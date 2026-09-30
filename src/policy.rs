@@ -1,0 +1,316 @@
+//! Which destinations clients may reach.
+//!
+//! A relay that forwards to any address would let its users reach the
+//! relay's own host and private network (RFC 9298 §7, RFC 9110 §9.3.6). Every
+//! target is therefore resolved here, by the relay, and every address the
+//! name resolves to is checked against the blocked list before connecting:
+//! checking the name alone would let a DNS answer pointing to 127.0.0.1 or
+//! 10.0.0.1 through ("DNS rebinding").
+
+use std::net::{IpAddr, SocketAddr};
+use std::time::Duration;
+
+use http::StatusCode;
+use ipnet::IpNet;
+
+use crate::config::Relay;
+
+/// Longest a name lookup may take.
+pub const DNS_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// A destination as the client named it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Target {
+    /// A DNS name, or an IP address (IPv6 without brackets).
+    pub host: String,
+    pub port: u16,
+}
+
+impl std::fmt::Display for Target {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.host.contains(':') {
+            write!(f, "[{}]:{}", self.host, self.port)
+        } else {
+            write!(f, "{}:{}", self.host, self.port)
+        }
+    }
+}
+
+impl Target {
+    /// Parses the authority of a classic CONNECT request, `host:port`, where
+    /// the port is required (RFC 9110 §9.3.6) and IPv6 addresses are in
+    /// brackets.
+    pub fn from_authority(authority: &str) -> Option<Self> {
+        let (host, port) = if let Some(rest) = authority.strip_prefix('[') {
+            let (host, rest) = rest.split_once(']')?;
+            host.parse::<std::net::Ipv6Addr>().ok()?;
+            (host, rest.strip_prefix(':')?)
+        } else {
+            let (host, port) = authority.rsplit_once(':')?;
+            if host.contains(':') {
+                return None;
+            }
+            (host, port)
+        };
+        Self::new(host, port)
+    }
+
+    /// Builds a target from the `target_host` and `target_port` variables of
+    /// a CONNECT-UDP request, already percent-decoded (RFC 9298 §2): an IPv4
+    /// address, an IPv6 address without brackets, or a DNS name.
+    pub fn from_template_vars(host: &str, port: &str) -> Option<Self> {
+        Self::new(host, port)
+    }
+
+    fn new(host: &str, port: &str) -> Option<Self> {
+        if port.is_empty() || port.len() > 5 || !port.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+        let port: u16 = port.parse().ok().filter(|p| *p != 0)?;
+        let host = host.strip_suffix('.').unwrap_or(host);
+        if host.parse::<IpAddr>().is_err() && !is_dns_name(host) {
+            return None;
+        }
+        Some(Self { host: host.to_ascii_lowercase(), port })
+    }
+
+    /// The address, when the host is an IP address literal.
+    pub fn ip(&self) -> Option<IpAddr> {
+        self.host.parse().ok()
+    }
+}
+
+/// A DNS name in the form resolvers accept: labels of letters, digits, `-`
+/// and `_`, 1-63 characters each, 253 in total.
+fn is_dns_name(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 253
+        && s.split('.').all(|l| {
+            !l.is_empty()
+                && l.len() <= 63
+                && l.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+                && !l.starts_with('-')
+                && !l.ends_with('-')
+        })
+}
+
+/// Why a target is not relayed. Each maps to a status code and a
+/// Proxy-Status error type (RFC 9209), which only authenticated clients see.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Refusal {
+    /// The request does not name a valid host and port.
+    BadTarget,
+    /// The port is blocked by configuration.
+    PortBlocked,
+    /// Every address of the target is blocked by configuration.
+    AddressBlocked,
+    DnsTimeout,
+    DnsError(String),
+    /// Resolution succeeded but gave no addresses.
+    NoAddresses,
+    ConnectionRefused,
+    ConnectionTimeout,
+    Unreachable(String),
+    /// The configured maximum number of tunnels is reached.
+    TooManyTunnels,
+}
+
+impl Refusal {
+    pub fn status(&self) -> StatusCode {
+        match self {
+            Refusal::BadTarget => StatusCode::BAD_REQUEST,
+            Refusal::PortBlocked | Refusal::AddressBlocked => StatusCode::FORBIDDEN,
+            Refusal::DnsTimeout | Refusal::ConnectionTimeout => StatusCode::GATEWAY_TIMEOUT,
+            Refusal::DnsError(_) | Refusal::NoAddresses | Refusal::ConnectionRefused | Refusal::Unreachable(_) => {
+                StatusCode::BAD_GATEWAY
+            }
+            Refusal::TooManyTunnels => StatusCode::SERVICE_UNAVAILABLE,
+        }
+    }
+
+    /// The Proxy-Status error type (RFC 9209 §2.3).
+    pub fn error_type(&self) -> &'static str {
+        match self {
+            Refusal::BadTarget => "http_request_error",
+            Refusal::PortBlocked => "http_request_denied",
+            Refusal::AddressBlocked => "destination_ip_prohibited",
+            Refusal::DnsTimeout => "dns_timeout",
+            Refusal::DnsError(_) => "dns_error",
+            Refusal::NoAddresses => "destination_not_found",
+            Refusal::ConnectionRefused => "connection_refused",
+            Refusal::ConnectionTimeout => "connection_timeout",
+            Refusal::Unreachable(_) => "destination_unavailable",
+            Refusal::TooManyTunnels => "connection_limit_reached",
+        }
+    }
+
+    /// The Proxy-Status header value.
+    pub fn proxy_status(&self) -> String {
+        format!("network-relay; error={}", self.error_type())
+    }
+}
+
+impl std::fmt::Display for Refusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Refusal::BadTarget => f.write_str("invalid target"),
+            Refusal::PortBlocked => f.write_str("port blocked by relay.blocked_ports"),
+            Refusal::AddressBlocked => f.write_str("address blocked by relay.blocked_destinations"),
+            Refusal::DnsTimeout => f.write_str("DNS lookup timed out"),
+            Refusal::DnsError(e) => write!(f, "DNS lookup failed: {e}"),
+            Refusal::NoAddresses => f.write_str("the name has no addresses"),
+            Refusal::ConnectionRefused => f.write_str("connection refused"),
+            Refusal::ConnectionTimeout => f.write_str("connection timed out"),
+            Refusal::Unreachable(e) => write!(f, "unreachable: {e}"),
+            Refusal::TooManyTunnels => f.write_str("relay.max_tunnels reached"),
+        }
+    }
+}
+
+/// The destination rules from the configuration.
+#[derive(Debug, Clone)]
+pub struct Policy {
+    blocked: Vec<IpNet>,
+    blocked_ports: Vec<u16>,
+}
+
+impl Policy {
+    pub fn new(relay: &Relay) -> Self {
+        Self { blocked: relay.blocked_destinations.clone(), blocked_ports: relay.blocked_ports.clone() }
+    }
+
+    /// Whether clients may reach `ip`. IPv4-mapped IPv6 addresses are checked
+    /// as the IPv4 addresses they are.
+    pub fn allows_ip(&self, ip: IpAddr) -> bool {
+        let ip = ip.to_canonical();
+        !self.blocked.iter().any(|net| net.contains(&ip))
+    }
+
+    /// Resolves `target` and returns the addresses clients may reach, in
+    /// the resolver's order of preference (RFC 6724).
+    pub async fn resolve(&self, target: &Target) -> Result<Vec<SocketAddr>, Refusal> {
+        if self.blocked_ports.contains(&target.port) {
+            return Err(Refusal::PortBlocked);
+        }
+        let addrs: Vec<SocketAddr> = match target.ip() {
+            Some(ip) => vec![SocketAddr::new(ip, target.port)],
+            None => {
+                let lookup = tokio::net::lookup_host((target.host.as_str(), target.port));
+                match tokio::time::timeout(DNS_TIMEOUT, lookup).await {
+                    Err(_) => return Err(Refusal::DnsTimeout),
+                    Ok(Err(e)) => return Err(Refusal::DnsError(e.to_string())),
+                    Ok(Ok(found)) => found.collect(),
+                }
+            }
+        };
+        if addrs.is_empty() {
+            return Err(Refusal::NoAddresses);
+        }
+        let mut allowed: Vec<SocketAddr> = Vec::with_capacity(addrs.len());
+        for a in addrs {
+            let a = SocketAddr::new(a.ip().to_canonical(), a.port());
+            if self.allows_ip(a.ip()) && !allowed.contains(&a) {
+                allowed.push(a);
+            }
+        }
+        if allowed.is_empty() {
+            return Err(Refusal::AddressBlocked);
+        }
+        Ok(allowed)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn t(host: &str, port: u16) -> Target {
+        Target { host: host.into(), port }
+    }
+
+    #[test]
+    fn authorities_are_parsed() {
+        assert_eq!(Target::from_authority("example.com:443"), Some(t("example.com", 443)));
+        assert_eq!(Target::from_authority("Example.COM.:80"), Some(t("example.com", 80)));
+        assert_eq!(Target::from_authority("192.0.2.1:8443"), Some(t("192.0.2.1", 8443)));
+        assert_eq!(Target::from_authority("[2001:db8::1]:443"), Some(t("2001:db8::1", 443)));
+        assert_eq!(Target::from_authority("_srv.example.com:5060"), Some(t("_srv.example.com", 5060)));
+        for bad in [
+            "example.com",
+            "example.com:",
+            "example.com:0",
+            "example.com:65536",
+            "example.com:+443",
+            "example.com:44a",
+            "2001:db8::1:443",
+            "[2001:db8::1]",
+            "[example.com]:443",
+            "[2001:db8::1]443",
+            ":443",
+            "exa mple.com:443",
+            "-bad.example:443",
+            "a..b:443",
+            "user@example.com:443",
+        ] {
+            assert_eq!(Target::from_authority(bad), None, "{bad}");
+        }
+        assert_eq!(t("2001:db8::1", 443).to_string(), "[2001:db8::1]:443");
+        assert_eq!(t("example.com", 443).to_string(), "example.com:443");
+    }
+
+    #[test]
+    fn template_variables_are_parsed() {
+        assert_eq!(Target::from_template_vars("2001:db8::42", "53"), Some(t("2001:db8::42", 53)));
+        assert_eq!(Target::from_template_vars("192.0.2.6", "443"), Some(t("192.0.2.6", 443)));
+        assert_eq!(Target::from_template_vars("dns.example", "53"), Some(t("dns.example", 53)));
+        assert_eq!(Target::from_template_vars("[2001:db8::42]", "53"), None, "no brackets in target_host");
+        assert_eq!(Target::from_template_vars("", "53"), None);
+        assert_eq!(Target::from_template_vars("a.example", ""), None);
+        assert_eq!(Target::from_template_vars("fe80::1%eth0", "53"), None, "no zone identifiers");
+    }
+
+    fn policy(blocked: &[&str], ports: &[u16]) -> Policy {
+        Policy { blocked: blocked.iter().map(|s| s.parse().unwrap()).collect(), blocked_ports: ports.to_vec() }
+    }
+
+    #[test]
+    fn blocked_addresses_include_mapped_ones() {
+        let p = Policy::new(&Relay::default());
+        for blocked in ["127.0.0.1", "10.1.2.3", "::1", "::ffff:127.0.0.1", "::ffff:10.0.0.1", "fd00::1", "fe80::1"] {
+            assert!(!p.allows_ip(blocked.parse().unwrap()), "{blocked}");
+        }
+        for allowed in ["1.1.1.1", "2606:4700:4700::1111", "::ffff:1.1.1.1"] {
+            assert!(p.allows_ip(allowed.parse().unwrap()), "{allowed}");
+        }
+        // Even with the mapped range unblocked, the IPv4 rule applies.
+        assert!(!policy(&["127.0.0.0/8"], &[]).allows_ip("::ffff:127.0.0.1".parse().unwrap()));
+    }
+
+    #[tokio::test]
+    async fn resolution_applies_the_rules() {
+        let p = policy(&["127.0.0.0/8", "::1/128"], &[25]);
+        assert_eq!(p.resolve(&t("192.0.2.1", 25)).await, Err(Refusal::PortBlocked));
+        assert_eq!(p.resolve(&t("127.0.0.1", 80)).await, Err(Refusal::AddressBlocked));
+        assert_eq!(p.resolve(&t("localhost", 80)).await.unwrap_err(), Refusal::AddressBlocked, "rebinding");
+        assert_eq!(p.resolve(&t("192.0.2.1", 80)).await, Ok(vec!["192.0.2.1:80".parse().unwrap()]));
+        assert_eq!(
+            p.resolve(&t("::ffff:192.0.2.1", 80)).await,
+            Ok(vec!["192.0.2.1:80".parse().unwrap()]),
+            "mapped addresses are connected to as IPv4"
+        );
+        let open = policy(&[], &[]);
+        let local = open.resolve(&t("localhost", 80)).await.unwrap();
+        assert!(local.iter().all(|a| a.ip().is_loopback() && a.port() == 80), "{local:?}");
+        let e = open.resolve(&t("does-not-exist.invalid", 80)).await.unwrap_err();
+        assert!(matches!(e, Refusal::DnsError(_) | Refusal::DnsTimeout | Refusal::NoAddresses), "{e:?}");
+    }
+
+    #[test]
+    fn refusals_map_to_rfc9209() {
+        assert_eq!(Refusal::AddressBlocked.status(), StatusCode::FORBIDDEN);
+        assert_eq!(Refusal::AddressBlocked.proxy_status(), "network-relay; error=destination_ip_prohibited");
+        assert_eq!(Refusal::DnsTimeout.status(), StatusCode::GATEWAY_TIMEOUT);
+        assert_eq!(Refusal::ConnectionRefused.status(), StatusCode::BAD_GATEWAY);
+        assert_eq!(Refusal::TooManyTunnels.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+}

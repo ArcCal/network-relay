@@ -187,13 +187,16 @@ pub(super) async fn udp(mut tunnel: Tunnel, sock: UdpSocket, mut ctx: TunnelCtx)
                 Ok(Event::Datagram(payload)) => {
                     deadline.as_mut().reset(tokio::time::Instant::now() + idle);
                     match datagram::split_context_id(&payload) {
-                        Ok((CONTEXT_ID_UDP_PAYLOAD, data)) => match sock.try_send(data) {
+                        // Awaited rather than tried: a new socket is not yet
+                        // known to be writable, and `try_send` would drop the
+                        // flow's first datagram, often a QUIC handshake.
+                        Ok((CONTEXT_ID_UDP_PAYLOAD, data)) => match sock.send(data).await {
                             Ok(n) => {
                                 up += 1;
                                 ctx.conn.up.fetch_add(n as u64, Ordering::Relaxed);
                             }
-                            // Full buffer, or an ICMP error from an earlier
-                            // datagram: UDP tolerates the loss.
+                            // An ICMP error from an earlier datagram, for
+                            // example: UDP tolerates the loss.
                             Err(_) => dropped += 1,
                         },
                         // Unknown context IDs are dropped (RFC 9298 §4).

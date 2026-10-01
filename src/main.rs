@@ -276,20 +276,37 @@ fn serve(path: PathBuf, check_only: bool) -> ExitCode {
     }
 }
 
-fn read_line(prompt: &str) -> Result<String> {
-    if std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+/// Reads a line from standard input. On a terminal the prompt is shown and
+/// what is typed is not echoed, as it is a password.
+fn read_secret(prompt: &str) -> Result<String> {
+    use nix::sys::termios::{tcgetattr, tcsetattr, LocalFlags, SetArg};
+    let stdin = std::io::stdin();
+    let mut echo = None;
+    if std::io::IsTerminal::is_terminal(&stdin) {
         eprint!("{prompt}");
         std::io::stderr().flush()?;
+        if let Ok(saved) = tcgetattr(&stdin) {
+            let mut quiet = saved.clone();
+            quiet.local_flags.remove(LocalFlags::ECHO);
+            if tcsetattr(&stdin, SetArg::TCSANOW, &quiet).is_ok() {
+                echo = Some(saved);
+            }
+        }
     }
     let mut line = String::new();
-    std::io::stdin().lock().read_line(&mut line).context("reading standard input")?;
+    let read = stdin.lock().read_line(&mut line);
+    if let Some(saved) = echo {
+        let _ = tcsetattr(&stdin, SetArg::TCSANOW, &saved);
+        eprintln!();
+    }
+    read.context("reading standard input")?;
     Ok(line.trim_end_matches(['\r', '\n']).to_string())
 }
 
 fn password_or_prompt(password: Option<String>) -> Result<String> {
     let password = match password {
         Some(p) => p,
-        None => read_line("Password: ")?,
+        None => read_secret("Password: ")?,
     };
     if password.is_empty() {
         bail!("no password given");
@@ -300,7 +317,7 @@ fn password_or_prompt(password: Option<String>) -> Result<String> {
 fn passwd(name: &str, from_stdin: bool) -> Result<bool> {
     auth::validate_user_name(name)?;
     let (password, generated) = if from_stdin {
-        let password = read_line("Password: ")?;
+        let password = read_secret("Password: ")?;
         if password.chars().count() < auth::MIN_PASSWORD_LEN {
             bail!("the password must have at least {} characters", auth::MIN_PASSWORD_LEN);
         }

@@ -1249,3 +1249,96 @@ async fn http1_success_responses_have_no_framing_headers() {
     assert_eq!(resp.headers()["capsule-protocol"], "?1");
     assert!(!resp.headers().contains_key("content-length"), "{:?}", resp.headers());
 }
+
+/// Cancelling a UDP flow (here: the user is removed) is reported as a
+/// cancellation, not as a malformed message.
+#[tokio::test]
+async fn revoked_udp_flows_are_cancelled_with_cancel_codes() {
+    let relay = TestRelay::start("").await;
+    let (udp, _u) = udp_echo().await;
+    let (mut h3_sender, _conn, _h3_driver) = raw_h3(&relay, true).await;
+    let req = udp_request(udp).extension(h3::ext::Protocol::CONNECT_UDP).body(()).unwrap();
+    let mut h3_stream = h3_sender.send_request(req).await.unwrap();
+    assert_eq!(h3_stream.recv_response().await.unwrap().status(), StatusCode::OK);
+    let (mut h2_sender, _h2_driver) = raw_h2(&relay).await;
+    let req = udp_request(udp).extension(h2::ext::Protocol::from_static("connect-udp")).body(()).unwrap();
+    let (response, _send) = h2_sender.send_request(req, false).unwrap();
+    let response = within("CONNECT-UDP response", response).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let mut h2_recv = response.into_body();
+    assert_eq!(relay.relay.active_tunnels(), 2);
+
+    relay.reload("", &[]);
+    let error = match within("H3_REQUEST_CANCELLED", h3_stream.recv_data()).await {
+        Err(error) => error,
+        Ok(_) => panic!("revocation did not reset the HTTP/3 flow"),
+    };
+    assert!(
+        matches!(error, h3::error::StreamError::RemoteTerminate { code } if code == h3::error::Code::H3_REQUEST_CANCELLED),
+        "{error:?}"
+    );
+    let error = within("CANCEL", h2_recv.data()).await.expect("reset became EOF").unwrap_err();
+    assert_eq!(error.reason(), Some(h2::Reason::CANCEL));
+    within("released tunnel slots", async {
+        while relay.relay.active_tunnels() != 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
+}
+
+/// RFC 9297 §2.1: a datagram that arrives after the request's receive side
+/// is closed is dropped silently; it does not abort the response direction.
+#[tokio::test]
+async fn http3_datagram_after_request_fin_is_dropped_silently() {
+    let relay = TestRelay::start("").await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let target = listener.local_addr().unwrap();
+    let (mut sender, conn, _driver) = raw_h3(&relay, true).await;
+    let req = Request::builder()
+        .method(Method::CONNECT)
+        .uri(target.to_string())
+        .header("authorization", auth::basic_authorization(ALICE.0, ALICE.1))
+        .body(())
+        .unwrap();
+    let mut stream = sender.send_request(req).await.unwrap();
+    assert_eq!(stream.recv_response().await.unwrap().status(), StatusCode::OK);
+    let (mut tcp, _) = within("target connection", listener.accept()).await.unwrap();
+    stream.finish().await.unwrap();
+    assert_eq!(within("target half-close", tcp.read(&mut [0])).await.unwrap(), 0);
+    let mut late = bytes::BytesMut::new();
+    network_relay::proto::varint::encode(stream.id().into_inner() / 4, &mut late);
+    late.extend_from_slice(b"\0late");
+    conn.send_datagram(late.freeze()).unwrap();
+    tcp.write_all(b"still open").await.unwrap();
+    let mut data = within("response data", stream.recv_data()).await.unwrap().expect("response direction ended");
+    assert_eq!(data.copy_to_bytes(data.remaining()), "still open");
+}
+
+/// Connection and Upgrade are token lists (RFC 9110 §7.6.1, §7.8).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn http1_upgrade_tokens_are_matched_in_lists() {
+    let relay = TestRelay::start("").await;
+    let (dns, _d) = udp_echo().await;
+    let opts = relay.options(ALICE, dns, dns);
+    let request = |upgrade: &'static str| {
+        Request::builder()
+            .method(Method::GET)
+            .uri(format!("/.well-known/masque/udp/127.0.0.1/{}/", dns.port()))
+            .header("host", "relay.test")
+            .header("connection", "keep-alive, Upgrade")
+            .header("upgrade", upgrade)
+            .header("authorization", auth::basic_authorization(ALICE.0, ALICE.1))
+            .body(Empty::<Bytes>::new())
+            .unwrap()
+    };
+    let (mut sender, _conn) = check::h1_sender(&opts, &opts.addresses).await.unwrap();
+    let resp = within("Upgrade", sender.send_request(request("websocket, connect-udp"))).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::SWITCHING_PROTOCOLS);
+    let (mut sender, _conn) = check::h1_sender(&opts, &opts.addresses).await.unwrap();
+    let resp = within("other upgrade", sender.send_request(request("websocket"))).await.unwrap();
+    // Answered as the plain GET it also is: a missing well-known file is 404.
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND, "an unknown upgrade token is not a proxy request");
+    assert!(!resp.headers().contains_key("upgrade"));
+    assert!(!resp.headers().contains_key("capsule-protocol"));
+}

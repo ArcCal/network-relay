@@ -25,7 +25,8 @@ hyper = { version = "1", features = ["client", "server", "http1", "http2"] }
 hyper-util = { version = "0.1", features = ["tokio", "server-auto", "http1", "http2"] }
 ipnet = { version = "2", features = ["serde"] }
 # Open file limit: every relayed TCP connection needs a file descriptor.
-nix = { version = "0.31", default-features = false, features = ["resource"] }
+# Terminal settings: passwords are typed without echo.
+nix = { version = "0.31", default-features = false, features = ["resource", "term"] }
 quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring", "log"] }
 ring = "0.17"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "logging"] }

@@ -46,6 +46,36 @@ pub enum TunnelError {
     Connection(String),
 }
 
+/// Why a tunnel is torn down early, which decides the error code the peer
+/// sees (RFC 9114 §4.4, RFC 9113 §8.5, RFC 9297 §3.3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Abort {
+    /// The peer sent a malformed capsule or datagram.
+    Malformed,
+    /// The destination socket failed.
+    Failed,
+    /// The peer cancelled, the user was revoked, or the peer stopped reading.
+    Cancelled,
+}
+
+impl Abort {
+    pub fn h3_code(self) -> Code {
+        match self {
+            Abort::Malformed => Code::H3_MESSAGE_ERROR,
+            Abort::Failed => Code::H3_CONNECT_ERROR,
+            Abort::Cancelled => Code::H3_REQUEST_CANCELLED,
+        }
+    }
+
+    pub fn h2_reason(self) -> h2::Reason {
+        match self {
+            Abort::Malformed => h2::Reason::PROTOCOL_ERROR,
+            Abort::Failed => h2::Reason::CONNECT_ERROR,
+            Abort::Cancelled => h2::Reason::CANCEL,
+        }
+    }
+}
+
 /// Result of sending an HTTP Datagram.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Sent {
@@ -93,7 +123,7 @@ macro_rules! h3_pumps {
         let (mut send, mut recv) = ($send, $recv);
         let (in_tx, in_rx) = mpsc::channel(STREAM_QUEUE);
         let (out_tx, mut out_rx) = mpsc::channel::<Bytes>(STREAM_QUEUE);
-        let (abort_tx, mut abort_rx) = tokio::sync::watch::channel(false);
+        let (abort_tx, mut abort_rx) = tokio::sync::watch::channel(None::<Abort>);
         let mut read_abort = abort_rx.clone();
         let reader = tokio::spawn(async move {
             let reading = async {
@@ -114,7 +144,11 @@ macro_rules! h3_pumps {
             };
             tokio::select! {
                 biased;
-                Ok(()) = read_abort.changed() => recv.stop_sending(Code::H3_MESSAGE_ERROR),
+                Ok(()) = read_abort.changed() => {
+                    if let Some(why) = *read_abort.borrow() {
+                        recv.stop_sending(why.h3_code());
+                    }
+                }
                 _ = reading => {}
             }
         });
@@ -132,14 +166,16 @@ macro_rules! h3_pumps {
                 tokio::select! {
                     biased;
                     changed = abort_rx.changed() => match changed {
-                        Ok(()) => true,
-                        Err(_) => tokio::time::timeout(CLOSE_TIMEOUT, &mut writing).await.is_err(),
+                        Ok(()) => *abort_rx.borrow(),
+                        // The flow ended normally: drain for a while, then
+                        // give up on a peer that stopped reading.
+                        Err(_) => tokio::time::timeout(CLOSE_TIMEOUT, &mut writing).await.err().map(|_| Abort::Cancelled),
                     },
-                    _ = &mut writing => false,
+                    _ = &mut writing => None,
                 }
             };
-            if aborted {
-                send.stop_stream(Code::H3_MESSAGE_ERROR);
+            if let Some(why) = aborted {
+                send.stop_stream(why.h3_code());
             }
         });
         Self::new(in_rx, out_tx, $datagrams, reader, abort_tx)
@@ -152,14 +188,14 @@ pub struct Tunnel {
     decoder: CapsuleDecoder,
     datagrams: Datagrams,
     reader: tokio::task::JoinHandle<()>,
-    abort: tokio::sync::watch::Sender<bool>,
+    abort: tokio::sync::watch::Sender<Option<Abort>>,
 }
 
 impl Drop for Tunnel {
     fn drop(&mut self) {
         // The writer ends on its own once `outbound` is dropped, after
         // finishing the stream gracefully.
-        if !*self.abort.borrow() {
+        if self.abort.borrow().is_none() {
             self.reader.abort();
         }
     }
@@ -171,7 +207,7 @@ impl Tunnel {
         outbound: mpsc::Sender<Bytes>,
         datagrams: Datagrams,
         reader: tokio::task::JoinHandle<()>,
-        abort: tokio::sync::watch::Sender<bool>,
+        abort: tokio::sync::watch::Sender<Option<Abort>>,
     ) -> Self {
         Self { inbound, outbound, decoder: CapsuleDecoder::default(), datagrams, reader, abort }
     }
@@ -263,10 +299,11 @@ impl Tunnel {
         }
     }
 
-    /// Aborts the request stream, as RFC 9297 §3.3 requires for a malformed
-    /// message.
-    pub fn abort(&self) {
-        self.abort.send_replace(true);
+    /// Tears the request stream down in both directions, with the error
+    /// code `why` maps to; a malformed message gets the one RFC 9297 §3.3
+    /// requires.
+    pub fn abort(&self, why: Abort) {
+        self.abort.send_replace(Some(why));
     }
 
     /// Wraps an HTTP/3 request stream on the server.
@@ -302,12 +339,12 @@ impl Tunnel {
 
     pub(crate) fn stream_with_reset<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + 'static>(
         io: S,
-        reset: Option<Box<dyn FnOnce() + Send>>,
+        reset: Option<Box<dyn FnOnce(Abort) + Send>>,
     ) -> Self {
         let (mut rd, mut wr) = tokio::io::split(io);
         let (in_tx, in_rx) = mpsc::channel(STREAM_QUEUE);
         let (out_tx, mut out_rx) = mpsc::channel::<Bytes>(STREAM_QUEUE);
-        let (abort_tx, mut abort_rx) = tokio::sync::watch::channel(false);
+        let (abort_tx, mut abort_rx) = tokio::sync::watch::channel(None::<Abort>);
         let mut read_abort = abort_rx.clone();
         let reader = tokio::spawn(async move {
             let reading = async {
@@ -352,16 +389,14 @@ impl Tunnel {
                 tokio::select! {
                     biased;
                     changed = abort_rx.changed() => match changed {
-                        Ok(()) => true,
-                        Err(_) => tokio::time::timeout(CLOSE_TIMEOUT, &mut writing).await.is_err(),
+                        Ok(()) => *abort_rx.borrow(),
+                        Err(_) => tokio::time::timeout(CLOSE_TIMEOUT, &mut writing).await.err().map(|_| Abort::Cancelled),
                     },
-                    _ = &mut writing => false,
+                    _ = &mut writing => None,
                 }
             };
-            if aborted {
-                if let Some(reset) = reset {
-                    reset();
-                }
+            if let (Some(why), Some(reset)) = (aborted, reset) {
+                reset(why);
             }
         });
         Self::new(in_rx, out_tx, Datagrams::Capsules, reader, abort_tx)
@@ -391,17 +426,18 @@ mod tests {
             let (tx, rx) = tokio::sync::oneshot::channel();
             let mut tunnel = Tunnel::stream_with_reset(
                 io,
-                Some(Box::new(|| {
-                    let _ = tx.send(());
+                Some(Box::new(|why| {
+                    let _ = tx.send(why);
                 })),
             );
             tunnel.send_datagram(Bytes::from(vec![0; 1024])).unwrap();
             if abort {
-                tunnel.abort();
+                tunnel.abort(Abort::Malformed);
             }
             drop(tunnel);
             let limit = if abort { Duration::from_millis(500) } else { Duration::from_secs(3) };
-            tokio::time::timeout(limit, rx).await.expect("blocked writer leaked").unwrap();
+            let why = tokio::time::timeout(limit, rx).await.expect("blocked writer leaked").unwrap();
+            assert_eq!(why, if abort { Abort::Malformed } else { Abort::Cancelled });
         }
     }
 

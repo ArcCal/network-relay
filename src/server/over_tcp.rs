@@ -184,6 +184,7 @@ impl Relay {
                 response.send_response(
                     Response::builder()
                         .status(refusal.status())
+                        .header(DATE, http_date())
                         .header("proxy-status", refusal.proxy_status())
                         .body(())?,
                     true,
@@ -212,8 +213,7 @@ impl Relay {
                 }
             }
             Opened::Udp(sock) => {
-                let tunnel =
-                    Tunnel::stream_with_reset(stream, Some(Box::new(move || reset.reset(h2::Reason::PROTOCOL_ERROR))));
+                let tunnel = Tunnel::stream_with_reset(stream, Some(Box::new(move |why| reset.reset(why.h2_reason()))));
                 pump::udp(tunnel, sock, ctx).await;
             }
         }
@@ -223,16 +223,17 @@ impl Relay {
     async fn handle_http(&self, info: Arc<ConnInfo>, mut req: Request<hyper::body::Incoming>) -> Response<Full<Bytes>> {
         let is_connect = req.method() == Method::CONNECT;
         // RFC 9298 §3.2: GET with "Connection: Upgrade" and "Upgrade: connect-udp".
+        // Both fields are token lists (RFC 9110 §7.6.1, §7.8).
+        let has_token = |name, token: &str| {
+            req.headers()
+                .get_all(name)
+                .iter()
+                .filter_map(|v| v.to_str().ok())
+                .any(|v| v.split(',').any(|t| t.trim().eq_ignore_ascii_case(token)))
+        };
         let protocol = req.headers().get(UPGRADE).and_then(|v| v.to_str().ok()).map(str::to_string);
-        let wants_upgrade = req
-            .headers()
-            .get_all(CONNECTION)
-            .iter()
-            .filter_map(|v| v.to_str().ok())
-            .any(|v| v.split(',').any(|t| t.trim().eq_ignore_ascii_case("upgrade")));
-        let udp = req.method() == Method::GET
-            && wants_upgrade
-            && protocol.as_deref().is_some_and(|u| u.eq_ignore_ascii_case(CONNECT_UDP_PROTOCOL));
+        let udp =
+            req.method() == Method::GET && has_token(CONNECTION, "upgrade") && has_token(UPGRADE, CONNECT_UDP_PROTOCOL);
         let kind = if is_connect {
             Some(Kind::Tcp)
         } else if udp {

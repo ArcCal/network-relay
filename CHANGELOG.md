@@ -2,6 +2,10 @@
 
 ## 未发布
 
+- `passwd --stdin`、`profile` 和 `check` 在终端里提示输入密码时不再回显。
+- UDP 流提前结束时的错误码按原因区分：畸形消息、目标套接字失效、取消或撤销分别用 `H3_MESSAGE_ERROR`/`PROTOCOL_ERROR`、`H3_CONNECT_ERROR`/`CONNECT_ERROR`、`H3_REQUEST_CANCELLED`/`CANCEL`；此前一律按畸形消息处理。
+- HTTP/3 TCP 隧道在设备已发 FIN 后收到的数据报静默丢弃（RFC 9297 §2.1），不再复位流。
+- HTTP/1.1 的 `Connection` 和 `Upgrade` 按令牌列表解析；HTTP/2 拒绝响应带 `Date`。
 - 增加 `deploy/global-profile.py`：用服务域名表（`deploy/domains/global-services.txt`）和 gfwlist 生成 `.mobileconfig`，只用标准库和 `network-relay profile`；有对应的自动化测试。
 - 监听或证书重载任务意外退出时，进程现在报错退出（由 systemd 重启），而不是缺一个监听器继续运行；信号处理在监听器启动前注册。
 - reload 不再让正在做首次验证、且用户没有变化的请求得到伪装网站的 404；失败的验证结果不再能挤掉缓存中已验证的条目。

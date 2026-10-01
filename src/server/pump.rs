@@ -13,7 +13,7 @@ use tracing::debug;
 
 use super::{ConnInfo, TunnelCtx};
 use crate::proto::datagram::{self, CONTEXT_ID_UDP_PAYLOAD};
-use crate::tunnel::{Event, Sent, Tunnel, TunnelError};
+use crate::tunnel::{Abort, Event, Sent, Tunnel, TunnelError};
 
 /// Bytes read from a destination at a time.
 const CHUNK: usize = 64 * 1024;
@@ -166,7 +166,9 @@ pub(super) async fn tcp_over_h3(
                     Ok(()) => down_done = true,
                     Err(e) => break H3Outcome::Abort(Code::H3_CONNECT_ERROR, e),
                 },
-                Ok(()) = &mut bad_datagram => break H3Outcome::Abort(Code::H3_DATAGRAM_ERROR, "datagram on TCP request".into()),
+                // Once the request's receive side is closed, RFC 9297 §2.1
+                // asks for datagrams to be dropped silently instead.
+                Ok(()) = &mut bad_datagram, if !up_done => break H3Outcome::Abort(Code::H3_DATAGRAM_ERROR, "datagram on TCP request".into()),
                 _ = ctx.cancelled() => break H3Outcome::Abort(Code::H3_REQUEST_CANCELLED, "client cancelled or user revoked".into()),
             }
         }
@@ -209,8 +211,9 @@ pub(super) async fn udp(mut tunnel: Tunnel, sock: UdpSocket, mut ctx: TunnelCtx)
                         Ok(Event::Datagram(payload)) => {
                             *activity.lock().unwrap() = tokio::time::Instant::now();
                             match datagram::split_context_id(&payload) {
+                                // RFC 9298 §5: longer than a UDP packet can carry.
                                 Ok((CONTEXT_ID_UDP_PAYLOAD, data)) if data.len() > datagram::MAX_UDP_PAYLOAD => {
-                                    break ("oversized UDP payload", true);
+                                    break ("oversized UDP payload", Some(Abort::Malformed));
                                 }
                                 // Awaited rather than tried: a new socket is not yet
                                 // known to be writable, and `try_send` would drop the
@@ -223,28 +226,30 @@ pub(super) async fn udp(mut tunnel: Tunnel, sock: UdpSocket, mut ctx: TunnelCtx)
                                     // An ICMP error from an earlier datagram, for
                                     // example: UDP tolerates the loss.
                                     Err(e) if udp_error_is_transient(&e) => dropped += 1,
-                                    Err(_) => break ("unusable UDP socket", true),
+                                    Err(_) => break ("unusable UDP socket", Some(Abort::Failed)),
                                 },
                             // Unknown context IDs are dropped (RFC 9298 §4).
                             Ok(_) => dropped += 1,
-                            Err(_) => break ("missing or truncated UDP context ID", true),
+                            Err(_) => break ("missing or truncated UDP context ID", Some(Abort::Malformed)),
                             }
                         }
-                        Ok(Event::Closed) => break ("client closed the stream", false),
+                        Ok(Event::Closed) => break ("client closed the stream", None),
                         Err(TunnelError::Malformed(e)) => {
                             debug!("malformed capsule stream: {e}");
-                            break ("malformed capsule stream", true);
+                            break ("malformed capsule stream", Some(Abort::Malformed));
                         }
-                        Err(_) => break ("stream ended", true),
+                        Err(TunnelError::Closed) => break ("client stopped reading", Some(Abort::Cancelled)),
+                        Err(TunnelError::Connection(_)) => break ("connection error", Some(Abort::Failed)),
                     },
                     ready = sock.readable() => {
                         if ready.is_err() {
-                            break ("socket error", true);
+                            break ("socket error", Some(Abort::Failed));
                         }
                         // Bound work per poll so an always-readable socket cannot
                         // starve cancellation, other flows, or the idle deadline.
+                        // One buffer serves the whole batch.
+                        let mut buf = [0u8; 65_535];
                         for _ in 0..32 {
-                            let mut buf = [0u8; 65_535];
                             match sock.try_recv(&mut buf) {
                                 Ok(n) => {
                                     *activity.lock().unwrap() = tokio::time::Instant::now();
@@ -252,14 +257,15 @@ pub(super) async fn udp(mut tunnel: Tunnel, sock: UdpSocket, mut ctx: TunnelCtx)
                                     match tunnel.send_datagram(datagram::udp_payload(&buf[..n])) {
                                         Ok(Sent::Sent) => down += 1,
                                         Ok(Sent::Dropped | Sent::TooBig) => dropped += 1,
-                                        Err(_) => break 'flow ("client writer closed", true),
+                                        Err(TunnelError::Closed) => break 'flow ("client stopped reading", Some(Abort::Cancelled)),
+                                        Err(_) => break 'flow ("connection error", Some(Abort::Failed)),
                                     }
                                 }
                                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
                                 // ICMP errors such as port unreachable surface here;
                                 // the flow stays open, as an unconnected socket would.
                                 Err(e) if udp_error_is_transient(&e) => break,
-                                Err(_) => break 'flow ("unusable UDP socket", true),
+                                Err(_) => break 'flow ("unusable UDP socket", Some(Abort::Failed)),
                             }
                         }
                     }
@@ -270,13 +276,13 @@ pub(super) async fn udp(mut tunnel: Tunnel, sock: UdpSocket, mut ctx: TunnelCtx)
         // Keep these outside the transfer loop, including any pending socket send.
         tokio::select! {
             biased;
-            _ = ctx.cancelled() => ("client cancelled or user revoked", true),
-            _ = deadline => ("idle", false),
+            _ = ctx.cancelled() => ("client cancelled or user revoked", Some(Abort::Cancelled)),
+            _ = deadline => ("idle", None),
             result = transferring => result,
         }
     };
-    if abort {
-        tunnel.abort();
+    if let Some(why) = abort {
+        tunnel.abort(why);
     }
     debug!(user = %ctx.user.name, target = %ctx.target, up, down, dropped, "UDP flow closed: {why}");
 }

@@ -165,6 +165,20 @@ class DeploymentTests(unittest.TestCase):
             deploy.atomic_write(link, b'wrong')
         self.assertEqual(target.read_bytes(), b'new')
 
+    def test_preflight_accepts_debian_12_and_13_only(self):
+        self.stack.close()  # undo the preflight mock from setUp
+        release = lambda version: {'ID': 'debian', 'VERSION_ID': version}
+        with mock.patch.object(deploy.os, 'geteuid', return_value=0), \
+                mock.patch.object(deploy.platform, 'machine', return_value='x86_64'), \
+                mock.patch.object(deploy.Path, 'is_dir', return_value=True):
+            for version in ('12', '13'):
+                with mock.patch.object(deploy.platform, 'freedesktop_os_release', return_value=release(version)):
+                    deploy.preflight()
+            for version in ('11', '14'):
+                with mock.patch.object(deploy.platform, 'freedesktop_os_release', return_value=release(version)), \
+                        self.assertRaises(ValueError):
+                    deploy.preflight()
+
     def test_occupied_port_never_stops_another_service(self):
         output = 'LISTEN 0 128 0.0.0.0:443 0.0.0.0:* users:(("nginx",pid=99,fd=3))\n'
         with mock.patch.object(deploy, 'run', return_value=subprocess.CompletedProcess([], 0, output)):

@@ -2,6 +2,7 @@
 
 ## 未发布
 
+- 一键安装脚本也支持 Debian 12（bookworm）x86_64。
 - 安装脚本的 `apt-get` 等待 dpkg 锁（最多 30 分钟），新开机的 VPS 正在自动更新时不再直接失败。
 - CI：arm64 测试中由测试启动的子进程也能通过 qemu 找到动态链接器。
 - `passwd --stdin`、`profile` 和 `check` 在终端里提示输入密码时不再回显。

@@ -1,6 +1,6 @@
-# Debian 13 x64：下载源码后自动安装
+# Debian 12/13 x64：下载源码后自动安装
 
-适用于 Debian 13、x86_64、systemd VPS。源码可以从 GitHub 下载 ZIP 后上传、解压；VPS 无需登录 GitHub。编译时仍需访问 Debian 软件源、Rust 官方下载站、crates.io 和公开依赖仓库。
+适用于 Debian 12 或 13、x86_64、systemd VPS（脚本文件名仍是 `install-debian13.sh`）。源码可以从 GitHub 下载 ZIP 后上传、解压；VPS 无需登录 GitHub。编译时仍需访问 Debian 软件源、Rust 官方下载站、crates.io 和公开依赖仓库。
 
 ## 已有本次交付的 mobileconfig
 
@@ -38,7 +38,7 @@ sudo bash deploy/install-debian13.sh --domain relay.qolita.com
 - 原子替换程序并验证本机 HTTPS；失败时恢复安装前文件及原来的运行/启用状态。文件备份在 `/etc/network-relay/backups/时间戳/`，对应路径记录在 `manifest.json` 中。软件包安装、证书签发和 UFW 放行不会随此回退而撤销。
 - 运行三种 HTTP 版本的 TCP/UDP 联网自检。若外部测试目标不可达，自检返回失败并保留已启动服务，便于诊断；本机通过不能代替外部网络的 UDP 443 检查。
 
-不传 `--binary` 时从源码编译；已有 Debian 13 x64 编译产物时，可传 `--binary /路径/network-relay`。
+不传 `--binary` 时从源码编译；已有同一 Debian 版本的 x64 编译产物时，可传 `--binary /路径/network-relay`。
 
 ## 更新与重复执行
 

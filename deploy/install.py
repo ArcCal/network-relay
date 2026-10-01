@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Debian 13 deployment using only Python's standard library and system tools."""
+"""Debian 12/13 deployment using only Python's standard library and system tools."""
 
 import argparse
 import base64
@@ -37,6 +37,7 @@ UDP_TEMPLATE = '/.well-known/masque/udp/{target_host}/{target_port}/'
 # A fresh VPS often runs unattended-upgrades right after boot; wait for its
 # dpkg lock instead of failing.
 APT = ['apt-get', '-o', 'DPkg::Lock::Timeout=1800']
+SUPPORTED_DEBIAN = ('12', '13')
 
 
 @dataclass(frozen=True)
@@ -209,8 +210,11 @@ def preflight():
     if os.geteuid() != 0:
         raise ValueError('请用 root 运行此安装脚本。')
     os_release = platform.freedesktop_os_release()
-    if (os_release.get('ID'), os_release.get('VERSION_ID'), platform.machine()) != ('debian', '13', 'x86_64'):
-        raise ValueError('只支持 Debian 13 x86_64。')
+    # Debian 12 has everything the installer needs too: Python 3.11
+    # (tomllib), apt with DPkg::Lock::Timeout, certbot and systemd.
+    if (os_release.get('ID') != 'debian' or os_release.get('VERSION_ID') not in SUPPORTED_DEBIAN
+            or platform.machine() != 'x86_64'):
+        raise ValueError('只支持 Debian 12/13 x86_64。')
     if not Path('/run/systemd/system').is_dir():
         raise ValueError('需要由 systemd 启动的 VPS。')
 
@@ -389,7 +393,7 @@ def apply_install(binary, config_data, profile_data, identity, *, automated_cert
 
 
 def main():
-    parser = argparse.ArgumentParser(description='安装/更新 Debian 13 x64 Network Relay，并生成按域名分流的 mobileconfig。')
+    parser = argparse.ArgumentParser(description='安装/更新 Debian 12/13 x64 Network Relay，并生成按域名分流的 mobileconfig。')
     parser.add_argument('--profile', type=Path, help='导入已有 mobileconfig 的服务器地址和凭据；推荐使用随交付提供的文件')
     parser.add_argument('--domain', help='中继域名；未导入 profile 时必需，不写则在终端询问')
     parser.add_argument('--email', help='Let’s Encrypt 账户邮箱；不写则注册无邮箱账户')

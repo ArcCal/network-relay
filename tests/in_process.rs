@@ -1342,3 +1342,43 @@ async fn http1_upgrade_tokens_are_matched_in_lists() {
     assert!(!resp.headers().contains_key("upgrade"));
     assert!(!resp.headers().contains_key("capsule-protocol"));
 }
+
+/// RFC 9112 §3.2: an HTTP/1.1 request with no Host field, or more than one,
+/// gets 400 and no tunnel, whatever it asks for.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn http1_requests_need_exactly_one_host() {
+    let relay = TestRelay::start("").await;
+    let (echo, _e) = echo_server().await;
+    let (dns, _d) = udp_echo().await;
+    let ca = network_relay::tls::client_config(Some(&relay.env.path("ca.pem")), &[b"http/1.1"]).unwrap();
+    let connector = tokio_rustls::TlsConnector::from(std::sync::Arc::new(ca));
+    let auth = auth::basic_authorization(ALICE.0, ALICE.1);
+    let udp_path = format!("/.well-known/masque/udp/127.0.0.1/{}/", dns.port());
+    let cases = [
+        format!("CONNECT {echo} HTTP/1.1\r\nProxy-Authorization: {auth}\r\n\r\n"),
+        format!("CONNECT {echo} HTTP/1.1\r\nHost: {echo}\r\nHost: {echo}\r\nProxy-Authorization: {auth}\r\n\r\n"),
+        format!(
+            "GET {udp_path} HTTP/1.1\r\nConnection: Upgrade\r\nUpgrade: connect-udp\r\nAuthorization: {auth}\r\n\r\n"
+        ),
+        format!(
+            "GET {udp_path} HTTP/1.1\r\nHost: relay.test\r\nHost: other.test\r\nConnection: Upgrade\r\n\
+             Upgrade: connect-udp\r\nAuthorization: {auth}\r\n\r\n"
+        ),
+        "GET / HTTP/1.1\r\n\r\n".to_string(),
+    ];
+    for request in cases {
+        let tcp = tokio::net::TcpStream::connect(relay.addr).await.unwrap();
+        let mut tls = connector.connect("relay.test".try_into().unwrap(), tcp).await.unwrap();
+        tls.write_all(request.as_bytes()).await.unwrap();
+        let mut head = Vec::new();
+        within("response", async {
+            let mut byte = [0u8; 1];
+            while !head.ends_with(b"\r\n") && tls.read(&mut byte).await.unwrap() == 1 {
+                head.push(byte[0]);
+            }
+        })
+        .await;
+        assert_eq!(String::from_utf8_lossy(&head).trim(), "HTTP/1.1 400 Bad Request", "{request:?}");
+    }
+    assert_eq!(relay.relay.active_tunnels(), 0);
+}

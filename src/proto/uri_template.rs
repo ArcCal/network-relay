@@ -155,6 +155,22 @@ impl UriTemplate {
         Ok(parts)
     }
 
+    /// Checks that requests built from this template can be matched back to
+    /// the targets they name. Some valid RFC 6570 forms, such as a query
+    /// with an unnamed `{target_host}`, expand fine but cannot be matched,
+    /// and would quietly turn every UDP request into a website request.
+    pub fn check_round_trip(&self) -> Result<(), TemplateError> {
+        for (host, port) in [("example.com", "443"), ("192.0.2.1", "53"), ("2001:db8::1", "8443")] {
+            let path = self.expand(&[("target_host", host), ("target_port", port)]);
+            let matched = self.matches(&path);
+            let back = matched.as_ref().map(|m| (m.get("target_host"), m.get("target_port")));
+            if back != Some((Some(&host.to_string()), Some(&port.to_string()))) {
+                return Err(TemplateError("requests built from this template cannot be matched back to their target"));
+            }
+        }
+        Ok(())
+    }
+
     /// Whether the template has an expression for variable `name`.
     pub fn has_variable(&self, name: &str) -> bool {
         self.parts.iter().any(|p| matches!(p, Part::Expr { vars, .. } if vars.iter().any(|v| v == name)))
@@ -589,6 +605,22 @@ mod tests {
         }
         let tpl = UriTemplate::parse_path("/udp/{target_host}/{target_port}/{target_host}").unwrap();
         assert!(tpl.matches("/udp/first.example/53/second.example").is_none());
+    }
+
+    #[test]
+    fn templates_that_cannot_be_matched_back_are_rejected() {
+        for ok in [
+            "/.well-known/masque/udp/{target_host}/{target_port}/",
+            "/masque?h={target_host}&p={target_port}",
+            "/masque{?target_host,target_port}",
+            "/udp/{target_host}-{target_port}/",
+            "/udp?h=prefix-{target_host}-suffix&p={target_port}&tag=fixed",
+        ] {
+            UriTemplate::parse_path(ok).unwrap().check_round_trip().unwrap_or_else(|e| panic!("{ok}: {e}"));
+        }
+        for bad in ["/udp?{target_host}&p={target_port}", "/udp/{target_host}{target_port}/"] {
+            assert!(UriTemplate::parse_path(bad).unwrap().check_round_trip().is_err(), "{bad}");
+        }
     }
 
     #[test]

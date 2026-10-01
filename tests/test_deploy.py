@@ -20,6 +20,10 @@ SPEC = importlib.util.spec_from_file_location('relay_deploy', ROOT / 'deploy/ins
 deploy = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = deploy
 SPEC.loader.exec_module(deploy)
+GLOBAL_SPEC = importlib.util.spec_from_file_location('relay_global_profile', ROOT / 'deploy/global-profile.py')
+global_profile = importlib.util.module_from_spec(GLOBAL_SPEC)
+sys.modules[GLOBAL_SPEC.name] = global_profile
+GLOBAL_SPEC.loader.exec_module(global_profile)
 BINARY = ROOT / 'target/debug/network-relay'
 PASSWORD = 'test-password-not-real-123'
 
@@ -261,6 +265,72 @@ class DeploymentTests(unittest.TestCase):
         self.assertFalse(deploy.CONFIG.exists())
         self.assertFalse(deploy.BINARY.exists())
         self.assertIn(['systemctl', 'stop', 'network-relay'], self.calls)
+
+
+GFWLIST = """[AutoProxy 0.2.9]
+! comment
+||Example.COM
+||blocked.example/some/path
+|https://www.site.example/x
+|http://85.17.73.31/
+.dotted.example
+bare.example
+/regex.*/
+@@||allowed.example
+||under_score.example
+||wild*.example
+keyword-only
+||sub.example.com
+"""
+
+
+class GlobalProfileTests(unittest.TestCase):
+    def test_gfwlist_rules_become_domains_and_the_rest_is_counted(self):
+        domains, stats = global_profile.extract_gfwlist(GFWLIST)
+        self.assertEqual(domains, ['bare.example', 'blocked.example', 'dotted.example', 'example.com',
+                                   'sub.example.com', 'www.site.example'])
+        self.assertEqual(stats['exception rules ignored'], 1)
+        self.assertEqual(stats['regular expressions dropped'], 1)
+        self.assertEqual(stats['path-limited rules widened to their domain'], 2)
+        self.assertEqual(global_profile.collapse(domains), [d for d in domains if d != 'sub.example.com'])
+
+    def test_both_gfwlist_encodings_are_read(self):
+        plain = GFWLIST.encode()
+        self.assertEqual(global_profile.decode_gfwlist(plain), GFWLIST)
+        self.assertEqual(global_profile.decode_gfwlist(base64.b64encode(plain)), GFWLIST)
+
+    def test_shipped_service_lists_are_clean(self):
+        for name in ('global-services.txt', 'google-ai-social.txt'):
+            text = (ROOT / 'deploy/domains' / name).read_text()
+            listed = [line.split('#')[0].strip() for line in text.splitlines() if line.split('#')[0].strip()]
+            self.assertEqual(global_profile.load_domain_file(ROOT / 'deploy/domains' / name), listed, name)
+        listed = global_profile.load_domain_file(ROOT / 'deploy/domains/global-services.txt')
+        for required in ('meta.ai', 'instagram.com', 'spotify.com', 'pandora.com', 'nytimes.com', 'wikipedia.org',
+                         'notebooklm.google', 'grok.com', 'claude.ai', 'chatgpt.com'):
+            self.assertIn(required, listed)
+
+    @unittest.skipUnless(BINARY.exists(), 'run cargo build first')
+    def test_generated_profile_has_the_expected_scope_and_credentials(self):
+        with tempfile.TemporaryDirectory() as directory:
+            gfw, out = Path(directory) / 'gfw.txt', Path(directory) / 'out.mobileconfig'
+            gfw.write_text(GFWLIST)
+            with redirect_stdout(io.StringIO()):
+                global_profile.main(['--host', 'Relay.Example.com.', '--user', 'iphone', '--password', PASSWORD,
+                                     '--gfwlist-file', str(gfw), '--binary', str(BINARY), '--out', str(out),
+                                     '--services', str(ROOT / 'deploy/domains/global-services.txt')])
+            self.assertEqual(out.stat().st_mode & 0o777, 0o600)
+            payload = plistlib.loads(out.read_bytes())['PayloadContent'][0]
+            domains = payload['MatchDomains']
+            self.assertEqual(len(domains), len(set(domains)))
+            for expected in ('spotify.com', 'example.com', 'bare.example'):
+                self.assertIn(expected, domains)
+            self.assertNotIn('sub.example.com', domains)
+            self.assertEqual(payload['ExcludedDomains'], ['relay.example.com'])
+            self.assertIs(payload['UIToggleEnabled'], False)
+            relay = payload['Relays'][0]
+            self.assertTrue(relay['HTTP3RelayURL'].startswith('https://relay.example.com/.well-known/masque/udp/'))
+            basic = relay['AdditionalHTTPHeaderFields']['Authorization'].split()[1]
+            self.assertEqual(base64.b64decode(basic).decode(), 'iphone:' + PASSWORD)
 
 
 deploy_run = deploy.run

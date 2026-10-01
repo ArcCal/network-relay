@@ -1,0 +1,79 @@
+# Services to send through the relay, in addition to google-ai-social.txt.
+# One domain per line; each matches its subdomains. Used by deploy/global-profile.py.
+# Google / YouTube / YouTube Music / Gemini / NotebookLM
+youtube.com
+youtu.be
+ytimg.com
+ggpht.com
+googlevideo.com
+youtube-nocookie.com
+music.youtube.com
+gemini.google.com
+notebooklm.google
+notebooklm.google.com
+# Meta AI (Muse) / Instagram
+meta.ai
+meta.com
+facebook.com
+facebook.net
+fb.com
+fbcdn.net
+fbsbx.com
+instagram.com
+cdninstagram.com
+instagr.am
+ig.me
+threads.net
+threads.com
+# Spotify
+spotify.com
+scdn.co
+spotifycdn.com
+spotifycdn.net
+spotify.design
+pscdn.co
+spotilocal.com
+audio-ak-spotify-com.akamaized.net
+heads-ak-spotify-com.akamaized.net
+# Pandora
+pandora.com
+p-cdn.us
+savagebeast.com
+# New York Times
+nytimes.com
+nyt.com
+nytimg.com
+nytco.com
+nyti.ms
+# Wikipedia / Wikimedia
+wikipedia.org
+wikimedia.org
+wikibooks.org
+wiktionary.org
+wikidata.org
+wikiquote.org
+wikisource.org
+wikiversity.org
+wikivoyage.org
+wikinews.org
+mediawiki.org
+wikimediafoundation.org
+# X / Grok
+x.com
+twitter.com
+twimg.com
+t.co
+x.ai
+grok.com
+# Claude
+claude.ai
+claude.com
+anthropic.com
+claudeusercontent.com
+# ChatGPT / OpenAI / Codex
+openai.com
+chatgpt.com
+chat.com
+oaistatic.com
+oaiusercontent.com
+sora.com

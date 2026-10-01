@@ -2,6 +2,7 @@
 
 ## 未发布
 
+- 增加 `deploy/global-profile.py`：用服务域名表（`deploy/domains/global-services.txt`）和 gfwlist 生成 `.mobileconfig`，只用标准库和 `network-relay profile`；有对应的自动化测试。
 - 监听或证书重载任务意外退出时，进程现在报错退出（由 systemd 重启），而不是缺一个监听器继续运行；信号处理在监听器启动前注册。
 - reload 不再让正在做首次验证、且用户没有变化的请求得到伪装网站的 404；失败的验证结果不再能挤掉缓存中已验证的条目。
 - 网站目录里悬空或循环的软链接不再导致整个网站加载失败。

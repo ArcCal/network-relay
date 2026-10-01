@@ -13,3 +13,19 @@
 这是**域名分流**，不是 App 身份分流：其他 App 使用相同 Google API、共享验证码或 CDN 时也会匹配。只指定某个 App 而不影响其他 App，需要另外的设备管理配置。本预设也不会覆盖设备上其他 VPN/代理已有的路由规则。
 
 修改后重新生成 profile 并安装；已有 profile 不会因文本文件变化自动更新。安装时可用 `--domains 自己的列表.txt`；如果通过 `--profile` 导入现成文件，则以该文件内的规则为准。
+
+## 全球服务 + gfwlist 描述文件
+
+`global-services.txt`（Meta AI/Instagram、Spotify、Pandora、NYT、Wikipedia、YouTube Music 等）加上 `google-ai-social.txt` 和 [gfwlist](https://github.com/gfwlist/gfwlist)，可以用 `deploy/global-profile.py` 生成一份描述文件：
+
+```bash
+cargo build --release
+python3 deploy/global-profile.py --host relay.example.com --user iphone
+```
+
+- 密码不写 `--password` 时提示输入，并通过标准输入交给 `network-relay profile`，不出现在进程列表里。
+- gfwlist 在运行时下载（`--gfwlist-url` 可换，`--gfwlist-file` 用本地文件，`--no-gfwlist` 不用）；列表本身不在仓库里。官方的 base64 版本和纯文本版本都能读。
+- 苹果的 `MatchDomains` 只能写域名：gfwlist 里的正则、IP 和 `@@` 例外规则被丢弃，只限某个 URL 路径的规则会让整个域名走中继；脚本结束时打印各类的数量。父域名已在列表里的子域名会合并。
+- 中继域名自己放进 `ExcludedDomains`。`--ui-toggle-enabled` 默认 `false`（设备上不能在设置里关闭，iOS/macOS 26+）；描述文件本身仍可删除。
+- 更新服务列表或 gfwlist 后重新运行，并重新安装；同一域名和用户的新描述文件会替换旧的。
+- 描述文件含明文密码，已被 `.gitignore` 忽略，不要提交或随意传递。

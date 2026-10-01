@@ -34,6 +34,9 @@ HOOK = Path('/etc/letsencrypt/renewal-hooks/deploy/network-relay')
 CERTS = Path('/etc/letsencrypt/live')
 SITE = Path('/var/www/relay')
 UDP_TEMPLATE = '/.well-known/masque/udp/{target_host}/{target_port}/'
+# A fresh VPS often runs unattended-upgrades right after boot; wait for its
+# dpkg lock instead of failing.
+APT = ['apt-get', '-o', 'DPkg::Lock::Timeout=1800']
 
 
 @dataclass(frozen=True)
@@ -248,8 +251,9 @@ def install(args):
     print('云防火墙/DNS 需已就绪：TCP 80、TCP/UDP 中继端口；Cloudflare 使用仅 DNS。', flush=True)
     env = os.environ.copy()
     env['DEBIAN_FRONTEND'] = 'noninteractive'
-    run(['apt-get', 'update'], env=env)
-    run(['apt-get', 'install', '-y', '--no-install-recommends', 'build-essential', 'pkg-config',
+    print('如系统正在自动更新，会等待它完成（最多 30 分钟）。', flush=True)
+    run(APT + ['update'], env=env)
+    run(APT + ['install', '-y', '--no-install-recommends', 'build-essential', 'pkg-config',
          'git', 'curl', 'ca-certificates', 'certbot', 'iproute2'], env=env)
     main_pid = run(['systemctl', 'show', 'network-relay.service', '-p', 'MainPID', '--value'],
                    capture=True, check=False).stdout.strip()

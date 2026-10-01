@@ -187,6 +187,8 @@ class DeploymentTests(unittest.TestCase):
         self.assertEqual(deploy.read_profile(deploy.PROFILE)[0].password, PASSWORD)
         self.assertTrue(any(c[:2] == ['systemctl', 'restart'] for c in self.calls))
         self.assertTrue(all(PASSWORD not in ' '.join(c) for c in self.calls))
+        apt = [c for c in self.calls if c[0] == 'apt-get']
+        self.assertTrue(apt and all('DPkg::Lock::Timeout=1800' in c for c in apt), 'apt waits for the dpkg lock')
 
     @unittest.skipUnless(BINARY.exists(), 'run cargo build first')
     def test_generated_profile_matches_generated_server_account(self):

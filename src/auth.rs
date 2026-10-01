@@ -36,7 +36,8 @@ const CACHE_TTL: Duration = Duration::from_secs(600);
 /// How long a rejected header is rejected without hashing again, so a device
 /// with a wrong password cannot keep the server busy.
 const NEGATIVE_TTL: Duration = Duration::from_secs(60);
-/// Most cached headers; beyond that the cache starts over.
+/// Most cached headers. When full, rejections are no longer cached and verified
+/// entries are only dropped as a last resort.
 const CACHE_MAX: usize = 4096;
 
 /// User names appear in logs and must not contain `:`, which separates the
@@ -211,7 +212,15 @@ impl Authenticator {
             let now = Instant::now();
             cache.retain(|_, c| c.until > now);
             if cache.len() >= CACHE_MAX {
-                cache.clear();
+                // Rejections must not push out verified headers, or a flood
+                // of wrong credentials would make every device hash again.
+                if user.is_none() {
+                    return;
+                }
+                cache.retain(|_, c| c.user.is_some());
+                if cache.len() >= CACHE_MAX {
+                    cache.clear();
+                }
             }
         }
         cache.insert(tag, Cached { user, until: Instant::now() + ttl });
@@ -245,12 +254,13 @@ impl Authenticator {
         // Hold the user lock through the generation check and cache insertion:
         // replacement must not clear the cache between these two operations.
         let users = self.users.read().unwrap();
-        if *self.generation.borrow() != generation
-            || result.as_ref().is_some_and(|u| users.get(&u.name) != Some(&u.hash))
-        {
-            return None;
+        // A user removed or changed meanwhile is rejected; a reload that left
+        // this user alone does not fail the request, it only keeps the result
+        // out of the cache.
+        let result = result.filter(|u| users.get(&u.name) == Some(&u.hash));
+        if *self.generation.borrow() == generation {
+            self.remember(tag, result.clone());
         }
-        self.remember(tag, result.clone());
         result
     }
 
@@ -340,6 +350,42 @@ mod tests {
         assert!(verification.await.is_none());
         assert!(auth.cache.lock().unwrap().is_empty());
         assert!(auth.inflight.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn reload_during_verification_keeps_a_user_who_is_unchanged() {
+        use std::future::Future;
+        use std::task::Poll;
+        let entry = user("alice", "alice-password");
+        let auth = Arc::new(Authenticator::new(std::slice::from_ref(&entry)).unwrap());
+        let header = basic_authorization("alice", "alice-password");
+        let mut verification = Box::pin(auth.verify(Some(header.as_bytes())));
+        std::future::poll_fn(|cx| {
+            assert!(verification.as_mut().poll(cx).is_pending());
+            Poll::Ready(())
+        })
+        .await;
+        auth.replace(&[entry]);
+        let verified = verification.await.expect("an unchanged user stays valid across a reload");
+        assert!(auth.is_current(&verified));
+        assert!(auth.cache.lock().unwrap().is_empty(), "a result from before the reload is not cached");
+    }
+
+    #[test]
+    fn rejections_never_push_out_verified_headers() {
+        let auth = Authenticator::new(&[user("alice", "alice-password")]).unwrap();
+        let alice = User { name: "alice".into(), hash: "h".into() };
+        let tag = |n: usize| {
+            let mut t = [0u8; 32];
+            t[..8].copy_from_slice(&(n as u64).to_be_bytes());
+            t
+        };
+        auth.remember(tag(0), Some(alice));
+        for n in 1..CACHE_MAX * 2 {
+            auth.remember(tag(n), None);
+        }
+        assert!(auth.cached(&tag(0)).is_some(), "the verified header survives a flood of rejections");
+        assert!(auth.cache.lock().unwrap().len() <= CACHE_MAX);
     }
 
     #[test]

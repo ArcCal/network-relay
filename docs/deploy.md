@@ -2,7 +2,7 @@
 
 Debian 13 x64 从下载的源码自动安装、申请证书及生成分流描述文件，见[自动部署说明](deploy-debian13.md)。
 
-README 的[从零开始](../README.md#从零开始)是完整的部署步骤。这里是其中提到的几种其他做法。
+README 的[一键安装](../README.md#方式一debian-13-一键安装推荐)和[手动安装](../README.md#方式二手动安装)是完整的部署步骤。这里是其中提到的几种其他做法。
 
 ## 从源码编译
 
@@ -20,7 +20,17 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 source "$HOME/.cargo/env"
 ```
 
-先按 README 第 6 步用 `gh auth login` 登录 GitHub（仓库是私有的），然后：
+仓库是私有的。最简单的是在电脑浏览器登录 GitHub，下载 `main` 分支的 ZIP 上传到服务器解压（见 README [一键安装第 2 步](../README.md#第-2-步下载源码并上传)），然后跳到下面的 `cd` 那一步。也可以在服务器上用 GitHub 官方命令行登录后克隆：
+
+```bash
+apt install -y gh
+```
+
+```bash
+gh auth login
+```
+
+依次选 `GitHub.com` → `HTTPS` → `Y` → `Login with a web browser`，它显示一个 8 位代码；在**电脑或手机的浏览器**里打开 https://github.com/login/device 输入代码，点 Authorize。服务器上看到 `Logged in as ...` 后：
 
 ```bash
 gh repo clone ArcCal/network-relay
@@ -38,7 +48,7 @@ cargo build --release
 install -m 755 target/release/network-relay /usr/local/bin/
 ```
 
-之后照 README 第 7 步继续。第 10、11 步用到的 `deploy/` 目录就在这个源码目录里。
+之后照 README [手动安装](../README.md#方式二手动安装)的第 6 步（伪装网站）继续。第 9、10 步用到的 `deploy/` 目录就在这个源码目录里。
 
 更新：
 

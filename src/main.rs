@@ -245,7 +245,7 @@ fn serve(path: PathBuf, check_only: bool) -> ExitCode {
     };
     if check_only {
         let checked = (|| {
-            network_relay::certs::CertStore::open(&config.tls.cert, &config.tls.key)?;
+            network_relay::certs::CertStore::check_files(&config.tls.cert, &config.tls.key)?;
             runtime()?.block_on(async { server::Relay::new(&config).map(|_| ()) })
         })();
         return match checked {

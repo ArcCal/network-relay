@@ -134,6 +134,14 @@ impl CertStore {
         Ok(Arc::new(Self { cert: cert.to_path_buf(), key: key.to_path_buf(), current: RwLock::new(loaded.key) }))
     }
 
+    /// Checks that the files hold a certificate and its key, valid now. For
+    /// `serve --check`; starting the server only warns, so a scheduled
+    /// reload can pick up a renewal.
+    pub fn check_files(cert: &Path, key: &Path) -> Result<()> {
+        let loaded = Loaded::read(cert, key)?;
+        loaded.check_validity(now_unix()).with_context(|| cert.display().to_string())
+    }
+
     /// Reads the files again and switches to them if they hold a valid
     /// certificate; otherwise keeps the current one.
     pub fn reload(&self) -> Result<()> {
@@ -326,6 +334,16 @@ mod tests {
         std::fs::remove_file(d.0.join("cert.pem")).unwrap();
         assert!(store.reload().is_err());
         assert_eq!(serving(&store), good);
+    }
+
+    #[test]
+    fn the_configuration_check_rejects_an_expired_certificate() {
+        let d = Dir::new("check");
+        d.write("ok", 2099);
+        CertStore::check_files(&d.0.join("cert.pem"), &d.0.join("key.pem")).unwrap();
+        d.write("old", 2001);
+        let e = CertStore::check_files(&d.0.join("cert.pem"), &d.0.join("key.pem")).unwrap_err();
+        assert!(format!("{e:#}").contains("expired"), "{e:#}");
     }
 
     #[test]

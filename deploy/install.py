@@ -219,6 +219,35 @@ def preflight():
         raise ValueError('需要由 systemd 启动的 VPS。')
 
 
+def certificate_paths(args, identity, existing_config):
+    """Returns (cert, key, automated) for this run.
+
+    An existing installation keeps the certificate it was set up with, so an
+    upgrade without --cert/--key does not switch to certbot, and a different
+    --cert/--key is refused rather than silently ignored. Paths are kept as
+    given, not resolved: Let's Encrypt's live/ files are symlinks that move
+    to the newest archive/ file on renewal.
+    """
+    automated = (CERTS / identity.domain / 'fullchain.pem', CERTS / identity.domain / 'privkey.pem')
+    given = None
+    if args.cert:
+        given = tuple(Path(os.path.abspath(p)) for p in (args.cert, args.key))
+        for path in given:
+            if not path.is_file():
+                raise ValueError(f'证书文件不存在：{path}')
+    if existing_config is not None:
+        tls = tomllib.loads(existing_config.decode())['tls']
+        current = (Path(tls['cert']), Path(tls['key']))
+        if given and given != current:
+            raise ValueError(f'已有安装使用的证书是 {current[0]} 和 {current[1]}，与 --cert/--key 不同。'
+                             f'要更换证书，请先编辑 {CONFIG} 的 [tls] 并 systemctl restart network-relay，'
+                             '再不带 --cert/--key 运行本脚本。')
+        return (*current, current == automated)
+    if given:
+        return (*given, False)
+    return (*automated, True)
+
+
 def install(args):
     preflight()
     existing = CONFIG.exists()
@@ -248,7 +277,8 @@ def install(args):
         raise ValueError('已有安装的域名、端口和用户名不同，拒绝自动覆盖。')
     if existing and not hmac.compare_digest(old_identity.password.encode(), identity.password.encode()):
         raise ValueError('提供的描述文件密码与已有安装不同；不会自动重置已有账号。')
-    if identity.port == 80 and not args.cert:
+    cert, key, automated_cert = certificate_paths(args, identity, CONFIG.read_bytes() if existing else None)
+    if identity.port == 80 and automated_cert:
         raise ValueError('自动证书续期需要独占 TCP 80，请为中继选择其他端口（默认 443）。')
 
     print(f'部署 {identity.domain}:{identity.port}，账号 {identity.user}；密码不会打印。', flush=True)
@@ -258,7 +288,7 @@ def install(args):
     print('如系统正在自动更新，会等待它完成（最多 30 分钟）。', flush=True)
     run(APT + ['update'], env=env)
     run(APT + ['install', '-y', '--no-install-recommends', 'build-essential', 'pkg-config',
-         'git', 'curl', 'ca-certificates', 'certbot', 'iproute2'], env=env)
+         'git', 'curl', 'ca-certificates', 'certbot', 'iproute2', 'procps'], env=env)
     main_pid = run(['systemctl', 'show', 'network-relay.service', '-p', 'MainPID', '--value'],
                    capture=True, check=False).stdout.strip()
     port_available(identity.port, int(main_pid or 0))
@@ -274,11 +304,7 @@ def install(args):
                 run(['ufw', 'allow', rule])
 
     binary = build_binary(args)
-    if args.cert:
-        cert, key = args.cert.resolve(strict=True), args.key.resolve(strict=True)
-    else:
-        cert = CERTS / identity.domain / 'fullchain.pem'
-        key = cert.with_name('privkey.pem')
+    if automated_cert:
         port_available(80)
         command = ['certbot', 'certonly', '--standalone', '--non-interactive', '--agree-tos',
                    '--keep-until-expiring', '--cert-name', identity.domain, '-d', identity.domain]
@@ -310,7 +336,7 @@ def install(args):
         candidate = staging / 'relay.toml'
         atomic_write(candidate, config_data)
         run([binary, 'serve', '--config', candidate, '--check'])
-        apply_install(binary, config_data, profile_data, identity, automated_cert=not args.cert)
+        apply_install(binary, config_data, profile_data, identity, automated_cert=automated_cert)
 
     print(f'\n安装完成。设备描述文件：{PROFILE}（含密码，权限 600，不会公开到网站）。', flush=True)
     print('开始从本机检查三种 HTTP 版本的 TCP/UDP 中继；公网入口仍需从设备验证。', flush=True)
@@ -366,7 +392,10 @@ def apply_install(binary, config_data, profile_data, identity, *, automated_cert
         run(['systemctl', 'enable', 'network-relay'])
         run(['systemctl', 'restart', 'network-relay'])
         for attempt in range(20):
-            result = run(['curl', '--fail', '--silent', '--show-error', '--max-time', '2', '--noproxy', '*',
+            # Any HTTP answer over TLS shows the relay is up; the website is
+            # optional, so its status (404 without [web]) does not matter.
+            result = run(['curl', '--silent', '--show-error', '--output', '/dev/null', '--max-time', '2',
+                          '--noproxy', '*',
                           '--resolve', f'{identity.domain}:{identity.port}:127.0.0.1',
                           f'https://{identity.domain}:{identity.port}/'], capture=True, check=False)
             if result.returncode == 0:

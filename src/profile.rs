@@ -149,6 +149,7 @@ pub fn generate(opts: &ProfileOptions) -> Result<String> {
     for var in ["target_host", "target_port"] {
         ensure!(template.has_variable(var), "the UDP template must contain {{{var}}}");
     }
+    template.check_round_trip()?;
     let url = escape(&opts.relay_url());
     let name = escape(opts.name.as_deref().unwrap_or(&opts.host));
     let id = format!("{IDENTIFIER_PREFIX}.{}.{}", opts.host.to_ascii_lowercase(), opts.user);

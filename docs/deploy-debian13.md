@@ -13,7 +13,7 @@
 sudo bash deploy/install-debian13.sh --profile /root/relay.qolita.com-iphone.mobileconfig
 ```
 
-可以附加 `--email 你的邮箱` 接收证书账户相关邮件；不提供时创建无邮箱 ACME 账户。执行自动证书申请流程会调用 certbot 的 `--agree-tos`，即接受 Let's Encrypt 服务条款。若已有公共 CA 的证书，可以改用 `--cert /路径/fullchain.pem --key /路径/privkey.pem`。
+可以附加 `--email 你的邮箱` 接收证书账户相关邮件；不提供时创建无邮箱 ACME 账户。执行自动证书申请流程会调用 certbot 的 `--agree-tos`，即接受 Let's Encrypt 服务条款。若已有公共 CA 的证书，可以改用 `--cert /路径/fullchain.pem --key /路径/privkey.pem`：路径按原样写进配置，不会展开符号链接，所以 Let's Encrypt 的 `live/` 路径续期后仍然有效。以后升级不用再带这两个参数，脚本沿用配置里的证书，不会改用 certbot；带了不同的路径会被拒绝，要换证书请先改 `/etc/network-relay/relay.toml` 的 `[tls]`。
 
 安装完成后，把**同一份** mobileconfig 安装到 iPhone/iPad/Mac。不要另生成不同密码的文件替换它；设备和服务器必须使用同一组凭据。安装副本也保存在 `/etc/network-relay/device.mobileconfig`，权限 600，不会发布到网站。
 

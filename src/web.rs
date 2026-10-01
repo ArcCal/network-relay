@@ -19,8 +19,9 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::io::Read;
+use std::os::fd::AsRawFd;
 use std::os::unix::fs::OpenOptionsExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{bail, ensure, Context, Result};
 use bytes::Bytes;
@@ -232,11 +233,7 @@ fn read_dir(root: &Path, dir: &Path, files: &mut HashMap<String, StaticFile>, to
             continue;
         }
         let resolved = path.canonicalize()?;
-        let Ok(relative) = resolved.strip_prefix(root) else { continue };
-        if relative.components().enumerate().any(|(i, c)| {
-            let name = c.as_os_str().to_string_lossy();
-            name.starts_with('.') && !(i == 0 && name == ".well-known")
-        }) {
+        if !public_under(root, &resolved) {
             continue;
         }
         if files.len() >= MAX_FILES {
@@ -249,6 +246,12 @@ fn read_dir(root: &Path, dir: &Path, files: &mut HashMap<String, StaticFile>, to
             .read(true)
             .custom_flags(nix::libc::O_NOFOLLOW | nix::libc::O_NONBLOCK)
             .open(&resolved)?;
+        // O_NOFOLLOW guards only the last path component. A parent directory
+        // swapped for a symlink between the check above and the open would
+        // lead outside the site, so check the file actually opened.
+        if !opened_file(&file).is_some_and(|opened| public_under(root, &opened)) {
+            continue;
+        }
         ensure!(file.metadata()?.is_file(), "{} is no longer a regular file", path.display());
         let mut body = Vec::new();
         file.take(MAX_TOTAL_BYTES - *total + 1)
@@ -265,6 +268,21 @@ fn read_dir(root: &Path, dir: &Path, files: &mut HashMap<String, StaticFile>, to
         files.insert(key, StaticFile { body: body.into(), content_type, cache_control, last_modified });
     }
     Ok(())
+}
+
+/// Whether `path` (already resolved) lies inside `root` and is public: no
+/// hidden component other than the top-level `.well-known` (RFC 8615).
+fn public_under(root: &Path, path: &Path) -> bool {
+    let Ok(relative) = path.strip_prefix(root) else { return false };
+    !relative.components().enumerate().any(|(i, c)| {
+        let name = c.as_os_str().to_string_lossy();
+        name.starts_with('.') && !(i == 0 && name == ".well-known")
+    })
+}
+
+/// The path the kernel reports for an open file (Linux).
+fn opened_file(file: &std::fs::File) -> Option<PathBuf> {
+    std::fs::read_link(format!("/proc/self/fd/{}", file.as_raw_fd())).ok()
 }
 
 /// Content type and caching by file extension. Pages and manifests are
@@ -413,6 +431,68 @@ mod tests {
         assert!(!loaded.files.contains_key("private.txt"));
         assert!(loaded.files.contains_key("public.html"));
         assert!(!loaded.files.contains_key("dangling.html"), "a broken link does not stop the site loading");
+    }
+
+    #[test]
+    fn the_opened_file_is_checked_not_just_its_path() {
+        let site = Site::new("opened");
+        let outside = Site::new("opened-outside");
+        let root = site.0.canonicalize().unwrap();
+        let inside = std::fs::File::open(root.join("index.html")).unwrap();
+        assert!(opened_file(&inside).is_some_and(|p| public_under(&root, &p)));
+        // What a swapped parent directory would make the open reach.
+        let escaped = std::fs::File::open(outside.0.join("index.html")).unwrap();
+        assert!(!opened_file(&escaped).is_some_and(|p| public_under(&root, &p)));
+        let hidden = std::fs::File::open(root.join(".secret")).unwrap();
+        assert!(!opened_file(&hidden).is_some_and(|p| public_under(&root, &p)));
+        assert!(public_under(&root, &root.join(".well-known/pvd")));
+        assert!(!public_under(&root, &root.join("docs/.well-known/x")));
+    }
+
+    /// A parent directory swapped for a symlink to outside the site while
+    /// the site loads: before the opened file was checked, about a quarter
+    /// of loads read the outside file.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn swapping_a_parent_directory_during_loading_never_leaks() {
+        use std::ffi::CString;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let site = Site::new("race");
+        let outside = Site::new("race-outside");
+        std::fs::write(site.0.join("docs/page.html"), "public").unwrap();
+        std::fs::write(outside.0.join("page.html"), "SECRET").unwrap();
+        std::os::unix::fs::symlink(&outside.0, site.0.join("swap")).unwrap();
+        let stop = std::sync::Arc::new(AtomicBool::new(false));
+        let flipper = {
+            let (a, b) = (site.0.join("docs"), site.0.join("swap"));
+            let (a, b) = (CString::new(a.to_str().unwrap()).unwrap(), CString::new(b.to_str().unwrap()).unwrap());
+            let stop = stop.clone();
+            std::thread::spawn(move || {
+                while !stop.load(Ordering::Relaxed) {
+                    // SAFETY: both arguments are valid NUL-terminated paths.
+                    unsafe {
+                        nix::libc::renameat2(
+                            nix::libc::AT_FDCWD,
+                            a.as_ptr(),
+                            nix::libc::AT_FDCWD,
+                            b.as_ptr(),
+                            nix::libc::RENAME_EXCHANGE,
+                        );
+                    }
+                }
+            })
+        };
+        let started = std::time::Instant::now();
+        let mut loads = 0;
+        while started.elapsed() < std::time::Duration::from_secs(2) {
+            if let Ok(loaded) = Website::load(&site.0, &BTreeMap::new()) {
+                loads += 1;
+                assert!(!loaded.files.values().any(|f| &f.body[..] == b"SECRET"), "read a file outside the site");
+            }
+        }
+        stop.store(true, Ordering::Relaxed);
+        flipper.join().unwrap();
+        assert!(loads > 100, "only {loads} loads");
     }
 
     #[test]

@@ -203,6 +203,10 @@ class DeploymentTests(unittest.TestCase):
         self.assertTrue(all(PASSWORD not in ' '.join(c) for c in self.calls))
         apt = [c for c in self.calls if c[0] == 'apt-get']
         self.assertTrue(apt and all('DPkg::Lock::Timeout=1800' in c for c in apt), 'apt waits for the dpkg lock')
+        self.assertTrue(any('procps' in c for c in apt), 'sysctl and kill come from procps')
+        health = [c for c in self.calls if c[0] == 'curl']
+        # The website is optional: any HTTP answer, even 404 without [web], is a healthy relay.
+        self.assertTrue(health and all('--fail' not in c for c in health))
 
     @unittest.skipUnless(BINARY.exists(), 'run cargo build first')
     def test_generated_profile_matches_generated_server_account(self):
@@ -214,6 +218,45 @@ class DeploymentTests(unittest.TestCase):
         self.assertEqual(tomllib.loads(deploy.CONFIG.read_text())['user'][0]['name'], identity.user)
         self.assertEqual(plistlib.loads(raw)['PayloadContent'][0]['MatchDomains'],
                          deploy.load_domains(ROOT / 'deploy/domains/google-ai-social.txt'))
+
+    @unittest.skipUnless(BINARY.exists(), 'run cargo build first')
+    def test_external_certificate_symlinks_are_kept_and_upgrades_keep_them(self):
+        self.certificates()
+        # Let's Encrypt style: live/ holds symlinks into archive/.
+        archive, live = self.root / 'archive', self.root / 'live'
+        archive.mkdir(), live.mkdir()
+        (self.root / 'cert.pem').rename(archive / 'fullchain1.pem')
+        (self.root / 'key.pem').rename(archive / 'privkey1.pem')
+        (live / 'fullchain.pem').symlink_to(archive / 'fullchain1.pem')
+        (live / 'privkey.pem').symlink_to(archive / 'privkey1.pem')
+        external = dict(cert=live / 'fullchain.pem', key=live / 'privkey.pem', profile=self.profile_file())
+        with mock.patch.object(deploy, 'run', side_effect=self.fake_run), redirect_stdout(io.StringIO()):
+            self.assertEqual(deploy.install(self.args(**external)), 0)
+            tls = tomllib.loads(deploy.CONFIG.read_text())['tls']
+            self.assertEqual(tls['cert'], str(live / 'fullchain.pem'), 'the live symlink, not its target')
+            self.assertEqual(tls['key'], str(live / 'privkey.pem'))
+            # An upgrade without --cert/--key keeps the external certificate.
+            self.calls.clear()
+            self.assertEqual(deploy.install(self.args(cert=None, key=None)), 0)
+        self.assertFalse(any(c[0] == 'certbot' for c in self.calls), 'no switch to certbot on upgrade')
+        self.assertFalse(deploy.HOOK.exists(), 'no certbot hook for an external certificate')
+        self.assertEqual(tomllib.loads(deploy.CONFIG.read_text())['tls'], tls)
+
+    @unittest.skipUnless(BINARY.exists(), 'run cargo build first')
+    def test_a_different_certificate_on_upgrade_is_refused_not_ignored(self):
+        self.certificates()
+        with mock.patch.object(deploy, 'run', side_effect=self.fake_run), redirect_stdout(io.StringIO()):
+            self.assertEqual(deploy.install(self.args(profile=self.profile_file())), 0)
+        other = self.root / 'other'
+        other.mkdir()
+        for name in ('cert.pem', 'key.pem'):
+            (other / name).write_bytes((self.root / name).read_bytes())
+        before = deploy.CONFIG.read_bytes()
+        self.calls.clear()
+        with mock.patch.object(deploy, 'run', side_effect=self.fake_run), self.assertRaises(ValueError):
+            deploy.install(self.args(cert=other / 'cert.pem', key=other / 'key.pem'))
+        self.assertEqual(self.calls, [], 'refused before changing anything')
+        self.assertEqual(deploy.CONFIG.read_bytes(), before)
 
     def test_manual_install_is_never_overwritten(self):
         deploy.CONFIG.parent.mkdir()

@@ -45,7 +45,7 @@
 
 | 项 | 默认 | 说明 |
 |---|---|---|
-| `udp_template` | `"/.well-known/masque/udp/{target_host}/{target_port}/"` | CONNECT-UDP 的 URI 模板里的路径部分（RFC 9298 §2）。必须包含 `{target_host}` 和 `{target_port}`。描述文件必须用同一个模板（`network-relay profile --udp-template`）。一般不用改 |
+| `udp_template` | `"/.well-known/masque/udp/{target_host}/{target_port}/"` | CONNECT-UDP 的 URI 模板里的路径部分（RFC 9298 §2）。必须包含 `{target_host}` 和 `{target_port}`，而且按它展开的请求必须能解析回原来的目标（例如查询里不带名字的 `?{target_host}` 解析不回来，会被拒绝）。描述文件必须用同一个模板（`network-relay profile --udp-template`）。一般不用改 |
 | `blocked_destinations` | 见下 | 设备不能访问的地址段。域名解析出的每个地址都检查；IPv4 映射的 IPv6 地址（`::ffff:a.b.c.d`）按 IPv4 地址检查 |
 | `blocked_ports` | `[25]` | 设备不能访问的端口，TCP 和 UDP 都算。25 是发邮件的端口，封掉防止服务器被用来发垃圾邮件 |
 | `connect_timeout_secs` | `10` | 连接目标 TCP 服务的超时（1 到 120） |
@@ -94,7 +94,7 @@
 | 参数 | 说明 |
 |---|---|
 | `-c`、`--config 路径` | 配置文件，默认 `/etc/network-relay/relay.toml` |
-| `--check` | 只检查配置、证书和网站能不能读，然后退出 |
+| `--check` | 只检查配置、证书和网站能不能读，然后退出。证书已过期或尚未生效时报错（正常启动时只警告，好让之后的续期自动修复） |
 
 环境变量 `RUST_LOG=debug` 可以看到更详细的日志（每个转发连接的开始和结束）。
 
@@ -137,7 +137,7 @@
 - 一个 `com.apple.relay.managed` 负载（iOS 17、macOS 14 起，可以手动安装，不需要监管）。
 - `HTTP3RelayURL` 和 `HTTP2RelayURL` 都是 URI 模板，比如 `https://relay.qolita.com/.well-known/masque/udp/{target_host}/{target_port}/`。
 - `AdditionalHTTPHeaderFields` 里是 `Authorization: Basic ...`，设备每个请求都会带上。**所以描述文件里有密码**，不要随便传给别人。
-- 标识符由域名和用户名决定：同一域名、同一用户重新生成的描述文件，安装时会替换旧的。
+- 标识符由域名和用户名用点拼接而成：同一域名、同一用户重新生成的描述文件，安装时会替换旧的。所以用户名里的点可能和域名“接上”：域名 `relay.example` 加用户 `com.alice`，与域名 `relay.example.com` 加用户 `alice` 得到同一个标识，后装的会替换先装的。给同一台设备装多个中继时，用户名不要用这种以点分段的形式。（为了让已装的描述文件仍能被替换，标识的拼法保持不变。）
 - 新选项只有在显式指定时才写入描述文件。请按设备版本选择：例如仅使用 `--match-fqdn` 的配置不适用于不支持该字段的旧系统。域名统一转成小写并去掉末尾的点。
 - DNS 回退允许设备使用本地网络的系统 DNS；希望 DNS 始终经过中继时，保留默认值。
 - 保存和覆盖均采用权限 600 的临时文件原子替换，拒绝覆盖符号链接。以运行中继服务的用户生成发布文件，保证服务能读取它。

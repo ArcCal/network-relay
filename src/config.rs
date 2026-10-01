@@ -137,6 +137,7 @@ impl Relay {
         for var in ["target_host", "target_port"] {
             ensure!(t.has_variable(var), "relay.udp_template must contain {{{var}}} (RFC 9298 §2)");
         }
+        t.check_round_trip().context("relay.udp_template")?;
         Ok(t)
     }
 
@@ -274,6 +275,7 @@ mod tests {
     fn relay_settings_are_checked() {
         assert!(parse("[relay]\nudp_template = \"/udp?h={target_host}&p={target_port}\"").is_ok());
         assert!(parse("[relay]\nudp_template = \"/udp/{target_host}/\"").is_err(), "needs the port");
+        assert!(parse("[relay]\nudp_template = \"/udp?{target_host}&p={target_port}\"").is_err(), "unmatchable");
         assert!(parse("[relay]\nudp_template = \"udp/{target_host}/{target_port}\"").is_err(), "not a path");
         assert!(parse("[relay]\nblocked_ports = [0]").is_err());
         assert!(parse("[relay]\nblocked_ports = []\nblocked_destinations = []").is_ok());

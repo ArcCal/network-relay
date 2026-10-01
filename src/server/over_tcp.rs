@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 use bytes::Bytes;
-use http::header::{ALT_SVC, CONNECTION, DATE, UPGRADE};
+use http::header::{ALT_SVC, CONNECTION, DATE, HOST, UPGRADE};
 use http::{Method, Request, Response, StatusCode};
 use http_body_util::Full;
 use hyper_util::rt::{TokioIo, TokioTimer};
@@ -221,6 +221,16 @@ impl Relay {
     }
 
     async fn handle_http(&self, info: Arc<ConnInfo>, mut req: Request<hyper::body::Incoming>) -> Response<Full<Bytes>> {
+        // RFC 9112 §3.2: an HTTP/1.1 request without exactly one Host field
+        // gets 400, as from any web server; RFC 9298 §3.2 asks the same of
+        // CONNECT-UDP requests.
+        if req.version() == http::Version::HTTP_11 && req.headers().get_all(HOST).iter().count() != 1 {
+            return Response::builder()
+                .status(StatusCode::BAD_REQUEST)
+                .header(CONNECTION, "close")
+                .body(Full::default())
+                .expect("valid");
+        }
         let is_connect = req.method() == Method::CONNECT;
         // RFC 9298 §3.2: GET with "Connection: Upgrade" and "Upgrade: connect-udp".
         // Both fields are token lists (RFC 9110 §7.6.1, §7.8).
@@ -244,7 +254,7 @@ impl Relay {
         let authority = req.uri().authority().map(|a| a.as_str().to_string()).or_else(|| {
             // HTTP/1.1 CONNECT carries the target as the request target,
             // which hyper parses into the authority; Host is a fallback.
-            is_connect.then(|| req.headers().get(http::header::HOST)?.to_str().ok().map(str::to_string))?
+            is_connect.then(|| req.headers().get(HOST)?.to_str().ok().map(str::to_string))?
         });
         let path_and_query = req.uri().path_and_query().map_or_else(|| "/".to_string(), |p| p.as_str().to_string());
         let settings = self.settings();

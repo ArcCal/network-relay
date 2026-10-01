@@ -16,7 +16,7 @@
 
 - [开始之前：必读](#开始之前必读)
 - [常见的坑（一定要看）](#常见的坑一定要看)
-- [方式一：Debian 13 一键安装（推荐）](#方式一debian-13-一键安装推荐)
+- [方式一：Debian 12/13 一键安装（推荐）](#方式一debian-1213-一键安装推荐)
 - [方式二：手动安装（其他系统、或想自己掌控每一步）](#方式二手动安装)
 - [把描述文件装到 iPhone、iPad、Mac](#把描述文件装到-iphoneipadmac)
 - [生成“指定服务 + gfwlist”的描述文件](#生成指定服务--gfwlist的描述文件)
@@ -63,7 +63,8 @@
 | DNS 还没生效，或填错了 IP | 证书申请失败，设备连不上 | 在**服务器上**执行 `getent hosts relay.example.com`，看到的 IP 必须和 `curl -4 -s https://ifconfig.me` 一样 |
 | 在 iPhone/Mac 上查 DNS | 开着 Clash、Stash、Surge 时会查到 `198.18.x.x` 的假地址，误以为 DNS 错了 | 只在服务器上查 |
 | 服务器没有固定公网 IP | 重启后 IP 变了，DNS 指向旧 IP | 绑定“静态 IP / 弹性 IP / Reserved IP” |
-| 443 端口已被 nginx 等占用 | 安装脚本报 `端口 443 已被其他服务占用`，**不会**替你停掉它 | 中继需要独占 TCP 443 和 UDP 443。换一台机器、换一个 IP，或停掉那个服务 |
+| 443 端口已被 nginx、tuic、hysteria、xray 等占用 | 安装脚本报 `端口 443 已被其他服务占用`，**不会**替你停掉它。QUIC 类代理（tuic、hysteria）常占 **UDP** 443 | 中继需要独占 TCP 443 和 UDP 443。先 `ss -lntup \| grep ':443 '` 看是谁，换一台机器、换一个 IP，或停掉那个服务 |
+| 通过 Tailscale（`100.x.x.x`）登录服务器 | DNS 填成了 `100.x` 的地址，外网连不上 | A 记录必须填**公网 IP**。在服务器上 `curl -4 -s https://ifconfig.me; echo` 查公网 IP |
 
 ### 安装过程
 
@@ -77,7 +78,7 @@
 | 下载的 ZIP 文件名带 `(1)` | `unzip network-relay-main(1).zip` 报语法错误 | 文件名加引号：`unzip 'network-relay-main(1).zip'` |
 | 不在源码目录里运行 | `No such file or directory` | 先 `cd` 进解压出来的目录（里面能看到 `Cargo.toml`、`deploy`、`src`） |
 | 用 `sh` 运行脚本 | 语法错误 | 用 `bash`：`bash deploy/install-debian13.sh ...` |
-| 一键安装在非 Debian 13、非 x86_64 上运行 | `只支持 Debian 13 x86_64。` | 其他系统走[手动安装](#方式二手动安装) |
+| 一键安装在 Debian 12/13 以外、或非 x86_64 的系统上运行 | `只支持 Debian 12/13 x86_64。`（旧版本脚本只认 Debian 13） | `cat /etc/os-release` 看版本；其他系统走[手动安装](#方式二手动安装) |
 | 用 `admin`、`ubuntu` 这类普通用户登录 | 权限不够 | 先 `sudo -i` 变成 root，提示符结尾变成 `#` |
 
 ### 密码和描述文件
@@ -108,9 +109,9 @@
 
 ---
 
-## 方式一：Debian 13 一键安装（推荐）
+## 方式一：Debian 12/13 一键安装（推荐）
 
-**适用**：Debian 13、x86_64、systemd 的 VPS（Vultr、AWS Lightsail、DigitalOcean 等的 Debian 13 镜像都是）。
+**适用**：Debian 12 或 13、x86_64、systemd 的 VPS（Vultr、AWS Lightsail、Google Cloud、DigitalOcean 等的 Debian 镜像都是）。不确定版本就在服务器上运行 `cat /etc/os-release`，看 `VERSION_ID`。
 **脚本会做**：装依赖 → 按 `Cargo.lock` 从源码编译 → 申请 Let's Encrypt 证书并设置自动续期 → 生成随机密码和用户 → 写配置、装 systemd 服务 → 启动并在本机自检 → 输出设备描述文件。失败时自动恢复安装前的文件。
 
 ### 第 1 步：准备域名和防火墙（在你的电脑上，网页操作）
@@ -720,7 +721,7 @@ journalctl -u network-relay -n 50 --no-pager -o cat
 | `端口 443 已被其他服务占用` / `端口 80 已被其他服务占用` | 有别的程序（常见是 nginx、apache、caddy）占着。脚本不会替你停掉它 |
 | `Timeout during connect (likely firewall problem)`（certbot） | TCP 80 没放行，检查云防火墙和服务器防火墙 |
 | `too many certificates already issued` | Let's Encrypt 的频率限制：同一组域名一周最多签 5 张。一键安装会复用已有证书，通常是反复删掉 `/etc/letsencrypt` 重装触发的。等一周，或换一个子域名 |
-| `只支持 Debian 13 x86_64。` | 走[手动安装](#方式二手动安装) |
+| `只支持 Debian 12/13 x86_64。` | 系统版本或 CPU 架构不对，走[手动安装](#方式二手动安装)。如果是 Debian 12 却看到 `只支持 Debian 13`，说明源码是旧版本，重新下载 `main` 的 ZIP |
 | `发现已有手工安装配置，拒绝覆盖` | 这台机器以前手动装过。按 [docs/deploy-debian13.md](docs/deploy-debian13.md#更新与重复执行) 处理 |
 | `已有安装的域名、端口和用户名不同` / `密码与已有安装不同` | 脚本拒绝覆盖已有账号，防止误操作。确认参数和第一次安装一致 |
 | `本机 HTTPS 启动检查失败，正在恢复原安装` | 服务没起来，已自动回滚。看 `journalctl -u network-relay -n 50 --no-pager -o cat` |

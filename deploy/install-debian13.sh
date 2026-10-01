@@ -13,7 +13,8 @@ source /etc/os-release
 }
 [[ -d /run/systemd/system ]] || { echo '需要以 systemd 启动的 Debian VPS。' >&2; exit 1; }
 if ! command -v python3 >/dev/null; then
-    apt-get update
-    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends python3
+    # Wait for unattended-upgrades on a freshly booted VPS instead of failing.
+    apt-get -o DPkg::Lock::Timeout=1800 update
+    DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=1800 install -y --no-install-recommends python3
 fi
 exec python3 "$script_dir/install.py" "$@"

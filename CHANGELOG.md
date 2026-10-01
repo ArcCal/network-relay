@@ -2,6 +2,8 @@
 
 ## 未发布
 
+- 安装脚本的 `apt-get` 等待 dpkg 锁（最多 30 分钟），新开机的 VPS 正在自动更新时不再直接失败。
+- CI：arm64 测试中由测试启动的子进程也能通过 qemu 找到动态链接器。
 - `passwd --stdin`、`profile` 和 `check` 在终端里提示输入密码时不再回显。
 - UDP 流提前结束时的错误码按原因区分：畸形消息、目标套接字失效、取消或撤销分别用 `H3_MESSAGE_ERROR`/`PROTOCOL_ERROR`、`H3_CONNECT_ERROR`/`CONNECT_ERROR`、`H3_REQUEST_CANCELLED`/`CANCEL`；此前一律按畸形消息处理。
 - HTTP/3 TCP 隧道在设备已发 FIN 后收到的数据报静默丢弃（RFC 9297 §2.1），不再复位流。

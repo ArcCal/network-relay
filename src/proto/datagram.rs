@@ -18,6 +18,9 @@ use super::{varint, Error};
 /// Context ID of datagrams that carry a UDP payload.
 pub const CONTEXT_ID_UDP_PAYLOAD: u64 = 0;
 
+/// Maximum UDP payload allowed by RFC 9298 section 5.
+pub const MAX_UDP_PAYLOAD: usize = 65_527;
+
 /// Splits an HTTP Datagram payload into its context ID and the rest.
 pub fn split_context_id(payload: &[u8]) -> Result<(u64, &[u8]), Error> {
     let mut view = payload;

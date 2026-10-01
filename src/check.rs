@@ -78,10 +78,11 @@ impl Options {
         if !self.addresses.is_empty() {
             return Ok(self.addresses.clone());
         }
-        let found: Vec<SocketAddr> = tokio::net::lookup_host((self.host.as_str(), self.port))
-            .await
-            .with_context(|| format!("resolving {}", self.host))?
-            .collect();
+        let found: Vec<SocketAddr> = within(self, "resolving the relay", async {
+            Ok(tokio::net::lookup_host((self.host.as_str(), self.port)).await?.collect())
+        })
+        .await
+        .with_context(|| format!("resolving {}", self.host))?;
         ensure!(!found.is_empty(), "{} has no addresses", self.host);
         Ok(found)
     }
@@ -166,19 +167,25 @@ async fn fetch_status_line<S: AsyncRead + AsyncWrite + Unpin>(io: &mut S, target
 }
 
 /// A DNS query for an A record, with a random ID.
-fn dns_query(name: &str) -> (u16, Vec<u8>) {
+fn dns_query(name: &str) -> Result<(u16, Vec<u8>)> {
+    ensure!(!name.is_empty() && name.is_ascii(), "DNS name must be nonempty ASCII (use IDNA for international names)");
+    let name = name.strip_suffix('.').unwrap_or(name);
+    ensure!(name.len() <= 253, "DNS name exceeds 255 wire bytes");
     let mut id = [0u8; 2];
     ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), &mut id).expect("system RNG");
     let id = u16::from_be_bytes(id);
     let mut q = Vec::with_capacity(32 + name.len());
     q.extend_from_slice(&id.to_be_bytes());
     q.extend_from_slice(&[0x01, 0x00, 0, 1, 0, 0, 0, 0, 0, 0]); // RD; one question
-    for label in name.trim_end_matches('.').split('.') {
-        q.push(label.len() as u8);
-        q.extend_from_slice(label.as_bytes());
+    if !name.is_empty() {
+        for label in name.split('.') {
+            ensure!(!label.is_empty() && label.len() <= 63, "DNS labels must contain 1-63 bytes");
+            q.push(label.len() as u8);
+            q.extend_from_slice(label.as_bytes());
+        }
     }
     q.extend_from_slice(&[0, 0, 1, 0, 1]); // root; type A; class IN
-    (id, q)
+    Ok((id, q))
 }
 
 /// Describes a reply to [`dns_query`]; any datagram that echoes the ID counts.
@@ -195,7 +202,7 @@ fn describe_dns_reply(id: u16, reply: &[u8], from: &(String, u16)) -> Result<Str
 
 /// Sends a DNS query through a CONNECT-UDP tunnel and waits for the reply.
 async fn dns_over(tunnel: &mut Tunnel, opts: &Options) -> Result<String> {
-    let (id, query) = dns_query(&opts.dns_name);
+    let (id, query) = dns_query(&opts.dns_name)?;
     let deadline = tokio::time::Instant::now() + opts.timeout;
     let mut tries = 0;
     loop {
@@ -273,12 +280,15 @@ impl H3 {
                     continue;
                 }
             };
-            let (driver, send) = h3::client::builder()
-                .enable_extended_connect(true)
-                .enable_datagram(true)
-                .build::<_, _, Bytes>(h3_quinn::Connection::new(conn.clone()))
-                .await
-                .context("HTTP/3 setup")?;
+            let (driver, send) = within(opts, "HTTP/3 setup", async {
+                h3::client::builder()
+                    .enable_extended_connect(true)
+                    .enable_datagram(true)
+                    .build::<_, _, Bytes>(h3_quinn::Connection::new(conn.clone()))
+                    .await
+                    .context("HTTP/3 setup")
+            })
+            .await?;
             let driver = Arc::new(std::sync::Mutex::new(driver));
             let drive = {
                 let driver = driver.clone();
@@ -330,8 +340,12 @@ impl H3 {
         let resp = within(opts, "CONNECT response", async { Ok(stream.recv_response().await?) }).await?;
         let proxy_status = resp.headers().get("proxy-status").and_then(|v| v.to_str().ok());
         check_status(resp.status(), StatusCode::OK, proxy_status)?;
+        stream.forbid_trailers();
         let (mut send, mut recv) = stream.split();
-        send.send_data(Bytes::from(http_get(&opts.tcp_target))).await?;
+        within(opts, "sending the request", async {
+            Ok(send.send_data(Bytes::from(http_get(&opts.tcp_target))).await?)
+        })
+        .await?;
         let mut got = Vec::new();
         within(opts, "reading the answer", async {
             while !got.contains(&b'\n') && got.len() < 1024 {
@@ -346,7 +360,7 @@ impl H3 {
             Ok(())
         })
         .await?;
-        let _ = send.finish().await;
+        within(opts, "finishing the request", async { Ok(send.finish().await?) }).await?;
         let line = got.split(|b| *b == b'\n').next().unwrap_or_default();
         Ok(format!("{} answered {:?}", opts.tcp_target, String::from_utf8_lossy(line).trim()))
     }
@@ -385,9 +399,10 @@ async fn tls_connect(opts: &Options, addrs: &[SocketAddr], alpn: &[&[u8]]) -> Re
         };
         let name = rustls::pki_types::ServerName::try_from(opts.host.clone())?;
         let connector = tokio_rustls::TlsConnector::from(config.clone());
-        return within(opts, "TLS handshake", async { Ok(connector.connect(name, tcp).await?) })
-            .await
-            .with_context(|| format!("{addr}"));
+        match within(opts, "TLS handshake", async { Ok(connector.connect(name, tcp).await?) }).await {
+            Ok(tls) => return Ok(tls),
+            Err(error) => last = error.context(format!("{addr}")),
+        }
     }
     Err(last)
 }
@@ -515,7 +530,7 @@ mod tests {
 
     #[test]
     fn dns_queries_are_well_formed() {
-        let (id, q) = dns_query("example.com");
+        let (id, q) = dns_query("example.com").unwrap();
         assert_eq!(u16::from_be_bytes([q[0], q[1]]), id);
         assert_eq!(&q[12..], b"\x07example\x03com\x00\x00\x01\x00\x01");
         let mut reply = q.clone();
@@ -528,6 +543,22 @@ mod tests {
         );
         assert!(describe_dns_reply(id, &q, &target).unwrap().contains("echoed"));
         assert!(describe_dns_reply(id.wrapping_add(1), &reply, &target).is_err());
+    }
+
+    #[test]
+    fn dns_queries_validate_wire_lengths() {
+        for name in [
+            String::new(),
+            "a..b".into(),
+            "example.com..".into(),
+            "x".repeat(64),
+            "é.com".into(),
+            format!("{}.{}.{}.{}", "x".repeat(63), "x".repeat(63), "x".repeat(63), "x".repeat(62)),
+        ] {
+            assert!(dns_query(&name).is_err(), "{name}");
+        }
+        assert_eq!(&dns_query(".").unwrap().1[12..], b"\0\0\x01\0\x01");
+        assert_eq!(&dns_query("example.com.").unwrap().1[12..], &dns_query("example.com").unwrap().1[12..]);
     }
 
     #[test]

@@ -54,6 +54,38 @@ pub fn tune_target_tcp(sock: socket2::SockRef<'_>) -> std::io::Result<()> {
     sock.set_tcp_keepalive(&keepalive)
 }
 
+/// RFC 9298: forwarded UDP must not introduce IP fragmentation.
+#[cfg(target_os = "linux")]
+pub fn no_udp_fragmentation(sock: socket2::SockRef<'_>, ipv6: bool) -> std::io::Result<()> {
+    use nix::libc;
+    use std::os::fd::AsRawFd;
+    let (level, option, value) = if ipv6 {
+        (libc::IPPROTO_IPV6, libc::IPV6_MTU_DISCOVER, libc::IPV6_PMTUDISC_DO)
+    } else {
+        (libc::IPPROTO_IP, libc::IP_MTU_DISCOVER, libc::IP_PMTUDISC_DO)
+    };
+    // SAFETY: the descriptor is live, and value/length describe an integer.
+    let result = unsafe {
+        libc::setsockopt(
+            sock.as_raw_fd(),
+            level,
+            option,
+            (&value as *const libc::c_int).cast(),
+            std::mem::size_of_val(&value) as libc::socklen_t,
+        )
+    };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn no_udp_fragmentation(_sock: socket2::SockRef<'_>, _ipv6: bool) -> std::io::Result<()> {
+    Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "UDP relay server requires Linux"))
+}
+
 /// Asks for larger socket buffers, as far as the kernel allows
 /// (`net.core.rmem_max` and `wmem_max` cap them). Returns the sizes granted.
 pub fn grow_buffers(sock: socket2::SockRef<'_>, bytes: usize) -> (usize, usize) {

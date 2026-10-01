@@ -44,6 +44,11 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - run: bash -n deploy/install-debian13.sh
+      - run: python3 -m unittest discover -s tests -p 'test_deploy.py' -v
 
   build:
     name: build ${{ matrix.arch }}

@@ -7,6 +7,7 @@
 //! `web`), so failed attempts reveal nothing. Status codes and Proxy-Status
 //! details (RFC 9209) only ever reach authenticated users.
 
+mod h2_stream;
 mod over_h3;
 mod over_tcp;
 mod pump;
@@ -83,6 +84,7 @@ fn load_site(web: Option<&Web>) -> Result<Option<Arc<Website>>> {
 
 impl Relay {
     pub fn new(config: &Config) -> Result<Self> {
+        config.validate()?;
         let alt_svc = HeaderValue::try_from(format!("h3=\":{}\"; ma=86400", config.listen.port())).expect("valid");
         Ok(Self {
             inner: Arc::new(Inner {
@@ -101,6 +103,7 @@ impl Relay {
     /// timeouts, logging and the website. The listen address and
     /// `relay.max_tunnels` need a restart.
     pub fn reload(&self, config: &Config) -> Result<()> {
+        config.validate()?;
         let settings = Settings::new(config)?;
         let site = load_site(config.web.as_ref());
         *self.inner.settings.write().unwrap() = Arc::new(settings);
@@ -246,6 +249,16 @@ enum Opened {
     Udp(UdpSocket),
 }
 
+impl Opened {
+    /// A failed HTTP handshake must not look like an orderly TCP close to
+    /// a destination that was already connected (RFC 9113/9114 CONNECT).
+    fn abort(&self) {
+        if let Self::Tcp(tcp) = self {
+            let _ = socket2::SockRef::from(tcp).set_linger(Some(Duration::ZERO));
+        }
+    }
+}
+
 /// Everything a running tunnel needs besides its streams.
 struct TunnelCtx {
     user: User,
@@ -253,20 +266,28 @@ struct TunnelCtx {
     conn: Arc<ConnInfo>,
     auth: Arc<Authenticator>,
     changes: watch::Receiver<u64>,
+    peer_closed: std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>,
     udp_idle_timeout: Duration,
     _permit: OwnedSemaphorePermit,
 }
 
 impl TunnelCtx {
-    /// Resolves once the user is removed or their password changes.
-    async fn revoked(&mut self) {
-        loop {
-            if self.changes.changed().await.is_err() {
-                return std::future::pending().await;
-            }
-            if !self.auth.is_current(&self.user) {
-                return;
-            }
+    /// Cancellation must remain observable even after one direction has FIN'd.
+    async fn cancelled(&mut self) {
+        tokio::select! {
+            _ = wait_for_revocation(&self.auth, &self.user, &mut self.changes) => {}
+            _ = &mut self.peer_closed => {}
+        }
+    }
+}
+
+async fn wait_for_revocation(auth: &Authenticator, user: &User, changes: &mut watch::Receiver<u64>) {
+    loop {
+        if !auth.is_current(user) {
+            return;
+        }
+        if changes.changed().await.is_err() {
+            return std::future::pending().await;
         }
     }
 }
@@ -363,13 +384,31 @@ impl Relay {
         conn: &Arc<ConnInfo>,
         settings: &Settings,
     ) -> Result<(Opened, TunnelCtx), Refusal> {
+        // Subscribe before any asynchronous work, then check the current user.
+        let mut changes = self.inner.auth.changes();
+        if !self.inner.auth.is_current(&a.user) {
+            return Err(Refusal::UserRevoked);
+        }
         let target = a.target.clone()?;
         let permit = self.inner.tunnels.clone().try_acquire_owned().map_err(|_| Refusal::TooManyTunnels)?;
-        let addrs = settings.policy.resolve(&target).await?;
-        let opened = match a.kind {
-            Kind::Tcp => Opened::Tcp(connect::tcp(&addrs, settings.connect_timeout).await?),
-            Kind::Udp => Opened::Udp(connect::udp(&addrs).await?),
+        let connecting = async {
+            let addrs = settings.policy.resolve(&target).await?;
+            if !self.inner.auth.is_current(&a.user) {
+                return Err(Refusal::UserRevoked);
+            }
+            match a.kind {
+                Kind::Tcp => Ok(Opened::Tcp(connect::tcp(&addrs, settings.connect_timeout).await?)),
+                Kind::Udp => Ok(Opened::Udp(connect::udp(&addrs).await?)),
+            }
         };
+        let opened = tokio::select! {
+            biased;
+            _ = wait_for_revocation(&self.inner.auth, &a.user, &mut changes) => return Err(Refusal::UserRevoked),
+            opened = connecting => opened?,
+        };
+        if !self.inner.auth.is_current(&a.user) {
+            return Err(Refusal::UserRevoked);
+        }
         let counter = match a.kind {
             Kind::Tcp => &conn.tcp,
             Kind::Udp => &conn.udp,
@@ -381,7 +420,8 @@ impl Relay {
             target,
             conn: conn.clone(),
             auth: self.inner.auth.clone(),
-            changes: self.inner.auth.changes(),
+            changes,
+            peer_closed: Box::pin(std::future::pending()),
             udp_idle_timeout: settings.udp_idle_timeout,
             _permit: permit,
         };
@@ -396,7 +436,7 @@ fn http_date() -> HeaderValue {
 /// Runs the server until SIGINT or SIGTERM. `config` was loaded from
 /// `config_path`, which SIGHUP reads again.
 pub async fn run(config_path: PathBuf, config: Config) -> Result<()> {
-    sys::raise_open_file_limit((config.relay.max_tunnels * 2 + 1024) as _);
+    sys::raise_open_file_limit(config.relay.max_tunnels.saturating_mul(2).saturating_add(1024) as _);
     let certs = CertStore::open(&config.tls.cert, &config.tls.key)?;
     let relay = Relay::new(&config)?;
     let udp =
@@ -460,6 +500,17 @@ pub async fn run(config_path: PathBuf, config: Config) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn revocation_is_detected_even_when_subscription_is_late() {
+        let hash = auth::hash_password("test-password").unwrap();
+        let user = User { name: "alice".into(), hash: hash.clone() };
+        let auth =
+            Authenticator::new(&[crate::config::UserEntry { name: user.name.clone(), password_hash: hash }]).unwrap();
+        auth.replace(&[]);
+        let mut changes = auth.changes();
+        tokio::time::timeout(Duration::from_secs(1), wait_for_revocation(&auth, &user, &mut changes)).await.unwrap();
+    }
 
     #[test]
     fn sizes_and_durations_read_well() {

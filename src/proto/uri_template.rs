@@ -66,7 +66,9 @@ impl UriTemplate {
         }
         let (scheme, rest) =
             raw.split_once("://").ok_or(TemplateError("must be absolute (scheme://authority/path)"))?;
-        if scheme.is_empty() || !scheme.bytes().all(|b| b.is_ascii_alphanumeric() || b"+-.".contains(&b)) {
+        if !scheme.as_bytes().first().is_some_and(u8::is_ascii_alphabetic)
+            || !scheme.bytes().all(|b| b.is_ascii_alphanumeric() || b"+-.".contains(&b))
+        {
             return Err(TemplateError("missing or invalid scheme"));
         }
         let path_start = rest.find('/').ok_or(TemplateError("path must not be empty and must start with '/'"))?;
@@ -76,6 +78,12 @@ impl UriTemplate {
         }
         if authority.contains(['{', '}']) {
             return Err(TemplateError("variables are only allowed in the path or query"));
+        }
+        if authority.parse::<http::uri::Authority>().is_err() || authority.contains(['@', '?', '#']) {
+            return Err(TemplateError("invalid authority"));
+        }
+        if path.contains('#') {
+            return Err(TemplateError("fragments are not allowed in a relay endpoint"));
         }
         let parts = Self::parse_parts(path)?;
         Ok(Self { raw: raw.to_string(), scheme: scheme.to_ascii_lowercase(), authority: authority.to_string(), parts })
@@ -135,6 +143,12 @@ impl UriTemplate {
             if let Part::Literal(l) = p {
                 if l.contains('}') {
                     return Err(TemplateError("unmatched '}'"));
+                }
+                let escapes_valid = l.bytes().enumerate().all(|(i, b)| {
+                    b != b'%' || l.as_bytes().get(i + 1..i + 3).is_some_and(|hex| hex.iter().all(u8::is_ascii_hexdigit))
+                });
+                if !escapes_valid || l.bytes().any(|b| b"\"<>\\^`|".contains(&b)) {
+                    return Err(TemplateError("invalid URI literal or percent escape"));
                 }
             }
         }
@@ -222,60 +236,75 @@ impl UriTemplate {
         };
         // Split the template into its path part and its query part.
         let mut path_parts = Vec::new();
-        let mut query_exprs = Vec::new();
-        let mut query_literal = String::new();
+        let mut query_parts = Vec::new();
         let mut in_query = false;
         for part in &self.parts {
             match part {
                 Part::Literal(l) if !in_query => match l.split_once('?') {
                     Some((before, after)) => {
                         path_parts.push(Part::Literal(before.to_string()));
-                        query_literal.push_str(after);
+                        query_parts.push(Part::Literal(after.to_string()));
                         in_query = true;
                     }
                     None => path_parts.push(part.clone()),
                 },
-                Part::Literal(l) => query_literal.push_str(l),
-                Part::Expr { op: Op::Simple, vars } if in_query => {
-                    // A simple expression inside a literal query such as
-                    // `?t={target}`: remember which parameter it fills.
-                    let name = query_literal.rsplit(['&', '?']).next().unwrap_or("").trim_end_matches('=');
-                    if vars.len() != 1 || name.is_empty() {
-                        return None;
-                    }
-                    query_exprs.push((name.to_string(), vars[0].clone()));
-                    query_literal.push('\u{0}'); // placeholder for the value
-                }
-                Part::Expr { op: Op::Simple, .. } => path_parts.push(part.clone()),
-                Part::Expr { vars, .. } => {
+                Part::Expr { op: Op::Query | Op::QueryContinuation, vars } => {
                     in_query = true;
-                    query_exprs.extend(vars.iter().map(|v| (v.clone(), v.clone())));
+                    for var in vars {
+                        if !query_parts.is_empty() {
+                            query_parts.push(Part::Literal("&".to_string()));
+                        }
+                        query_parts.push(Part::Literal(format!("{var}=")));
+                        query_parts.push(Part::Expr { op: Op::Simple, vars: vec![var.clone()] });
+                    }
                 }
+                _ if in_query => query_parts.push(part.clone()),
+                _ => path_parts.push(part.clone()),
             }
         }
 
         let mut out = HashMap::new();
         match_path(&path_parts, path, &mut out)?;
-
-        let params: Vec<(String, String)> = query
+        // Keep encoded values until matching: a variable's escaped '&' or ','
+        // must not turn into a delimiter. Reject malformed percent escapes.
+        let params: Vec<(String, &str)> = query
             .unwrap_or("")
             .split('&')
             .filter(|kv| !kv.is_empty())
             .map(|kv| {
-                let (k, v) = kv.split_once('=').unwrap_or((kv, ""));
-                (decode(k).unwrap_or_default(), decode(v).unwrap_or_default())
+                let (key, value) = kv.split_once('=').unwrap_or((kv, ""));
+                decode(value)?;
+                Some((decode(key)?, value))
             })
-            .collect();
-        // Fixed parameters written literally in the template must be present.
-        for kv in query_literal.split('&').filter(|kv| !kv.is_empty() && !kv.contains('\u{0}')) {
-            let (k, v) = kv.split_once('=').unwrap_or((kv, ""));
-            if !params.iter().any(|(pk, pv)| pk == k && pv == v) {
-                return None;
+            .collect::<Option<_>>()?;
+        let mut patterns: Vec<Vec<Part>> = vec![Vec::new()];
+        for part in query_parts {
+            match part {
+                Part::Literal(l) => {
+                    for (i, piece) in l.split('&').enumerate() {
+                        if i != 0 {
+                            patterns.push(Vec::new());
+                        }
+                        if !piece.is_empty() {
+                            patterns.last_mut()?.push(Part::Literal(piece.to_string()));
+                        }
+                    }
+                }
+                other => patterns.last_mut()?.push(other),
             }
         }
-        for (param, var) in query_exprs {
-            if let Some((_, v)) = params.iter().find(|(k, _)| *k == param) {
-                out.insert(var, v.clone());
+        for mut pattern in patterns {
+            if pattern.is_empty() {
+                continue;
+            }
+            let Part::Literal(first) = pattern.first_mut()? else { return None };
+            let (key, prefix) = first.split_once('=').unwrap_or((first, ""));
+            let key = decode(key)?;
+            *first = prefix.to_string();
+            if let Some((_, value)) = params.iter().find(|(k, _)| k == &key) {
+                match_path(&pattern, value, &mut out)?;
+            } else if !pattern.iter().any(|p| matches!(p, Part::Expr { .. })) {
+                return None;
             }
         }
         Some(out)
@@ -284,36 +313,84 @@ impl UriTemplate {
 
 /// Matches path parts left to right. A simple expression captures up to the
 /// next literal; two expressions in a row cannot be matched unambiguously.
-fn match_path(parts: &[Part], mut path: &str, out: &mut HashMap<String, String>) -> Option<()> {
-    let mut i = 0;
-    while i < parts.len() {
-        match &parts[i] {
-            Part::Literal(l) => path = path.strip_prefix(l.as_str())?,
+fn match_path(parts: &[Part], path: &str, out: &mut HashMap<String, String>) -> Option<()> {
+    // Literals may also occur in a hostname, e.g. "{target_host}-{target_port}".
+    // Try complete matches, with a fixed work budget for attacker-controlled paths.
+    fn walk(
+        parts: &[Part],
+        path: &str,
+        out: &HashMap<String, String>,
+        budget: &mut usize,
+        strict_port: bool,
+    ) -> Option<HashMap<String, String>> {
+        *budget = budget.checked_sub(1 + path.len() / 64)?;
+        let Some((first, rest)) = parts.split_first() else { return path.is_empty().then(|| out.clone()) };
+        match first {
+            Part::Literal(l) => walk(rest, path.strip_prefix(l)?, out, budget, strict_port),
             Part::Expr { vars, .. } => {
-                let captured = match parts.get(i + 1) {
-                    Some(Part::Literal(next)) if !next.is_empty() => {
-                        let end = path.find(next.as_str())?;
-                        let (c, rest) = path.split_at(end);
-                        path = rest;
-                        c
+                let mut ends: Vec<usize> = match rest.first() {
+                    Some(Part::Literal(l)) if !l.is_empty() => {
+                        let mut positions = Vec::new();
+                        let mut offset = 0;
+                        while let Some(i) = path[offset..].find(l.as_str()) {
+                            positions.push(offset + i);
+                            offset += i + 1;
+                        }
+                        positions
                     }
-                    Some(_) => return None,
-                    None => std::mem::take(&mut path),
+                    None => vec![path.len()],
+                    _ => return None,
                 };
-                if !captured.is_empty() {
-                    let values: Vec<&str> = captured.split(',').collect();
-                    if values.len() != vars.len() {
-                        return None;
+                ends.reverse();
+                for end in ends {
+                    let mut next = out.clone();
+                    let captured = &path[..end];
+                    if !captured.is_empty() {
+                        let values: Vec<_> = captured.split(',').collect();
+                        if values.iter().any(|v| !v.bytes().all(|b| b.is_ascii_alphanumeric() || b"-._~%".contains(&b)))
+                        {
+                            continue;
+                        }
+                        if values.len() > vars.len() {
+                            continue;
+                        }
+                        let mut values = values.into_iter().peekable();
+                        let mut valid = true;
+                        for (i, name) in vars.iter().enumerate() {
+                            let required = |v: &String| v == "target_host" || v == "target_port";
+                            let remaining_required = vars[i..].iter().filter(|v| required(v)).count();
+                            if !required(name) && values.len() <= remaining_required {
+                                continue;
+                            }
+                            let Some(value) = values.next().and_then(decode) else {
+                                valid = false;
+                                break;
+                            };
+                            if strict_port && name == "target_port" && value.parse::<u16>().map_or(true, |p| p == 0) {
+                                valid = false;
+                                break;
+                            }
+                            if next.get(name).is_some_and(|old| old != &value) {
+                                valid = false;
+                                break;
+                            }
+                            next.insert(name.clone(), value);
+                        }
+                        if !valid || values.next().is_some() {
+                            continue;
+                        }
                     }
-                    for (name, value) in vars.iter().zip(values) {
-                        out.insert(name.clone(), decode(value)?);
+                    if let Some(found) = walk(rest, &path[end..], &next, budget, strict_port) {
+                        return Some(found);
                     }
                 }
+                None
             }
         }
-        i += 1;
     }
-    path.is_empty().then_some(())
+    // Still return structurally matching malformed targets for a 400 response.
+    *out = walk(parts, path, out, &mut 4096, true).or_else(|| walk(parts, path, out, &mut 4096, false))?;
+    Some(())
 }
 
 fn encode(value: &str) -> String {
@@ -459,6 +536,25 @@ mod tests {
     }
 
     #[test]
+    fn query_literals_around_variables_round_trip() {
+        for raw in [
+            "/udp?h=prefix-{target_host}&p={target_port}",
+            "/udp?h={target_host}-suffix&p={target_port}",
+            "/udp?h=prefix-{target_host}-suffix&p={target_port}&tag=fixed",
+            "/udp?pair={target_host,target_port}",
+        ] {
+            let tpl = UriTemplate::parse_path(raw).unwrap();
+            let path = tpl.expand(&[("target_host", "example.com"), ("target_port", "443")]);
+            let matched = tpl.matches(&path).unwrap();
+            assert_eq!(vars(&matched), ("example.com", "443"), "{path}");
+        }
+        assert!(UriTemplate::parse_path("/udp{?target_host,target_port}")
+            .unwrap()
+            .matches("/udp?target_host=%zz&target_port=443")
+            .is_none());
+    }
+
+    #[test]
     fn expand_then_match_roundtrip() {
         for tpl in [
             DEFAULT,
@@ -472,5 +568,41 @@ mod tests {
                 assert_eq!(vars(&m), (host, port), "{path}");
             }
         }
+    }
+
+    #[test]
+    fn separators_inside_hosts_and_optional_variables_round_trip() {
+        for path in [
+            "/udp/{target_host}-{target_port}/",
+            "/udp/{target_port}-{target_host}/",
+            "/udp/{target_host}aa{target_port}/",
+            "/udp/{ignored,target_host,target_port}/",
+            "/udp/{target_host,ignored,target_port}/",
+            "/udp/{target_host}/{target_port}/{target_host}",
+            "/udp?h={target_host}-{target_port}",
+        ] {
+            let tpl = UriTemplate::parse_path(path).unwrap();
+            for host in ["some-host.example", "aaa", "a-123-456.example", "::1"] {
+                let expanded = tpl.expand(&[("target_host", host), ("target_port", "53")]);
+                assert_eq!(vars(&tpl.matches(&expanded).unwrap()), (host, "53"), "{path} => {expanded}");
+            }
+        }
+        let tpl = UriTemplate::parse_path("/udp/{target_host}/{target_port}/{target_host}").unwrap();
+        assert!(tpl.matches("/udp/first.example/53/second.example").is_none());
+    }
+
+    #[test]
+    fn invalid_endpoints_are_rejected_but_escaped_literals_are_allowed() {
+        for raw in [
+            "1https://example.org/udp",
+            "https://user@example.org/udp",
+            "https://example.org/udp#fragment",
+            "https://example.org/udp/%",
+            "https://example.org/udp/%gg",
+            "https://example.org/udp/<bad>",
+        ] {
+            assert!(UriTemplate::parse(raw).is_err(), "{raw}");
+        }
+        assert!(UriTemplate::parse("https://example.org/udp/%FF/%00").is_ok());
     }
 }

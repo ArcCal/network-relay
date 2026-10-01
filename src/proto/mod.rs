@@ -42,3 +42,9 @@ pub enum Error {
     #[error("malformed: {0}")]
     Malformed(&'static str),
 }
+
+/// RFC 9297 section 3.2: Capsule messages cannot carry HTTP content metadata.
+pub fn valid_capsule_headers(headers: &http::HeaderMap) -> bool {
+    use http::header::{CONTENT_LENGTH, CONTENT_TYPE, TRANSFER_ENCODING};
+    ![CONTENT_LENGTH, CONTENT_TYPE, TRANSFER_ENCODING].iter().any(|name| headers.contains_key(name))
+}

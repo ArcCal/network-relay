@@ -94,6 +94,11 @@ pub fn hash_password(password: &str) -> Result<String> {
 pub fn validate_hash(hash: &str) -> Result<()> {
     let parsed = PasswordHash::new(hash).map_err(|e| anyhow!("not a valid password hash ({e})"))?;
     ensure!(parsed.algorithm.as_str() == "argon2id", "password hash must use argon2id");
+    ensure!(parsed.salt.is_some() && parsed.hash.is_some(), "password hash needs a salt and output");
+    if let Some(version) = parsed.version {
+        argon2::Version::try_from(version).map_err(|e| anyhow!("invalid Argon2 version: {e}"))?;
+    }
+    argon2::Params::try_from(&parsed).map_err(|e| anyhow!("invalid Argon2 parameters: {e}"))?;
     Ok(())
 }
 
@@ -123,7 +128,7 @@ pub struct Authenticator {
     /// Hashing takes tens of milliseconds and megabytes of memory, so the
     /// number of concurrent verifications is capped. This limits resources,
     /// it does not lock anyone out.
-    slots: Semaphore,
+    slots: Arc<Semaphore>,
     /// Verified instead of a real hash for unknown user names, so the
     /// response time does not reveal which names exist.
     dummy_hash: String,
@@ -138,12 +143,28 @@ pub struct Authenticator {
     generation: watch::Sender<u64>,
 }
 
+/// Removes a verification entry even if the request is cancelled while waiting.
+struct InflightGuard {
+    auth: Arc<Authenticator>,
+    tag: CacheTag,
+    lock: Arc<tokio::sync::Mutex<()>>,
+}
+
+impl Drop for InflightGuard {
+    fn drop(&mut self) {
+        let mut inflight = self.auth.inflight.lock().unwrap();
+        if Arc::strong_count(&self.lock) == 2 {
+            inflight.remove(&self.tag);
+        }
+    }
+}
+
 impl Authenticator {
     pub fn new(users: &[UserEntry]) -> Result<Self> {
         let slots = std::thread::available_parallelism().map_or(2, |n| n.get()) * 2;
         let auth = Self {
             users: RwLock::new(HashMap::new()),
-            slots: Semaphore::new(slots),
+            slots: Arc::new(Semaphore::new(slots)),
             dummy_hash: hash_password(&generate_password())?,
             cache_key: ring::hmac::Key::new(ring::hmac::HMAC_SHA256, &random_bytes::<32>()),
             cache: Mutex::default(),
@@ -156,7 +177,8 @@ impl Authenticator {
 
     /// Installs a new user list and forgets every cached verification.
     pub fn replace(&self, users: &[UserEntry]) {
-        *self.users.write().unwrap() = users.iter().map(|u| (u.name.clone(), u.password_hash.clone())).collect();
+        let mut current = self.users.write().unwrap();
+        *current = users.iter().map(|u| (u.name.clone(), u.password_hash.clone())).collect();
         self.cache.lock().unwrap().clear();
         self.generation.send_modify(|g| *g += 1);
     }
@@ -176,6 +198,8 @@ impl Authenticator {
     }
 
     fn cached(&self, tag: &CacheTag) -> Option<Option<User>> {
+        // Serialize lookup with replacement and cache invalidation.
+        let _users = self.users.read().unwrap();
         let cache = self.cache.lock().unwrap();
         cache.get(tag).filter(|c| c.until > Instant::now()).map(|c| c.user.clone())
     }
@@ -204,28 +228,46 @@ impl Authenticator {
         if let Some(result) = self.cached(&tag) {
             return result;
         }
-        let lock = self.inflight.lock().unwrap().entry(tag).or_default().clone();
-        let _guard = lock.lock().await;
+        let lock = {
+            let mut inflight = self.inflight.lock().unwrap();
+            if !inflight.contains_key(&tag) && inflight.len() >= CACHE_MAX {
+                return None;
+            }
+            inflight.entry(tag).or_default().clone()
+        };
+        let cleanup = InflightGuard { auth: self.clone(), tag, lock };
+        let _guard = cleanup.lock.lock().await;
         if let Some(result) = self.cached(&tag) {
             return result;
         }
         let generation = *self.generation.borrow();
         let result = self.verify_uncached(name, password).await;
-        // A reload during the verification may have changed the user.
-        if *self.generation.borrow() == generation {
-            self.remember(tag, result.clone());
+        // Hold the user lock through the generation check and cache insertion:
+        // replacement must not clear the cache between these two operations.
+        let users = self.users.read().unwrap();
+        if *self.generation.borrow() != generation
+            || result.as_ref().is_some_and(|u| users.get(&u.name) != Some(&u.hash))
+        {
+            return None;
         }
-        self.inflight.lock().unwrap().remove(&tag);
+        self.remember(tag, result.clone());
         result
     }
 
     async fn verify_uncached(&self, name: String, password: String) -> Option<User> {
         let known = self.users.read().unwrap().get(&name).cloned();
         let hash = known.clone().unwrap_or_else(|| self.dummy_hash.clone());
-        let _permit = self.slots.acquire().await.ok()?;
+        let permit = self.slots.clone().acquire_owned().await.ok()?;
         let ok = {
             let hash = hash.clone();
-            tokio::task::spawn_blocking(move || verify_hash(&password, &hash)).await.unwrap_or(false)
+            tokio::task::spawn_blocking(move || {
+                // Cancellation of the HTTP request must not release the slot
+                // while this non-cancellable computation is still running.
+                let _permit = permit;
+                verify_hash(&password, &hash)
+            })
+            .await
+            .unwrap_or(false)
         };
         (ok && known.is_some()).then_some(User { name, hash })
     }
@@ -260,6 +302,9 @@ mod tests {
         assert!(verify_hash("correct horse", &hash));
         assert!(!verify_hash("wrong horse", &hash));
         assert!(validate_hash("plaintext").is_err());
+        assert!(validate_hash("$argon2id$v=19$m=19456,t=2,p=1").is_err());
+        assert!(validate_hash(&hash.replace("v=19", "v=99")).is_err());
+        assert!(validate_hash(&hash.replace("p=1", "p=0")).is_err());
         assert!(validate_hash("$argon2i$v=19$m=16,t=2,p=1$c2FsdHNhbHQ$aGFzaGhhc2hoYXNo").is_err());
     }
 
@@ -277,6 +322,57 @@ mod tests {
         for bad in ["", "a:b", ".hidden", "with space", &"x".repeat(65)] {
             assert!(validate_user_name(bad).is_err(), "{bad}");
         }
+    }
+
+    #[tokio::test]
+    async fn removal_during_verification_rejects_the_old_user() {
+        use std::future::Future;
+        use std::task::Poll;
+        let auth = Arc::new(Authenticator::new(&[user("alice", "alice-password")]).unwrap());
+        let header = basic_authorization("alice", "alice-password");
+        let mut verification = Box::pin(auth.verify(Some(header.as_bytes())));
+        std::future::poll_fn(|cx| {
+            assert!(verification.as_mut().poll(cx).is_pending());
+            Poll::Ready(())
+        })
+        .await;
+        auth.replace(&[]);
+        assert!(verification.await.is_none());
+        assert!(auth.cache.lock().unwrap().is_empty());
+        assert!(auth.inflight.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn cancelled_verification_cleans_up_and_keeps_hash_slot() {
+        use std::future::Future;
+        use std::task::Poll;
+        // Keep the sole blocking worker occupied so the assertion cannot race
+        // with a fast hash computation completing on another thread.
+        let runtime = tokio::runtime::Builder::new_current_thread().max_blocking_threads(1).build().unwrap();
+        let (started, ready) = std::sync::mpsc::channel();
+        let (release, waiting) = std::sync::mpsc::channel();
+        let blocker = runtime.spawn_blocking(move || {
+            started.send(()).unwrap();
+            let _ = waiting.recv();
+        });
+        ready.recv().unwrap();
+        runtime.block_on(async {
+            let auth = Arc::new(Authenticator::new(&[user("alice", "alice-password")]).unwrap());
+            let slots = auth.slots.available_permits();
+            let header = basic_authorization("alice", "alice-password");
+            let mut verification = Box::pin(auth.verify(Some(header.as_bytes())));
+            std::future::poll_fn(|cx| {
+                assert!(verification.as_mut().poll(cx).is_pending());
+                Poll::Ready(())
+            })
+            .await;
+            drop(verification);
+            assert!(auth.inflight.lock().unwrap().is_empty());
+            assert_eq!(auth.slots.available_permits(), slots - 1);
+            release.send(()).unwrap();
+            blocker.await.unwrap();
+            let _permit = auth.slots.clone().acquire_many_owned(slots as u32).await.unwrap();
+        });
     }
 
     #[tokio::test]

@@ -228,7 +228,10 @@ impl Config {
             "relay.udp_idle_timeout_secs must be between 120 and 3600, got {}",
             r.udp_idle_timeout_secs
         );
-        ensure!(r.max_tunnels >= 1, "relay.max_tunnels must be at least 1");
+        ensure!(
+            (1..=tokio::sync::Semaphore::MAX_PERMITS).contains(&r.max_tunnels),
+            "relay.max_tunnels is outside the supported range"
+        );
         let mut names = HashSet::new();
         for u in &self.users {
             auth::validate_user_name(&u.name).with_context(|| format!("user name {:?}", u.name))?;
@@ -277,6 +280,7 @@ mod tests {
         assert!(parse("[relay]\nconnect_timeout_secs = 0").is_err());
         assert!(parse("[relay]\nudp_idle_timeout_secs = 30").is_err(), "RFC 4787 minimum");
         assert!(parse("[relay]\nmax_tunnels = 0").is_err());
+        assert!(parse(&format!("[relay]\nmax_tunnels = {}", tokio::sync::Semaphore::MAX_PERMITS + 1)).is_err());
         assert!(parse("[relay]\nunknown = 1").is_err());
         assert!(parse("log_dir = \"logs\"").is_err(), "relative log_dir");
     }

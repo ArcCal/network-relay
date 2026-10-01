@@ -57,12 +57,27 @@ enum Command {
         /// Port, if not 443.
         #[arg(long, default_value_t = 443)]
         port: u16,
-        /// Relay only this domain and its subdomains (repeatable). Without it, all traffic uses the relay.
+        /// Relay this domain and its subdomains (repeatable). Without match-domain or match-fqdn, relay all traffic.
         #[arg(long = "match-domain", value_name = "DOMAIN")]
         match_domains: Vec<String>,
         /// Never relay this domain and its subdomains (repeatable).
         #[arg(long = "exclude-domain", value_name = "DOMAIN")]
         excluded_domains: Vec<String>,
+        /// Relay exactly this hostname, without its subdomains (iOS 18.4+, macOS 15.4+).
+        #[arg(long = "match-fqdn", value_name = "HOST")]
+        match_fqdns: Vec<String>,
+        /// Exclude exactly this hostname (repeatable).
+        #[arg(long = "exclude-fqdn", value_name = "HOST")]
+        excluded_fqdns: Vec<String>,
+        /// Allow the user to disable the relay in Settings (iOS/macOS 26+).
+        #[arg(long, num_args = 0..=1, default_missing_value = "true")]
+        ui_toggle_enabled: Option<bool>,
+        /// Allow failover to the device's system DNS resolver (iOS/macOS 26+).
+        #[arg(long, num_args = 0..=1, default_missing_value = "true")]
+        allow_dns_failover: Option<bool>,
+        /// Relay UUID for managed-app/user-enrollment routing (not supported by macOS).
+        #[arg(long)]
+        relay_uuid: Option<String>,
         /// Name shown in Settings (default: the domain).
         #[arg(long)]
         name: Option<String>,
@@ -133,6 +148,11 @@ fn main() -> ExitCode {
             port,
             match_domains,
             excluded_domains,
+            match_fqdns,
+            excluded_fqdns,
+            ui_toggle_enabled,
+            allow_dns_failover,
+            relay_uuid,
             name,
             udp_template,
             no_http3,
@@ -143,13 +163,18 @@ fn main() -> ExitCode {
         } => (|| {
             let password = password_or_prompt(password)?;
             let opts = ProfileOptions {
-                host: host.trim_end_matches('.').to_ascii_lowercase(),
+                host: host.strip_suffix('.').unwrap_or(&host).to_ascii_lowercase(),
                 port,
                 user,
                 password,
                 udp_template,
                 match_domains,
                 excluded_domains,
+                match_fqdns,
+                excluded_fqdns,
+                ui_toggle_enabled,
+                allow_dns_failover,
+                relay_uuid,
                 name,
                 http3: !no_http3,
                 http2: !no_http2,
@@ -305,22 +330,16 @@ fn passwd(name: &str, from_stdin: bool) -> Result<bool> {
 fn write_profile(opts: &ProfileOptions, out: Option<PathBuf>) -> Result<bool> {
     let text = profile::generate(opts)?;
     let out = out.unwrap_or_else(|| PathBuf::from(format!("{}-{}.mobileconfig", opts.host, opts.user)));
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        let mut f = std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(&out)
-            .with_context(|| format!("creating {}", out.display()))?;
-        f.write_all(text.as_bytes())?;
-    }
+    network_relay::private_file::write(&out, text.as_bytes())?;
     println!("Wrote {} (it contains the password; delete it once installed).", out.display());
     println!("Relay URL: {}", opts.relay_url());
     println!(
         "Relayed: {}",
-        if opts.match_domains.is_empty() { "all traffic".to_string() } else { opts.match_domains.join(", ") }
+        if opts.match_domains.is_empty() && opts.match_fqdns.is_empty() {
+            "all traffic".to_string()
+        } else {
+            opts.match_domains.iter().chain(&opts.match_fqdns).cloned().collect::<Vec<_>>().join(", ")
+        }
     );
     Ok(true)
 }
@@ -332,7 +351,7 @@ fn publish_profile(opts: &ProfileOptions, config_path: &std::path::Path) -> Resu
     let text = profile::generate(opts)?;
     let name = format!("{}.mobileconfig", auth::generate_password());
     let path = web.root.join(&name);
-    std::fs::write(&path, text).with_context(|| format!("writing {}", path.display()))?;
+    network_relay::private_file::write(&path, text.as_bytes())?;
     let port = if opts.port == 443 { String::new() } else { format!(":{}", opts.port) };
     println!("Wrote {}", path.display());
     println!();

@@ -67,20 +67,24 @@ pub(super) async fn tcp_over_stream<S: AsyncRead + AsyncWrite + Unpin>(
     mut client: S,
     mut tcp: TcpStream,
     mut ctx: TunnelCtx,
-) {
+) -> bool {
     let conn = ctx.conn.clone();
     let result = {
         let mut target = Counted { tcp: &mut tcp, conn: &conn };
         tokio::select! {
             r = tokio::io::copy_bidirectional_with_sizes(&mut client, &mut target, CHUNK, CHUNK) => r.map_err(|e| e.to_string()),
-            _ = ctx.revoked() => Err("user removed or password changed".into()),
+            _ = ctx.cancelled() => Err("client cancelled or user revoked".into()),
         }
     };
     match result {
-        Ok((up, down)) => debug!(user = %ctx.user.name, target = %ctx.target, up, down, "TCP tunnel closed"),
+        Ok((up, down)) => {
+            debug!(user = %ctx.user.name, target = %ctx.target, up, down, "TCP tunnel closed");
+            true
+        }
         Err(e) => {
             reset_on_close(&tcp);
             debug!(user = %ctx.user.name, target = %ctx.target, "TCP tunnel aborted: {e}");
+            false
         }
     }
 }
@@ -95,7 +99,13 @@ enum H3Outcome {
 /// Relays TCP over an HTTP/3 CONNECT stream. A FIN on either side becomes a
 /// FIN on the other; an error on either side resets both, with
 /// H3_CONNECT_ERROR towards the client (RFC 9114 §4.4).
-pub(super) async fn tcp_over_h3(stream: H3Stream, tcp: TcpStream, mut ctx: TunnelCtx) {
+pub(super) async fn tcp_over_h3(
+    mut stream: H3Stream,
+    tcp: TcpStream,
+    mut ctx: TunnelCtx,
+    mut bad_datagram: tokio::sync::oneshot::Receiver<()>,
+) {
+    stream.forbid_trailers();
     let (mut send, mut recv) = stream.split();
     let (mut rd, mut wr) = tcp.into_split();
     let conn = ctx.conn.clone();
@@ -115,7 +125,7 @@ pub(super) async fn tcp_over_h3(stream: H3Stream, tcp: TcpStream, mut ctx: Tunne
                         }
                     }
                     Ok(None) => {
-                        let _ = wr.shutdown().await;
+                        wr.shutdown().await.map_err(|e| format!("closing destination write side: {e}"))?;
                         return Ok(());
                     }
                     Err(e) => return Err(format!("client stream: {e}")),
@@ -128,7 +138,7 @@ pub(super) async fn tcp_over_h3(stream: H3Stream, tcp: TcpStream, mut ctx: Tunne
                 buf.reserve(CHUNK);
                 match rd.read_buf(&mut buf).await {
                     Ok(0) => {
-                        let _ = send.finish().await;
+                        send.finish().await.map_err(|e| format!("finishing client stream: {e}"))?;
                         return Ok(());
                     }
                     Ok(n) => {
@@ -156,7 +166,8 @@ pub(super) async fn tcp_over_h3(stream: H3Stream, tcp: TcpStream, mut ctx: Tunne
                     Ok(()) => down_done = true,
                     Err(e) => break H3Outcome::Abort(Code::H3_CONNECT_ERROR, e),
                 },
-                _ = ctx.revoked() => break H3Outcome::Abort(Code::H3_REQUEST_CANCELLED, "user removed or password changed".into()),
+                Ok(()) = &mut bad_datagram => break H3Outcome::Abort(Code::H3_DATAGRAM_ERROR, "datagram on TCP request".into()),
+                _ = ctx.cancelled() => break H3Outcome::Abort(Code::H3_REQUEST_CANCELLED, "client cancelled or user revoked".into()),
             }
         }
     };
@@ -178,68 +189,112 @@ pub(super) async fn tcp_over_h3(stream: H3Stream, tcp: TcpStream, mut ctx: Tunne
 /// `udp_idle_timeout`, or the user is revoked.
 pub(super) async fn udp(mut tunnel: Tunnel, sock: UdpSocket, mut ctx: TunnelCtx) {
     let idle = ctx.udp_idle_timeout;
-    let deadline = tokio::time::sleep(idle);
-    tokio::pin!(deadline);
+    let activity = std::sync::Mutex::new(tokio::time::Instant::now());
+    let conn = ctx.conn.clone();
     let (mut up, mut down, mut dropped) = (0u64, 0u64, 0u64);
-    let why = loop {
-        tokio::select! {
-            event = tunnel.next_event() => match event {
-                Ok(Event::Datagram(payload)) => {
-                    deadline.as_mut().reset(tokio::time::Instant::now() + idle);
-                    match datagram::split_context_id(&payload) {
-                        // Awaited rather than tried: a new socket is not yet
-                        // known to be writable, and `try_send` would drop the
-                        // flow's first datagram, often a QUIC handshake.
-                        Ok((CONTEXT_ID_UDP_PAYLOAD, data)) => match sock.send(data).await {
-                            Ok(n) => {
-                                up += 1;
-                                ctx.conn.up.fetch_add(n as u64, Ordering::Relaxed);
-                            }
-                            // An ICMP error from an earlier datagram, for
-                            // example: UDP tolerates the loss.
-                            Err(_) => dropped += 1,
-                        },
-                        // Unknown context IDs are dropped (RFC 9298 §4).
-                        _ => dropped += 1,
-                    }
+    let (why, abort) = {
+        let deadline = async {
+            loop {
+                let next = *activity.lock().unwrap() + idle;
+                tokio::time::sleep_until(next).await;
+                if tokio::time::Instant::now() >= *activity.lock().unwrap() + idle {
+                    break;
                 }
-                Ok(Event::Closed) => break "client closed the stream",
-                Err(TunnelError::Malformed(e)) => {
-                    tunnel.abort();
-                    debug!("malformed capsule stream: {e}");
-                    break "malformed capsule stream";
-                }
-                Err(_) => break "stream ended",
-            },
-            ready = sock.readable() => {
-                if ready.is_err() {
-                    break "socket error";
-                }
-                deadline.as_mut().reset(tokio::time::Instant::now() + idle);
-                loop {
-                    let mut buf = [0u8; 65_535];
-                    match sock.try_recv(&mut buf) {
-                        Ok(n) => {
-                            ctx.conn.down.fetch_add(n as u64, Ordering::Relaxed);
-                            match tunnel.send_datagram(datagram::udp_payload(&buf[..n])) {
-                                Ok(Sent::Sent) => down += 1,
-                                Ok(Sent::Dropped | Sent::TooBig) => dropped += 1,
-                                Err(_) => break,
+            }
+        };
+        let transferring = async {
+            'flow: loop {
+                tokio::select! {
+                    event = tunnel.next_event() => match event {
+                        Ok(Event::Datagram(payload)) => {
+                            *activity.lock().unwrap() = tokio::time::Instant::now();
+                            match datagram::split_context_id(&payload) {
+                                Ok((CONTEXT_ID_UDP_PAYLOAD, data)) if data.len() > datagram::MAX_UDP_PAYLOAD => {
+                                    break ("oversized UDP payload", true);
+                                }
+                                // Awaited rather than tried: a new socket is not yet
+                                // known to be writable, and `try_send` would drop the
+                                // flow's first datagram, often a QUIC handshake.
+                                Ok((CONTEXT_ID_UDP_PAYLOAD, data)) => match sock.send(data).await {
+                                    Ok(n) => {
+                                        up += 1;
+                                        conn.up.fetch_add(n as u64, Ordering::Relaxed);
+                                    }
+                                    // An ICMP error from an earlier datagram, for
+                                    // example: UDP tolerates the loss.
+                                    Err(e) if udp_error_is_transient(&e) => dropped += 1,
+                                    Err(_) => break ("unusable UDP socket", true),
+                                },
+                            // Unknown context IDs are dropped (RFC 9298 §4).
+                            Ok(_) => dropped += 1,
+                            Err(_) => break ("missing or truncated UDP context ID", true),
                             }
                         }
-                        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
-                        // ICMP errors such as port unreachable surface here;
-                        // the flow stays open, as an unconnected socket would.
-                        Err(_) => break,
+                        Ok(Event::Closed) => break ("client closed the stream", false),
+                        Err(TunnelError::Malformed(e)) => {
+                            debug!("malformed capsule stream: {e}");
+                            break ("malformed capsule stream", true);
+                        }
+                        Err(_) => break ("stream ended", true),
+                    },
+                    ready = sock.readable() => {
+                        if ready.is_err() {
+                            break ("socket error", true);
+                        }
+                        // Bound work per poll so an always-readable socket cannot
+                        // starve cancellation, other flows, or the idle deadline.
+                        for _ in 0..32 {
+                            let mut buf = [0u8; 65_535];
+                            match sock.try_recv(&mut buf) {
+                                Ok(n) => {
+                                    *activity.lock().unwrap() = tokio::time::Instant::now();
+                                    conn.down.fetch_add(n as u64, Ordering::Relaxed);
+                                    match tunnel.send_datagram(datagram::udp_payload(&buf[..n])) {
+                                        Ok(Sent::Sent) => down += 1,
+                                        Ok(Sent::Dropped | Sent::TooBig) => dropped += 1,
+                                        Err(_) => break 'flow ("client writer closed", true),
+                                    }
+                                }
+                                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+                                // ICMP errors such as port unreachable surface here;
+                                // the flow stays open, as an unconnected socket would.
+                                Err(e) if udp_error_is_transient(&e) => break,
+                                Err(_) => break 'flow ("unusable UDP socket", true),
+                            }
+                        }
                     }
                 }
+                tokio::task::yield_now().await;
             }
-            _ = &mut deadline => break "idle",
-            _ = ctx.revoked() => {
-                tunnel.abort();
-                break "user removed or password changed";
-            }
+        };
+        // Keep these outside the transfer loop, including any pending socket send.
+        tokio::select! {
+            biased;
+            _ = ctx.cancelled() => ("client cancelled or user revoked", true),
+            _ = deadline => ("idle", false),
+            result = transferring => result,
         }
     };
+    if abort {
+        tunnel.abort();
+    }
     debug!(user = %ctx.user.name, target = %ctx.target, up, down, dropped, "UDP flow closed: {why}");
+}
+
+/// Linux can report a per-packet ICMP/PMTU error while the connected UDP
+/// socket remains usable. Descriptor/state errors must terminate the flow
+/// (RFC 9298 §3.1), rather than spinning until the idle timeout.
+fn udp_error_is_transient(error: &std::io::Error) -> bool {
+    use std::io::ErrorKind;
+    matches!(
+        error.kind(),
+        ErrorKind::WouldBlock
+            | ErrorKind::Interrupted
+            | ErrorKind::ConnectionRefused
+            | ErrorKind::ConnectionReset
+            | ErrorKind::TimedOut
+            | ErrorKind::NetworkUnreachable
+            | ErrorKind::HostUnreachable
+            | ErrorKind::PermissionDenied
+    ) || matches!(error.raw_os_error(), Some(nix::libc::EMSGSIZE | nix::libc::ENOBUFS))
 }

@@ -14,6 +14,7 @@ bytes = "1"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 clap = { version = "4", features = ["derive"] }
 http = "1"
+h2 = "0.4"
 # Extended CONNECT with `Protocol::CONNECT_UDP` and HTTP Datagrams are on h3
 # master but not in a released version yet, so pin a reviewed commit.
 h3 = { git = "https://github.com/hyperium/h3", rev = "43745ad87e95b0c035ac9c547aad467303213425" }
@@ -42,6 +43,11 @@ x509-parser = "0.18"
 
 [dev-dependencies]
 rcgen = "0.14"
+
+# Local frame-validation and idle-cancellation fixes; see vendor/*/PATCH.md.
+[patch."https://github.com/hyperium/h3"]
+h3 = { path = "vendor/h3" }
+h3-quinn = { path = "vendor/h3-quinn" }
 
 [profile.release]
 lto = "thin"

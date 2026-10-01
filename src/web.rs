@@ -18,6 +18,8 @@
 //! requests can never reach files outside it.
 
 use std::collections::{BTreeMap, HashMap};
+use std::io::Read;
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 
 use anyhow::{bail, ensure, Context, Result};
@@ -58,9 +60,11 @@ impl Website {
     /// `extra_headers` are added to every response, for example a
     /// Content-Security-Policy.
     pub fn load(root: &Path, extra_headers: &BTreeMap<String, String>) -> Result<Self> {
+        let root = root.canonicalize().with_context(|| format!("resolving website {}", root.display()))?;
         let mut files = HashMap::new();
         let mut total = 0u64;
-        read_dir(root, root, &mut files, &mut total).with_context(|| format!("reading website {}", root.display()))?;
+        read_dir(&root, &root, &mut files, &mut total)
+            .with_context(|| format!("reading website {}", root.display()))?;
         ensure!(files.contains_key("index.html"), "website {} has no index.html", root.display());
         let mut headers = vec![
             (X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff")),
@@ -68,6 +72,20 @@ impl Website {
         ];
         for (name, value) in extra_headers {
             let name = HeaderName::try_from(name.as_str()).with_context(|| format!("invalid header name {name:?}"))?;
+            ensure!(
+                !matches!(
+                    name.as_str(),
+                    "content-length"
+                        | "transfer-encoding"
+                        | "connection"
+                        | "upgrade"
+                        | "keep-alive"
+                        | "proxy-connection"
+                        | "te"
+                        | "trailer"
+                ),
+                "web.headers cannot override HTTP framing field {name}"
+            );
             let value = HeaderValue::try_from(value.as_str()).with_context(|| format!("invalid value for {name}"))?;
             headers.retain(|(n, _)| *n != name);
             headers.push((name, value));
@@ -100,7 +118,7 @@ impl Website {
     fn not_found(&self) -> Cover {
         let mut headers =
             vec![(CONTENT_LENGTH, HeaderValue::from(0)), (CACHE_CONTROL, HeaderValue::from_static("no-cache"))];
-        headers.extend(self.headers.iter().cloned());
+        self.add_headers(&mut headers);
         Cover { status: StatusCode::NOT_FOUND, headers, body: Bytes::new() }
     }
 
@@ -111,8 +129,15 @@ impl Website {
             (CACHE_CONTROL, HeaderValue::from_static(file.cache_control)),
             (LAST_MODIFIED, file.last_modified.clone()),
         ];
-        headers.extend(self.headers.iter().cloned());
+        self.add_headers(&mut headers);
         Cover { status, headers, body: if with_body { file.body.clone() } else { Bytes::new() } }
+    }
+
+    fn add_headers(&self, headers: &mut Vec<(HeaderName, HeaderValue)>) {
+        for (name, value) in &self.headers {
+            headers.retain(|(old, _)| old != name);
+            headers.push((name.clone(), value.clone()));
+        }
     }
 }
 
@@ -200,14 +225,31 @@ fn read_dir(root: &Path, dir: &Path, files: &mut HashMap<String, StaticFile>, to
         if !meta.is_file() {
             continue;
         }
+        let resolved = path.canonicalize()?;
+        let Ok(relative) = resolved.strip_prefix(root) else { continue };
+        if relative.components().enumerate().any(|(i, c)| {
+            let name = c.as_os_str().to_string_lossy();
+            name.starts_with('.') && !(i == 0 && name == ".well-known")
+        }) {
+            continue;
+        }
         if files.len() >= MAX_FILES {
             bail!("more than {MAX_FILES} files");
         }
-        *total += meta.len();
-        if *total > MAX_TOTAL_BYTES {
+        if meta.len() > MAX_TOTAL_BYTES - *total {
             bail!("more than {} MiB of files", MAX_TOTAL_BYTES >> 20);
         }
-        let body = std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(nix::libc::O_NOFOLLOW | nix::libc::O_NONBLOCK)
+            .open(&resolved)?;
+        ensure!(file.metadata()?.is_file(), "{} is no longer a regular file", path.display());
+        let mut body = Vec::new();
+        file.take(MAX_TOTAL_BYTES - *total + 1)
+            .read_to_end(&mut body)
+            .with_context(|| format!("reading {}", path.display()))?;
+        *total += body.len() as u64;
+        ensure!(*total <= MAX_TOTAL_BYTES, "more than {} MiB of files", MAX_TOTAL_BYTES >> 20);
         let rel = path.strip_prefix(root).expect("under root");
         let key = rel.components().map(|c| c.as_os_str().to_string_lossy()).collect::<Vec<_>>().join("/");
         let modified: DateTime<Utc> = meta.modified().map(DateTime::from).unwrap_or_else(|_| Utc::now());
@@ -345,5 +387,36 @@ mod tests {
         assert_eq!(normalize("/%").as_deref(), Some("%"));
         assert_eq!(normalize("/%ff"), None, "not UTF-8");
         assert_eq!(normalize("//./a//b/"), Some("a/b".into()));
+    }
+
+    #[test]
+    fn file_symlinks_cannot_expose_private_files() {
+        use std::os::unix::fs::symlink;
+        let site = Site::new("symlinks");
+        let outside = Site::new("outside");
+        std::fs::write(site.0.join(".secret"), "private").unwrap();
+        std::fs::write(outside.0.join("secret"), "outside").unwrap();
+        symlink(outside.0.join("secret"), site.0.join("external.txt")).unwrap();
+        symlink(site.0.join(".secret"), site.0.join("private.txt")).unwrap();
+        symlink(site.0.join("index.html"), site.0.join("public.html")).unwrap();
+        let loaded = Website::load(&site.0, &BTreeMap::new()).unwrap();
+        assert!(!loaded.files.contains_key("external.txt"));
+        assert!(!loaded.files.contains_key("private.txt"));
+        assert!(loaded.files.contains_key("public.html"));
+    }
+
+    #[test]
+    fn extra_headers_cannot_break_http_framing_and_override_once() {
+        let site = Site::new("headers");
+        for header in ["Content-Length", "Transfer-Encoding", "Connection", "Upgrade", "Keep-Alive", "TE", "Trailer"] {
+            let headers = BTreeMap::from([(header.into(), "1".into())]);
+            assert!(Website::load(&site.0, &headers).is_err(), "{header}");
+        }
+        let headers = BTreeMap::from([("Cache-Control".into(), "private".into())]);
+        let loaded = Website::load(&site.0, &headers).unwrap();
+        let response = cover(Some(&loaded), &Method::GET, "/", false);
+        let values: Vec<_> = response.headers.iter().filter(|(k, _)| k == CACHE_CONTROL).collect();
+        assert_eq!(values.len(), 1);
+        assert_eq!(values[0].1, "private");
     }
 }

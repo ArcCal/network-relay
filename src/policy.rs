@@ -100,6 +100,7 @@ fn is_dns_name(s: &str) -> bool {
 pub enum Refusal {
     /// The request does not name a valid host and port.
     BadTarget,
+    UserRevoked,
     /// The port is blocked by configuration.
     PortBlocked,
     /// Every address of the target is blocked by configuration.
@@ -119,7 +120,7 @@ impl Refusal {
     pub fn status(&self) -> StatusCode {
         match self {
             Refusal::BadTarget => StatusCode::BAD_REQUEST,
-            Refusal::PortBlocked | Refusal::AddressBlocked => StatusCode::FORBIDDEN,
+            Refusal::PortBlocked | Refusal::AddressBlocked | Refusal::UserRevoked => StatusCode::FORBIDDEN,
             Refusal::DnsTimeout | Refusal::ConnectionTimeout => StatusCode::GATEWAY_TIMEOUT,
             Refusal::DnsError(_) | Refusal::NoAddresses | Refusal::ConnectionRefused | Refusal::Unreachable(_) => {
                 StatusCode::BAD_GATEWAY
@@ -132,6 +133,7 @@ impl Refusal {
     pub fn error_type(&self) -> &'static str {
         match self {
             Refusal::BadTarget => "http_request_error",
+            Refusal::UserRevoked => "http_request_denied",
             Refusal::PortBlocked => "http_request_denied",
             Refusal::AddressBlocked => "destination_ip_prohibited",
             Refusal::DnsTimeout => "dns_timeout",
@@ -154,6 +156,7 @@ impl std::fmt::Display for Refusal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Refusal::BadTarget => f.write_str("invalid target"),
+            Refusal::UserRevoked => f.write_str("user removed or password changed"),
             Refusal::PortBlocked => f.write_str("port blocked by relay.blocked_ports"),
             Refusal::AddressBlocked => f.write_str("address blocked by relay.blocked_destinations"),
             Refusal::DnsTimeout => f.write_str("DNS lookup timed out"),

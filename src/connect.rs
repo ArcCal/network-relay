@@ -103,6 +103,10 @@ pub async fn udp(addrs: &[SocketAddr]) -> Result<UdpSocket, Refusal> {
         // there is none, for example for IPv6 on a host without it.
         match sock.connect(addr).await {
             Ok(()) => {
+                if let Err(e) = sys::no_udp_fragmentation(socket2::SockRef::from(&sock), addr.is_ipv6()) {
+                    last_error = Some(e);
+                    continue;
+                }
                 sys::grow_buffers(socket2::SockRef::from(&sock), UDP_BUFFER);
                 return Ok(sock);
             }

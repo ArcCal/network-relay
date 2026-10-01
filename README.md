@@ -3,10 +3,12 @@
 给 iPhone、iPad、Mac **系统自带的“网络中继”（Network Relay）**功能用的服务端。
 
 - **设备上不用装任何 App**：装一个描述文件（`.mobileconfig`），系统自己把流量经你的服务器转发。
-- 可以只让**指定的域名**走中继、其他直连；也可以让**全部流量**走中继。
+- 可以按**域名及子域名**或**精确主机名**选择和排除流量；也可以让**全部流量**走中继。精确匹配需要 iOS 18.4 / macOS 15.4 或更新。
 - 协议是苹果规定的标准协议：TCP 用 HTTP CONNECT，UDP 用 CONNECT-UDP（RFC 9298），跑在 HTTP/3（QUIC）、HTTP/2、HTTP/1.1 上。
 - 用户名密码认证。没有密码的人访问你的域名，看到的只是一个普通网站。
 - 需要 iOS / iPadOS 17、macOS 14 或更新的系统。
+
+描述文件还支持设备端开关、系统 DNS 回退（iOS/macOS 26+）和托管 App 的 Relay UUID，参数和适用版本见[配置参考](docs/config.md#network-relay-profile)。
 
 > **当前状态（0.1.0）**：服务端已经用 curl、quic-go 的 masque-go 客户端和自带的自检工具在 HTTP/3、HTTP/2、HTTP/1.1 上测通。**还没有在真实的 iPhone、Mac 上验证过**，按下面的步骤做完，就是第一次真机测试。遇到问题请看[出了问题怎么办](#出了问题怎么办)。
 
@@ -15,6 +17,8 @@
 ---
 
 ## 从零开始
+
+**Debian 13 x64 自动安装：** 下载源码 ZIP、解压后，可以运行 `sudo bash deploy/install-debian13.sh --domain 你的中继域名`。脚本会完成编译、证书、服务、续期和按域名分流的描述文件。已有交付的 `.mobileconfig` 时用 `--profile /路径/文件.mobileconfig` 导入相同凭据，详见[自动部署说明](docs/deploy-debian13.md)。下面保留手动部署步骤。
 
 ### 开始之前：必读三条
 

@@ -524,7 +524,6 @@ dependencies = [
 [[package]]
 name = "h3"
 version = "0.0.8"
-source = "git+https://github.com/hyperium/h3?rev=43745ad87e95b0c035ac9c547aad467303213425#43745ad87e95b0c035ac9c547aad467303213425"
 dependencies = [
  "bytes",
  "fastrand",
@@ -546,7 +545,6 @@ dependencies = [
 [[package]]
 name = "h3-quinn"
 version = "0.0.10"
-source = "git+https://github.com/hyperium/h3?rev=43745ad87e95b0c035ac9c547aad467303213425#43745ad87e95b0c035ac9c547aad467303213425"
 dependencies = [
  "bytes",
  "futures-util",
@@ -781,6 +779,7 @@ dependencies = [
  "bytes",
  "chrono",
  "clap",
+ "h2",
  "h3",
  "h3-datagram",
  "h3-quinn",

@@ -34,20 +34,36 @@ const EARLY_DATAGRAMS: usize = 64;
 /// Hands each datagram of a connection to the flow of its stream.
 #[derive(Default)]
 struct Router {
-    flows: HashMap<StreamId, mpsc::Sender<Bytes>>,
+    flows: HashMap<StreamId, Flow>,
+    /// Recently closed streams never need early delivery. Keep this bounded
+    /// on long-lived connections; older late datagrams can only occupy the
+    /// bounded early queue, since QUIC stream IDs are never reused.
+    closed: VecDeque<StreamId>,
     /// Clients may send datagrams right after the request, before the
     /// response (RFC 9298 §5); they can arrive before the relay has checked
     /// the request. A few are held, oldest dropped first.
     early: VecDeque<(StreamId, Bytes)>,
 }
 
+enum Flow {
+    PendingUdp,
+    Udp(mpsc::Sender<Bytes>),
+    Other(Option<oneshot::Sender<()>>),
+}
+
 impl Router {
     fn deliver(&mut self, stream_id: StreamId, payload: Bytes) {
-        match self.flows.get(&stream_id) {
-            Some(tx) => {
+        match self.flows.get_mut(&stream_id) {
+            Some(Flow::Udp(tx)) => {
                 let _ = tx.try_send(payload);
             }
-            None => {
+            Some(Flow::Other(error)) => {
+                if let Some(tx) = error.take() {
+                    let _ = tx.send(());
+                }
+            }
+            None if self.closed.contains(&stream_id) => {}
+            Some(Flow::PendingUdp) | None => {
                 if self.early.len() == EARLY_DATAGRAMS {
                     self.early.pop_front();
                 }
@@ -57,15 +73,19 @@ impl Router {
     }
 
     fn add(&mut self, stream_id: StreamId, tx: mpsc::Sender<Bytes>) {
+        self.register(stream_id, Flow::Udp(tx));
+    }
+
+    fn register(&mut self, stream_id: StreamId, flow: Flow) {
+        self.flows.insert(stream_id, flow);
         let early = std::mem::take(&mut self.early);
         for (id, payload) in early {
             if id == stream_id {
-                let _ = tx.try_send(payload);
+                self.deliver(id, payload);
             } else {
                 self.early.push_back((id, payload));
             }
         }
-        self.flows.insert(stream_id, tx);
     }
 }
 
@@ -120,10 +140,13 @@ impl Relay {
                 return Ok(());
             }
         };
+        let transport = h3_quinn::Connection::new(conn.clone());
+        let stopped = transport.send_stopped();
         let mut h3_conn: H3Connection = h3::server::builder()
+            .max_field_section_size(32 * 1024)
             .enable_extended_connect(true)
             .enable_datagram(true)
-            .build(h3_quinn::Connection::new(conn.clone()))
+            .build(transport)
             .await
             .context("HTTP/3 setup")?;
         let info = ConnInfo::new("HTTP/3", remote);
@@ -142,6 +165,7 @@ impl Relay {
                     Ok(Some(resolver)) => {
                         let (relay, info, conn, routes, sender_tx) =
                             (self.clone(), info.clone(), conn.clone(), routes.clone(), sender_tx.clone());
+                        let stopped = stopped.clone();
                         tokio::spawn(async move {
                             let (req, stream) = match tokio::time::timeout(HEADER_TIMEOUT, resolver.resolve_request()).await {
                                 Ok(Ok(r)) => r,
@@ -153,7 +177,8 @@ impl Relay {
                                 Ok(Err(e)) => return debug!(remote = %info.remote, "malformed HTTP/3 request: {e}"),
                                 Err(_) => return,
                             };
-                            relay.handle_h3_request(req, stream, info, conn, routes, sender_tx).await;
+                            let notification = stopped.take(stream.id()).expect("accepted stream notification");
+                            relay.handle_h3_request(req, stream, info, conn, routes, sender_tx, notification).await;
                         });
                     }
                     Ok(None) => break Ok(()),
@@ -168,6 +193,7 @@ impl Relay {
         result
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn handle_h3_request(
         self,
         req: http::Request<()>,
@@ -176,7 +202,16 @@ impl Relay {
         conn: quinn::Connection,
         routes: Routes,
         sender_tx: mpsc::Sender<(StreamId, oneshot::Sender<DgramSender>)>,
+        stopped: h3_quinn::Stopped,
     ) {
+        let closed_conn = conn.clone();
+        let mut peer_closed: std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> = Box::pin(async move {
+            if matches!(stopped.await, Ok(None)) {
+                // A fully acknowledged response FIN does not cancel the
+                // other direction. Connection loss still must cancel it.
+                closed_conn.closed().await;
+            }
+        });
         let is_connect = req.method() == Method::CONNECT;
         let protocol = req.extensions().get::<h3::ext::Protocol>().copied();
         let kind = match (is_connect, protocol) {
@@ -195,34 +230,81 @@ impl Relay {
             path_and_query: &path_and_query,
             headers: req.headers(),
         };
-        let Some(authorized) = self.authorize(&incoming, &info, &settings).await else {
-            let cover = web::cover(self.site().as_deref(), req.method(), req.uri().path(), is_connect);
-            return send_cover(stream, cover).await;
+        let stream_id = stream.id();
+        let (bad_tx, mut bad_datagram) = oneshot::channel();
+        let pending = if kind == Some(Kind::Udp) { Flow::PendingUdp } else { Flow::Other(Some(bad_tx)) };
+        routes.lock().unwrap().register(stream_id, pending);
+        let _route = RouteGuard { routes: routes.clone(), stream_id };
+        let authorized = tokio::select! {
+            biased;
+            _ = &mut peer_closed => return,
+            Ok(()) = &mut bad_datagram => {
+                abort_datagram(&mut stream);
+                return;
+            }
+            authorized = self.authorize(&incoming, &info, &settings) => authorized,
         };
+        let Some(authorized) = authorized else {
+            let cover = web::cover(self.site().as_deref(), req.method(), req.uri().path(), is_connect);
+            tokio::select! {
+                biased;
+                _ = &mut peer_closed => {},
+                Ok(()) = &mut bad_datagram => abort_datagram(&mut stream),
+                _ = send_cover(&mut stream, cover) => {}
+            }
+            return;
+        };
+
+        if authorized.kind == Kind::Udp && !crate::proto::valid_capsule_headers(req.headers()) {
+            stream.stop_stream(h3::error::Code::H3_MESSAGE_ERROR);
+            stream.stop_sending(h3::error::Code::H3_MESSAGE_ERROR);
+            return;
+        }
 
         // Datagrams may arrive as soon as the client has sent the request,
         // before the response: route them to the flow from now on.
-        let stream_id = stream.id();
         let flow = (authorized.kind == Kind::Udp).then(|| {
             let (tx, rx) = mpsc::channel(FLOW_QUEUE);
             routes.lock().unwrap().add(stream_id, tx);
             rx
         });
-        let _route = RouteGuard { routes: routes.clone(), stream_id };
-
-        let (opened, ctx) = match self.open(&authorized, &info, &settings).await {
+        let opened = tokio::select! {
+            biased;
+            _ = &mut peer_closed => return,
+            Ok(()) = &mut bad_datagram => {
+                abort_datagram(&mut stream);
+                return;
+            }
+            opened = self.open(&authorized, &info, &settings) => opened,
+        };
+        let (opened, mut ctx) = match opened {
             Ok(o) => o,
             Err(refusal) => return send_refusal(stream, &refusal).await,
         };
+        ctx.peer_closed = peer_closed;
         let mut resp = Response::builder().status(StatusCode::OK).header(DATE, http_date());
         if authorized.kind == Kind::Udp {
             resp = resp.header(CAPSULE_PROTOCOL_HEADER, "?1");
         }
-        if stream.send_response(resp.body(()).expect("valid")).await.is_err() {
+        let sent = tokio::select! {
+            biased;
+            _ = ctx.cancelled() => {
+                stream.stop_stream(h3::error::Code::H3_REQUEST_CANCELLED);
+                stream.stop_sending(h3::error::Code::H3_REQUEST_CANCELLED);
+                false
+            },
+            Ok(()) = &mut bad_datagram => {
+                abort_datagram(&mut stream);
+                false
+            },
+            result = stream.send_response(resp.body(()).expect("valid")) => result.is_ok(),
+        };
+        if !sent {
+            opened.abort();
             return;
         }
         match opened {
-            Opened::Tcp(tcp) => pump::tcp_over_h3(stream, tcp, ctx).await,
+            Opened::Tcp(tcp) => pump::tcp_over_h3(stream, tcp, ctx, bad_datagram).await,
             Opened::Udp(sock) => {
                 let (reply_tx, reply_rx) = oneshot::channel();
                 if sender_tx.send((stream_id, reply_tx)).await.is_err() {
@@ -245,11 +327,22 @@ struct RouteGuard {
 
 impl Drop for RouteGuard {
     fn drop(&mut self) {
-        self.routes.lock().unwrap().flows.remove(&self.stream_id);
+        let mut router = self.routes.lock().unwrap();
+        router.flows.remove(&self.stream_id);
+        router.early.retain(|(id, _)| *id != self.stream_id);
+        if router.closed.len() == 1024 {
+            router.closed.pop_front();
+        }
+        router.closed.push_back(self.stream_id);
     }
 }
 
-async fn send_cover(mut stream: H3Stream, cover: Cover) {
+fn abort_datagram(stream: &mut H3Stream) {
+    stream.stop_stream(h3::error::Code::H3_DATAGRAM_ERROR);
+    stream.stop_sending(h3::error::Code::H3_DATAGRAM_ERROR);
+}
+
+async fn send_cover(stream: &mut H3Stream, cover: Cover) {
     // The answer never depends on a request body: stop the client sending
     // one, with the code RFC 9114 §4.1.2 asks for (dropping the stream
     // unread would send code 0).
@@ -313,5 +406,21 @@ mod tests {
             r.deliver(id(8), Bytes::from_static(b"x"));
         }
         assert_eq!(r.early.len(), EARLY_DATAGRAMS, "bounded");
+    }
+
+    #[test]
+    fn requests_can_finish_authentication_out_of_order() {
+        let mut r = Router::default();
+        r.register(id(0), Flow::PendingUdp);
+        let (tx4, _rx4) = mpsc::channel(8);
+        r.add(id(4), tx4);
+        r.deliver(id(0), Bytes::from_static(b"pending"));
+        let (tx0, mut rx0) = mpsc::channel(8);
+        r.add(id(0), tx0);
+        assert_eq!(rx0.try_recv().unwrap(), "pending");
+        let (tx, mut rx) = oneshot::channel();
+        r.deliver(id(8), Bytes::from_static(b"illegal"));
+        r.register(id(8), Flow::Other(Some(tx)));
+        assert!(rx.try_recv().is_ok(), "early datagram on a non-UDP request is rejected");
     }
 }

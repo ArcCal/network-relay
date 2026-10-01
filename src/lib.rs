@@ -10,6 +10,7 @@ pub mod config;
 pub mod connect;
 pub mod logging;
 pub mod policy;
+pub mod private_file;
 pub mod profile;
 pub mod proto;
 pub mod server;

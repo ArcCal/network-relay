@@ -9,6 +9,7 @@
 use bytes::{Buf, Bytes, BytesMut};
 use h3::error::Code;
 use h3::quic::StreamId;
+use h3::ConnectionState;
 use h3_datagram::datagram_handler::{DatagramSender, SendDatagramError};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::mpsc;
@@ -21,6 +22,8 @@ pub type DgramSender = DatagramSender<h3_quinn::datagram::SendDatagramHandler, B
 
 /// Stream chunks buffered in each direction.
 const STREAM_QUEUE: usize = 256;
+/// A peer with a closed request must not retain a blocked writer forever.
+const CLOSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// What the peer sent.
 #[derive(Debug)]
@@ -53,11 +56,6 @@ pub enum Sent {
     /// drops it rather than falling back to reliable delivery, which would
     /// defeat the congestion control of whatever runs over UDP (RFC 9298 §5).
     TooBig,
-}
-
-enum Outbound {
-    Data(Bytes),
-    Abort,
 }
 
 /// How HTTP Datagrams travel.
@@ -94,81 +92,105 @@ macro_rules! h3_pumps {
     ($send:ident, $recv:ident, $datagrams:ident) => {{
         let (mut send, mut recv) = ($send, $recv);
         let (in_tx, in_rx) = mpsc::channel(STREAM_QUEUE);
-        let (out_tx, mut out_rx) = mpsc::channel(STREAM_QUEUE);
+        let (out_tx, mut out_rx) = mpsc::channel::<Bytes>(STREAM_QUEUE);
+        let (abort_tx, mut abort_rx) = tokio::sync::watch::channel(false);
+        let mut read_abort = abort_rx.clone();
         let reader = tokio::spawn(async move {
-            loop {
-                match recv.recv_data().await {
-                    Ok(Some(mut buf)) => {
-                        if in_tx.send(buf.copy_to_bytes(buf.remaining())).await.is_err() {
+            let reading = async {
+                loop {
+                    match recv.recv_data().await {
+                        Ok(Some(mut buf)) => {
+                            if in_tx.send(buf.copy_to_bytes(buf.remaining())).await.is_err() {
+                                break;
+                            }
+                        }
+                        Ok(None) => break,
+                        Err(e) => {
+                            debug!("request stream read ended: {e}");
                             break;
                         }
                     }
-                    Ok(None) => break,
-                    Err(e) => {
-                        debug!("request stream read ended: {e}");
-                        break;
-                    }
                 }
+            };
+            tokio::select! {
+                biased;
+                Ok(()) = read_abort.changed() => recv.stop_sending(Code::H3_MESSAGE_ERROR),
+                _ = reading => {}
             }
         });
         tokio::spawn(async move {
-            while let Some(msg) = out_rx.recv().await {
-                match msg {
-                    Outbound::Data(b) => {
+            let aborted = {
+                let writing = async {
+                    while let Some(b) = out_rx.recv().await {
                         if send.send_data(b).await.is_err() {
                             return;
                         }
                     }
-                    Outbound::Abort => {
-                        send.stop_stream(Code::H3_MESSAGE_ERROR);
-                        return;
-                    }
+                    let _ = send.finish().await;
+                };
+                tokio::pin!(writing);
+                tokio::select! {
+                    biased;
+                    changed = abort_rx.changed() => match changed {
+                        Ok(()) => true,
+                        Err(_) => tokio::time::timeout(CLOSE_TIMEOUT, &mut writing).await.is_err(),
+                    },
+                    _ = &mut writing => false,
                 }
+            };
+            if aborted {
+                send.stop_stream(Code::H3_MESSAGE_ERROR);
             }
-            let _ = send.finish().await;
         });
-        Self::new(in_rx, out_tx, $datagrams, reader)
+        Self::new(in_rx, out_tx, $datagrams, reader, abort_tx)
     }};
 }
 
 pub struct Tunnel {
     inbound: mpsc::Receiver<Bytes>,
-    outbound: mpsc::Sender<Outbound>,
+    outbound: mpsc::Sender<Bytes>,
     decoder: CapsuleDecoder,
     datagrams: Datagrams,
     reader: tokio::task::JoinHandle<()>,
+    abort: tokio::sync::watch::Sender<bool>,
 }
 
 impl Drop for Tunnel {
     fn drop(&mut self) {
         // The writer ends on its own once `outbound` is dropped, after
         // finishing the stream gracefully.
-        self.reader.abort();
+        if !*self.abort.borrow() {
+            self.reader.abort();
+        }
     }
 }
 
 impl Tunnel {
     fn new(
         inbound: mpsc::Receiver<Bytes>,
-        outbound: mpsc::Sender<Outbound>,
+        outbound: mpsc::Sender<Bytes>,
         datagrams: Datagrams,
         reader: tokio::task::JoinHandle<()>,
+        abort: tokio::sync::watch::Sender<bool>,
     ) -> Self {
-        Self { inbound, outbound, decoder: CapsuleDecoder::default(), datagrams, reader }
+        Self { inbound, outbound, decoder: CapsuleDecoder::default(), datagrams, reader, abort }
     }
 
     /// Waits for the next datagram from the peer. Capsules other than
     /// DATAGRAM are skipped, as RFC 9297 §3.2 requires for unknown types.
     pub async fn next_event(&mut self) -> Result<Event, TunnelError> {
         loop {
-            if let Some(raw) = self.decoder.next_capsule().map_err(TunnelError::Malformed)? {
+            if self.outbound.is_closed() {
+                return Err(TunnelError::Closed);
+            }
+            if let Some(raw) = self.decoder.next_udp_capsule().map_err(TunnelError::Malformed)? {
                 if raw.capsule_type == types::DATAGRAM {
                     return Ok(Event::Datagram(raw.value));
                 }
                 debug!(capsule_type = raw.capsule_type, "ignoring capsule");
                 continue;
             }
-            let Tunnel { inbound, decoder, datagrams, .. } = self;
+            let Tunnel { inbound, outbound, decoder, datagrams, .. } = self;
             let quic = match datagrams {
                 Datagrams::Quic(q) => Some(&mut q.inbound),
                 Datagrams::Capsules => None,
@@ -180,6 +202,7 @@ impl Tunnel {
                 }
             };
             tokio::select! {
+                _ = outbound.closed() => return Err(TunnelError::Closed),
                 chunk = inbound.recv() => match chunk {
                     Some(bytes) => decoder.push(bytes),
                     None => {
@@ -195,13 +218,16 @@ impl Tunnel {
     /// Sends an HTTP Datagram payload (context ID plus data).
     pub fn send_datagram(&mut self, payload: Bytes) -> Result<Sent, TunnelError> {
         let q = match &mut self.datagrams {
-            Datagrams::Capsules => return Ok(self.send_datagram_capsule(payload)),
+            Datagrams::Capsules => return self.send_datagram_capsule(payload),
             Datagrams::Quic(q) => q,
         };
+        if !q.sender.settings().enable_datagram() {
+            return self.send_datagram_capsule(payload);
+        }
         let Some(max) = q.conn.max_datagram_size() else {
             // The peer does not accept QUIC DATAGRAM frames: RFC 9297 §3.5
             // lets us use DATAGRAM capsules instead.
-            return Ok(self.send_datagram_capsule(payload));
+            return self.send_datagram_capsule(payload);
         };
         if payload.len() > max.saturating_sub(q.qsid_len) {
             return Ok(Sent::TooBig);
@@ -209,17 +235,18 @@ impl Tunnel {
         match q.sender.send_datagram(payload.clone()) {
             Ok(()) => Ok(Sent::Sent),
             Err(SendDatagramError::TooLarge { .. }) => Ok(Sent::TooBig),
-            Err(SendDatagramError::NotAvailable { .. }) => Ok(self.send_datagram_capsule(payload)),
+            Err(SendDatagramError::NotAvailable { .. }) => self.send_datagram_capsule(payload),
             Err(e) => Err(TunnelError::Connection(e.to_string())),
         }
     }
 
-    fn send_datagram_capsule(&self, payload: Bytes) -> Sent {
+    fn send_datagram_capsule(&self, payload: Bytes) -> Result<Sent, TunnelError> {
         let mut out = BytesMut::new();
         capsule::encode(types::DATAGRAM, &payload, &mut out);
-        match self.outbound.try_send(Outbound::Data(out.freeze())) {
-            Ok(()) => Sent::Sent,
-            Err(_) => Sent::Dropped,
+        match self.outbound.try_send(out.freeze()) {
+            Ok(()) => Ok(Sent::Sent),
+            Err(mpsc::error::TrySendError::Full(_)) => Ok(Sent::Dropped),
+            Err(mpsc::error::TrySendError::Closed(_)) => Err(TunnelError::Closed),
         }
     }
 
@@ -228,7 +255,10 @@ impl Tunnel {
     /// no such limit.
     pub fn max_datagram_payload(&self) -> Option<usize> {
         match &self.datagrams {
-            Datagrams::Quic(q) => q.conn.max_datagram_size().map(|m| m.saturating_sub(q.qsid_len)),
+            Datagrams::Quic(q) if q.sender.settings().enable_datagram() => {
+                q.conn.max_datagram_size().map(|m| m.saturating_sub(q.qsid_len))
+            }
+            Datagrams::Quic(_) => None,
             Datagrams::Capsules => None,
         }
     }
@@ -236,23 +266,25 @@ impl Tunnel {
     /// Aborts the request stream, as RFC 9297 §3.3 requires for a malformed
     /// message.
     pub fn abort(&self) {
-        let _ = self.outbound.try_send(Outbound::Abort);
+        self.abort.send_replace(true);
     }
 
     /// Wraps an HTTP/3 request stream on the server.
     pub fn h3_server(
-        stream: h3::server::RequestStream<h3_quinn::BidiStream<Bytes>, Bytes>,
+        mut stream: h3::server::RequestStream<h3_quinn::BidiStream<Bytes>, Bytes>,
         datagrams: Datagrams,
     ) -> Self {
+        stream.forbid_trailers();
         let (send, recv) = stream.split();
         h3_pumps!(send, recv, datagrams)
     }
 
     /// Wraps an HTTP/3 request stream on the client.
     pub fn h3_client(
-        stream: h3::client::RequestStream<h3_quinn::BidiStream<Bytes>, Bytes>,
+        mut stream: h3::client::RequestStream<h3_quinn::BidiStream<Bytes>, Bytes>,
         datagrams: Datagrams,
     ) -> Self {
+        stream.forbid_trailers();
         let (send, recv) = stream.split();
         h3_pumps!(send, recv, datagrams)
     }
@@ -265,30 +297,46 @@ impl Tunnel {
 
     /// Wraps any byte stream that carries capsules.
     pub fn stream<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + 'static>(io: S) -> Self {
+        Self::stream_with_reset(io, None)
+    }
+
+    pub(crate) fn stream_with_reset<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + 'static>(
+        io: S,
+        reset: Option<Box<dyn FnOnce() + Send>>,
+    ) -> Self {
         let (mut rd, mut wr) = tokio::io::split(io);
         let (in_tx, in_rx) = mpsc::channel(STREAM_QUEUE);
-        let (out_tx, mut out_rx) = mpsc::channel::<Outbound>(STREAM_QUEUE);
+        let (out_tx, mut out_rx) = mpsc::channel::<Bytes>(STREAM_QUEUE);
+        let (abort_tx, mut abort_rx) = tokio::sync::watch::channel(false);
+        let mut read_abort = abort_rx.clone();
         let reader = tokio::spawn(async move {
-            loop {
-                let mut buf = BytesMut::with_capacity(16 * 1024);
-                match rd.read_buf(&mut buf).await {
-                    Ok(0) => break,
-                    Ok(_) => {
-                        if in_tx.send(buf.freeze()).await.is_err() {
+            let reading = async {
+                loop {
+                    let mut buf = BytesMut::with_capacity(16 * 1024);
+                    match rd.read_buf(&mut buf).await {
+                        Ok(0) => break,
+                        Ok(_) => {
+                            if in_tx.send(buf.freeze()).await.is_err() {
+                                break;
+                            }
+                        }
+                        Err(e) => {
+                            debug!("tunnel stream read ended: {e}");
                             break;
                         }
                     }
-                    Err(e) => {
-                        debug!("tunnel stream read ended: {e}");
-                        break;
-                    }
                 }
+            };
+            tokio::select! {
+                biased;
+                Ok(()) = read_abort.changed() => {}
+                _ = reading => {}
             }
         });
         tokio::spawn(async move {
-            while let Some(msg) = out_rx.recv().await {
-                match msg {
-                    Outbound::Data(b) => {
+            let aborted = {
+                let writing = async {
+                    while let Some(b) = out_rx.recv().await {
                         if wr.write_all(&b).await.is_err() {
                             return;
                         }
@@ -298,12 +346,73 @@ impl Tunnel {
                             return;
                         }
                     }
-                    // Dropping the stream resets it.
-                    Outbound::Abort => return,
+                    let _ = wr.shutdown().await;
+                };
+                tokio::pin!(writing);
+                tokio::select! {
+                    biased;
+                    changed = abort_rx.changed() => match changed {
+                        Ok(()) => true,
+                        Err(_) => tokio::time::timeout(CLOSE_TIMEOUT, &mut writing).await.is_err(),
+                    },
+                    _ = &mut writing => false,
+                }
+            };
+            if aborted {
+                if let Some(reset) = reset {
+                    reset();
                 }
             }
-            let _ = wr.shutdown().await;
         });
-        Self::new(in_rx, out_tx, Datagrams::Capsules, reader)
+        Self::new(in_rx, out_tx, Datagrams::Capsules, reader, abort_tx)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn a_closed_writer_is_not_an_ordinary_udp_drop() {
+        let (io, peer) = tokio::io::duplex(8);
+        let mut tunnel = Tunnel::stream(io);
+        drop(peer);
+        tunnel.send_datagram(Bytes::from_static(b"\0test")).unwrap();
+        tokio::time::timeout(Duration::from_secs(2), tunnel.outbound.closed()).await.unwrap();
+        assert!(matches!(tunnel.send_datagram(Bytes::from_static(b"\0test")), Err(TunnelError::Closed)));
+        assert!(matches!(tunnel.next_event().await, Err(TunnelError::Closed)));
+    }
+
+    #[tokio::test]
+    async fn dropping_a_flow_bounds_a_blocked_writer_and_abort_is_prompt() {
+        for abort in [false, true] {
+            let (io, _unread_peer) = tokio::io::duplex(1);
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            let mut tunnel = Tunnel::stream_with_reset(
+                io,
+                Some(Box::new(|| {
+                    let _ = tx.send(());
+                })),
+            );
+            tunnel.send_datagram(Bytes::from(vec![0; 1024])).unwrap();
+            if abort {
+                tunnel.abort();
+            }
+            drop(tunnel);
+            let limit = if abort { Duration::from_millis(500) } else { Duration::from_secs(3) };
+            tokio::time::timeout(limit, rx).await.expect("blocked writer leaked").unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn normal_close_drains_queued_capsules() {
+        let (io, mut peer) = tokio::io::duplex(1);
+        let mut tunnel = Tunnel::stream(io);
+        tunnel.send_datagram(Bytes::from_static(b"\0answer")).unwrap();
+        drop(tunnel);
+        let mut received = Vec::new();
+        tokio::time::timeout(Duration::from_secs(2), peer.read_to_end(&mut received)).await.unwrap().unwrap();
+        assert_eq!(received, b"\0\x07\0answer");
     }
 }

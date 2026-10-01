@@ -35,6 +35,8 @@
 - 没有密码的请求都得到这个网站的回答：有的文件返回文件；不存在的路径返回 `index.html`（像单页应用那样）；CONNECT 请求返回 404 加 `index.html`。
 - 例外：`/.well-known/` 下不存在的文件返回空的 404，因为这些路径有固定含义（RFC 8615）。
 - 以 `.` 开头的文件和目录不对外提供，`.well-known` 目录除外。
+- 文件软链接只允许指向网站内的公开文件；目录软链接不遍历。指向目录外或隐藏文件的链接不会发布。
+- `headers` 中同名字段覆盖默认值；禁止设置 `Content-Length`、`Transfer-Encoding`、`Connection`、`Upgrade`、`Keep-Alive`、`Proxy-Connection`、`TE`、`Trailer`，这些字段由协议实现管理。
 - 目录在启动和 reload 时整个读进内存（最多 1000 个文件、64 MiB），之后改了文件要 reload 才生效。
 - 不设 `[web]` 时，所有这类请求一律 404。
 - `.mobileconfig` 文件按描述文件的类型（`application/x-apple-aspen-config`）提供，Safari 打开时会提示安装。`network-relay profile --publish` 就是把描述文件放在这里。
@@ -79,7 +81,7 @@
 | `[[user]]`、`[relay]`（`max_tunnels` 除外）、`[debug]`、`[web]`、证书文件 | `systemctl reload network-relay`，已有连接不受影响（被删除的用户除外） |
 | `listen`、`max_tunnels`、`log_dir`、`[tls]` 的文件路径 | `systemctl restart network-relay`，所有设备会断开并自动重连 |
 
-配置有错时，reload 不会生效，日志里写明原因，中继继续用原来的配置。
+配置解析或校验失败时，reload 不会生效，日志里写明原因。网站读取失败时保留旧网站，其他合法配置变更仍生效；证书更新失败时保留旧证书。
 
 ## 命令
 
@@ -115,14 +117,19 @@
 | `--user 名字` | 用户名 |
 | `--password 密码` | 密码；不写时运行后提示输入（推荐，不会留在 shell 历史里） |
 | `--port 端口` | 不是 443 时写 |
-| `--match-domain 域名` | 只有这个域名和它的子域名走中继。可以写多个。一个都不写时，全部流量走中继 |
+| `--match-domain 域名` | 这个域名和它的子域名走中继。可以写多个；它和 `--match-fqdn` 都不写时，全部流量走中继（排除项除外） |
 | `--exclude-domain 域名` | 这个域名和它的子域名不走中继。可以写多个 |
+| `--match-fqdn 主机名` | 只有精确匹配的主机名走中继，不包含其子域名。可以写多个；iOS 18.4、macOS 15.4 起支持 |
+| `--exclude-fqdn 主机名` | 精确排除这个主机名，不包含其子域名。可以写多个；iOS 18.4、macOS 15.4 起支持 |
+| `--ui-toggle-enabled [true/false]` | 是否允许用户在设置里停用中继；iOS/macOS 26 起支持。不写时使用系统默认值 `true`，只写开关相当于 `true` |
+| `--allow-dns-failover [true/false]` | 是否允许设备回退到默认系统 DNS 解析器；iOS/macOS 26 起支持。不写时使用系统默认值 `false`，只写开关相当于 `true` |
+| `--relay-uuid UUID` | 指定托管 App 路由所用的 Relay UUID；用户注册（user enrollment）需要此字段。须与 MDM 的 App 关联配置一致；Apple 未在 macOS 上提供此字段 |
 | `--name 名称` | 在设置里显示的名字，默认是域名 |
 | `--udp-template 路径` | 改过 `relay.udp_template` 时写同样的值 |
 | `--no-http3` | 只用 HTTP/2（TCP）。UDP 被封的网络里可以试 |
 | `--no-http2` | 只用 HTTP/3 |
 | `-o`、`--out 文件` | 保存到这个文件，默认 `域名-用户名.mobileconfig`（权限 600） |
-| `--publish` | 不保存到当前目录，而是放进 `[web] root` 目录，文件名随机，并打印下载链接。要 `systemctl reload` 后才能下载；装好后删掉 |
+| `--publish` | 放进 `[web] root` 目录，文件名随机、权限 600，并打印下载链接。要 `systemctl reload` 后才能下载；装好后删掉并再次 reload |
 | `--config 路径` | `--publish` 读哪个配置文件，默认 `/etc/network-relay/relay.toml` |
 
 描述文件的内容：
@@ -131,6 +138,15 @@
 - `HTTP3RelayURL` 和 `HTTP2RelayURL` 都是 URI 模板，比如 `https://relay.qolita.com/.well-known/masque/udp/{target_host}/{target_port}/`。
 - `AdditionalHTTPHeaderFields` 里是 `Authorization: Basic ...`，设备每个请求都会带上。**所以描述文件里有密码**，不要随便传给别人。
 - 标识符由域名和用户名决定：同一域名、同一用户重新生成的描述文件，安装时会替换旧的。
+- 新选项只有在显式指定时才写入描述文件。请按设备版本选择：例如仅使用 `--match-fqdn` 的配置不适用于不支持该字段的旧系统。域名统一转成小写并去掉末尾的点。
+- DNS 回退允许设备使用本地网络的系统 DNS；希望 DNS 始终经过中继时，保留默认值。
+- 保存和覆盖均采用权限 600 的临时文件原子替换，拒绝覆盖符号链接。以运行中继服务的用户生成发布文件，保证服务能读取它。
+
+例如，只中继 `api.example.com`，同时允许用户手动停用（设备需要 iOS/macOS 26 或更新）：
+
+```bash
+network-relay profile --host relay.example.com --user iphone --match-fqdn api.example.com --ui-toggle-enabled true
+```
 
 ### `network-relay check`
 

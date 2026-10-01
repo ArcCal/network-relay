@@ -79,7 +79,7 @@
 | 改了什么 | 怎么生效 |
 |---|---|
 | `[[user]]`、`[relay]`（`max_tunnels` 除外）、`[debug]`、`[web]`、证书文件 | `systemctl reload network-relay`，已有连接不受影响（被删除的用户除外） |
-| `listen`、`max_tunnels`、`log_dir`、`[tls]` 的文件路径 | `systemctl restart network-relay`，所有设备会断开并自动重连 |
+| `listen`、`max_tunnels`、`log_dir`、`[tls]` 的文件路径和 `reload_interval_days` | `systemctl restart network-relay`，所有设备会断开并自动重连 |
 
 配置解析或校验失败时，reload 不会生效，日志里写明原因。网站读取失败时保留旧网站，其他合法配置变更仍生效；证书更新失败时保留旧证书。
 

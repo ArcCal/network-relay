@@ -28,7 +28,9 @@ type Builder = hyper::server::conn::http1::Builder;
 
 fn builder() -> Builder {
     let mut builder = Builder::new();
-    builder.timer(TokioTimer::new()).header_read_timeout(HEADER_TIMEOUT);
+    // The same bound on request headers as HTTP/2 and HTTP/3 have (32 KiB),
+    // with room for what is buffered around them.
+    builder.timer(TokioTimer::new()).header_read_timeout(HEADER_TIMEOUT).max_buf_size(64 * 1024);
     builder
 }
 

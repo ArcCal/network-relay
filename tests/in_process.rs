@@ -752,7 +752,11 @@ async fn target_udp_sockets_disable_ip_fragmentation() {
         ("127.0.0.1:0", libc::IPPROTO_IP, libc::IP_MTU_DISCOVER, libc::IP_PMTUDISC_DO),
         ("[::1]:0", libc::IPPROTO_IPV6, libc::IPV6_MTU_DISCOVER, libc::IPV6_PMTUDISC_DO),
     ] {
-        let target = UdpSocket::bind(address).await.unwrap();
+        let Ok(target) = UdpSocket::bind(address).await else {
+            // A container or CI host without IPv6 loopback.
+            assert!(address.starts_with("[::1]"), "{address} must be available");
+            continue;
+        };
         let sock = network_relay::connect::udp(&[target.local_addr().unwrap()]).await.unwrap();
         let mut mode: libc::c_int = 0;
         let mut len = std::mem::size_of_val(&mode) as libc::socklen_t;
@@ -1205,4 +1209,43 @@ async fn max_tunnels_is_enforced() {
     .await;
     let mut third = h3.request(connect()).await.unwrap();
     assert_eq!(third.recv_response().await.unwrap().status(), StatusCode::OK);
+}
+
+/// RFC 9110 §9.3.6: a 2xx response to CONNECT carries no Content-Length or
+/// Transfer-Encoding; RFC 9298 §3.2: the 101 names the upgrade token.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn http1_success_responses_have_no_framing_headers() {
+    let relay = TestRelay::start("").await;
+    let (echo, _e) = echo_server().await;
+    let (dns, _d) = udp_echo().await;
+    let opts = relay.options(ALICE, echo, dns);
+    let (mut sender, _conn) = check::h1_sender(&opts, &opts.addresses).await.unwrap();
+    let req = Request::builder()
+        .method(Method::CONNECT)
+        .uri(echo.to_string())
+        .header("host", echo.to_string())
+        .header("proxy-authorization", auth::basic_authorization(ALICE.0, ALICE.1))
+        .body(Empty::<Bytes>::new())
+        .unwrap();
+    let resp = within("CONNECT", sender.send_request(req)).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert!(!resp.headers().contains_key("content-length"), "{:?}", resp.headers());
+    assert!(!resp.headers().contains_key("transfer-encoding"), "{:?}", resp.headers());
+
+    let (mut sender, _conn) = check::h1_sender(&opts, &opts.addresses).await.unwrap();
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri(format!("/.well-known/masque/udp/127.0.0.1/{}/", dns.port()))
+        .header("host", "relay.test")
+        .header("connection", "Upgrade")
+        .header("upgrade", "connect-udp")
+        .header("capsule-protocol", "?1")
+        .header("authorization", auth::basic_authorization(ALICE.0, ALICE.1))
+        .body(Empty::<Bytes>::new())
+        .unwrap();
+    let resp = within("Upgrade", sender.send_request(req)).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::SWITCHING_PROTOCOLS);
+    assert_eq!(resp.headers()["upgrade"], "connect-udp");
+    assert_eq!(resp.headers()["capsule-protocol"], "?1");
+    assert!(!resp.headers().contains_key("content-length"), "{:?}", resp.headers());
 }

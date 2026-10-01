@@ -214,7 +214,13 @@ fn read_dir(root: &Path, dir: &Path, files: &mut HashMap<String, StaticFile>, to
             continue;
         }
         let path = entry.path();
-        let meta = std::fs::metadata(&path).with_context(|| format!("reading {}", path.display()))?;
+        let meta = match std::fs::metadata(&path) {
+            Ok(meta) => meta,
+            // A dangling or looping symlink is not part of the site, and
+            // must not keep the rest of it from loading.
+            Err(_) if entry.file_type().is_ok_and(|t| t.is_symlink()) => continue,
+            Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
+        };
         if meta.is_dir() {
             // Following directory symlinks could loop.
             if !entry.file_type()?.is_symlink() {
@@ -399,10 +405,14 @@ mod tests {
         symlink(outside.0.join("secret"), site.0.join("external.txt")).unwrap();
         symlink(site.0.join(".secret"), site.0.join("private.txt")).unwrap();
         symlink(site.0.join("index.html"), site.0.join("public.html")).unwrap();
+        symlink(site.0.join("missing"), site.0.join("dangling.html")).unwrap();
+        symlink("loop-b", site.0.join("loop-a")).unwrap();
+        symlink("loop-a", site.0.join("loop-b")).unwrap();
         let loaded = Website::load(&site.0, &BTreeMap::new()).unwrap();
         assert!(!loaded.files.contains_key("external.txt"));
         assert!(!loaded.files.contains_key("private.txt"));
         assert!(loaded.files.contains_key("public.html"));
+        assert!(!loaded.files.contains_key("dangling.html"), "a broken link does not stop the site loading");
     }
 
     #[test]

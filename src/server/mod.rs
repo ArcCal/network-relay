@@ -451,9 +451,14 @@ pub async fn run(config_path: PathBuf, config: Config) -> Result<()> {
     debug!(rcv, snd, "UDP socket buffers");
     let endpoint = quic_endpoint(certs.clone(), udp)?;
     let tcp = TcpListener::bind(config.listen).await.with_context(|| format!("listening on TCP {}", config.listen))?;
-    let quic_task = tokio::spawn(relay.clone().serve_quic(endpoint.clone()));
-    let tcp_task = tokio::spawn(relay.clone().serve_tcp(tcp, tcp_tls_config(certs.clone())?));
-    let reload_task = tokio::spawn(certs.clone().run_schedule(Schedule::from_config(config.tls.reload_interval_days)));
+    // Registered before the listeners start, so an early SIGHUP or SIGTERM is
+    // handled rather than killing the process by default action.
+    let mut sighup = signal(SignalKind::hangup())?;
+    let mut sigterm = signal(SignalKind::terminate())?;
+    let mut quic_task = tokio::spawn(relay.clone().serve_quic(endpoint.clone()));
+    let mut tcp_task = tokio::spawn(relay.clone().serve_tcp(tcp, tcp_tls_config(certs.clone())?));
+    let mut reload_task =
+        tokio::spawn(certs.clone().run_schedule(Schedule::from_config(config.tls.reload_interval_days)));
     info!(
         listen = %config.listen,
         users = config.users.len(),
@@ -466,9 +471,10 @@ pub async fn run(config_path: PathBuf, config: Config) -> Result<()> {
     if config.users.is_empty() {
         warn!("no [[user]] configured: every request gets the website; add one with `network-relay passwd`");
     }
-    let mut sighup = signal(SignalKind::hangup())?;
-    let mut sigterm = signal(SignalKind::terminate())?;
-    loop {
+    // None for a requested shutdown; otherwise the task that ended. None of
+    // these tasks returns on its own, so an exit (a panic, say) must not leave
+    // the process running without a listener: fail and let systemd restart it.
+    let failed = loop {
         tokio::select! {
             _ = sighup.recv() => match Config::load(&config_path) {
                 Ok(c) => {
@@ -479,22 +485,34 @@ pub async fn run(config_path: PathBuf, config: Config) -> Result<()> {
                     if let Err(e) = certs.reload() {
                         warn!("keeping the current TLS certificate: {e:#}");
                     }
-                    if c.listen != config.listen || c.relay.max_tunnels != config.relay.max_tunnels {
-                        warn!("listen and relay.max_tunnels take effect after a restart");
+                    if c.listen != config.listen
+                        || c.relay.max_tunnels != config.relay.max_tunnels
+                        || c.log_dir != config.log_dir
+                        || c.tls.cert != config.tls.cert
+                        || c.tls.key != config.tls.key
+                        || c.tls.reload_interval_days != config.tls.reload_interval_days
+                    {
+                        warn!("listen, log_dir, relay.max_tunnels and the [tls] settings take effect after a restart");
                     }
                 }
                 Err(e) => warn!("not reloading, configuration is invalid: {e:#}"),
             },
-            _ = sigterm.recv() => { info!("SIGTERM received, shutting down"); break; }
-            _ = tokio::signal::ctrl_c() => { info!("interrupted, shutting down"); break; }
+            _ = sigterm.recv() => { info!("SIGTERM received, shutting down"); break None; }
+            _ = tokio::signal::ctrl_c() => { info!("interrupted, shutting down"); break None; }
+            r = &mut quic_task => break Some(("HTTP/3 listener", r)),
+            r = &mut tcp_task => break Some(("HTTP/2 and HTTP/1.1 listener", r)),
+            r = &mut reload_task => break Some(("certificate reload task", r)),
         }
-    }
+    };
     reload_task.abort();
     tcp_task.abort();
     quic_task.abort();
     endpoint.close(0u32.into(), b"server shutting down");
     let _ = tokio::time::timeout(Duration::from_secs(2), endpoint.wait_idle()).await;
-    Ok(())
+    match failed {
+        None => Ok(()),
+        Some((what, result)) => anyhow::bail!("the {what} stopped unexpectedly: {result:?}"),
+    }
 }
 
 #[cfg(test)]

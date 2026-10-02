@@ -53,23 +53,24 @@ def domain_name(value):
     if (len(value) > 253 or '.' not in value
             or any(not re.fullmatch(r'[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?', label)
                    for label in value.split('.'))):
-        raise ValueError(f'无效域名：{value!r}')
+        raise ValueError(f'Invalid domain name: {value!r}')
     try:
         import ipaddress
         ipaddress.ip_address(value)
     except ValueError:
         return value
-    raise ValueError('请使用域名，而不是 IP 地址。')
+    raise ValueError('Use a domain name, not an IP address.')
 
 
 def validate_identity(identity):
     domain_name(identity.domain)
     if not 1 <= identity.port <= 65535:
-        raise ValueError('端口必须在 1–65535 之间。')
+        raise ValueError('The port must be between 1 and 65535.')
     if not re.fullmatch(r'[A-Za-z0-9_-][A-Za-z0-9_.-]{0,63}', identity.user):
-        raise ValueError('用户名只能包含字母、数字、下划线、点、连字符，且不能以点开头。')
+        raise ValueError('The user name may contain only letters, digits, underscores, dots and hyphens, '
+                         'and must not start with a dot.')
     if len(identity.password) < 12 or any(ord(c) < 32 or ord(c) == 127 for c in identity.password):
-        raise ValueError('密码至少 12 个字符，且不能包含控制字符。')
+        raise ValueError('The password must be at least 12 characters and contain no control characters.')
     return identity
 
 
@@ -82,7 +83,7 @@ def load_domains(path):
             if value not in domains:
                 domains.append(value)
     if not domains:
-        raise ValueError('分流域名表不能为空，否则 Apple 会匹配全部流量。')
+        raise ValueError('The domain list must not be empty; Apple treats an empty list as matching all traffic.')
     return domains
 
 
@@ -90,36 +91,36 @@ def read_profile(path):
     with Path(path).open('rb') as stream:
         raw = stream.read((1 << 20) + 1)
     if len(raw) > 1 << 20:
-        raise ValueError('描述文件超过 1 MiB。')
+        raise ValueError('The profile is larger than 1 MiB.')
     profile = plistlib.loads(raw)
     payloads = profile.get('PayloadContent', [])
     if len(payloads) != 1 or payloads[0].get('PayloadType') != 'com.apple.relay.managed':
-        raise ValueError('需要仅包含一个 Network Relay 负载的未签名 mobileconfig。')
+        raise ValueError('Expected an unsigned mobileconfig with exactly one Network Relay payload.')
     payload = payloads[0]
     relays = payload.get('Relays', [])
     if len(relays) != 1:
-        raise ValueError('安装脚本需要单跳中继描述文件。')
+        raise ValueError('The installer needs a profile with a single relay hop.')
     relay = relays[0]
     urls = [relay[key] for key in ('HTTP2RelayURL', 'HTTP3RelayURL') if key in relay]
     if not urls or len(set(urls)) != 1:
-        raise ValueError('HTTP/2 和 HTTP/3 必须使用同一个中继 URL。')
+        raise ValueError('HTTP/2 and HTTP/3 must use the same relay URL.')
     url = urlsplit(urls[0])
     if (url.scheme != 'https' or url.username or url.password or url.query or url.fragment
             or url.path != UDP_TEMPLATE):
-        raise ValueError('描述文件须使用 HTTPS 和项目默认的 CONNECT-UDP 模板。')
+        raise ValueError("The profile must use HTTPS and the project's default CONNECT-UDP template.")
     if any(key in relay for key in ('PayloadCertificateUUID', 'RawPublicKeys')):
-        raise ValueError('此安装流程使用公共 CA 和密码认证。')
+        raise ValueError('This installer uses a public CA and password authentication.')
     authorization = relay.get('AdditionalHTTPHeaderFields', {}).get('Authorization', '')
     scheme, _, value = authorization.partition(' ')
     if scheme.lower() != 'basic':
-        raise ValueError('描述文件缺少 Basic 认证头。')
+        raise ValueError('The profile has no Basic authorization header.')
     try:
         user, password = base64.b64decode(value, validate=True).decode().split(':', 1)
     except (ValueError, UnicodeError) as error:
-        raise ValueError('描述文件中的 Basic 凭据无效。') from error
+        raise ValueError('The Basic credentials in the profile are invalid.') from error
     domains = payload.get('MatchDomains', [])
     if not isinstance(domains, list) or not domains:
-        raise ValueError('描述文件必须包含非空 MatchDomains，不能意外启用全局代理。')
+        raise ValueError('The profile must have a non-empty MatchDomains, or it would relay all traffic.')
     for domain in domains:
         domain_name(domain)
     identity = validate_identity(Identity(domain_name(url.hostname or ''),
@@ -130,7 +131,7 @@ def read_profile(path):
 def atomic_write(path, data, mode=0o600):
     path = Path(path)
     if path.is_symlink() or (path.exists() and not path.is_file()):
-        raise ValueError(f'拒绝覆盖非普通文件：{path}')
+        raise ValueError(f'Refusing to overwrite a non-regular file: {path}')
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, name = tempfile.mkstemp(prefix='.network-relay-', dir=path.parent)
     try:
@@ -170,7 +171,7 @@ def build_binary(args):
         run([binary, '--version'])
         return binary
     if not (REPO / 'Cargo.lock').is_file():
-        raise ValueError('请下载完整源码 ZIP 并解压，或使用 --binary 指定已编译的程序。')
+        raise ValueError('Download and extract the complete source ZIP, or pass a built program with --binary.')
     env = os.environ.copy()
     # Keep caches out of the source ZIP and avoid modifying shell profiles.
     env['CARGO_HOME'] = '/var/cache/network-relay/cargo'
@@ -203,20 +204,21 @@ def port_available(port, allowed_pid=0):
         for listener in listeners:
             pids = re.findall(r'pid=(\d+)', listener)
             if not pids or any(int(pid) != allowed_pid for pid in pids):
-                raise ValueError(f'端口 {port} 已被其他服务占用；脚本不会停止它：{listener}')
+                raise ValueError(f'Port {port} is already in use by another service; '
+                                 f'the installer will not stop it: {listener}')
 
 
 def preflight():
     if os.geteuid() != 0:
-        raise ValueError('请用 root 运行此安装脚本。')
+        raise ValueError('Run this installer as root.')
     os_release = platform.freedesktop_os_release()
     # Debian 12 has everything the installer needs too: Python 3.11
     # (tomllib), apt with DPkg::Lock::Timeout, certbot and systemd.
     if (os_release.get('ID') != 'debian' or os_release.get('VERSION_ID') not in SUPPORTED_DEBIAN
             or platform.machine() != 'x86_64'):
-        raise ValueError('只支持 Debian 12/13 x86_64。')
+        raise ValueError('This installer supports only Debian 12/13 x86_64.')
     if not Path('/run/systemd/system').is_dir():
-        raise ValueError('需要由 systemd 启动的 VPS。')
+        raise ValueError('A VPS booted with systemd is required.')
 
 
 def certificate_paths(args, identity, existing_config):
@@ -234,14 +236,14 @@ def certificate_paths(args, identity, existing_config):
         given = tuple(Path(os.path.abspath(p)) for p in (args.cert, args.key))
         for path in given:
             if not path.is_file():
-                raise ValueError(f'证书文件不存在：{path}')
+                raise ValueError(f'Certificate file not found: {path}')
     if existing_config is not None:
         tls = tomllib.loads(existing_config.decode())['tls']
         current = (Path(tls['cert']), Path(tls['key']))
         if given and given != current:
-            raise ValueError(f'已有安装使用的证书是 {current[0]} 和 {current[1]}，与 --cert/--key 不同。'
-                             f'要更换证书，请先编辑 {CONFIG} 的 [tls] 并 systemctl restart network-relay，'
-                             '再不带 --cert/--key 运行本脚本。')
+            raise ValueError(f'The existing installation uses {current[0]} and {current[1]}, not the given '
+                             f'--cert/--key. To change the certificate, edit [tls] in {CONFIG}, run '
+                             'systemctl restart network-relay, then run this installer without --cert/--key.')
         return (*current, current == automated)
     if given:
         return (*given, False)
@@ -253,39 +255,45 @@ def install(args):
     existing = CONFIG.exists()
     old_identity = read_profile(PROFILE)[0] if PROFILE.exists() else None
     if existing and old_identity is None:
-        raise ValueError('发现已有手工安装配置，拒绝覆盖。请备份并按 docs/deploy-debian13.md 的更新步骤处理。')
+        raise ValueError('Found an existing manual installation; refusing to overwrite it. '
+                         'Back it up and follow the update steps in docs/deploy-debian13.md.')
     imported = args.profile or (PROFILE if existing else None)
     if imported:
         identity, profile_data = read_profile(imported)
         if args.domain and domain_name(args.domain) != identity.domain:
-            raise ValueError('--domain 与描述文件中的服务器域名不一致。')
+            raise ValueError('--domain does not match the server domain in the profile.')
         if ((args.user is not None and args.user != identity.user)
                 or (args.port is not None and args.port != identity.port)):
-            raise ValueError('--user/--port 与描述文件不一致。')
+            raise ValueError('--user/--port do not match the profile.')
         if args.domains:
-            raise ValueError('--profile 已带有分流规则，不能同时指定 --domains。')
+            raise ValueError('--profile already carries its domain rules; --domains cannot be used with it.')
     else:
         domain = args.domain
         if not domain and sys.stdin.isatty():
-            domain = input('中继域名（必须已解析到这台 VPS）：').strip()
+            domain = input('Relay domain (must already resolve to this VPS): ').strip()
         identity = validate_identity(Identity(domain_name(domain or ''), 443 if args.port is None else args.port,
                                               args.user or 'iphone', secrets.token_urlsafe(24)))
         profile_data = None
     domains = load_domains(args.domains or REPO / 'deploy/domains/google-ai-social.txt')
     if existing and (old_identity.domain, old_identity.port, old_identity.user) != (
             identity.domain, identity.port, identity.user):
-        raise ValueError('已有安装的域名、端口和用户名不同，拒绝自动覆盖。')
+        raise ValueError('The existing installation has a different domain, port or user name; '
+                         'refusing to overwrite it.')
     if existing and not hmac.compare_digest(old_identity.password.encode(), identity.password.encode()):
-        raise ValueError('提供的描述文件密码与已有安装不同；不会自动重置已有账号。')
+        raise ValueError("The profile's password differs from the existing installation's; "
+                         'the existing account will not be reset automatically.')
     cert, key, automated_cert = certificate_paths(args, identity, CONFIG.read_bytes() if existing else None)
     if identity.port == 80 and automated_cert:
-        raise ValueError('自动证书续期需要独占 TCP 80，请为中继选择其他端口（默认 443）。')
+        raise ValueError('Automatic certificate renewal needs TCP 80 to itself; '
+                         'choose another port for the relay (default 443).')
 
-    print(f'部署 {identity.domain}:{identity.port}，账号 {identity.user}；密码不会打印。', flush=True)
-    print('云防火墙/DNS 需已就绪：TCP 80、TCP/UDP 中继端口；Cloudflare 使用仅 DNS。', flush=True)
+    print(f'Deploying {identity.domain}:{identity.port}, user {identity.user}; the password is not printed.',
+          flush=True)
+    print('Cloud firewall and DNS must be ready: TCP 80 and the relay port on TCP/UDP; '
+          'Cloudflare set to DNS only.', flush=True)
     env = os.environ.copy()
     env['DEBIAN_FRONTEND'] = 'noninteractive'
-    print('如系统正在自动更新，会等待它完成（最多 30 分钟）。', flush=True)
+    print('Waiting for any automatic system updates to finish first (up to 30 minutes).', flush=True)
     run(APT + ['update'], env=env)
     run(APT + ['install', '-y', '--no-install-recommends', 'build-essential', 'pkg-config',
          'git', 'curl', 'ca-certificates', 'certbot', 'iproute2', 'procps'], env=env)
@@ -295,8 +303,9 @@ def install(args):
     try:
         addresses = socket.getaddrinfo(identity.domain, identity.port, type=socket.SOCK_STREAM)
     except socket.gaierror as error:
-        raise ValueError('中继域名无法解析，请先把 DNS A/AAAA 记录指向 VPS。') from error
-    print('域名当前地址：' + ', '.join(sorted({item[4][0] for item in addresses})), flush=True)
+        raise ValueError('The relay domain does not resolve; '
+                         'point its DNS A/AAAA records at this VPS first.') from error
+    print('The domain currently resolves to: ' + ', '.join(sorted({item[4][0] for item in addresses})), flush=True)
     if shutil.which('ufw'):
         status = run(['ufw', 'status'], capture=True).stdout
         if re.search(r'^Status: active$', status, re.MULTILINE):
@@ -321,7 +330,8 @@ def install(args):
         if profile_data is None:
             generated = staging / 'device.mobileconfig'
             command = [binary, 'profile', '--host', identity.domain, '--port', str(identity.port),
-                       '--user', identity.user, '--name', 'Google / AI / X — 其他直连', '--out', generated]
+                       '--user', identity.user, '--name', 'Google / AI / X — everything else direct',
+                       '--out', generated]
             for domain in domains:
                 command.extend(['--match-domain', domain])
             run(command, input=identity.password + '\n', capture=True)
@@ -338,13 +348,16 @@ def install(args):
         run([binary, 'serve', '--config', candidate, '--check'])
         apply_install(binary, config_data, profile_data, identity, automated_cert=automated_cert)
 
-    print(f'\n安装完成。设备描述文件：{PROFILE}（含密码，权限 600，不会公开到网站）。', flush=True)
-    print('开始从本机检查三种 HTTP 版本的 TCP/UDP 中继；公网入口仍需从设备验证。', flush=True)
+    print(f'\nInstallation complete. Device profile: {PROFILE} '
+          '(contains the password, mode 600, not published on the website).', flush=True)
+    print('Checking the TCP/UDP relay over all three HTTP versions from this machine; '
+          'access from the internet still has to be confirmed from a device.', flush=True)
     result = run([BINARY, 'check', '--server', identity.domain, '--address', '127.0.0.1',
                   '--port', str(identity.port), '--user', identity.user],
                  input=identity.password + '\n', check=False, timeout=300)
     if result.returncode:
-        print('服务已运行，但联网自检有失败。请查看上面的错误及 journalctl -u network-relay。', file=sys.stderr)
+        print('The service is running, but the network self-check had failures. '
+              'See the errors above and journalctl -u network-relay.', file=sys.stderr)
         return 2
     return 0
 
@@ -374,7 +387,7 @@ def apply_install(binary, config_data, profile_data, identity, *, automated_cert
     snapshots = {}
     for index, path in enumerate(updates):
         if path.is_symlink() or (path.exists() and not path.is_file()):
-            raise ValueError(f'拒绝替换非普通安装文件：{path}')
+            raise ValueError(f'Refusing to replace a non-regular installed file: {path}')
         saved = backup / str(index)
         if path.exists():
             shutil.copy2(path, saved)
@@ -387,7 +400,8 @@ def apply_install(binary, config_data, profile_data, identity, *, automated_cert
         for path, (data, mode) in updates.items():
             atomic_write(path, data, mode)
         if run(['sysctl', '-p', SYSCTL], check=False).returncode:
-            print('无法调整 UDP 缓冲区（部分 VPS 限制 sysctl），继续使用内核现有设置。', file=sys.stderr)
+            print('Could not raise the UDP buffer limits (some VPSes restrict sysctl); '
+                  'keeping the current kernel settings.', file=sys.stderr)
         run(['systemctl', 'daemon-reload'])
         run(['systemctl', 'enable', 'network-relay'])
         run(['systemctl', 'restart', 'network-relay'])
@@ -402,8 +416,8 @@ def apply_install(binary, config_data, profile_data, identity, *, automated_cert
                 break
             time.sleep(.5)
         else:
-            raise RuntimeError('本机 HTTPS 启动检查失败，正在恢复原安装。')
-        print(f'服务已启动，安装前文件备份：{backup}', flush=True)
+            raise RuntimeError('Local HTTPS startup check failed; restoring the previous installation.')
+        print(f'Service started; files from before the installation are backed up in {backup}', flush=True)
     except BaseException:
         run(['systemctl', 'stop', 'network-relay'], check=False)
         if not was_enabled:
@@ -422,30 +436,37 @@ def apply_install(binary, config_data, profile_data, identity, *, automated_cert
 
 
 def main():
-    parser = argparse.ArgumentParser(description='安装/更新 Debian 12/13 x64 Network Relay，并生成按域名分流的 mobileconfig。')
-    parser.add_argument('--profile', type=Path, help='导入已有 mobileconfig 的服务器地址和凭据；推荐使用随交付提供的文件')
-    parser.add_argument('--domain', help='中继域名；未导入 profile 时必需，不写则在终端询问')
-    parser.add_argument('--email', help='Let’s Encrypt 账户邮箱；不写则注册无邮箱账户')
-    parser.add_argument('--user', help='新安装的用户名，默认 iphone')
-    parser.add_argument('--port', type=int, help='监听端口，默认 443')
-    parser.add_argument('--domains', type=Path, help='新生成 profile 使用的域名列表，默认 Google/AI/X 预设')
-    parser.add_argument('--binary', type=Path, help='安装指定预编译程序；默认从下载的源码编译')
-    parser.add_argument('--jobs', type=int, default=1, help='编译并发数，默认 1 以减少内存使用')
-    parser.add_argument('--cert', type=Path, help='使用现有证书；默认自动申请 Let’s Encrypt')
-    parser.add_argument('--key', type=Path, help='与 --cert 配套的私钥')
+    parser = argparse.ArgumentParser(description='Install or update Network Relay on Debian 12/13 x64 and generate '
+                                                 'a mobileconfig that relays selected domains.')
+    parser.add_argument('--profile', type=Path, help='import the server address and credentials from an existing '
+                        'mobileconfig; recommended when one was provided')
+    parser.add_argument('--domain', help='relay domain; required without --profile, '
+                        'asked for in the terminal if omitted')
+    parser.add_argument('--email', help='Let’s Encrypt account email; '
+                        'without it the account is registered with no email')
+    parser.add_argument('--user', help='user name for a new installation, default iphone')
+    parser.add_argument('--port', type=int, help='listening port, default 443')
+    parser.add_argument('--domains', type=Path,
+                        help='domain list for a newly generated profile, default the Google/AI/X preset')
+    parser.add_argument('--binary', type=Path,
+                        help='install this prebuilt program instead of building the downloaded source')
+    parser.add_argument('--jobs', type=int, default=1, help='parallel build jobs, default 1 to reduce memory use')
+    parser.add_argument('--cert', type=Path,
+                        help='use an existing certificate instead of obtaining one from Let’s Encrypt')
+    parser.add_argument('--key', type=Path, help='private key for --cert')
     args = parser.parse_args()
     if bool(args.cert) != bool(args.key) or not 1 <= args.jobs <= 128:
-        parser.error('--cert/--key 必须一起提供，--jobs 必须在 1–128 之间。')
+        parser.error('--cert and --key must be given together, and --jobs must be between 1 and 128.')
     try:
         preflight()
         with open('/run/lock/network-relay-install.lock', 'w') as lock:
             try:
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:
-                raise ValueError('另一个安装进程正在运行。') from None
+                raise ValueError('Another installation is already running.') from None
             return install(args)
     except (ValueError, OSError, RuntimeError, subprocess.SubprocessError) as error:
-        print(f'安装未完成：{error}', file=sys.stderr)
+        print(f'Installation not completed: {error}', file=sys.stderr)
         return 1
 
 

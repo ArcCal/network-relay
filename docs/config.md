@@ -1,148 +1,148 @@
-# 配置参考
+# Configuration reference
 
-## 配置文件
+## Configuration file
 
-默认位置 `/etc/network-relay/relay.toml`（`network-relay serve --config 路径` 可以换）。格式是 TOML。完整示例见 [`deploy/relay.example.toml`](../deploy/relay.example.toml)。
+The default location is `/etc/network-relay/relay.toml` (change it with `network-relay serve --config path`). The format is TOML. For a complete example, see [`deploy/relay.example.toml`](../deploy/relay.example.toml).
 
-- 写错的项名会直接报错，不会被悄悄忽略。
-- 改完先 `network-relay serve --check` 检查，再 `systemctl reload network-relay` 生效。
-- 文件里有密码哈希，权限设成 `600`。
+- A misspelled key is reported as an error, not silently ignored.
+- After editing, check with `network-relay serve --check` first, then apply with `systemctl reload network-relay`.
+- The file contains password hashes; set its mode to `600`.
 
-### 顶层
+### Top level
 
-| 项 | 默认 | 说明 |
+| Key | Default | Description |
 |---|---|---|
-| `listen` | `"[::]:443"` | 监听的地址和端口。UDP 上是 HTTP/3，TCP 上是 HTTP/2 和 HTTP/1.1，同一个端口。`[::]` 同时接受 IPv4 和 IPv6。改了要 restart |
-| `log_dir` | 不设 | 另外把日志存成文件的目录，必须是完整路径，比如 `"/var/log/network-relay"`。每小时一个文件，保留 24 小时。不设时日志只进 journal |
+| `listen` | `"[::]:443"` | Address and port to listen on. HTTP/3 on UDP, HTTP/2 and HTTP/1.1 on TCP, on the same port. `[::]` accepts both IPv4 and IPv6. Needs a restart after a change |
+| `log_dir` | not set | Directory where logs are also saved as files; must be a full path, such as `"/var/log/network-relay"`. One file per hour, kept for 24 hours. When not set, logs go only to the journal |
 
-### `[tls]`（必填）
+### `[tls]` (required)
 
-| 项 | 默认 | 说明 |
+| Key | Default | Description |
 |---|---|---|
-| `cert` | — | 证书链文件，certbot 的 `fullchain.pem` |
-| `key` | — | 私钥文件，certbot 的 `privkey.pem` |
-| `reload_interval_days` | 不设 | 每隔几天（1 到 7）重新读取证书文件。不设时每天凌晨 3 点（系统时区）读取。`systemctl reload` 也会立刻读取 |
+| `cert` | — | Certificate chain file, certbot's `fullchain.pem` |
+| `key` | — | Private key file, certbot's `privkey.pem` |
+| `reload_interval_days` | not set | Reread the certificate files every this many days (1 to 7). When not set, they are reread every day at 3 a.m. (system time zone). `systemctl reload` also rereads them immediately |
 
-证书上的名字必须是设备连接用的域名。读取新证书失败时（比如文件损坏）继续用旧的，并在日志里警告。证书 14 天内过期时，日志里也有警告。
+The name on the certificate must be the domain the devices connect to. If reading a new certificate fails (a corrupt file, for example), the old one stays in use and a warning is logged. A warning is also logged when the certificate expires within 14 days.
 
-### `[web]`（可选）
+### `[web]` (optional)
 
-| 项 | 默认 | 说明 |
+| Key | Default | Description |
 |---|---|---|
-| `root` | — | 伪装网站的目录，里面必须有 `index.html` |
-| `headers` | 无 | 额外的响应头，比如 `[web.headers]` 下写 `Content-Security-Policy = "default-src 'self'"` |
+| `root` | — | Directory of the decoy website; it must contain `index.html` |
+| `headers` | none | Extra response headers, for example `Content-Security-Policy = "default-src 'self'"` under `[web.headers]` |
 
-- 没有密码的请求都得到这个网站的回答：有的文件返回文件；不存在的路径返回 `index.html`（像单页应用那样）；CONNECT 请求返回 404 加 `index.html`。
-- 例外：`/.well-known/` 下不存在的文件返回空的 404，因为这些路径有固定含义（RFC 8615）。
-- 以 `.` 开头的文件和目录不对外提供，`.well-known` 目录除外。
-- 文件软链接只允许指向网站内的公开文件；目录软链接不遍历。指向目录外或隐藏文件的链接不会发布。
-- `headers` 中同名字段覆盖默认值；禁止设置 `Content-Length`、`Transfer-Encoding`、`Connection`、`Upgrade`、`Keep-Alive`、`Proxy-Connection`、`TE`、`Trailer`，这些字段由协议实现管理。
-- 目录在启动和 reload 时整个读进内存（最多 1000 个文件、64 MiB），之后改了文件要 reload 才生效。
-- 不设 `[web]` 时，所有这类请求一律 404。
-- `.mobileconfig` 文件按描述文件的类型（`application/x-apple-aspen-config`）提供，Safari 打开时会提示安装。`network-relay profile --publish` 就是把描述文件放在这里。
+- Every request without a password is answered by this website: existing files are returned; missing paths return `index.html` (like a single-page app); CONNECT requests get a 404 with `index.html`.
+- Exception: missing files under `/.well-known/` return an empty 404, because those paths have fixed meanings (RFC 8615).
+- Files and directories starting with `.` are not served, except the `.well-known` directory.
+- File symlinks may only point to public files inside the website; directory symlinks are not followed. Links pointing outside the directory or to hidden files are not published.
+- A field in `headers` with the same name overrides the default; `Content-Length`, `Transfer-Encoding`, `Connection`, `Upgrade`, `Keep-Alive`, `Proxy-Connection`, `TE` and `Trailer` cannot be set, because the protocol implementation manages them.
+- The directory is read into memory as a whole at startup and on reload (at most 1000 files, 64 MiB); after changing files, reload for them to take effect.
+- Without `[web]`, all such requests get 404.
+- `.mobileconfig` files are served with the profile content type (`application/x-apple-aspen-config`), so Safari offers to install them. `network-relay profile --publish` puts profiles here.
 
-### `[relay]`（可选）
+### `[relay]` (optional)
 
-| 项 | 默认 | 说明 |
+| Key | Default | Description |
 |---|---|---|
-| `udp_template` | `"/.well-known/masque/udp/{target_host}/{target_port}/"` | CONNECT-UDP 的 URI 模板里的路径部分（RFC 9298 §2）。必须包含 `{target_host}` 和 `{target_port}`，而且按它展开的请求必须能解析回原来的目标（例如查询里不带名字的 `?{target_host}` 解析不回来，会被拒绝）。描述文件必须用同一个模板（`network-relay profile --udp-template`）。一般不用改 |
-| `blocked_destinations` | 见下 | 设备不能访问的地址段。域名解析出的每个地址都检查；IPv4 映射的 IPv6 地址（`::ffff:a.b.c.d`）按 IPv4 地址检查 |
-| `blocked_ports` | `[25]` | 设备不能访问的端口，TCP 和 UDP 都算。25 是发邮件的端口，封掉防止服务器被用来发垃圾邮件 |
-| `connect_timeout_secs` | `10` | 连接目标 TCP 服务的超时（1 到 120） |
-| `udp_idle_timeout_secs` | `300` | UDP 流双向都没有数据多久后关闭（120 到 3600；RFC 4787 要求至少 2 分钟） |
-| `max_tunnels` | `20000` | 所有用户加起来，同时转发的 TCP 连接和 UDP 流的上限。超过时新请求得到 503。改了要 restart |
+| `udp_template` | `"/.well-known/masque/udp/{target_host}/{target_port}/"` | Path part of the CONNECT-UDP URI template (RFC 9298 §2). It must contain `{target_host}` and `{target_port}`, and requests expanded from it must parse back to the original target (for example, an unnamed `?{target_host}` in the query cannot be parsed back and is rejected). Profiles must use the same template (`network-relay profile --udp-template`). Usually left alone |
+| `blocked_destinations` | see below | Address ranges devices may not reach. Every address a domain resolves to is checked; IPv4-mapped IPv6 addresses (`::ffff:a.b.c.d`) are checked as IPv4 addresses |
+| `blocked_ports` | `[25]` | Ports devices may not reach, on both TCP and UDP. 25 is the mail port; blocking it keeps the server from being used to send spam |
+| `connect_timeout_secs` | `10` | Timeout for connecting to a target TCP service (1 to 120) |
+| `udp_idle_timeout_secs` | `300` | How long a UDP flow may go without data in either direction before it is closed (120 to 3600; RFC 4787 requires at least 2 minutes) |
+| `max_tunnels` | `20000` | Limit on TCP connections and UDP flows relayed at the same time, across all users. New requests beyond it get 503. Needs a restart after a change |
 
-`blocked_destinations` 的默认值：本机（`127.0.0.0/8`、`::1`）、未指定地址、私有网络（`10.0.0.0/8`、`172.16.0.0/12`、`192.168.0.0/16`、`fc00::/7`）、运营商级 NAT（`100.64.0.0/10`）、链路本地（`169.254.0.0/16`，包括云服务商的元数据服务 `169.254.169.254`；`fe80::/10`）、组播、保留地址、文档和测试用地址、IPv4 映射地址、本地用的 NAT64 前缀。完整列表见示例配置。
+Default `blocked_destinations`: the local host (`127.0.0.0/8`, `::1`), unspecified addresses, private networks (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `fc00::/7`), carrier-grade NAT (`100.64.0.0/10`), link-local (`169.254.0.0/16`, including cloud providers' metadata service `169.254.169.254`; `fe80::/10`), multicast, reserved addresses, documentation and test addresses, IPv4-mapped addresses, and the local-use NAT64 prefix. See the example configuration for the complete list.
 
-- 想让设备访问服务器所在的内网（比如家里的 NAS），把对应的段从列表里删掉。**不要整个清空**：那样设备能访问服务器本机上只监听 127.0.0.1 的服务。
-- 被拒绝的请求返回 403，`Proxy-Status` 头里写明原因（`destination_ip_prohibited` 或 `http_request_denied`）。
+- To let devices reach the network the server is on (a NAS at home, say), remove the corresponding range from the list. **Do not empty it entirely**: devices could then reach services on the server itself that listen only on 127.0.0.1.
+- Refused requests get 403, with the reason in the `Proxy-Status` header (`destination_ip_prohibited` or `http_request_denied`).
 
-### `[debug]`（可选）
+### `[debug]` (optional)
 
-| 项 | 默认 | 说明 |
+| Key | Default | Description |
 |---|---|---|
-| `log_requests` | `false` | 每个代理请求（CONNECT 或 Upgrade）记一行日志：HTTP 版本、方法、`:protocol`、目标、路径和所有请求头（`Authorization` 只显示用户名）。被拒绝的请求也记下原因。用来弄清楚设备实际发了什么；很吵，用完关掉 |
+| `log_requests` | `false` | Log one line per proxy request (CONNECT or Upgrade): HTTP version, method, `:protocol`, target, path and all request headers (`Authorization` shows only the user name). Refused requests are logged with the reason. Use it to find out what devices actually send; it is noisy, so turn it off afterwards |
 
-### `[[user]]`（可以有多个）
+### `[[user]]` (may appear more than once)
 
-| 项 | 说明 |
+| Key | Description |
 |---|---|
-| `name` | 用户名：1 到 64 个字母、数字、`-`、`_`、`.`，不能以 `.` 开头 |
-| `password_hash` | `network-relay passwd` 打印的 Argon2id 哈希 |
+| `name` | User name: 1 to 64 letters, digits, `-`, `_` or `.`, not starting with `.` |
+| `password_hash` | The Argon2id hash printed by `network-relay passwd` |
 
-- 每台设备一个用户，停用某台设备只删它的那段。
-- reload 后，被删除或改了密码的用户，正在进行的连接立刻断开。
-- 没有任何用户时，中继只是一个网站，启动时日志里有警告。
+- One user per device, so disabling a device means deleting only its section.
+- After a reload, ongoing connections of users who were deleted or whose password changed are disconnected immediately.
+- With no users at all, the relay is just a website, and a warning is logged at startup.
 
-## reload 和 restart
+## reload and restart
 
-| 改了什么 | 怎么生效 |
+| What changed | How to apply it |
 |---|---|
-| `[[user]]`、`[relay]`（`max_tunnels` 除外）、`[debug]`、`[web]`、证书文件 | `systemctl reload network-relay`，已有连接不受影响（被删除的用户除外） |
-| `listen`、`max_tunnels`、`log_dir`、`[tls]` 的文件路径和 `reload_interval_days` | `systemctl restart network-relay`，所有设备会断开并自动重连 |
+| `[[user]]`, `[relay]` (except `max_tunnels`), `[debug]`, `[web]`, certificate files | `systemctl reload network-relay`; existing connections are not affected (except for deleted users) |
+| `listen`, `max_tunnels`, `log_dir`, the file paths and `reload_interval_days` in `[tls]` | `systemctl restart network-relay`; all devices disconnect and reconnect automatically |
 
-配置解析或校验失败时，reload 不会生效，日志里写明原因。网站读取失败时保留旧网站，其他合法配置变更仍生效；证书更新失败时保留旧证书。
+If parsing or validating the configuration fails, the reload does not take effect and the reason is logged. If reading the website fails, the old website is kept and other valid configuration changes still apply; if updating the certificate fails, the old certificate is kept.
 
-## 命令
+## Commands
 
-所有命令都有 `--help`。
+Every command has `--help`.
 
 ### `network-relay serve`
 
-运行中继。systemd 用的就是它。
+Runs the relay. This is what systemd uses.
 
-| 参数 | 说明 |
+| Option | Description |
 |---|---|
-| `-c`、`--config 路径` | 配置文件，默认 `/etc/network-relay/relay.toml` |
-| `--check` | 只检查配置、证书和网站能不能读，然后退出。证书已过期或尚未生效时报错（正常启动时只警告，好让之后的续期自动修复） |
+| `-c`, `--config path` | Configuration file, default `/etc/network-relay/relay.toml` |
+| `--check` | Only check that the configuration, certificate and website can be read, then exit. An expired or not-yet-valid certificate is an error (a normal start only warns, so that a later renewal can fix it automatically) |
 
-环境变量 `RUST_LOG=debug` 可以看到更详细的日志（每个转发连接的开始和结束）。
+The environment variable `RUST_LOG=debug` shows more detailed logs (the start and end of every relayed connection).
 
 ### `network-relay passwd`
 
-生成一个用户：随机密码（144 位随机数）和它的哈希。
+Creates a user: a random password (144 random bits) and its hash.
 
-| 参数 | 说明 |
+| Option | Description |
 |---|---|
-| `--name 名字` | 用户名 |
-| `--stdin` | 不生成随机密码，从标准输入读取你自己的密码（至少 12 个字符） |
+| `--name name` | User name |
+| `--stdin` | Instead of generating a random password, read your own from standard input (at least 12 characters) |
 
 ### `network-relay profile`
 
-生成给 iPhone、iPad、Mac 用的描述文件（`.mobileconfig`）。
+Generates a profile (`.mobileconfig`) for iPhone, iPad and Mac.
 
-| 参数 | 说明 |
+| Option | Description |
 |---|---|
-| `--host 域名` | 中继的域名（证书上的名字） |
-| `--user 名字` | 用户名 |
-| `--password 密码` | 密码；不写时运行后提示输入（推荐，不会留在 shell 历史里） |
-| `--port 端口` | 不是 443 时写 |
-| `--match-domain 域名` | 这个域名和它的子域名走中继。可以写多个；它和 `--match-fqdn` 都不写时，全部流量走中继（排除项除外） |
-| `--exclude-domain 域名` | 这个域名和它的子域名不走中继。可以写多个 |
-| `--match-fqdn 主机名` | 只有精确匹配的主机名走中继，不包含其子域名。可以写多个；iOS 18.4、macOS 15.4 起支持 |
-| `--exclude-fqdn 主机名` | 精确排除这个主机名，不包含其子域名。可以写多个；iOS 18.4、macOS 15.4 起支持 |
-| `--ui-toggle-enabled [true/false]` | 是否允许用户在设置里停用中继；iOS/macOS 26 起支持。不写时使用系统默认值 `true`，只写开关相当于 `true` |
-| `--allow-dns-failover [true/false]` | 是否允许设备回退到默认系统 DNS 解析器；iOS/macOS 26 起支持。不写时使用系统默认值 `false`，只写开关相当于 `true` |
-| `--relay-uuid UUID` | 指定托管 App 路由所用的 Relay UUID；用户注册（user enrollment）需要此字段。须与 MDM 的 App 关联配置一致；Apple 未在 macOS 上提供此字段 |
-| `--name 名称` | 在设置里显示的名字，默认是域名 |
-| `--udp-template 路径` | 改过 `relay.udp_template` 时写同样的值 |
-| `--no-http3` | 只用 HTTP/2（TCP）。UDP 被封的网络里可以试 |
-| `--no-http2` | 只用 HTTP/3 |
-| `-o`、`--out 文件` | 保存到这个文件，默认 `域名-用户名.mobileconfig`（权限 600） |
-| `--publish` | 放进 `[web] root` 目录，文件名随机、权限 600，并打印下载链接。要 `systemctl reload` 后才能下载；装好后删掉并再次 reload |
-| `--config 路径` | `--publish` 读哪个配置文件，默认 `/etc/network-relay/relay.toml` |
+| `--host domain` | The relay's domain (the name on the certificate) |
+| `--user name` | User name |
+| `--password password` | Password; if omitted, it is prompted for when the command runs (recommended: it stays out of the shell history) |
+| `--port port` | Needed when not 443 |
+| `--match-domain domain` | This domain and its subdomains go through the relay. Can be given more than once; when neither this nor `--match-fqdn` is given, all traffic goes through the relay (except exclusions) |
+| `--exclude-domain domain` | This domain and its subdomains do not go through the relay. Can be given more than once |
+| `--match-fqdn hostname` | Only this exact host name goes through the relay, not its subdomains. Can be given more than once; supported from iOS 18.4 and macOS 15.4 |
+| `--exclude-fqdn hostname` | Exclude exactly this host name, not its subdomains. Can be given more than once; supported from iOS 18.4 and macOS 15.4 |
+| `--ui-toggle-enabled [true/false]` | Whether the user may turn the relay off in Settings; supported from iOS/macOS 26. When omitted, the system default `true` applies; the flag alone means `true` |
+| `--allow-dns-failover [true/false]` | Whether the device may fall back to the default system DNS resolver; supported from iOS/macOS 26. When omitted, the system default `false` applies; the flag alone means `true` |
+| `--relay-uuid UUID` | The Relay UUID used for managed app routing; user enrollment requires it. It must match the app association configured in MDM; Apple does not offer this key on macOS |
+| `--name name` | Name shown in Settings, default the domain |
+| `--udp-template path` | If `relay.udp_template` was changed, give the same value |
+| `--no-http3` | Use HTTP/2 (TCP) only. Worth trying on networks that block UDP |
+| `--no-http2` | Use HTTP/3 only |
+| `-o`, `--out file` | Save to this file, default `domain-user.mobileconfig` (mode 600) |
+| `--publish` | Put it in the `[web] root` directory with a random file name and mode 600, and print the download link. It can be downloaded only after `systemctl reload`; after installing, delete it and reload again |
+| `--config path` | Which configuration file `--publish` reads, default `/etc/network-relay/relay.toml` |
 
-描述文件的内容：
+What the profile contains:
 
-- 一个 `com.apple.relay.managed` 负载（iOS 17、macOS 14 起，可以手动安装，不需要监管）。
-- `HTTP3RelayURL` 和 `HTTP2RelayURL` 都是 URI 模板，比如 `https://relay.qolita.com/.well-known/masque/udp/{target_host}/{target_port}/`。
-- `AdditionalHTTPHeaderFields` 里是 `Authorization: Basic ...`，设备每个请求都会带上。**所以描述文件里有密码**，不要随便传给别人。
-- 标识符由域名和用户名用点拼接而成：同一域名、同一用户重新生成的描述文件，安装时会替换旧的。所以用户名里的点可能和域名“接上”：域名 `relay.example` 加用户 `com.alice`，与域名 `relay.example.com` 加用户 `alice` 得到同一个标识，后装的会替换先装的。给同一台设备装多个中继时，用户名不要用这种以点分段的形式。（为了让已装的描述文件仍能被替换，标识的拼法保持不变。）
-- 新选项只有在显式指定时才写入描述文件。请按设备版本选择：例如仅使用 `--match-fqdn` 的配置不适用于不支持该字段的旧系统。域名统一转成小写并去掉末尾的点。
-- DNS 回退允许设备使用本地网络的系统 DNS；希望 DNS 始终经过中继时，保留默认值。
-- 保存和覆盖均采用权限 600 的临时文件原子替换，拒绝覆盖符号链接。以运行中继服务的用户生成发布文件，保证服务能读取它。
+- One `com.apple.relay.managed` payload (iOS 17 and macOS 14 or later; can be installed by hand, no supervision needed).
+- `HTTP3RelayURL` and `HTTP2RelayURL` are both URI templates, such as `https://relay.qolita.com/.well-known/masque/udp/{target_host}/{target_port}/`.
+- `AdditionalHTTPHeaderFields` holds `Authorization: Basic ...`, which the device sends with every request. **So the profile contains the password**; do not hand it to others.
+- The identifier is the domain and the user name joined with a dot: a profile regenerated for the same domain and user replaces the old one when installed. This means a dot in the user name can "join up" with the domain: domain `relay.example` with user `com.alice` gives the same identifier as domain `relay.example.com` with user `alice`, and whichever is installed later replaces the other. When installing several relays on the same device, do not use dotted user names like this. (The way the identifier is built stays unchanged so that profiles already installed can still be replaced.)
+- New options are written into the profile only when given explicitly. Choose them according to the device's OS version: for example, a configuration that uses only `--match-fqdn` does not suit older systems that do not support that key. Domains are converted to lower case and trailing dots are removed.
+- DNS failover lets the device use the local network's system DNS; to keep DNS going through the relay at all times, leave the default.
+- Saving and overwriting both use atomic replacement with a mode-600 temporary file, and symlinks are never overwritten. Generate published files as the user that runs the relay service, so that the service can read them.
 
-例如，只中继 `api.example.com`，同时允许用户手动停用（设备需要 iOS/macOS 26 或更新）：
+For example, to relay only `api.example.com` while letting the user turn the relay off by hand (the device needs iOS/macOS 26 or later):
 
 ```bash
 network-relay profile --host relay.example.com --user iphone --match-fqdn api.example.com --ui-toggle-enabled true
@@ -150,18 +150,18 @@ network-relay profile --host relay.example.com --user iphone --match-fqdn api.ex
 
 ### `network-relay check`
 
-像设备一样测试一个正在运行的中继：HTTP/3、HTTP/2、HTTP/1.1 上各测一次 TCP（经 CONNECT 请求一个网页）和 UDP（经 CONNECT-UDP 查一次 DNS），再确认没有密码时 CONNECT 得到 404。全部通过时退出码是 0。
+Tests a running relay the way a device would: on each of HTTP/3, HTTP/2 and HTTP/1.1 it tests TCP once (fetching a web page through a CONNECT request) and UDP once (a DNS query through CONNECT-UDP), then confirms that CONNECT without a password gets 404. Exits with 0 when everything passes.
 
-| 参数 | 默认 | 说明 |
+| Option | Default | Description |
 |---|---|---|
-| `--server 域名` | — | 中继的域名 |
-| `--address IP` | 解析域名 | 直接连这个 IP（可以写多个） |
-| `--port 端口` | `443` | |
-| `--user 名字` | — | |
-| `--password 密码` | 提示输入 | |
-| `--tcp-target 主机:端口` | `example.com:80` | 经 TCP 中继访问的网站（发一个 HTTP 请求，显示第一行回答） |
-| `--udp-target 主机:端口` | `1.1.1.1:53` | 经 UDP 中继查询的 DNS 服务器 |
-| `--dns-name 域名` | `example.com` | 查询的域名 |
-| `--udp-template 路径` | 默认模板 | 改过 `relay.udp_template` 时写同样的值 |
-| `--ca 文件` | 系统根证书 | 只信任这个 CA（测试用） |
-| `--timeout 秒` | `10` | 每一步的超时 |
+| `--server domain` | — | The relay's domain |
+| `--address IP` | resolve the domain | Connect directly to this IP (can be given more than once) |
+| `--port port` | `443` | |
+| `--user name` | — | |
+| `--password password` | prompted for | |
+| `--tcp-target host:port` | `example.com:80` | Website reached through the TCP relay (sends one HTTP request and shows the first line of the response) |
+| `--udp-target host:port` | `1.1.1.1:53` | DNS server queried through the UDP relay |
+| `--dns-name domain` | `example.com` | Name to query |
+| `--udp-template path` | default template | If `relay.udp_template` was changed, give the same value |
+| `--ca file` | system root certificates | Trust only this CA (for testing) |
+| `--timeout seconds` | `10` | Timeout for each step |

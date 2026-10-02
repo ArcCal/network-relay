@@ -1,56 +1,56 @@
-# Debian 12/13 x64：下载源码后自动安装
+# Debian 12/13 x64: automatic install from the downloaded source
 
-适用于 Debian 12 或 13、x86_64、systemd VPS（脚本文件名仍是 `install-debian13.sh`）。源码可以从 GitHub 下载 ZIP 后上传、解压；VPS 无需登录 GitHub。编译时仍需访问 Debian 软件源、Rust 官方下载站、crates.io 和公开依赖仓库。
+For a Debian 12 or 13, x86_64, systemd VPS (the script is still called `install-debian13.sh`). The source can be downloaded from GitHub as a ZIP, uploaded and extracted; the VPS does not need to log in to GitHub. Building still needs access to the Debian package mirrors, the official Rust download site, crates.io and the public dependency repositories.
 
-## 已有本次交付的 mobileconfig
+## You already have the mobileconfig delivered with this release
 
-1. 将 `relay.qolita.com` 的 A 记录指向 VPS 公网 IPv4。仅在 IPv6 可用时设置 AAAA；Cloudflare 选择“仅 DNS”。
-2. 云服务商安全组放行 TCP 80、TCP 443、UDP 443，保留 SSH 端口。
-3. 将源码 ZIP 解压，并将单独交付的 `relay.qolita.com-iphone.mobileconfig` 上传到 VPS 的 `/root/`。该文件包含随机账号密码，不在 Git 仓库中。
-4. 在解压的源码目录中执行：
+1. Point the A record of `relay.qolita.com` at the VPS's public IPv4 address. Set an AAAA record only if IPv6 works; in Cloudflare choose "DNS only".
+2. In the cloud provider's security group, allow TCP 80, TCP 443 and UDP 443, and keep the SSH port.
+3. Extract the source ZIP, and upload the separately delivered `relay.qolita.com-iphone.mobileconfig` to `/root/` on the VPS. That file contains a random user name and password and is not in the Git repository.
+4. In the extracted source directory, run:
 
 ```bash
 sudo bash deploy/install-debian13.sh --profile /root/relay.qolita.com-iphone.mobileconfig
 ```
 
-可以附加 `--email 你的邮箱` 接收证书账户相关邮件；不提供时创建无邮箱 ACME 账户。执行自动证书申请流程会调用 certbot 的 `--agree-tos`，即接受 Let's Encrypt 服务条款。若已有公共 CA 的证书，可以改用 `--cert /路径/fullchain.pem --key /路径/privkey.pem`：路径按原样写进配置，不会展开符号链接，所以 Let's Encrypt 的 `live/` 路径续期后仍然有效。以后升级不用再带这两个参数，脚本沿用配置里的证书，不会改用 certbot；带了不同的路径会被拒绝，要换证书请先改 `/etc/network-relay/relay.toml` 的 `[tls]`。
+You can add `--email you@example.com` to receive mail about the certificate account; without it, an ACME account with no email is created. The automatic certificate step calls certbot with `--agree-tos`, which means accepting the Let's Encrypt terms of service. If you already have a certificate from a public CA, use `--cert /path/fullchain.pem --key /path/privkey.pem` instead: the paths are written into the configuration as given, without resolving symlinks, so Let's Encrypt `live/` paths keep working after renewal. Later upgrades do not need these two options again; the script keeps the certificate in the configuration and does not switch to certbot. Different paths are refused; to change the certificate, first edit `[tls]` in `/etc/network-relay/relay.toml`.
 
-安装完成后，把**同一份** mobileconfig 安装到 iPhone/iPad/Mac。不要另生成不同密码的文件替换它；设备和服务器必须使用同一组凭据。安装副本也保存在 `/etc/network-relay/device.mobileconfig`，权限 600，不会发布到网站。
+After installation, install **the same** mobileconfig on the iPhone/iPad/Mac. Do not replace it with a separately generated file with a different password; the device and the server must use the same credentials. A copy is also kept at `/etc/network-relay/device.mobileconfig`, mode 600, and is not published on the website.
 
-## 没有预先生成的 mobileconfig
+## No pre-generated mobileconfig
 
 ```bash
 sudo bash deploy/install-debian13.sh --domain relay.qolita.com
 ```
 
-脚本会生成新随机密码，创建 `iphone` 账号，并在 `/etc/network-relay/device.mobileconfig` 输出与其一致的分流文件。下载这份新文件到设备安装。此模式的随机密码与其他独立生成的 profile 不同。
+The script generates a new random password, creates the `iphone` user, and writes a matching profile to `/etc/network-relay/device.mobileconfig`. Download this new file to the device and install it. The random password in this mode differs from any other independently generated profile.
 
-默认分流 Google/Gemini（含 Gmail、Drive、YouTube）、Claude、X/Grok、ChatGPT 等服务，使用非空 `MatchDomains`；规则和边界见 [域名表说明](../deploy/domains/README.md)。新生成文件可用 `--domains 自己的列表.txt` 调整；导入文件时直接保留其规则。
+By default it relays Google/Gemini (including Gmail, Drive and YouTube), Claude, X/Grok, ChatGPT and similar services, with a non-empty `MatchDomains`; see the [domain list notes](../deploy/domains/README.md) for the rules and their limits. For a newly generated file, adjust the list with `--domains your-list.txt`; an imported file keeps its own rules.
 
-## 脚本完成的步骤
+## What the script does
 
-- 检查系统、并发安装锁、域名及端口占用；不会停止占用端口的其他服务。
-- 安装软件依赖和 Rust 工具链，按 `Cargo.lock` 编译源码。默认单进程编译并关闭构建 LTO，以降低小 VPS 的峰值内存需求；建议至少 2 GiB 内存及 3 GiB 可用磁盘。可用 `--jobs 2` 提高并发。
-- 自动申请/复用 Let's Encrypt 证书，启用 `certbot.timer`，安装续期后重载中继的 hook。TCP 80 须长期可用以续期。
-- 若 UFW 已启用，添加 TCP 80 和中继 TCP/UDP 端口规则；不会清空防火墙规则。自行配置的 nftables/iptables 和云安全组仍需你放行相应端口。
-- 创建默认网站、仅保存 Argon2id 哈希的服务器配置，以及权限 600 的设备描述文件；保留程序默认的目标地址限制。
-- 安装 systemd 单元、开机启动和 UDP 缓冲区配置。现有较大的缓冲区设置不会被调小。
-- 原子替换程序并验证本机 HTTPS；失败时恢复安装前文件及原来的运行/启用状态。文件备份在 `/etc/network-relay/backups/时间戳/`，对应路径记录在 `manifest.json` 中。软件包安装、证书签发和 UFW 放行不会随此回退而撤销。
-- 运行三种 HTTP 版本的 TCP/UDP 联网自检。若外部测试目标不可达，自检返回失败并保留已启动服务，便于诊断；本机通过不能代替外部网络的 UDP 443 检查。
+- Checks the system, the lock against concurrent installs, the domain and port usage; it does not stop other services that hold the ports.
+- Installs the dependencies and the Rust toolchain and builds the source as pinned by `Cargo.lock`. By default it builds with one job and turns off LTO to lower the peak memory need on small VPSes; at least 2 GiB of memory and 3 GiB of free disk are recommended. Use `--jobs 2` to build in parallel.
+- Obtains or reuses a Let's Encrypt certificate, enables `certbot.timer`, and installs a hook that reloads the relay after renewal. TCP 80 must stay open for renewals.
+- If UFW is enabled, adds rules for TCP 80 and the relay's TCP/UDP port; it never flushes firewall rules. You still need to open the ports in your own nftables/iptables rules and in the cloud security group.
+- Creates the default website, a server configuration that stores only the Argon2id hash, and a device profile with mode 600; keeps the program's default destination restrictions.
+- Installs the systemd unit, enables it at boot, and installs the UDP buffer settings. Existing larger buffer settings are not lowered.
+- Replaces the program atomically and checks HTTPS on the local machine; on failure, restores the files from before the installation and the previous running/enabled state. Backups are kept in `/etc/network-relay/backups/timestamp/`, with the original paths recorded in `manifest.json`. Package installation, certificate issuance and UFW rules are not undone by this rollback.
+- Runs the networked TCP/UDP self-check over all three HTTP versions. If the external test targets are unreachable, the self-check fails but the started service is left running for diagnosis; passing locally does not replace checking UDP 443 from an outside network.
 
-不传 `--binary` 时从源码编译；已有同一 Debian 版本的 x64 编译产物时，可传 `--binary /路径/network-relay`。
+Without `--binary` it builds from source; if you already have an x64 build for the same Debian version, pass `--binary /path/network-relay`.
 
-## 更新与重复执行
+## Updating and re-running
 
-由本脚本创建的安装，再次运行同一命令会保留密码及配置，包括手工添加的用户或设置。也可以只运行：
+For an installation this script created, running the same command again keeps the password and the configuration, including users or settings added by hand. You can also just run:
 
 ```bash
 sudo bash deploy/install-debian13.sh
 ```
 
-它会从 `/etc/network-relay/device.mobileconfig` 恢复安装身份，编译当前下载的源码并更新程序。提供不同域名、端口、用户名或密码时会拒绝覆盖。
+It recovers the installation's identity from `/etc/network-relay/device.mobileconfig`, builds the currently downloaded source and updates the program. It refuses to overwrite anything if given a different domain, port, user name or password.
 
-脚本不会接管没有该 profile 的旧手工安装。旧安装可以保留现有配置并单独更新二进制；修改前先备份：
+The script does not take over an older manual installation that has no such profile. An older installation can keep its configuration and update only the binary; back it up before changing anything:
 
 ```bash
 cargo build --locked --release
@@ -60,7 +60,7 @@ sudo mv /usr/local/bin/network-relay.new /usr/local/bin/network-relay
 sudo systemctl restart network-relay
 ```
 
-## 检查运行状态
+## Checking that it runs
 
 ```bash
 systemctl status network-relay --no-pager
@@ -68,4 +68,4 @@ journalctl -u network-relay -n 80 --no-pager
 systemctl list-timers certbot.timer
 ```
 
-脚本、真实 profile/config 生成和解析、重复执行、端口冲突与启动失败回退均有自动化测试；其中包管理、ACME 和 systemd 操作使用模拟命令，避免在测试机上更改系统。实际证书签发和云防火墙连通性须在你的 VPS 上验证。
+The script, generating and parsing real profiles and configurations, re-running, port conflicts and rollback on startup failure all have automated tests; package management, ACME and systemd operations use mock commands so that the test machine's system is not changed. Actual certificate issuance and cloud firewall connectivity must be verified on your VPS.

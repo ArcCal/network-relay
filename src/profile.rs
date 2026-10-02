@@ -314,8 +314,8 @@ mod tests {
             opts.name = Some(name.into());
             assert!(generate(&opts).is_err(), "{name:?}");
         }
-        opts.name = Some("中继 & <名字>\n".into());
-        assert!(generate(&opts).unwrap().contains("中继 &amp; &lt;名字&gt;"));
+        opts.name = Some("Relé & <Näme>\n".into());
+        assert!(generate(&opts).unwrap().contains("Relé &amp; &lt;Näme&gt;"));
         opts.udp_template = "elsewhere/udp/{target_host}/{target_port}".into();
         assert!(generate(&opts).is_err(), "a missing slash must not change the relay host");
         opts.udp_template = DEFAULT_UDP_PATH_TEMPLATE.into();

@@ -1,12 +1,12 @@
-# 部署补充
+# Deployment notes
 
-Debian 12/13 x64 从下载的源码自动安装、申请证书及生成分流描述文件，见[自动部署说明](deploy-debian13.md)。
+For an automatic install on Debian 12/13 x64 from the downloaded source, including certificates and a domain-based profile, see the [automatic deployment guide](deploy-debian13.md).
 
-README 的[一键安装](../README.md#方式一debian-1213-一键安装推荐)和[手动安装](../README.md#方式二手动安装)是完整的部署步骤。这里是其中提到的几种其他做法。
+The README's [one-step install](../README.md#option-1-one-step-install-on-debian-1213-recommended) and [manual install](../README.md#option-2-manual-install) are the complete deployment steps. This page covers a few alternatives mentioned there.
 
-## 从源码编译
+## Building from source
 
-没有发布版本，或者想用最新代码时，在服务器上自己编译。需要约 1 GB 内存；内存小的服务器可能要先加 swap。
+When there is no release, or you want the latest code, build on the server yourself. It needs about 1 GB of memory; a server with little memory may need swap first.
 
 ```bash
 apt install -y build-essential git
@@ -20,7 +20,7 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 source "$HOME/.cargo/env"
 ```
 
-仓库是私有的。最简单的是在电脑浏览器登录 GitHub，下载 `main` 分支的 ZIP 上传到服务器解压（见 README [一键安装第 2 步](../README.md#第-2-步下载源码并上传)），然后跳到下面的 `cd` 那一步。也可以在服务器上用 GitHub 官方命令行登录后克隆：
+The repository is private. The simplest way is to log in to GitHub in your computer's browser, download the ZIP of the `main` branch, upload it to the server and extract it (see the README's [one-step install, step 2](../README.md#step-2-download-the-source-and-upload-it)), then skip to the `cd` step below. Alternatively, log in with GitHub's official command-line tool on the server and clone:
 
 ```bash
 apt install -y gh
@@ -30,7 +30,7 @@ apt install -y gh
 gh auth login
 ```
 
-依次选 `GitHub.com` → `HTTPS` → `Y` → `Login with a web browser`，它显示一个 8 位代码；在**电脑或手机的浏览器**里打开 https://github.com/login/device 输入代码，点 Authorize。服务器上看到 `Logged in as ...` 后：
+Choose `GitHub.com` → `HTTPS` → `Y` → `Login with a web browser`; it shows an 8-character code. Open https://github.com/login/device in a browser **on your computer or phone**, enter the code and click Authorize. Once the server shows `Logged in as ...`:
 
 ```bash
 gh repo clone ArcCal/network-relay
@@ -48,19 +48,19 @@ cargo build --release
 install -m 755 target/release/network-relay /usr/local/bin/
 ```
 
-之后照 README [手动安装](../README.md#方式二手动安装)的第 6 步（伪装网站）继续。第 9、10 步用到的 `deploy/` 目录就在这个源码目录里。
+Then continue with step 6 (the decoy website) of the README's [manual install](../README.md#option-2-manual-install). The `deploy/` directory used in steps 9 and 10 is in this source directory.
 
-更新：
+To update:
 
 ```bash
 cd /root/network-relay && git pull && cargo build --release && install -m 755 target/release/network-relay /usr/local/bin/ && systemctl restart network-relay
 ```
 
-## 在 Mac 上自检
+## Self-check from a Mac
 
-`network-relay check` 在服务器上跑，测的是“服务器自己连自己”。想确认从外面（比如家里的网络）也能连通，可以在 Mac 上跑同一个命令。
+`network-relay check` run on the server tests "the server connecting to itself". To confirm the relay is also reachable from outside (from your home network, say), run the same command on a Mac.
 
-Mac 上要先编译（和编译 masque-vpn 的方法一样）：
+Build it on the Mac first (the same way as building masque-vpn):
 
 ```bash
 xcode-select --install
@@ -78,39 +78,39 @@ source "$HOME/.cargo/env"
 git clone https://github.com/ArcCal/network-relay
 ```
 
-仓库是私有的：提示输入时，用户名填 GitHub 用户名，密码填一个 GitHub personal access token（GitHub 网页的 Settings → Developer settings 里创建，能读这个仓库即可）。不想用 git 的话，在浏览器里登录 GitHub，打开仓库页面，Code → Download ZIP，解压。
+The repository is private: when prompted, enter your GitHub user name as the user name and a GitHub personal access token as the password (create one under Settings → Developer settings on the GitHub website; read access to this repository is enough). If you would rather not use git, log in to GitHub in a browser, open the repository page, choose Code → Download ZIP, and extract it.
 
 ```bash
 cd network-relay && cargo build --release
 ```
 
-然后（**先退出 Clash、Stash 之类的代理软件**，否则测的是它们）：
+Then (**quit proxy apps such as Clash or Stash first**, or you will be testing them):
 
 ```bash
 ./target/release/network-relay check --server relay.qolita.com --user macbook
 ```
 
-- 服务器只能在 Linux 上运行，但 `check` 和 `profile` 两个命令在 Mac 上也能用。
-- 想绕过 DNS、直接连某个 IP：加 `--address 服务器IP`。
+- The server runs only on Linux, but the `check` and `profile` commands also work on a Mac.
+- To skip DNS and connect to a specific IP, add `--address server-IP`.
 
-## 证书
+## Certificates
 
-### 80 端口用不了：用 DNS 验证
+### Port 80 unavailable: use DNS validation
 
-`certbot --standalone` 需要 TCP 80。80 端口被占用或被封时，改用 DNS 验证，不需要任何端口：
+`certbot --standalone` needs TCP 80. When port 80 is taken or blocked, use DNS validation instead, which needs no ports:
 
 ```bash
 certbot certonly --manual --preferred-challenges dns -d relay.qolita.com
 ```
 
-按提示在域名的 DNS 里加一条 `_acme-challenge.relay.qolita.com` 的 TXT 记录，等一两分钟再按回车。
+As prompted, add a TXT record for `_acme-challenge.relay.qolita.com` in the domain's DNS, wait a minute or two, then press Enter.
 
-- 手动 DNS 验证**不能自动续期**，90 天内要再做一次。域名在 Cloudflare 上的话，可以装 `python3-certbot-dns-cloudflare`，用 Cloudflare 的 API Token 自动完成，能自动续期。
-- 证书文件的位置和 `--standalone` 一样，配置不用改。
+- Manual DNS validation **does not renew automatically**; you have to do it again within 90 days. If the domain is on Cloudflare, you can install `python3-certbot-dns-cloudflare` and let it complete the challenge with a Cloudflare API token, which does renew automatically.
+- The certificate files end up in the same place as with `--standalone`, so the configuration does not change.
 
-### 续期后多久生效
+### When a renewal takes effect
 
-中继默认每天凌晨 3 点（系统时区）重新读取证书文件；想立刻生效就 `systemctl reload network-relay`。也可以让 certbot 每次续期后自动通知中继：
+By default the relay rereads the certificate files every day at 3 a.m. (system time zone); for an immediate effect, run `systemctl reload network-relay`. You can also have certbot notify the relay after every renewal:
 
 ```bash
 printf '#!/bin/sh\nsystemctl reload network-relay\n' > /etc/letsencrypt/renewal-hooks/deploy/network-relay
@@ -120,9 +120,9 @@ printf '#!/bin/sh\nsystemctl reload network-relay\n' > /etc/letsencrypt/renewal-
 chmod 755 /etc/letsencrypt/renewal-hooks/deploy/network-relay
 ```
 
-## 服务器上的防火墙
+## Firewall on the server
 
-云服务商的防火墙之外，服务器上如果开着 ufw：
+Besides the cloud provider's firewall, if ufw is enabled on the server:
 
 ```bash
 ufw allow 443/tcp
@@ -136,27 +136,27 @@ ufw allow 443/udp
 ufw allow 80/tcp
 ```
 
-用 nftables 或 iptables 自己写规则的，同样放行 TCP 80、TCP 443、UDP 443。
+If you write your own nftables or iptables rules, allow TCP 80, TCP 443 and UDP 443 in the same way.
 
-## 端口不是 443
+## A port other than 443
 
-`listen` 可以改成别的端口，比如 `listen = "[::]:8443"`，然后：
+`listen` can be changed to another port, such as `listen = "[::]:8443"`. Then:
 
-- 云防火墙放行 TCP 和 UDP 的这个端口；
-- 生成描述文件时加 `--port 8443`，自检时也加 `--port 8443`。
+- allow that port on both TCP and UDP in the cloud firewall;
+- add `--port 8443` when generating profiles and when running the self-check.
 
-用 443 最好：很多网络只放行 443，而且看起来就是一个普通网站。
+443 is best: many networks only allow 443, and it looks like an ordinary website.
 
-## 和别的网站共用一台服务器
+## Sharing a server with other websites
 
-中继要独占 TCP 443 和 UDP 443。服务器上已经有 nginx 之类占着 443 时，最简单的是给中继另开一台服务器或另一个 IP。中继自带的伪装网站可以放任意静态网页（`[web] root` 目录），很多情况下不再需要 nginx。
+The relay needs TCP 443 and UDP 443 to itself. If nginx or similar already holds 443 on the server, the simplest fix is to give the relay its own server or IP address. The relay's built-in decoy website can serve any static pages (the `[web] root` directory), so in many cases nginx is no longer needed.
 
-## systemd 服务做了什么
+## What the systemd service does
 
-`deploy/network-relay.service`：
+`deploy/network-relay.service`:
 
-- 以 root 启动，只是为了能读 certbot 的私钥（只有 root 能读）；root 的其他权限都去掉了，只保留绑定 443 端口的权限（`CapabilityBoundingSet=CAP_NET_BIND_SERVICE`）。
-- 系统目录只读、看不到 /home、独立的 /tmp，等等。
-- `systemctl reload` 发送 SIGHUP，重新读取配置。
-- 打开文件数上限设为 1048576：每个被转发的连接占一个。
-- 日志进 journal；配置了 `log_dir = "/var/log/network-relay"` 时另存文件（这个目录由 systemd 创建）。
+- Starts as root only so it can read certbot's private key (readable only by root); all other root privileges are dropped, keeping only the permission to bind port 443 (`CapabilityBoundingSet=CAP_NET_BIND_SERVICE`).
+- System directories are read-only, /home is hidden, /tmp is private, and so on.
+- `systemctl reload` sends SIGHUP, which rereads the configuration.
+- The open-file limit is 1048576: each relayed connection uses one.
+- Logs go to the journal; with `log_dir = "/var/log/network-relay"` configured they are also saved to files (systemd creates that directory).

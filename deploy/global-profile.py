@@ -103,27 +103,30 @@ def find_binary(given):
     for candidate in candidates:
         if candidate and Path(candidate).is_file():
             return Path(candidate)
-    raise SystemExit('找不到 network-relay 程序：先 cargo build --release，或用 --binary 指定。')
+    raise SystemExit('network-relay program not found: run cargo build --release first, '
+                     'or pass it with --binary.')
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
-    parser.add_argument('--host', required=True, help='中继域名')
+    parser.add_argument('--host', required=True, help='relay domain')
     parser.add_argument('--user', required=True)
-    parser.add_argument('--password', help='不写则提示输入（推荐，不会留在 shell 历史里）')
+    parser.add_argument('--password', help='prompted for if omitted (recommended: it stays out of the shell history)')
     parser.add_argument('--port', type=int, default=443)
-    parser.add_argument('--out', type=Path, help='默认：<域名>-<用户>.mobileconfig')
-    parser.add_argument('--name', help='在设置里显示的名字')
+    parser.add_argument('--out', type=Path, help='default: <host>-<user>.mobileconfig')
+    parser.add_argument('--name', help='name shown in Settings')
     parser.add_argument('--services', type=Path, action='append',
-                        help='域名列表文件，可重复；默认 domains/google-ai-social.txt 和 domains/global-services.txt')
+                        help='domain list file, repeatable; '
+                        'default domains/google-ai-social.txt and domains/global-services.txt')
     gfw = parser.add_mutually_exclusive_group()
-    gfw.add_argument('--gfwlist-file', type=Path, help='使用已下载的 gfwlist，而不是下载')
-    gfw.add_argument('--no-gfwlist', action='store_true', help='只用服务列表，不加入 gfwlist')
+    gfw.add_argument('--gfwlist-file', type=Path, help='use an already downloaded gfwlist instead of downloading it')
+    gfw.add_argument('--no-gfwlist', action='store_true', help='use only the service lists, without the gfwlist')
     parser.add_argument('--gfwlist-url', default=GFWLIST_URL)
     parser.add_argument('--ui-toggle-enabled', choices=['true', 'false'], default='false',
-                        help='是否允许在设置里关闭中继（iOS/macOS 26+），默认 false')
-    parser.add_argument('--allow-dns-failover', choices=['true', 'false'], help='默认不写，用系统默认值（关闭）')
-    parser.add_argument('--binary', type=Path, help='network-relay 程序，默认 target/release 或 PATH')
+                        help='whether the relay can be turned off in Settings (iOS/macOS 26+), default false')
+    parser.add_argument('--allow-dns-failover', choices=['true', 'false'],
+                        help='omitted by default, leaving the system default (off)')
+    parser.add_argument('--binary', type=Path, help='network-relay program, default target/release or PATH')
     args = parser.parse_args(argv)
 
     services = []
@@ -139,7 +142,7 @@ def main(argv=None):
     host = args.host.lower().removesuffix('.')
     domains = [d for d in domains if d != host]
 
-    password = args.password or getpass.getpass('密码：')
+    password = args.password or getpass.getpass('Password: ')
     out = args.out or Path(f'{host}-{args.user}.mobileconfig')
     command = [str(find_binary(args.binary)), 'profile', '--host', host, '--user', args.user, '--port', str(args.port),
                '--ui-toggle-enabled', args.ui_toggle_enabled, '--exclude-domain', host, '--out', str(out)]
@@ -151,9 +154,10 @@ def main(argv=None):
         command += ['--match-domain', domain]
     # The password goes through standard input, not the process list.
     subprocess.run(command, input=password + '\n', text=True, check=True, stdout=subprocess.DEVNULL)
-    print(f'已写入 {out}（含密码，权限 600，装好后删除）：{len(domains)} 个匹配域名，排除 {host}。')
+    print(f'Wrote {out} (contains the password, mode 600; delete it after installing): '
+          f'{len(domains)} matched domains, {host} excluded.')
     for name, number in stats.items():
-        print(f'  gfwlist：{name}：{number}')
+        print(f'  gfwlist: {name}: {number}')
     return 0
 
 

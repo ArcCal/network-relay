@@ -16,7 +16,7 @@ use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 
 use crate::auth::basic_authorization;
-use crate::proto::{UriTemplate, DEFAULT_UDP_PATH_TEMPLATE};
+use crate::proto::UriTemplate;
 
 /// Reverse-DNS prefix of the payload identifiers.
 const IDENTIFIER_PREFIX: &str = "com.github.arccal.network-relay";
@@ -65,6 +65,7 @@ pub struct ProfileOptions {
 }
 
 impl ProfileOptions {
+    #[cfg(test)]
     pub fn new(host: &str, user: &str, password: &str) -> Self {
         Self {
             host: host.to_string(),
@@ -73,7 +74,7 @@ impl ProfileOptions {
             password: Some(password.to_string()),
             identity: None,
             identity_asset: None,
-            udp_template: DEFAULT_UDP_PATH_TEMPLATE.to_string(),
+            udp_template: crate::proto::DEFAULT_UDP_PATH_TEMPLATE.to_string(),
             match_domains: Vec::new(),
             excluded_domains: Vec::new(),
             match_fqdns: Vec::new(),
@@ -552,7 +553,7 @@ mod tests {
         assert!(generate(&opts).unwrap().contains("Relé &amp; &lt;Näme&gt;"));
         opts.udp_template = "elsewhere/udp/{target_host}/{target_port}".into();
         assert!(generate(&opts).is_err(), "a missing slash must not change the relay host");
-        opts.udp_template = DEFAULT_UDP_PATH_TEMPLATE.into();
+        opts.udp_template = crate::proto::DEFAULT_UDP_PATH_TEMPLATE.into();
         opts.match_domains = vec!["example.com..".into()];
         assert!(generate(&opts).is_err());
     }

@@ -19,7 +19,6 @@ pub struct Identity {
     pub password: String,
     /// SHA-256 of the DER certificate, for `certificate_sha256`.
     pub fingerprint: [u8; 32],
-    pub certificate_pem: String,
 }
 
 /// Makes an ECDSA P-256 key and a self-signed client certificate for
@@ -42,12 +41,7 @@ pub fn generate(user: &str, days: u32) -> Result<Identity> {
     let password = auth::generate_password();
     let pfx = p12::PFX::new(cert.der(), &key.serialize_der(), None, &password, user)
         .ok_or_else(|| anyhow!("encoding the PKCS#12 file failed"))?;
-    Ok(Identity {
-        p12: pfx.to_der(),
-        password,
-        fingerprint: auth::fingerprint(cert.der()),
-        certificate_pem: cert.pem(),
-    })
+    Ok(Identity { p12: pfx.to_der(), password, fingerprint: auth::fingerprint(cert.der()) })
 }
 
 #[cfg(test)]

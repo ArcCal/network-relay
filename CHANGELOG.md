@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Removed unused code and dependencies: the direct `rustls-pki-types` dependency (rustls's `std` feature already provides it), unused `hyper-util` features (`server-auto`, `http1`, `http2`), never-read URI template accessors and fields, an unused datagram-size query and certificate PEM field, and helpers that only tests used are now compiled for tests only.
 - **UDP flows close when the destination is unreachable** (RFC 9298 §3.1 MUST): an ICMP Destination Unreachable reported on the target socket (port, host or network unreachable) now ends the flow with `H3_CONNECT_ERROR`/`CONNECT_ERROR` instead of keeping it open until the idle timeout. Errors that concern one datagram (too large for the path, a full queue, a local firewall rule) still only drop it.
 - **Graceful shutdown**: on SIGTERM the relay stops accepting connections, sends GOAWAY on every HTTP/2 and HTTP/3 connection (RFC 9113 §6.8, RFC 9114 §5.2), lets open requests finish for up to 5 seconds, then closes QUIC connections with `H3_NO_ERROR`. Requests arriving after GOAWAY are rejected with `H3_REQUEST_REJECTED`, so clients may retry them.
 - The HTTP/3 GOAWAY identifier is the first request not processed, as RFC 9114 §5.2 defines it (vendored h3 patch); it was the last accepted one, the HTTP/2 meaning, which invited clients to retry a request that had been processed.

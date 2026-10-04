@@ -286,19 +286,6 @@ impl Tunnel {
         }
     }
 
-    /// Largest HTTP Datagram payload that currently fits in one QUIC
-    /// DATAGRAM frame, or `None` when datagrams travel as capsules and have
-    /// no such limit.
-    pub fn max_datagram_payload(&self) -> Option<usize> {
-        match &self.datagrams {
-            Datagrams::Quic(q) if q.sender.settings().enable_datagram() => {
-                q.conn.max_datagram_size().map(|m| m.saturating_sub(q.qsid_len))
-            }
-            Datagrams::Quic(_) => None,
-            Datagrams::Capsules => None,
-        }
-    }
-
     /// Tears the request stream down in both directions, with the error
     /// code `why` maps to; a malformed message gets the one RFC 9297 §3.3
     /// requires.

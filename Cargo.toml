@@ -22,7 +22,7 @@ h3-datagram = { git = "https://github.com/hyperium/h3", rev = "43745ad87e95b0c03
 h3-quinn = { git = "https://github.com/hyperium/h3", rev = "43745ad87e95b0c035ac9c547aad467303213425", features = ["datagram"] }
 http-body-util = "0.1"
 hyper = { version = "1", features = ["client", "server", "http1", "http2"] }
-hyper-util = { version = "0.1", features = ["tokio", "server-auto", "http1", "http2"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
 ipnet = { version = "2", features = ["serde"] }
 # Open file limit: every relayed TCP connection needs a file descriptor.
 # Terminal settings: passwords are typed without echo.
@@ -35,7 +35,6 @@ quinn = { version = "0.11", default-features = false, features = ["runtime-tokio
 ring = "0.17"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "logging"] }
 rustls-native-certs = "0.8"
-rustls-pki-types = { version = "1", features = ["std"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 socket2 = { version = "0.6", features = ["all"] }

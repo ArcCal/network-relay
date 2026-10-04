@@ -265,10 +265,10 @@ pub(super) async fn udp(mut tunnel: Tunnel, sock: UdpSocket, mut ctx: TunnelCtx)
                                         up += 1;
                                         conn.up.fetch_add(n as u64, Ordering::Relaxed);
                                     }
-                                    // An ICMP error from an earlier datagram, for
-                                    // example: UDP tolerates the loss.
+                                    // A datagram too large for the path, say:
+                                    // dropped, as UDP allows (RFC 9298 §3.1).
                                     Err(e) if udp_error_is_transient(&e) => dropped += 1,
-                                    Err(_) => break ("unusable UDP socket", Some(Abort::Failed)),
+                                    Err(e) => break (unusable(&e), Some(Abort::Failed)),
                                 },
                             // Unknown context IDs are dropped (RFC 9298 §4).
                             Ok(_) => dropped += 1,
@@ -305,10 +305,9 @@ pub(super) async fn udp(mut tunnel: Tunnel, sock: UdpSocket, mut ctx: TunnelCtx)
                                     }
                                 }
                                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
-                                // ICMP errors such as port unreachable surface here;
-                                // the flow stays open, as an unconnected socket would.
                                 Err(e) if udp_error_is_transient(&e) => break,
-                                Err(_) => break 'flow ("unusable UDP socket", Some(Abort::Failed)),
+                                // ICMP Destination Unreachable, for example.
+                                Err(e) => break 'flow (unusable(&e), Some(Abort::Failed)),
                             }
                         }
                     }
@@ -330,20 +329,26 @@ pub(super) async fn udp(mut tunnel: Tunnel, sock: UdpSocket, mut ctx: TunnelCtx)
     debug!(user = %ctx.user.name, target = %ctx.target, up, down, dropped, "UDP flow closed: {why}");
 }
 
-/// Linux can report a per-packet ICMP/PMTU error while the connected UDP
-/// socket remains usable. Descriptor/state errors must terminate the flow
-/// (RFC 9298 §3.1), rather than spinning until the idle timeout.
+/// Errors that concern one datagram, after which the socket still works: a
+/// datagram too large for the path, a full send queue, a local firewall rule.
+///
+/// Everything else ends the flow. RFC 9298 §3.1: "If a UDP proxy is notified
+/// by its operating system that its socket is no longer usable, it MUST close
+/// the request stream", with ICMP Destination Unreachable as the example. On
+/// a connected socket Linux reports one as ECONNREFUSED (port unreachable),
+/// EHOSTUNREACH or ENETUNREACH on the next send or receive.
 fn udp_error_is_transient(error: &std::io::Error) -> bool {
     use std::io::ErrorKind;
-    matches!(
-        error.kind(),
-        ErrorKind::WouldBlock
-            | ErrorKind::Interrupted
-            | ErrorKind::ConnectionRefused
-            | ErrorKind::ConnectionReset
-            | ErrorKind::TimedOut
-            | ErrorKind::NetworkUnreachable
-            | ErrorKind::HostUnreachable
-            | ErrorKind::PermissionDenied
-    ) || matches!(error.raw_os_error(), Some(nix::libc::EMSGSIZE | nix::libc::ENOBUFS))
+    matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::Interrupted | ErrorKind::PermissionDenied)
+        || matches!(error.raw_os_error(), Some(nix::libc::EMSGSIZE | nix::libc::ENOBUFS))
+}
+
+/// Why a flow ended on a socket error, for the log.
+fn unusable(error: &std::io::Error) -> &'static str {
+    use std::io::ErrorKind;
+    match error.kind() {
+        ErrorKind::ConnectionRefused => "destination port unreachable (ICMP)",
+        ErrorKind::HostUnreachable | ErrorKind::NetworkUnreachable => "destination unreachable (ICMP)",
+        _ => "unusable UDP socket",
+    }
 }

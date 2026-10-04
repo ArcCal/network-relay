@@ -1,6 +1,7 @@
 //! HTTP/3 on QUIC.
 
 use std::collections::{HashMap, VecDeque};
+use std::future::Future;
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
@@ -16,7 +17,7 @@ use tracing::debug;
 use super::{http_date, pump, ConnInfo, Incoming, Kind, Opened, Relay, HEADER_TIMEOUT};
 use crate::certs::CertStore;
 use crate::policy::Refusal;
-use crate::proto::{CAPSULE_PROTOCOL_HEADER, CONNECT_UDP_PROTOCOL};
+use crate::proto::CAPSULE_PROTOCOL_HEADER;
 use crate::tls;
 use crate::tunnel::{Datagrams, DgramSender, QuicDatagrams, Tunnel};
 use crate::web::{self, Cover};
@@ -28,6 +29,11 @@ type Routes = Arc<Mutex<Router>>;
 
 /// HTTP/3 error code for an orderly close (RFC 9114 §8.1).
 pub(super) const H3_NO_ERROR: u32 = 0x100;
+
+/// How long a draining connection waits for its last stream data to be
+/// acknowledged before it is closed: three round trips, within these bounds.
+const DRAIN_ACK_MIN: std::time::Duration = std::time::Duration::from_millis(100);
+const DRAIN_ACK_MAX: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// Datagrams queued per UDP flow before new ones are dropped.
 const FLOW_QUEUE: usize = 1024;
@@ -141,7 +147,18 @@ pub fn quic_endpoint(
 impl Relay {
     /// Serves HTTP/3 on a QUIC endpoint until it closes.
     pub async fn serve_quic(self, endpoint: quinn::Endpoint) {
-        while let Some(incoming) = endpoint.accept().await {
+        let shutting_down = self.shutting_down();
+        tokio::pin!(shutting_down);
+        loop {
+            let incoming = tokio::select! {
+                incoming = endpoint.accept() => incoming,
+                _ = &mut shutting_down => {
+                    // New connections are refused; open ones carry on.
+                    endpoint.set_server_config(None);
+                    return;
+                }
+            };
+            let Some(incoming) = incoming else { return };
             let remote = incoming.remote_address();
             // When handshakes arrive faster than usual, clients first prove
             // they can receive at their address (RFC 9000 §8.1), so spoofed
@@ -202,6 +219,9 @@ impl Relay {
         // only the connection can create.
         let (sender_tx, mut sender_rx) = mpsc::channel::<(StreamId, oneshot::Sender<DgramSender>)>(64);
 
+        let shutting_down = self.shutting_down();
+        tokio::pin!(shutting_down);
+        let mut draining = false;
         let result = loop {
             tokio::select! {
                 accepted = h3_conn.accept() => match accepted {
@@ -214,8 +234,8 @@ impl Relay {
                             let _active = active;
                             let (req, stream) = match tokio::time::timeout(HEADER_TIMEOUT, resolver.resolve_request()).await {
                                 Ok(Ok(r)) => r,
-                                // Includes requests with a :protocol the h3
-                                // library does not know, such as connect-tcp.
+                                // Malformed (RFC 9114 §4.1.2): h3 has reset
+                                // the stream with H3_MESSAGE_ERROR.
                                 Ok(Err(e)) if relay.settings().log_requests => {
                                     return tracing::info!(remote = %info.remote, "malformed HTTP/3 request: {e}")
                                 }
@@ -235,9 +255,27 @@ impl Relay {
                 // QUIC keep-alives keep a connection open indefinitely; one
                 // without requests is closed after the idle timeout (sooner
                 // if it never authenticated), with GOAWAY first.
-                _ = info.idle(idle_timeout) => {
+                _ = info.idle(idle_timeout), if !draining => {
                     debug!(%remote, "closing idle HTTP/3 connection");
                     let _ = h3_conn.shutdown(0).await;
+                    conn.close(VarInt::from_u32(H3_NO_ERROR), b"");
+                    break Ok(());
+                }
+                // Server shutdown: GOAWAY, so the client sends no new
+                // requests here and may retry later ones elsewhere (RFC 9114
+                // §5.2); the open ones go on until done or the process exits.
+                _ = &mut shutting_down, if !draining => {
+                    debug!(%remote, "server shutting down: GOAWAY");
+                    let _ = h3_conn.shutdown(0).await;
+                    draining = true;
+                }
+                _ = info.drained(), if draining => {
+                    // Closing discards stream data the peer has not yet
+                    // acknowledged, such as the last response's FIN: give it
+                    // a few round trips, or until the client, which has had
+                    // GOAWAY, closes the connection itself.
+                    let grace = (conn.rtt() * 3).clamp(DRAIN_ACK_MIN, DRAIN_ACK_MAX);
+                    let _ = tokio::time::timeout(grace, conn.closed()).await;
                     conn.close(VarInt::from_u32(H3_NO_ERROR), b"");
                     break Ok(());
                 }
@@ -267,43 +305,56 @@ impl Relay {
             }
         });
         let is_connect = req.method() == Method::CONNECT;
-        let protocol = req.extensions().get::<h3::ext::Protocol>().copied();
-        let kind = match (is_connect, protocol) {
-            (true, None) => Some(Kind::Tcp),
-            (true, Some(p)) if p.as_str() == CONNECT_UDP_PROTOCOL => Some(Kind::Udp),
-            _ => None,
-        };
+        // The vendored h3 rejects malformed requests (RFC 9114 §4.1.2,
+        // §4.3.1, §4.4) with H3_MESSAGE_ERROR before they get here, and passes
+        // :protocol tokens it does not know as `OtherProtocol`.
+        let protocol = req
+            .extensions()
+            .get::<h3::ext::Protocol>()
+            .map(|p| p.as_str().to_string())
+            .or_else(|| req.extensions().get::<h3::ext::OtherProtocol>().map(|p| p.as_str().to_string()));
+        let kind = Kind::of_connect(is_connect, protocol.as_deref(), req.uri().scheme_str());
         let authority = req.uri().authority().map(|a| a.as_str().to_string());
         let path_and_query = req.uri().path_and_query().map_or("/", |p| p.as_str()).to_string();
         let settings = self.settings();
         let incoming = Incoming {
             method: req.method(),
-            protocol: protocol.as_ref().map(|p| p.as_str()),
+            protocol: protocol.as_deref(),
             kind,
             authority: authority.as_deref(),
             path_and_query: &path_and_query,
             headers: req.headers(),
         };
         let stream_id = stream.id();
-        let (bad_tx, mut bad_datagram) = oneshot::channel();
+        let (bad_tx, mut bad_datagram) = oneshot::channel::<()>();
         let pending = if kind == Some(Kind::Udp) { Flow::PendingUdp } else { Flow::Other(Some(bad_tx)) };
         routes.lock().unwrap().register(stream_id, pending);
         let _route = RouteGuard { routes: routes.clone(), stream_id };
-        let authorized = tokio::select! {
-            biased;
-            _ = &mut peer_closed => return,
-            Ok(()) = &mut bad_datagram => {
-                abort_datagram(&mut stream);
-                return;
+        let authorizing = self.authorize(&incoming, &info, &settings);
+        tokio::pin!(authorizing);
+        let authorized = loop {
+            tokio::select! {
+                biased;
+                _ = &mut peer_closed => return,
+                Ok(()) = &mut bad_datagram => {
+                    // A CONNECT's request stream stays open for its tunnel;
+                    // reading it here would take the tunnel's first bytes.
+                    if kind == Some(Kind::Tcp) || !receive_side_closed(&mut stream) {
+                        abort_datagram(&mut stream);
+                        return;
+                    }
+                    bad_datagram = closed_receiver();
+                }
+                authorized = &mut authorizing => break authorized,
             }
-            authorized = self.authorize(&incoming, &info, &settings) => authorized,
         };
         let Some(authorized) = authorized else {
             let cover = web::cover(self.site().as_deref(), req.method(), req.uri().path(), is_connect);
+            // `send_cover` stops the receive side first, so datagrams that
+            // arrive meanwhile are dropped (RFC 9297 §2.1).
             tokio::select! {
                 biased;
                 _ = &mut peer_closed => {},
-                Ok(()) = &mut bad_datagram => abort_datagram(&mut stream),
                 _ = send_cover(&mut stream, cover) => {}
             }
             return;
@@ -389,6 +440,27 @@ impl Drop for RouteGuard {
         }
         router.closed.push_back(self.stream_id);
     }
+}
+
+/// Whether the client has finished sending on this request, reading and
+/// discarding whatever body is already buffered. RFC 9297 §2.1: a datagram
+/// on a request without datagram semantics aborts it with H3_DATAGRAM_ERROR,
+/// unless the request's receive side is closed: then it is dropped.
+fn receive_side_closed(stream: &mut H3Stream) -> bool {
+    let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+    loop {
+        match std::pin::pin!(stream.recv_data()).poll(&mut cx) {
+            std::task::Poll::Ready(Ok(Some(_))) => continue,
+            std::task::Poll::Ready(Ok(None) | Err(_)) => return true,
+            std::task::Poll::Pending => return false,
+        }
+    }
+}
+
+/// A receiver that never yields a value, to disarm a datagram notification
+/// that was already handled (a completed oneshot must not be polled again).
+fn closed_receiver() -> oneshot::Receiver<()> {
+    oneshot::channel().1
 }
 
 fn abort_datagram(stream: &mut H3Stream) {

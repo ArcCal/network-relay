@@ -32,7 +32,7 @@ use crate::certs::{CertStore, Schedule};
 use crate::config::{Config, Web};
 use crate::limits::{Budget, Connections, TokenBucket, UserSlot, UserTunnels};
 use crate::policy::{Policy, Refusal, Target};
-use crate::proto::{UriTemplate, CONNECT_TCP_PROTOCOL};
+use crate::proto::{UriTemplate, CONNECT_TCP_PROTOCOL, CONNECT_UDP_PROTOCOL};
 use crate::web::Website;
 use crate::{connect, sys};
 
@@ -48,6 +48,9 @@ const UNAUTHENTICATED_IDLE: Duration = Duration::from_secs(30);
 /// which clients must first prove their address with a Retry (RFC 9000 §8.1).
 const HANDSHAKE_RATE: f64 = 200.0;
 const HANDSHAKE_BURST: f64 = 400.0;
+/// On SIGTERM, how long connections get to finish their requests after
+/// GOAWAY before they are closed. Short, because a restart waits for it.
+const DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Settings that a reload (SIGHUP) replaces.
 struct Settings {
@@ -97,6 +100,9 @@ struct Inner {
     alt_svc: HeaderValue,
     /// One-time profile links already downloaded (see `web`).
     consumed: Arc<Mutex<std::collections::HashSet<String>>>,
+    /// Set when the server is shutting down: connections send GOAWAY and
+    /// close once their requests are done.
+    shutdown: watch::Sender<bool>,
 }
 
 /// The relay, independent of sockets so tests can run it in-process.
@@ -131,6 +137,7 @@ impl Relay {
                 handshakes: Mutex::new(TokenBucket::new(HANDSHAKE_RATE, HANDSHAKE_BURST)),
                 alt_svc,
                 consumed,
+                shutdown: watch::Sender::new(false),
             }),
         })
     }
@@ -188,6 +195,32 @@ impl Relay {
         Some(budget.clone())
     }
 
+    /// Starts a graceful shutdown: every connection sends GOAWAY (RFC 9113
+    /// §6.8, RFC 9114 §5.2), lets its open requests finish, then closes.
+    pub fn begin_shutdown(&self) {
+        self.inner.shutdown.send_replace(true);
+    }
+
+    /// Waits until every client connection has closed, or `timeout`.
+    /// Returns whether they all did.
+    pub async fn drain(&self, timeout: Duration) -> bool {
+        tokio::time::timeout(timeout, async {
+            while self.open_connections() > 0 {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .is_ok()
+    }
+
+    /// Resolves once a shutdown has begun.
+    fn shutting_down(&self) -> impl std::future::Future<Output = ()> + Send + 'static {
+        let mut rx = self.inner.shutdown.subscribe();
+        async move {
+            let _ = rx.wait_for(|down| *down).await;
+        }
+    }
+
     /// Whether a new QUIC connection from an unvalidated address should
     /// first be sent a Retry: only when handshakes arrive faster than usual.
     fn handshake_needs_retry(&self) -> bool {
@@ -202,6 +235,13 @@ enum Kind {
     Tcp,
     /// CONNECT-UDP: the path names a UDP destination.
     Udp,
+    /// An extended CONNECT for a protocol this relay does not implement,
+    /// such as `connect-tcp` or `connect-ip`: 501 once authenticated.
+    Unsupported,
+    /// A UDP proxying request that breaks RFC 9298 §3 (an HTTP/1.1
+    /// `Upgrade: connect-udp` that is not a GET with `Connection: Upgrade`,
+    /// or a `:scheme` other than https): 400 once authenticated.
+    Malformed,
 }
 
 impl Kind {
@@ -209,6 +249,21 @@ impl Kind {
         match self {
             Kind::Tcp => "TCP",
             Kind::Udp => "UDP",
+            Kind::Unsupported => "unsupported",
+            Kind::Malformed => "malformed",
+        }
+    }
+
+    /// The kind of an HTTP/2 or HTTP/3 request: CONNECT, with or without
+    /// `:protocol` (RFC 8441, RFC 9220).
+    fn of_connect(is_connect: bool, protocol: Option<&str>, scheme: Option<&str>) -> Option<Self> {
+        match (is_connect, protocol) {
+            (false, _) => None,
+            (true, None) => Some(Kind::Tcp),
+            // RFC 9298 §3.4: the scheme of a UDP proxying request is https.
+            (true, Some(CONNECT_UDP_PROTOCOL)) if scheme == Some("https") => Some(Kind::Udp),
+            (true, Some(CONNECT_UDP_PROTOCOL)) => Some(Kind::Malformed),
+            (true, Some(_)) => Some(Kind::Unsupported),
         }
     }
 }
@@ -292,6 +347,17 @@ impl ConnInfo {
         self.active.fetch_add(1, Ordering::AcqRel);
         self.activity.notify_waiters();
         ActiveRequest(self.clone())
+    }
+
+    /// Resolves once no request is open on the connection.
+    async fn drained(&self) {
+        loop {
+            let changed = self.activity.notified();
+            if self.active.load(Ordering::Acquire) == 0 {
+                return;
+            }
+            changed.await;
+        }
     }
 
     /// Resolves once the connection has had no open request for `limit`
@@ -512,6 +578,8 @@ impl Relay {
                     _ => Err(Refusal::BadTarget),
                 }
             }
+            Kind::Unsupported => Err(Refusal::UnsupportedProtocol),
+            Kind::Malformed => Err(Refusal::MalformedRequest),
         };
         // A client certificate that belongs to a user authenticates on its
         // own; otherwise the password.
@@ -579,6 +647,9 @@ impl Relay {
             match a.kind {
                 Kind::Tcp => Ok(Opened::Tcp(connect::tcp(&addrs, settings.connect_timeout).await?)),
                 Kind::Udp => Ok(Opened::Udp(connect::udp(&addrs).await?)),
+                // Their target is always a refusal, returned above.
+                Kind::Unsupported => Err(Refusal::UnsupportedProtocol),
+                Kind::Malformed => Err(Refusal::MalformedRequest),
             }
         };
         let opened = tokio::select! {
@@ -589,11 +660,12 @@ impl Relay {
         if !self.inner.auth.is_current(&a.user) {
             return Err(Refusal::UserRevoked);
         }
-        let counter = match a.kind {
+        match a.kind {
             Kind::Tcp => &conn.tcp,
             Kind::Udp => &conn.udp,
-        };
-        counter.fetch_add(1, Ordering::Relaxed);
+            Kind::Unsupported | Kind::Malformed => &conn.refused,
+        }
+        .fetch_add(1, Ordering::Relaxed);
         debug!(user = %a.user.name, kind = a.kind.as_str(), %target, "tunnel opened");
         let ctx = TunnelCtx {
             user: a.user.clone(),
@@ -700,6 +772,25 @@ pub async fn run(config_path: PathBuf, config: Config) -> Result<()> {
     reload_task.abort();
     tcp_task.abort();
     quic_task.abort();
+    // No new connections; open ones get GOAWAY and a moment to finish
+    // their requests (RFC 9113 §6.8, RFC 9114 §5.2), then are closed with
+    // H3_NO_ERROR. A failed listener skips the wait.
+    endpoint.set_server_config(None);
+    if failed.is_none() {
+        relay.begin_shutdown();
+        let open = relay.open_connections();
+        if open > 0 {
+            info!(
+                connections = open,
+                tunnels = relay.active_tunnels(),
+                "draining for up to {}s",
+                DRAIN_TIMEOUT.as_secs()
+            );
+            if !relay.drain(DRAIN_TIMEOUT).await {
+                info!(connections = relay.open_connections(), "closing the remaining connections");
+            }
+        }
+    }
     endpoint.close(over_h3::H3_NO_ERROR.into(), b"server shutting down");
     let _ = tokio::time::timeout(Duration::from_secs(2), endpoint.wait_idle()).await;
     match failed {

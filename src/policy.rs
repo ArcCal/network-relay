@@ -117,41 +117,62 @@ pub enum Refusal {
     TooManyTunnels,
     /// The user's share of tunnels is used up.
     TooManyUserTunnels,
+    /// An extended CONNECT for a protocol the relay does not implement.
+    UnsupportedProtocol,
+    /// A UDP proxying request that breaks RFC 9298 §3.
+    MalformedRequest,
 }
 
 impl Refusal {
+    /// The status code: the one RFC 9209 §2.3 recommends for the
+    /// Proxy-Status error type, where there is one.
     pub fn status(&self) -> StatusCode {
         match self {
-            Refusal::BadTarget => StatusCode::BAD_REQUEST,
-            Refusal::PortBlocked | Refusal::AddressBlocked | Refusal::UserRevoked => StatusCode::FORBIDDEN,
+            Refusal::BadTarget | Refusal::MalformedRequest => StatusCode::BAD_REQUEST,
+            Refusal::PortBlocked | Refusal::UserRevoked => StatusCode::FORBIDDEN,
             Refusal::DnsTimeout | Refusal::ConnectionTimeout => StatusCode::GATEWAY_TIMEOUT,
-            Refusal::DnsError(_) | Refusal::NoAddresses | Refusal::ConnectionRefused | Refusal::Unreachable(_) => {
-                StatusCode::BAD_GATEWAY
-            }
+            Refusal::AddressBlocked
+            | Refusal::DnsError(_)
+            | Refusal::NoAddresses
+            | Refusal::ConnectionRefused
+            | Refusal::Unreachable(_) => StatusCode::BAD_GATEWAY,
             Refusal::TooManyTunnels | Refusal::TooManyUserTunnels => StatusCode::SERVICE_UNAVAILABLE,
+            Refusal::UnsupportedProtocol => StatusCode::NOT_IMPLEMENTED,
         }
     }
 
-    /// The Proxy-Status error type (RFC 9209 §2.3).
-    pub fn error_type(&self) -> &'static str {
-        match self {
-            Refusal::BadTarget => "http_request_error",
-            Refusal::UserRevoked => "http_request_denied",
-            Refusal::PortBlocked => "http_request_denied",
+    /// The Proxy-Status error type (RFC 9209 §2.3), if one fits.
+    pub fn error_type(&self) -> Option<&'static str> {
+        Some(match self {
+            Refusal::BadTarget | Refusal::MalformedRequest => "http_request_error",
+            Refusal::UserRevoked | Refusal::PortBlocked => "http_request_denied",
             Refusal::AddressBlocked => "destination_ip_prohibited",
             Refusal::DnsTimeout => "dns_timeout",
-            Refusal::DnsError(_) => "dns_error",
-            Refusal::NoAddresses => "destination_not_found",
+            // A name without addresses is a DNS answer, not a gateway's
+            // missing configuration (destination_not_found, §2.3.4).
+            Refusal::DnsError(_) | Refusal::NoAddresses => "dns_error",
             Refusal::ConnectionRefused => "connection_refused",
             Refusal::ConnectionTimeout => "connection_timeout",
-            Refusal::Unreachable(_) => "destination_unavailable",
+            Refusal::Unreachable(_) => "destination_ip_unroutable",
             Refusal::TooManyTunnels | Refusal::TooManyUserTunnels => "connection_limit_reached",
-        }
+            // No error type describes it; the 501 does.
+            Refusal::UnsupportedProtocol => return None,
+        })
     }
 
     /// The Proxy-Status header value.
     pub fn proxy_status(&self) -> String {
-        format!("network-relay; error={}", self.error_type())
+        let mut value = String::from("network-relay");
+        if let Some(error) = self.error_type() {
+            value.push_str("; error=");
+            value.push_str(error);
+        }
+        match self {
+            Refusal::NoAddresses => value.push_str("; details=\"no addresses\""),
+            Refusal::UnsupportedProtocol => value.push_str("; details=\"unsupported :protocol\""),
+            _ => {}
+        }
+        value
     }
 }
 
@@ -170,6 +191,8 @@ impl std::fmt::Display for Refusal {
             Refusal::Unreachable(e) => write!(f, "unreachable: {e}"),
             Refusal::TooManyTunnels => f.write_str("relay.max_tunnels reached"),
             Refusal::TooManyUserTunnels => f.write_str("relay.max_tunnels_per_user reached"),
+            Refusal::UnsupportedProtocol => f.write_str("unsupported :protocol"),
+            Refusal::MalformedRequest => f.write_str("malformed UDP proxying request"),
         }
     }
 }
@@ -470,10 +493,15 @@ mod tests {
 
     #[test]
     fn refusals_map_to_rfc9209() {
-        assert_eq!(Refusal::AddressBlocked.status(), StatusCode::FORBIDDEN);
+        assert_eq!(Refusal::AddressBlocked.status(), StatusCode::BAD_GATEWAY);
         assert_eq!(Refusal::AddressBlocked.proxy_status(), "network-relay; error=destination_ip_prohibited");
         assert_eq!(Refusal::DnsTimeout.status(), StatusCode::GATEWAY_TIMEOUT);
         assert_eq!(Refusal::ConnectionRefused.status(), StatusCode::BAD_GATEWAY);
         assert_eq!(Refusal::TooManyTunnels.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(Refusal::NoAddresses.proxy_status(), "network-relay; error=dns_error; details=\"no addresses\"");
+        assert_eq!(Refusal::Unreachable("x".into()).proxy_status(), "network-relay; error=destination_ip_unroutable");
+        assert_eq!(Refusal::UnsupportedProtocol.status(), StatusCode::NOT_IMPLEMENTED);
+        assert_eq!(Refusal::UnsupportedProtocol.proxy_status(), "network-relay; details=\"unsupported :protocol\"");
+        assert_eq!(Refusal::PortBlocked.status(), StatusCode::FORBIDDEN);
     }
 }

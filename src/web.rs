@@ -74,15 +74,15 @@ pub struct Cover {
 }
 
 impl Website {
-    /// Reads every file under `root`, which must contain `index.html`.
-    /// `extra_headers` are added to every response, for example a
-    /// Content-Security-Policy.
-    pub fn load(root: &Path, extra_headers: &BTreeMap<String, String>) -> Result<Self> {
+    #[cfg(test)]
+    fn load(root: &Path, extra_headers: &BTreeMap<String, String>) -> Result<Self> {
         Self::load_with(root, extra_headers, Arc::default())
     }
 
-    /// Like [`Website::load`], remembering downloaded one-time profiles in
-    /// `consumed`, which outlives reloads.
+    /// Reads every file under `root`, which must contain `index.html`.
+    /// `extra_headers` are added to every response, for example a
+    /// Content-Security-Policy. Downloaded one-time profiles are remembered
+    /// in `consumed`, which outlives reloads.
     pub fn load_with(
         root: &Path,
         extra_headers: &BTreeMap<String, String>,
@@ -131,7 +131,8 @@ impl Website {
         (SystemTime::now() < expires).then_some(file)
     }
 
-    pub fn file_count(&self) -> usize {
+    #[cfg(test)]
+    fn file_count(&self) -> usize {
         self.files.len()
     }
 

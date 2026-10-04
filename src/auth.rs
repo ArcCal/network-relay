@@ -479,10 +479,6 @@ impl Authenticator {
         self.generation.subscribe()
     }
 
-    pub fn user_count(&self) -> usize {
-        self.users.read().unwrap().accounts.len()
-    }
-
     /// Whether `user` is still configured with the same credential and has
     /// not expired.
     pub fn is_current(&self, user: &User) -> bool {
@@ -894,7 +890,6 @@ mod tests {
         assert!(!auth.is_current(&ok));
         auth.replace(&[]).unwrap();
         assert!(check(&auth, &basic_authorization("alice", "alice-password")).await.is_err());
-        assert_eq!(auth.user_count(), 0);
     }
 
     #[tokio::test]

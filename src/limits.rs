@@ -243,10 +243,6 @@ impl Budget {
         Self { bytes, packets, settings: (bytes_per_second, packets_per_second) }
     }
 
-    pub fn is_unlimited(&self) -> bool {
-        self.bytes.is_none() && self.packets.is_none()
-    }
-
     /// How long a stream must wait after moving `n` bytes; zero when the
     /// budget allows it now.
     pub fn charge_bytes(&self, n: usize) -> Duration {
@@ -388,7 +384,7 @@ mod tests {
     #[test]
     fn budgets_limit_packets_and_bytes() {
         let unlimited = Budget::new(0, 0);
-        assert!(unlimited.is_unlimited() && unlimited.allow_packet(65_000));
+        assert!(unlimited.allow_packet(65_000) && unlimited.charge_bytes(1 << 30).is_zero());
         let packets = Budget::new(0, 2);
         assert!(packets.allow_packet(1) && packets.allow_packet(1));
         assert!(!packets.allow_packet(1));

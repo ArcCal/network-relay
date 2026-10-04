@@ -8,7 +8,7 @@ pub mod datagram;
 pub mod uri_template;
 pub mod varint;
 
-pub use capsule::{CapsuleDecoder, RawCapsule};
+pub use capsule::CapsuleDecoder;
 pub use uri_template::UriTemplate;
 
 /// `:protocol` pseudo-header value for CONNECT-UDP requests over HTTP/2 and

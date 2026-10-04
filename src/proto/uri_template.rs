@@ -39,8 +39,6 @@ enum Part {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UriTemplate {
     raw: String,
-    scheme: String,
-    authority: String,
     /// Path and query, starting with `/`.
     parts: Vec<Part>,
 }
@@ -86,7 +84,7 @@ impl UriTemplate {
             return Err(TemplateError("fragments are not allowed in a relay endpoint"));
         }
         let parts = Self::parse_parts(path)?;
-        Ok(Self { raw: raw.to_string(), scheme: scheme.to_ascii_lowercase(), authority: authority.to_string(), parts })
+        Ok(Self { raw: raw.to_string(), parts })
     }
 
     /// Parses a template for just the path and query, as a server
@@ -174,38 +172,6 @@ impl UriTemplate {
     /// Whether the template has an expression for variable `name`.
     pub fn has_variable(&self, name: &str) -> bool {
         self.parts.iter().any(|p| matches!(p, Part::Expr { vars, .. } if vars.iter().any(|v| v == name)))
-    }
-
-    pub fn scheme(&self) -> &str {
-        &self.scheme
-    }
-
-    /// The authority (`host[:port]`) the request goes to.
-    pub fn authority(&self) -> &str {
-        &self.authority
-    }
-
-    /// Host part of the authority, without brackets around IPv6 literals.
-    pub fn host(&self) -> &str {
-        let a = self.authority.rsplit_once('@').map_or(self.authority.as_str(), |(_, h)| h);
-        if let Some(rest) = a.strip_prefix('[') {
-            return rest.split(']').next().unwrap_or(rest);
-        }
-        a.rsplit_once(':').map_or(a, |(h, _)| h)
-    }
-
-    /// Port of the authority, or the scheme's default.
-    pub fn port(&self) -> Option<u16> {
-        let a = self.authority.rsplit_once('@').map_or(self.authority.as_str(), |(_, h)| h);
-        let after_host = if a.starts_with('[') { a.split_once(']').map(|(_, r)| r)? } else { a };
-        match after_host.rsplit_once(':') {
-            Some((_, p)) => p.parse().ok(),
-            None => match self.scheme.as_str() {
-                "https" => Some(443),
-                "http" => Some(80),
-                _ => None,
-            },
-        }
     }
 
     /// Expands the template into a path and query (origin form). Variables
@@ -514,16 +480,6 @@ mod tests {
         let lit = t("https://proxy.example.org:4443/masque?h={target_host}&p={target_port}");
         assert_eq!(lit.expand(&[("target_host", "a.example"), ("target_port", "53")]), "/masque?h=a.example&p=53");
         assert_eq!(t("https://masque.example.org/?user=bob").expand(&[]), "/?user=bob");
-    }
-
-    #[test]
-    fn authority_host_and_port() {
-        let q = t("https://proxy.example.org:4443/masque{?target_host,target_port}");
-        assert_eq!((q.authority(), q.host(), q.port()), ("proxy.example.org:4443", "proxy.example.org", Some(4443)));
-        let d = t(DEFAULT);
-        assert_eq!((d.host(), d.port()), ("example.org", Some(443)));
-        let v6 = t("https://[2001:db8::1]:8443/udp/");
-        assert_eq!((v6.host(), v6.port()), ("2001:db8::1", Some(8443)));
     }
 
     #[test]

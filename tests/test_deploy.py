@@ -5,7 +5,6 @@ import base64
 from contextlib import ExitStack, redirect_stdout
 import importlib.util
 import io
-import os
 from pathlib import Path
 import plistlib
 import subprocess

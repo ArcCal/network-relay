@@ -62,17 +62,17 @@ Looked at during research: Envoy (the configuration above), quic-go's [masque-go
 | HTTP/2 | Same (RFC 9113 §8.5) | Same (RFC 8441 extended CONNECT) |
 | HTTP/1.1 | `CONNECT host:port HTTP/1.1` (RFC 9110 §9.3.6) | `GET path` + `Connection: Upgrade` + `Upgrade: connect-udp` (RFC 9298 §3.2), answered with 101 |
 
-Every other request goes to the decoy website.
+Every other request goes to the decoy website. Malformed HTTP/3 requests (RFC 9114 §4.1.2: a pseudo-header field twice or missing, `:scheme`/`:path` on a classic CONNECT, `:protocol` without CONNECT, and so on) are reset with `H3_MESSAGE_ERROR` before any of this, as h2 resets malformed HTTP/2 requests with `PROTOCOL_ERROR`. Once authenticated, an extended CONNECT for another protocol (`connect-tcp`, `connect-ip`, `websocket`) gets 501, and a malformed UDP proxying request (RFC 9298 §3.2, §3.4: `:scheme` other than `https`; on HTTP/1.1 an `Upgrade: connect-udp` that is not a GET with `Connection: Upgrade`) gets 400. `Upgrade` on HTTP/1.0 is ignored (RFC 9110 §7.8).
 
 ### 2.2 Handling a request
 
 1. **Classify**: not one of the requests in the table above → website. A UDP request whose path does not match the template → website.
-2. **Authenticate**: look at `Proxy-Authorization` first, then `Authorization`, both parsed as Basic. Failure → website (CONNECT gets 404). Authentication failures are logged (the user name is escaped first, so log lines cannot be forged).
-3. **Slots**: the number of concurrent tunnels has reached `max_tunnels` → 503.
+2. **Authenticate**: a client certificate whose fingerprint belongs to a user; otherwise `Proxy-Authorization` first, then `Authorization`, both parsed as Basic. Failure → website (CONNECT gets 404). Authentication failures are logged at a bounded rate (the user name is escaped first, so log lines cannot be forged).
+3. **Slots**: the user's tunnels have reached `max_tunnels_per_user`, or all tunnels `max_tunnels` → 503 (`connection_limit_reached`).
 4. **Target**: for TCP, parse `host:port` from `:authority` (the port is required, IPv6 in brackets); for UDP, take `target_host` (IPv6 without brackets, colons encoded) and `target_port` from the template variables. Malformed → 400.
-5. **Policy**: port in `blocked_ports` → 403; resolve the domain (5-second timeout); check every resolved address against `blocked_destinations`, IPv4-mapped addresses as IPv4; none left → 403.
+5. **Policy**: port in `blocked_ports` → 403 (`http_request_denied`); resolve the domain (5-second timeout); check every resolved address against `blocked_destinations` and the server's own addresses, IPv6 addresses carrying an IPv4 address also by that address; none left → 502 (`destination_ip_prohibited`).
 6. **Connect**: TCP uses Happy Eyeballs (RFC 8305): in resolution order, alternating between the two address families, one more attempt every 250 milliseconds, moving on immediately when one fails, with `connect_timeout_secs` as the overall timeout. UDP creates a connected UDP socket (receiving only packets sent back by the target) and picks the first address that has a route.
-7. **Respond**: 200 on success (101 for CONNECT-UDP over HTTP/1.1), with `Capsule-Protocol: ?1` for CONNECT-UDP. On failure, the status codes above with RFC 9209's `Proxy-Status: network-relay; error=...` (`dns_error`, `dns_timeout`, `destination_not_found`, `destination_ip_prohibited`, `http_request_denied`, `connection_refused`, `connection_timeout`, `destination_unavailable`, `connection_limit_reached`, `http_request_error`).
+7. **Respond**: 200 on success (101 for CONNECT-UDP over HTTP/1.1), with `Capsule-Protocol: ?1` for CONNECT-UDP. On failure, RFC 9209's `Proxy-Status: network-relay; error=...` with the status code §2.3 recommends for it: `dns_error` 502 (also for a name without addresses), `dns_timeout` 504, `destination_ip_prohibited` 502, `destination_ip_unroutable` 502, `connection_refused` 502, `connection_timeout` 504, `connection_limit_reached` 503, `http_request_denied` 403, `http_request_error` 400.
 
 ### 2.3 TCP relaying
 
@@ -91,7 +91,7 @@ Every other request goes to the decoy website.
 - Capsules of an unknown type or unknown context are skipped as a stream, without the UDP size limit; for context 0, the UDP limit is checked as early as possible from the declared length. Malformations such as truncation abort the request stream; capsule requests forbid `Content-Length`, `Content-Type` and `Transfer-Encoding` (RFC 9297 §3.2–3.3).
 - Target UDP sockets on Linux explicitly set the IPv4/IPv6 don't-fragment policy; packets larger than the path MTU are dropped rather than causing IP fragmentation (RFC 9298 §3.1).
 - UDP packets from the target that are too large for one QUIC DATAGRAM are dropped, not sent reliably instead (otherwise QUIC inside QUIC would have the two congestion controllers interfere with each other).
-- Packets are dropped when the queue is full or the target answers a single datagram with an ICMP/PMTU error; a failed socket or a closed request write side ends the flow. The forwarding loop limits how many packets it receives per round, and still responds to revocation and timeouts while waiting to send.
+- Packets are dropped when the queue is full or a single datagram is too large for the path (EMSGSIZE); ICMP Destination Unreachable (ECONNREFUSED, EHOSTUNREACH, ENETUNREACH on the connected socket), any other socket failure, or a closed request write side ends the flow (RFC 9298 §3.1). The forwarding loop limits how many packets it receives per round, and still responds to revocation and timeouts while waiting to send.
 - The error code for an early end depends on the cause: malformed capsules or datagrams use `H3_MESSAGE_ERROR` / `PROTOCOL_ERROR`, a failed target socket uses `H3_CONNECT_ERROR` / `CONNECT_ERROR`, and device cancellation or user revocation uses `H3_REQUEST_CANCELLED` / `CANCEL`.
 - After a flow ends, the capsule write queue gets at most one second to drain; a write side that stays blocked is then reset, so no background tasks are left behind.
 - Closed after `udp_idle_timeout_secs` with no packets in either direction (RFC 4787 requires NAT mappings to last at least 2 minutes; the default is 5 minutes). Closed immediately when the device closes the request stream.
@@ -104,6 +104,7 @@ Every other request goes to the decoy website.
 - Each request is parsed and handled in its own task, so a slow request does not hold up other requests on the same connection.
 - Transport parameters: at most 1024 concurrent bidirectional streams (each TCP connection from a device is one stream); a 4 MiB receive window per stream and 32 MiB per connection; 4 MiB each of datagram send and receive buffer; 300-second idle timeout (in practice the smaller of the two sides' values).
 - **Path MTU**: relayed QUIC packets are at least 1200 bytes (RFC 9000 §14.1); with the outer QUIC header, DATAGRAM frame and context ID, they need about 1250 bytes of UDP payload. The connection starts at the 1200 bytes every QUIC path must carry, so the handshake works on any path, and DPLPMTUD (RFC 8899, RFC 9000 §14.3) probes up to 1452 bytes (a 1500-byte link with IPv6 and UDP headers) within the first round trips. Until a probe succeeds, or on a path that cannot carry more, datagrams too large to send are dropped and the device's own QUIC falls back to smaller packets, as on any path with a small MTU. A fixed larger initial MTU would instead lose the whole connection on such paths.
+- **Shutdown**: on SIGTERM, GOAWAY on every connection carrying the first request ID not processed (RFC 9114 §5.2); later requests get `H3_REQUEST_REJECTED`; open requests get up to 5 seconds before `CONNECTION_CLOSE` with `H3_NO_ERROR`.
 - **Admission**: connections beyond `max_connections` or `max_connections_per_ip` are refused before the TLS handshake. When new handshakes arrive faster than 200 per second (after a burst of 400), clients must first prove their address with a Retry (RFC 9000 §8.1.2), so spoofed sources cannot make the relay do handshake work. A connection gets 10 seconds to finish its handshake.
 - UDP sockets request 8 MiB send and receive buffers; if the kernel limit is too small a message is logged, and `deploy/99-network-relay.conf` raises the limit.
 
@@ -111,6 +112,7 @@ Every other request goes to the decoy website.
 
 - `SETTINGS_ENABLE_CONNECT_PROTOCOL` (RFC 8441); without it, devices cannot send CONNECT-UDP.
 - At most 1024 concurrent streams; a 4 MiB receive window per stream and a 32 MiB connection window; a PING every 30 seconds, disconnecting after 20 seconds without a reply. Both HTTP/2 and HTTP/3 limit request headers to 32 KiB.
+- On SIGTERM, GOAWAY (RFC 9113 §6.8); h2 closes the connection once its streams end, or the process exits after 5 seconds.
 - Connections over `max_connections` or `max_connections_per_ip` are closed as soon as they are accepted. A connection with no open request for `idle_timeout_secs` (30 seconds if none of its requests authenticated) is closed with GOAWAY.
 - TLS offers both HTTP/2 and HTTP/1.1 (ALPN) and allows TLS 1.2, like an ordinary website. HTTP/3 uses only TLS 1.3.
 

@@ -165,10 +165,17 @@ where
     /// See [connection shutdown](https://www.rfc-editor.org/rfc/rfc9114.html#connection-shutdown) for more information.
     #[cfg_attr(feature = "tracing", instrument(skip_all, level = "trace"))]
     pub async fn shutdown(&mut self, max_requests: usize) -> Result<(), ConnectionError> {
+        //= https://www.rfc-editor.org/rfc/rfc9114#section-5.2
+        //# In the server-to-client direction, it carries a client-initiated
+        //# bidirectional stream ID
+        //# Requests on stream IDs greater than or equal to the identifier
+        //# were not processed: the identifier is the first request that will
+        //# not be, one past the last accepted one (plus the grace allowance).
         let max_id = self
             .last_accepted_stream
-            .map(|id| id + max_requests)
-            .unwrap_or(StreamId::FIRST_REQUEST);
+            .map(|id| id + 1)
+            .unwrap_or(StreamId::FIRST_REQUEST)
+            + max_requests;
 
         self.inner.shutdown(&mut self.sent_closing, max_id).await
     }
@@ -207,7 +214,7 @@ where
                     // incoming requests not belonging to the grace interval. It's possible that
                     // some acceptable request streams arrive after rejected requests.
                     if let Some(max_id) = self.sent_closing {
-                        if s.send_id() > max_id {
+                        if s.send_id() >= max_id {
                             s.stop_sending(Code::H3_REQUEST_REJECTED.value());
                             s.reset(Code::H3_REQUEST_REJECTED.value());
                             if self.poll_requests_completion(cx).is_ready() {

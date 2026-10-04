@@ -39,8 +39,15 @@ impl Relay {
     pub async fn serve_tcp(self, listener: TcpListener, tls_config: Arc<rustls::ServerConfig>) {
         let acceptor = tokio_rustls::TlsAcceptor::from(tls_config);
         let builder = Arc::new(builder());
+        let shutting_down = self.shutting_down();
+        tokio::pin!(shutting_down);
         loop {
-            let (tcp, remote) = match listener.accept().await {
+            let accepted = tokio::select! {
+                accepted = listener.accept() => accepted,
+                // Dropping the listener refuses new connections.
+                _ = &mut shutting_down => return,
+            };
+            let (tcp, remote) = match accepted {
                 Ok(c) => c,
                 Err(e) => {
                     warn!("TCP accept failed: {e}");
@@ -75,11 +82,23 @@ impl Relay {
                     }
                     return;
                 }
+                let shutting_down = relay.shutting_down();
                 let service = hyper::service::service_fn(move |req| {
                     let (relay, info) = (relay.clone(), info.clone());
                     async move { Ok::<_, Infallible>(relay.handle_http(info, req).await) }
                 });
-                if let Err(e) = builder.serve_connection(TokioIo::new(tls), service).with_upgrades().await {
+                let connection = builder.serve_connection(TokioIo::new(tls), service).with_upgrades();
+                tokio::pin!(connection, shutting_down);
+                let result = tokio::select! {
+                    result = &mut connection => result,
+                    _ = &mut shutting_down => {
+                        // Finishes a response under way, then closes; an
+                        // upgraded tunnel has left the connection already.
+                        connection.as_mut().graceful_shutdown();
+                        connection.await
+                    }
+                };
+                if let Err(e) = result {
                     debug!(%remote, "HTTP connection ended: {e}");
                 }
             });
@@ -115,6 +134,8 @@ impl Relay {
         // a connection without requests is closed after the idle timeout
         // (sooner if it never authenticated), with GOAWAY first.
         let idle_timeout = self.settings().idle_timeout;
+        let shutting_down = self.shutting_down();
+        tokio::pin!(shutting_down);
         let mut closing = false;
         loop {
             tokio::select! {
@@ -141,6 +162,13 @@ impl Relay {
                     conn.graceful_shutdown();
                     closing = true;
                 }
+                // Server shutdown: GOAWAY (RFC 9113 §6.8); h2 closes the
+                // connection once the open streams are done.
+                _ = &mut shutting_down, if !closing => {
+                    debug!(remote = %info.remote, "server shutting down: GOAWAY");
+                    conn.graceful_shutdown();
+                    closing = true;
+                }
             }
         }
     }
@@ -151,13 +179,11 @@ impl Relay {
         req: Request<h2::RecvStream>,
         mut response: h2::server::SendResponse<Bytes>,
     ) -> Result<()> {
+        // h2 rejects malformed requests (RFC 9113 §8.1.1, §8.3, §8.5; RFC
+        // 8441 §4) with a PROTOCOL_ERROR stream reset before they get here.
         let protocol = req.extensions().get::<h2::ext::Protocol>().map(|p| p.as_str());
         let is_connect = req.method() == Method::CONNECT;
-        let kind = match (is_connect, protocol) {
-            (true, None) => Some(Kind::Tcp),
-            (true, Some(CONNECT_UDP_PROTOCOL)) => Some(Kind::Udp),
-            _ => None,
-        };
+        let kind = Kind::of_connect(is_connect, protocol, req.uri().scheme_str());
         let settings = self.settings();
         let incoming = Incoming {
             method: req.method(),
@@ -263,12 +289,16 @@ impl Relay {
                 .any(|v| v.split(',').any(|t| t.trim().eq_ignore_ascii_case(token)))
         };
         let protocol = req.headers().get(UPGRADE).and_then(|v| v.to_str().ok()).map(str::to_string);
-        let udp =
-            req.method() == Method::GET && has_token(CONNECTION, "upgrade") && has_token(UPGRADE, CONNECT_UDP_PROTOCOL);
+        // RFC 9110 §7.8: Upgrade in an HTTP/1.0 request MUST be ignored.
+        let wants_udp = req.version() == http::Version::HTTP_11 && has_token(UPGRADE, CONNECT_UDP_PROTOCOL);
         let kind = if is_connect {
             Some(Kind::Tcp)
-        } else if udp {
+        } else if wants_udp && req.method() == Method::GET && has_token(CONNECTION, "upgrade") {
             Some(Kind::Udp)
+        } else if wants_udp {
+            // RFC 9298 §3.2: a malformed UDP proxying request MUST get an
+            // error status (SHOULD 400), not the website's 200.
+            Some(Kind::Malformed)
         } else {
             None
         };
@@ -328,13 +358,14 @@ impl Relay {
         });
         let builder = Response::builder().header(DATE, http_date());
         match authorized.kind {
-            Kind::Tcp => builder.status(StatusCode::OK),
             // RFC 9298 §3.3.
             Kind::Udp => builder
                 .status(StatusCode::SWITCHING_PROTOCOLS)
                 .header(CONNECTION, "Upgrade")
                 .header(UPGRADE, CONNECT_UDP_PROTOCOL)
                 .header(CAPSULE_PROTOCOL_HEADER, "?1"),
+            // Only tunnels that opened get here.
+            Kind::Tcp | Kind::Unsupported | Kind::Malformed => builder.status(StatusCode::OK),
         }
         .body(Full::default())
         .expect("valid")

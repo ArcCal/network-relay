@@ -165,7 +165,11 @@ fn check_status(status: StatusCode, expected: StatusCode, proxy_status: Option<&
             "the relay answered like a plain website ({status}): wrong user name or password, the user is not in \
              the server's configuration, or the UDP path differs from relay.udp_template"
         ),
-        StatusCode::FORBIDDEN => bail!("the relay does not allow this destination ({status}){detail}"),
+        _ if status == StatusCode::FORBIDDEN
+            || proxy_status.is_some_and(|p| p.contains("destination_ip_prohibited")) =>
+        {
+            bail!("the relay does not allow this destination ({status}){detail}")
+        }
         s => bail!("the relay refused ({s}){detail}"),
     }
 }
@@ -599,10 +603,13 @@ mod tests {
         assert!(check_status(StatusCode::OK, StatusCode::OK, None).is_ok());
         let e = check_status(StatusCode::NOT_FOUND, StatusCode::OK, None).unwrap_err().to_string();
         assert!(e.contains("password"), "{e}");
-        let e =
-            check_status(StatusCode::FORBIDDEN, StatusCode::OK, Some("network-relay; error=destination_ip_prohibited"))
-                .unwrap_err()
-                .to_string();
-        assert!(e.contains("destination_ip_prohibited"), "{e}");
+        let e = check_status(
+            StatusCode::BAD_GATEWAY,
+            StatusCode::OK,
+            Some("network-relay; error=destination_ip_prohibited"),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(e.contains("does not allow") && e.contains("destination_ip_prohibited"), "{e}");
     }
 }

@@ -6,6 +6,10 @@
 //! the hour it covers and a new one is started. Renamed files are deleted
 //! before any line in them is 24 hours old. Timestamps are in the system
 //! time zone.
+//!
+//! Lines are handed to background threads for writing, so a slow journal or
+//! disk never holds up request handling; if they fall far behind (a flood),
+//! lines are dropped rather than queued without bound.
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
@@ -18,7 +22,6 @@ use anyhow::{Context, Result};
 use chrono::{DateTime, Local, TimeDelta, Timelike};
 use tracing_subscriber::fmt::format::Writer;
 use tracing_subscriber::fmt::time::FormatTime;
-use tracing_subscriber::fmt::MakeWriter;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::EnvFilter;
@@ -35,14 +38,33 @@ const MAINTENANCE_INTERVAL: Duration = Duration::from_secs(60);
 const DELETE_AFTER: Duration = Duration::from_secs(RETENTION.as_secs() - 3600 - MAINTENANCE_INTERVAL.as_secs());
 const TIME_FORMAT: &str = "%Y-%m-%d %H:%M:%S%.3f %:z";
 
+/// Keeps the background log writers running; dropping it writes out what
+/// is still buffered.
+#[must_use]
+pub struct LogGuard(#[allow(dead_code)] Vec<tracing_appender::non_blocking::WorkerGuard>);
+
+/// Lines buffered per writer before new ones are dropped.
+const BUFFERED_LINES: usize = 64 * 1024;
+
 /// Sets up logging for `program` (`network-relay` or `other-program`): to
 /// stdout, and with `dir` also to files there. `RUST_LOG` overrides the
 /// default `info` level for both.
-pub fn init(program: &'static str, dir: Option<&Path>) -> Result<()> {
+pub fn init(program: &'static str, dir: Option<&Path>) -> Result<LogGuard> {
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
     // Colour only on a terminal, not in the journal or files.
     let ansi = std::io::IsTerminal::is_terminal(&std::io::stdout());
-    let stdout = tracing_subscriber::fmt::layer().with_timer(LocalTime).with_target(false).with_ansi(ansi);
+    let mut guards = Vec::new();
+    let (stdout_writer, guard) = tracing_appender::non_blocking::NonBlockingBuilder::default()
+        .buffered_lines_limit(BUFFERED_LINES)
+        .lossy(true)
+        .thread_name("log-stdout")
+        .finish(std::io::stdout());
+    guards.push(guard);
+    let stdout = tracing_subscriber::fmt::layer()
+        .with_timer(LocalTime)
+        .with_target(false)
+        .with_ansi(ansi)
+        .with_writer(stdout_writer);
     let files = match dir {
         Some(dir) => {
             let log = LogFile::open(dir, program, Local::now())
@@ -57,12 +79,18 @@ pub fn init(program: &'static str, dir: Option<&Path>) -> Result<()> {
                 })
                 .context("starting the log file thread")?;
             log_panics(files.clone());
+            let (file_writer, guard) = tracing_appender::non_blocking::NonBlockingBuilder::default()
+                .buffered_lines_limit(BUFFERED_LINES)
+                .lossy(true)
+                .thread_name("log-files-writer")
+                .finish(FileSink(files));
+            guards.push(guard);
             Some(
                 tracing_subscriber::fmt::layer()
                     .with_timer(LocalTime)
                     .with_target(false)
                     .with_ansi(false)
-                    .with_writer(files),
+                    .with_writer(file_writer),
             )
         }
         None => None,
@@ -71,7 +99,7 @@ pub fn init(program: &'static str, dir: Option<&Path>) -> Result<()> {
     if let Some(dir) = dir {
         tracing::info!("log files in {}, kept for at most 24 hours", dir.display());
     }
-    Ok(())
+    Ok(LogGuard(guards))
 }
 
 /// Timestamps in the system time zone, with its offset.
@@ -121,18 +149,10 @@ impl Files {
     }
 }
 
-impl<'a> MakeWriter<'a> for Files {
-    type Writer = EventWriter<'a>;
+/// Receives one formatted line per event from the background writer.
+struct FileSink(Files);
 
-    fn make_writer(&'a self) -> Self::Writer {
-        EventWriter(self)
-    }
-}
-
-/// Receives one formatted line per event.
-struct EventWriter<'a>(&'a Files);
-
-impl Write for EventWriter<'_> {
+impl Write for FileSink {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         self.0.lock().write_line(buf, Local::now())?;
         Ok(buf.len())

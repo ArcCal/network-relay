@@ -122,8 +122,9 @@ def main(argv=None):
     gfw.add_argument('--gfwlist-file', type=Path, help='use an already downloaded gfwlist instead of downloading it')
     gfw.add_argument('--no-gfwlist', action='store_true', help='use only the service lists, without the gfwlist')
     parser.add_argument('--gfwlist-url', default=GFWLIST_URL)
-    parser.add_argument('--ui-toggle-enabled', choices=['true', 'false'], default='false',
-                        help='whether the relay can be turned off in Settings (iOS/macOS 26+), default false')
+    parser.add_argument('--ui-toggle-enabled', choices=['true', 'false'], default='true',
+                        help='whether the relay can be turned off in Settings (iOS/macOS 26+), default true: '
+                        'with false, an unreachable relay breaks every listed domain until the profile is removed')
     parser.add_argument('--allow-dns-failover', choices=['true', 'false'],
                         help='omitted by default, leaving the system default (off)')
     parser.add_argument('--binary', type=Path, help='network-relay program, default target/release or PATH')

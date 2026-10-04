@@ -1,5 +1,6 @@
 //! Moving data between a client's tunnel and the destination socket.
 
+use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::Ordering;
 use std::task::{Context, Poll};
@@ -12,6 +13,7 @@ use tokio::net::{TcpStream, UdpSocket};
 use tracing::debug;
 
 use super::{ConnInfo, TunnelCtx};
+use crate::limits::Budget;
 use crate::proto::datagram::{self, CONTEXT_ID_UDP_PAYLOAD};
 use crate::tunnel::{Abort, Event, Sent, Tunnel, TunnelError};
 
@@ -27,27 +29,54 @@ fn reset_on_close(tcp: &TcpStream) {
 }
 
 /// The destination side of a tunnel, counting bytes as they pass, so the
-/// connection's totals are right however the tunnel ends.
+/// connection's totals are right however the tunnel ends, and holding each
+/// direction back when the user's traffic budget is spent.
 struct Counted<'a> {
     tcp: &'a mut TcpStream,
     conn: &'a ConnInfo,
+    budget: Option<&'a Budget>,
+    read_pause: Option<Pin<Box<tokio::time::Sleep>>>,
+    write_pause: Option<Pin<Box<tokio::time::Sleep>>>,
+}
+
+/// Charges `n` bytes to `budget` and returns the pause owed, if any.
+fn charge(budget: Option<&Budget>, n: usize) -> Option<Pin<Box<tokio::time::Sleep>>> {
+    let wait = budget?.charge_bytes(n);
+    (!wait.is_zero()).then(|| Box::pin(tokio::time::sleep(wait)))
+}
+
+/// Waits out a pause, if one is pending.
+fn poll_pause(pause: &mut Option<Pin<Box<tokio::time::Sleep>>>, cx: &mut Context<'_>) -> Poll<()> {
+    if let Some(p) = pause {
+        std::task::ready!(p.as_mut().poll(cx));
+        *pause = None;
+    }
+    Poll::Ready(())
 }
 
 impl AsyncRead for Counted<'_> {
     fn poll_read(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut ReadBuf<'_>) -> Poll<std::io::Result<()>> {
+        std::task::ready!(poll_pause(&mut self.read_pause, cx));
         let before = buf.filled().len();
         let r = Pin::new(&mut *self.tcp).poll_read(cx, buf);
         let n = buf.filled().len() - before;
         self.conn.down.fetch_add(n as u64, Ordering::Relaxed);
+        if n > 0 {
+            self.read_pause = charge(self.budget, n);
+        }
         r
     }
 }
 
 impl AsyncWrite for Counted<'_> {
     fn poll_write(mut self: Pin<&mut Self>, cx: &mut Context<'_>, data: &[u8]) -> Poll<std::io::Result<usize>> {
+        std::task::ready!(poll_pause(&mut self.write_pause, cx));
         let r = Pin::new(&mut *self.tcp).poll_write(cx, data);
         if let Poll::Ready(Ok(n)) = r {
             self.conn.up.fetch_add(n as u64, Ordering::Relaxed);
+            if n > 0 {
+                self.write_pause = charge(self.budget, n);
+            }
         }
         r
     }
@@ -69,8 +98,10 @@ pub(super) async fn tcp_over_stream<S: AsyncRead + AsyncWrite + Unpin>(
     mut ctx: TunnelCtx,
 ) -> bool {
     let conn = ctx.conn.clone();
+    let budget = ctx.budget.clone();
     let result = {
-        let mut target = Counted { tcp: &mut tcp, conn: &conn };
+        let mut target =
+            Counted { tcp: &mut tcp, conn: &conn, budget: budget.as_deref(), read_pause: None, write_pause: None };
         tokio::select! {
             r = tokio::io::copy_bidirectional_with_sizes(&mut client, &mut target, CHUNK, CHUNK) => r.map_err(|e| e.to_string()),
             _ = ctx.cancelled() => Err("client cancelled or user revoked".into()),
@@ -109,11 +140,15 @@ pub(super) async fn tcp_over_h3(
     let (mut send, mut recv) = stream.split();
     let (mut rd, mut wr) = tcp.into_split();
     let conn = ctx.conn.clone();
+    let budget = ctx.budget.clone();
     let outcome = {
         let up = async {
             loop {
                 match recv.recv_data().await {
                     Ok(Some(mut buf)) => {
+                        if let Some(b) = &budget {
+                            b.spend_bytes(buf.remaining()).await;
+                        }
                         while buf.has_remaining() {
                             let chunk = buf.chunk();
                             let n = chunk.len();
@@ -145,6 +180,9 @@ pub(super) async fn tcp_over_h3(
                         conn.down.fetch_add(n as u64, Ordering::Relaxed);
                         if let Err(e) = send.send_data(buf.split().freeze()).await {
                             return Err(format!("client stream: {e}"));
+                        }
+                        if let Some(b) = &budget {
+                            b.spend_bytes(n).await;
                         }
                     }
                     Err(e) => return Err(format!("reading from destination: {e}")),
@@ -191,6 +229,8 @@ pub(super) async fn tcp_over_h3(
 /// `udp_idle_timeout`, or the user is revoked.
 pub(super) async fn udp(mut tunnel: Tunnel, sock: UdpSocket, mut ctx: TunnelCtx) {
     let idle = ctx.udp_idle_timeout;
+    let budget = ctx.budget.clone();
+    let allowed = |n: usize| budget.as_ref().is_none_or(|b| b.allow_packet(n));
     let activity = std::sync::Mutex::new(tokio::time::Instant::now());
     let conn = ctx.conn.clone();
     let (mut up, mut down, mut dropped) = (0u64, 0u64, 0u64);
@@ -218,6 +258,8 @@ pub(super) async fn udp(mut tunnel: Tunnel, sock: UdpSocket, mut ctx: TunnelCtx)
                                 // Awaited rather than tried: a new socket is not yet
                                 // known to be writable, and `try_send` would drop the
                                 // flow's first datagram, often a QUIC handshake.
+                                // Over the user's budget: dropped, as UDP allows.
+                                Ok((CONTEXT_ID_UDP_PAYLOAD, data)) if !allowed(data.len()) => dropped += 1,
                                 Ok((CONTEXT_ID_UDP_PAYLOAD, data)) => match sock.send(data).await {
                                     Ok(n) => {
                                         up += 1;
@@ -251,6 +293,7 @@ pub(super) async fn udp(mut tunnel: Tunnel, sock: UdpSocket, mut ctx: TunnelCtx)
                         let mut buf = [0u8; 65_535];
                         for _ in 0..32 {
                             match sock.try_recv(&mut buf) {
+                                Ok(n) if !allowed(n) => dropped += 1,
                                 Ok(n) => {
                                     *activity.lock().unwrap() = tokio::time::Instant::now();
                                     conn.down.fetch_add(n as u64, Ordering::Relaxed);

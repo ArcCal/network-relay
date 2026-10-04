@@ -9,7 +9,7 @@ use h3::quic::StreamId;
 use h3_datagram::datagram_handler::{DatagramReader, HandleDatagramsExt};
 use http::header::DATE;
 use http::{Method, Response, StatusCode};
-use quinn::{IdleTimeout, TransportConfig, VarInt};
+use quinn::{IdleTimeout, MtuDiscoveryConfig, TransportConfig, VarInt};
 use tokio::sync::{mpsc, oneshot};
 use tracing::debug;
 
@@ -25,6 +25,9 @@ type H3Connection = h3::server::Connection<h3_quinn::Connection, Bytes>;
 type H3Stream = h3::server::RequestStream<h3_quinn::BidiStream<Bytes>, Bytes>;
 type DgramReader = DatagramReader<h3_quinn::datagram::RecvDatagramHandler>;
 type Routes = Arc<Mutex<Router>>;
+
+/// HTTP/3 error code for an orderly close (RFC 9114 §8.1).
+pub(super) const H3_NO_ERROR: u32 = 0x100;
 
 /// Datagrams queued per UDP flow before new ones are dropped.
 const FLOW_QUEUE: usize = 1024;
@@ -89,11 +92,21 @@ impl Router {
     }
 }
 
+/// Largest UDP payload path MTU discovery tries (a 1500-byte Ethernet MTU
+/// minus IPv6 and UDP headers).
+pub const MTU_UPPER_BOUND: u16 = 1452;
+
 /// QUIC transport settings. Every relayed TCP connection is a request
 /// stream, so a device needs many at once; stream and connection windows are
-/// sized for fast long-distance transfers. The initial MTU leaves room for
-/// relayed QUIC packets, which are at least 1200 bytes (RFC 9000 §14.1),
-/// inside a DATAGRAM frame; path MTU discovery raises it further.
+/// sized for fast long-distance transfers.
+///
+/// Packets start at QUIC's guaranteed 1200 bytes (RFC 9000 §14), so the
+/// handshake gets through on any path, including IPv6 minimum-MTU paths.
+/// Relayed QUIC packets are at least 1200 bytes too and need about 1250 inside
+/// a DATAGRAM frame, so path MTU discovery (DPLPMTUD, RFC 8899) starts right
+/// after the handshake and raises the size within a few round trips; until
+/// then, relayed packets that do not fit are dropped rather than sent
+/// reliably (RFC 9298 §6.1), and the relayed protocol retransmits them.
 pub(super) fn transport_config() -> TransportConfig {
     let mut t = TransportConfig::default();
     t.max_concurrent_bidi_streams(VarInt::from_u32(1024));
@@ -102,14 +115,22 @@ pub(super) fn transport_config() -> TransportConfig {
     t.send_window(32 << 20);
     t.datagram_receive_buffer_size(Some(4 << 20));
     t.datagram_send_buffer_size(4 << 20);
-    t.initial_mtu(1350);
+    t.initial_mtu(1200);
+    t.min_mtu(1200);
+    let mut mtu = MtuDiscoveryConfig::default();
+    mtu.upper_bound(MTU_UPPER_BOUND);
+    t.mtu_discovery_config(Some(mtu));
     t.max_idle_timeout(Some(IdleTimeout::from(VarInt::from_u32(300_000))));
     t
 }
 
 /// QUIC endpoint for HTTP/3.
-pub fn quic_endpoint(certs: Arc<CertStore>, socket: std::net::UdpSocket) -> Result<quinn::Endpoint> {
-    let tls_config = tls::server_config(certs, &[tls::ALPN_H3], false)?;
+pub fn quic_endpoint(
+    certs: Arc<CertStore>,
+    socket: std::net::UdpSocket,
+    client_certificates: bool,
+) -> Result<quinn::Endpoint> {
+    let tls_config = tls::server_config(certs, &[tls::ALPN_H3], false, client_certificates)?;
     let crypto = quinn::crypto::rustls::QuicServerConfig::try_from(tls_config)?;
     let mut server_config = quinn::ServerConfig::with_crypto(Arc::new(crypto));
     server_config.transport_config(Arc::new(transport_config()));
@@ -121,9 +142,22 @@ impl Relay {
     /// Serves HTTP/3 on a QUIC endpoint until it closes.
     pub async fn serve_quic(self, endpoint: quinn::Endpoint) {
         while let Some(incoming) = endpoint.accept().await {
+            let remote = incoming.remote_address();
+            // When handshakes arrive faster than usual, clients first prove
+            // they can receive at their address (RFC 9000 §8.1), so spoofed
+            // packets cannot hold connection slots.
+            if !incoming.remote_address_validated() && incoming.may_retry() && self.handshake_needs_retry() {
+                let _ = incoming.retry();
+                continue;
+            }
+            let Some(permit) = self.inner.connections.try_acquire(remote.ip()) else {
+                debug!(%remote, "connection limit reached");
+                incoming.refuse();
+                continue;
+            };
             let relay = self.clone();
             tokio::spawn(async move {
-                let remote = incoming.remote_address();
+                let _permit = permit;
                 if let Err(e) = relay.handle_quic_connection(incoming).await {
                     debug!(%remote, "connection ended: {e:#}");
                 }
@@ -133,13 +167,21 @@ impl Relay {
 
     async fn handle_quic_connection(self, incoming: quinn::Incoming) -> Result<()> {
         let remote = incoming.remote_address();
-        let conn = match incoming.await {
-            Ok(conn) => conn,
-            Err(e) => {
+        let conn = match tokio::time::timeout(HEADER_TIMEOUT, incoming).await {
+            Ok(Ok(conn)) => conn,
+            Ok(Err(e)) => {
                 debug!(%remote, "QUIC handshake failed: {e}");
                 return Ok(());
             }
+            Err(_) => {
+                debug!(%remote, "QUIC handshake timed out");
+                return Ok(());
+            }
         };
+        let client_cert = conn
+            .peer_identity()
+            .and_then(|id| id.downcast::<Vec<rustls::pki_types::CertificateDer<'static>>>().ok())
+            .and_then(|certs| tls::client_fingerprint(Some(&certs)));
         let transport = h3_quinn::Connection::new(conn.clone());
         let stopped = transport.send_stopped();
         let mut h3_conn: H3Connection = h3::server::builder()
@@ -149,7 +191,8 @@ impl Relay {
             .build(transport)
             .await
             .context("HTTP/3 setup")?;
-        let info = ConnInfo::new("HTTP/3", remote);
+        let info = ConnInfo::new("HTTP/3", remote, client_cert);
+        let idle_timeout = self.settings().idle_timeout;
 
         // Exactly one datagram reader per connection; it hands each datagram
         // to the flow that owns the stream named by its quarter stream ID.
@@ -166,7 +209,9 @@ impl Relay {
                         let (relay, info, conn, routes, sender_tx) =
                             (self.clone(), info.clone(), conn.clone(), routes.clone(), sender_tx.clone());
                         let stopped = stopped.clone();
+                        let active = info.request_started();
                         tokio::spawn(async move {
+                            let _active = active;
                             let (req, stream) = match tokio::time::timeout(HEADER_TIMEOUT, resolver.resolve_request()).await {
                                 Ok(Ok(r)) => r,
                                 // Includes requests with a :protocol the h3
@@ -186,6 +231,15 @@ impl Relay {
                 },
                 Some((stream_id, reply)) = sender_rx.recv() => {
                     let _ = reply.send(h3_conn.get_datagram_sender(stream_id));
+                }
+                // QUIC keep-alives keep a connection open indefinitely; one
+                // without requests is closed after the idle timeout (sooner
+                // if it never authenticated), with GOAWAY first.
+                _ = info.idle(idle_timeout) => {
+                    debug!(%remote, "closing idle HTTP/3 connection");
+                    let _ = h3_conn.shutdown(0).await;
+                    conn.close(VarInt::from_u32(H3_NO_ERROR), b"");
+                    break Ok(());
                 }
             }
         };

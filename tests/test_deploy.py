@@ -49,7 +49,8 @@ class DeploymentTests(unittest.TestCase):
         self.stack = ExitStack()
         self.addCleanup(self.stack.close)
         for name, relative in {
-            'ETC': 'etc', 'CONFIG': 'etc/relay.toml', 'PROFILE': 'etc/device.mobileconfig',
+            'ETC': 'etc', 'CONFIG': 'etc/relay.toml', 'STATE': 'etc/install.json',
+            'LEGACY_PROFILE': 'etc/device.mobileconfig',
             'BINARY': 'bin/network-relay', 'UNIT': 'units/network-relay.service',
             'SYSCTL': 'sysctl/network-relay.conf', 'HOOK': 'renew/network-relay', 'SITE': 'site', 'CERTS': 'certs',
         }.items():
@@ -92,7 +93,8 @@ class DeploymentTests(unittest.TestCase):
 
     def args(self, **changes):
         values = dict(profile=None, domain='relay.example.com', email=None, user=None, port=None,
-                      domains=None, binary=BINARY, jobs=1, cert=self.root / 'cert.pem', key=self.root / 'key.pem')
+                      domains=None, binary=BINARY, jobs=1, cert=self.root / 'cert.pem', key=self.root / 'key.pem',
+                      profile_out=None)
         values.update(changes)
         return argparse.Namespace(**values)
 
@@ -192,13 +194,18 @@ class DeploymentTests(unittest.TestCase):
         with mock.patch.object(deploy, 'run', side_effect=self.fake_run), redirect_stdout(io.StringIO()):
             self.assertEqual(deploy.install(self.args(profile=self.profile_file())), 0)
             config = deploy.CONFIG.read_bytes()
-            self.assertEqual(deploy.PROFILE.stat().st_mode & 0o777, 0o600)
+            self.assertFalse(deploy.LEGACY_PROFILE.exists(), 'no copy of the password is kept')
+            self.assertEqual(deploy.STATE.stat().st_mode & 0o777, 0o600)
+            self.assertNotIn(PASSWORD.encode(), deploy.STATE.read_bytes())
             self.assertIn('16777216', deploy.SYSCTL.read_text())
             # An administrator's extra setting must survive subsequent upgrades.
             deploy.CONFIG.write_bytes(config + b'\n[debug]\nlog_requests = true\n')
             self.assertEqual(deploy.install(self.args()), 0)
+            # Upgrades need neither the profile nor the password.
+            self.assertEqual(deploy.install(self.args(domain=None)), 0)
         self.assertEqual(deploy.CONFIG.read_bytes(), config + b'\n[debug]\nlog_requests = true\n')
-        self.assertEqual(deploy.read_profile(deploy.PROFILE)[0].password, PASSWORD)
+        self.assertEqual(deploy.read_state(deploy.STATE),
+                         deploy.Identity('relay.example.com', 443, 'iphone', None))
         self.assertTrue(any(c[:2] == ['systemctl', 'restart'] for c in self.calls))
         self.assertTrue(all(PASSWORD not in ' '.join(c) for c in self.calls))
         apt = [c for c in self.calls if c[0] == 'apt-get']
@@ -209,15 +216,49 @@ class DeploymentTests(unittest.TestCase):
         self.assertTrue(health and all('--fail' not in c for c in health))
 
     @unittest.skipUnless(BINARY.exists(), 'run cargo build first')
-    def test_generated_profile_matches_generated_server_account(self):
+    def test_generated_profile_is_published_once_and_matches_the_account(self):
         self.certificates()
-        with mock.patch.object(deploy, 'run', side_effect=self.fake_run), redirect_stdout(io.StringIO()):
+        output = io.StringIO()
+        with mock.patch.object(deploy, 'run', side_effect=self.fake_run), redirect_stdout(output):
             self.assertEqual(deploy.install(self.args()), 0)
-        identity, raw = deploy.read_profile(deploy.PROFILE)
+        published = list((deploy.SITE / '.publish').glob('*.mobileconfig'))
+        self.assertEqual(len(published), 1)
+        self.assertEqual(published[0].stat().st_mode & 0o777, 0o600)
+        self.assertIn(f'https://relay.example.com/{published[0].name}', output.getvalue())
+        self.assertIn(['systemctl', 'reload', 'network-relay'], self.calls, 'the relay picks the profile up')
+        identity, raw = deploy.read_profile(published[0])
         self.assertGreaterEqual(len(identity.password), 24)
-        self.assertEqual(tomllib.loads(deploy.CONFIG.read_text())['user'][0]['name'], identity.user)
+        self.assertNotIn(identity.password, output.getvalue())
+        self.assertFalse(deploy.LEGACY_PROFILE.exists())
+        user = tomllib.loads(deploy.CONFIG.read_text())['user'][0]
+        self.assertEqual(user['name'], identity.user)
+        self.assertTrue(user['password_hash'].startswith('$pbkdf2-sha256$'), 'a generated secret needs no Argon2')
         self.assertEqual(plistlib.loads(raw)['PayloadContent'][0]['MatchDomains'],
                          deploy.load_domains(ROOT / 'deploy/domains/google-ai-social.txt'))
+
+    @unittest.skipUnless(BINARY.exists(), 'run cargo build first')
+    def test_profile_out_writes_a_private_file_instead_of_publishing(self):
+        self.certificates()
+        out = self.root / 'device.mobileconfig'
+        with mock.patch.object(deploy, 'run', side_effect=self.fake_run), redirect_stdout(io.StringIO()):
+            self.assertEqual(deploy.install(self.args(profile_out=out)), 0)
+        self.assertEqual(out.stat().st_mode & 0o777, 0o600)
+        self.assertFalse((deploy.SITE / '.publish').exists())
+        self.assertEqual(deploy.read_profile(out)[0].user, 'iphone')
+
+    @unittest.skipUnless(BINARY.exists(), 'run cargo build first')
+    def test_installations_from_before_the_state_file_upgrade_from_their_profile(self):
+        self.certificates()
+        with mock.patch.object(deploy, 'run', side_effect=self.fake_run), redirect_stdout(io.StringIO()):
+            self.assertEqual(deploy.install(self.args(profile=self.profile_file())), 0)
+            deploy.STATE.unlink()
+            deploy.LEGACY_PROFILE.write_bytes(self.profile_file().read_bytes())
+            output = io.StringIO()
+            with redirect_stdout(output):
+                self.assertEqual(deploy.install(self.args(domain=None)), 0)
+        self.assertEqual(deploy.read_state(deploy.STATE).user, 'iphone')
+        self.assertIn(f'rm {deploy.LEGACY_PROFILE}', output.getvalue())
+        self.assertTrue(deploy.LEGACY_PROFILE.exists(), 'the administrator decides when to delete it')
 
     @unittest.skipUnless(BINARY.exists(), 'run cargo build first')
     def test_external_certificate_symlinks_are_kept_and_upgrades_keep_them(self):
@@ -287,13 +328,13 @@ class DeploymentTests(unittest.TestCase):
     def test_failed_upgrade_restores_files_and_running_service(self):
         self.active, self.fail_restart = True, True
         old_files = {deploy.BINARY: b'old binary', deploy.CONFIG: b'old config',
-                     deploy.PROFILE: b'old profile', deploy.UNIT: b'old unit'}
+                     deploy.STATE: b'old state', deploy.UNIT: b'old unit'}
         for path, contents in old_files.items():
             deploy.atomic_write(path, contents)
         new_binary = self.root / 'new-binary'
         new_binary.write_bytes(b'new binary')
         with mock.patch.object(deploy, 'run', side_effect=self.fake_run), self.assertRaises(subprocess.CalledProcessError):
-            deploy.apply_install(new_binary, b'new config', b'new profile',
+            deploy.apply_install(new_binary, b'new config', b'new state',
                                  deploy.Identity('relay.example.com', 443, 'iphone', PASSWORD), automated_cert=True)
         for path, contents in old_files.items():
             self.assertEqual(path.read_bytes(), contents)
@@ -306,7 +347,7 @@ class DeploymentTests(unittest.TestCase):
         new_binary = self.root / 'new-binary'
         new_binary.write_bytes(b'new binary')
         with mock.patch.object(deploy, 'run', side_effect=self.fake_run), self.assertRaises(subprocess.CalledProcessError):
-            deploy.apply_install(new_binary, b'new config', b'new profile',
+            deploy.apply_install(new_binary, b'new config', b'new state',
                                  deploy.Identity('relay.example.com', 443, 'iphone', PASSWORD), automated_cert=True)
         self.assertFalse(deploy.CONFIG.exists())
         self.assertFalse(deploy.UNIT.exists())
@@ -319,7 +360,7 @@ class DeploymentTests(unittest.TestCase):
         new_binary.write_bytes(b'new binary')
         with mock.patch.object(deploy, 'run', side_effect=self.fake_run), mock.patch.object(deploy.time, 'sleep'), \
                 self.assertRaises(RuntimeError):
-            deploy.apply_install(new_binary, b'new config', b'new profile',
+            deploy.apply_install(new_binary, b'new config', b'new state',
                                  deploy.Identity('relay.example.com', 443, 'iphone', PASSWORD), automated_cert=True)
         self.assertFalse(deploy.CONFIG.exists())
         self.assertFalse(deploy.BINARY.exists())
@@ -385,7 +426,7 @@ class GlobalProfileTests(unittest.TestCase):
                 self.assertIn(expected, domains)
             self.assertNotIn('sub.example.com', domains)
             self.assertEqual(payload['ExcludedDomains'], ['relay.example.com'])
-            self.assertIs(payload['UIToggleEnabled'], False)
+            self.assertIs(payload['UIToggleEnabled'], True, 'the user can switch off a relay that is down')
             relay = payload['Relays'][0]
             self.assertTrue(relay['HTTP3RelayURL'].startswith('https://relay.example.com/.well-known/masque/udp/'))
             basic = relay['AdditionalHTTPHeaderFields']['Authorization'].split()[1]

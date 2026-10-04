@@ -8,6 +8,8 @@ pub mod certs;
 pub mod check;
 pub mod config;
 pub mod connect;
+pub mod identity;
+pub mod limits;
 pub mod logging;
 pub mod policy;
 pub mod private_file;

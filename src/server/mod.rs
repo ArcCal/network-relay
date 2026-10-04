@@ -12,10 +12,11 @@ mod over_h3;
 mod over_tcp;
 mod pump;
 
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, OnceLock, RwLock};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
@@ -23,12 +24,13 @@ use http::header::{HeaderName, HeaderValue, AUTHORIZATION, PROXY_AUTHORIZATION};
 use http::{HeaderMap, Method};
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
 use tokio::signal::unix::{signal, SignalKind};
-use tokio::sync::{watch, OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{watch, Notify, OwnedSemaphorePermit, Semaphore};
 use tracing::{debug, info, warn};
 
-use crate::auth::{self, Authenticator, User};
+use crate::auth::{self, Authenticator, CacheTag, Denied, User};
 use crate::certs::{CertStore, Schedule};
 use crate::config::{Config, Web};
+use crate::limits::{Budget, Connections, TokenBucket, UserSlot, UserTunnels};
 use crate::policy::{Policy, Refusal, Target};
 use crate::proto::{UriTemplate, CONNECT_TCP_PROTOCOL};
 use crate::web::Website;
@@ -39,6 +41,13 @@ pub use over_tcp::tcp_tls_config;
 
 /// Longest a client may take to send its request headers.
 const HEADER_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long a connection that never authenticated may stay open without a
+/// request.
+const UNAUTHENTICATED_IDLE: Duration = Duration::from_secs(30);
+/// New QUIC handshakes per second from addresses not yet validated, beyond
+/// which clients must first prove their address with a Retry (RFC 9000 §8.1).
+const HANDSHAKE_RATE: f64 = 200.0;
+const HANDSHAKE_BURST: f64 = 400.0;
 
 /// Settings that a reload (SIGHUP) replaces.
 struct Settings {
@@ -47,6 +56,10 @@ struct Settings {
     connect_timeout: Duration,
     udp_idle_timeout: Duration,
     log_requests: bool,
+    max_tunnels_per_user: usize,
+    /// Per-user traffic budget: bytes and UDP packets per second (0: none).
+    budget: (u64, u64),
+    idle_timeout: Duration,
 }
 
 impl Settings {
@@ -57,6 +70,9 @@ impl Settings {
             connect_timeout: config.relay.connect_timeout(),
             udp_idle_timeout: config.relay.udp_idle_timeout(),
             log_requests: config.debug.log_requests,
+            max_tunnels_per_user: config.relay.max_tunnels_per_user,
+            budget: (config.relay.max_bytes_per_second_per_user, config.relay.max_udp_packets_per_second_per_user),
+            idle_timeout: config.relay.idle_timeout(),
         })
     }
 }
@@ -68,8 +84,19 @@ struct Inner {
     /// One permit per relayed TCP connection or UDP flow.
     tunnels: Arc<Semaphore>,
     max_tunnels: usize,
+    /// Tunnels per user.
+    user_tunnels: Arc<UserTunnels>,
+    /// Traffic budgets per user; they survive reloads that leave the limits
+    /// alone, so reconnecting or reloading does not renew a budget.
+    budgets: Mutex<HashMap<String, Arc<Budget>>>,
+    /// Client connections, in total and per address. Fixed at start-up.
+    connections: Arc<Connections>,
+    /// New QUIC handshakes from unvalidated addresses.
+    handshakes: Mutex<TokenBucket>,
     /// Advertises HTTP/3 in responses over TCP, as websites that offer it do.
     alt_svc: HeaderValue,
+    /// One-time profile links already downloaded (see `web`).
+    consumed: Arc<Mutex<std::collections::HashSet<String>>>,
 }
 
 /// The relay, independent of sockets so tests can run it in-process.
@@ -78,22 +105,32 @@ pub struct Relay {
     inner: Arc<Inner>,
 }
 
-fn load_site(web: Option<&Web>) -> Result<Option<Arc<Website>>> {
-    web.map(|w| Website::load(&w.root, &w.headers).map(Arc::new)).transpose()
+fn load_site(
+    web: Option<&Web>,
+    consumed: &Arc<Mutex<std::collections::HashSet<String>>>,
+) -> Result<Option<Arc<Website>>> {
+    web.map(|w| Website::load_with(&w.root, &w.headers, consumed.clone()).map(Arc::new)).transpose()
 }
 
 impl Relay {
     pub fn new(config: &Config) -> Result<Self> {
         config.validate()?;
         let alt_svc = HeaderValue::try_from(format!("h3=\":{}\"; ma=86400", config.listen.port())).expect("valid");
+        let max_tunnels = config.relay.max_tunnels();
+        let consumed = Arc::default();
         Ok(Self {
             inner: Arc::new(Inner {
                 settings: RwLock::new(Arc::new(Settings::new(config)?)),
                 auth: Arc::new(Authenticator::new(&config.users)?),
-                site: RwLock::new(load_site(config.web.as_ref())?),
-                tunnels: Arc::new(Semaphore::new(config.relay.max_tunnels)),
-                max_tunnels: config.relay.max_tunnels,
+                site: RwLock::new(load_site(config.web.as_ref(), &consumed)?),
+                tunnels: Arc::new(Semaphore::new(max_tunnels)),
+                max_tunnels,
+                user_tunnels: Arc::default(),
+                budgets: Mutex::default(),
+                connections: Connections::new(config.relay.max_connections, config.relay.max_connections_per_ip),
+                handshakes: Mutex::new(TokenBucket::new(HANDSHAKE_RATE, HANDSHAKE_BURST)),
                 alt_svc,
+                consumed,
             }),
         })
     }
@@ -105,9 +142,9 @@ impl Relay {
     pub fn reload(&self, config: &Config) -> Result<()> {
         config.validate()?;
         let settings = Settings::new(config)?;
-        let site = load_site(config.web.as_ref());
+        let site = load_site(config.web.as_ref(), &self.inner.consumed);
+        self.inner.auth.replace(&config.users)?;
         *self.inner.settings.write().unwrap() = Arc::new(settings);
-        self.inner.auth.replace(&config.users);
         match site {
             Ok(site) => *self.inner.site.write().unwrap() = site,
             Err(e) => warn!("keeping the current website: {e:#}"),
@@ -126,6 +163,35 @@ impl Relay {
 
     fn site(&self) -> Option<Arc<Website>> {
         self.inner.site.read().unwrap().clone()
+    }
+
+    /// Tunnels open for `user` right now.
+    pub fn user_tunnels(&self, user: &str) -> usize {
+        self.inner.user_tunnels.count(user)
+    }
+
+    /// Client connections open right now.
+    pub fn open_connections(&self) -> usize {
+        self.inner.connections.open()
+    }
+
+    /// A user's traffic budget under the current limits, if there is one.
+    fn budget(&self, user: &str, limits: (u64, u64)) -> Option<Arc<Budget>> {
+        if limits == (0, 0) {
+            return None;
+        }
+        let mut budgets = self.inner.budgets.lock().unwrap();
+        let budget = budgets.entry(user.to_string()).or_insert_with(|| Arc::new(Budget::new(limits.0, limits.1)));
+        if budget.settings != limits {
+            *budget = Arc::new(Budget::new(limits.0, limits.1));
+        }
+        Some(budget.clone())
+    }
+
+    /// Whether a new QUIC connection from an unvalidated address should
+    /// first be sent a Retry: only when handshakes arrive faster than usual.
+    fn handshake_needs_retry(&self) -> bool {
+        !self.inner.handshakes.lock().unwrap().try_take(1.0, Instant::now())
     }
 }
 
@@ -170,10 +236,32 @@ struct ConnInfo {
     refused: AtomicU64,
     up: AtomicU64,
     down: AtomicU64,
+    /// SHA-256 of the client certificate, if the client presented one.
+    client_cert: Option<[u8; 32]>,
+    /// Uncached password verifications under way on this connection.
+    pending_auth: AtomicUsize,
+    /// The credentials this connection authenticated with.
+    bound: Mutex<Option<(CacheTag, User)>>,
+    /// Requests (streams) open on this connection, for the idle timeout.
+    active: AtomicUsize,
+    idle_since: Mutex<tokio::time::Instant>,
+    activity: Notify,
+}
+
+/// Counts a request as open on its connection until dropped.
+struct ActiveRequest(Arc<ConnInfo>);
+
+impl Drop for ActiveRequest {
+    fn drop(&mut self) {
+        if self.0.active.fetch_sub(1, Ordering::AcqRel) == 1 {
+            *self.0.idle_since.lock().unwrap() = tokio::time::Instant::now();
+        }
+        self.0.activity.notify_waiters();
+    }
 }
 
 impl ConnInfo {
-    fn new(transport: &'static str, remote: SocketAddr) -> Arc<Self> {
+    fn new(transport: &'static str, remote: SocketAddr, client_cert: Option<[u8; 32]>) -> Arc<Self> {
         Arc::new(Self {
             transport,
             remote,
@@ -184,12 +272,47 @@ impl ConnInfo {
             refused: AtomicU64::new(0),
             up: AtomicU64::new(0),
             down: AtomicU64::new(0),
+            client_cert,
+            pending_auth: AtomicUsize::new(0),
+            bound: Mutex::new(None),
+            active: AtomicUsize::new(0),
+            idle_since: Mutex::new(tokio::time::Instant::now()),
+            activity: Notify::new(),
         })
     }
 
     fn authenticated(&self, user: &str) {
         if self.user.set(user.to_string()).is_ok() {
             info!(user, remote = %self.remote, transport = self.transport, "client connected");
+        }
+    }
+
+    /// Marks a request as open until the returned guard is dropped.
+    fn request_started(self: &Arc<Self>) -> ActiveRequest {
+        self.active.fetch_add(1, Ordering::AcqRel);
+        self.activity.notify_waiters();
+        ActiveRequest(self.clone())
+    }
+
+    /// Resolves once the connection has had no open request for `limit`
+    /// (or [`UNAUTHENTICATED_IDLE`] while it never authenticated).
+    async fn idle(&self, limit: Duration) {
+        loop {
+            let changed = self.activity.notified();
+            if self.active.load(Ordering::Acquire) == 0 {
+                let limit = if self.user.get().is_some() { limit } else { limit.min(UNAUTHENTICATED_IDLE) };
+                let since = *self.idle_since.lock().unwrap();
+                tokio::select! {
+                    _ = tokio::time::sleep_until(since + limit) => {
+                        if self.active.load(Ordering::Acquire) == 0 && *self.idle_since.lock().unwrap() == since {
+                            return;
+                        }
+                    }
+                    _ = changed => {}
+                }
+            } else {
+                changed.await;
+            }
         }
     }
 }
@@ -268,7 +391,10 @@ struct TunnelCtx {
     changes: watch::Receiver<u64>,
     peer_closed: std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>,
     udp_idle_timeout: Duration,
+    /// The user's traffic budget, if limits are configured.
+    budget: Option<Arc<Budget>>,
     _permit: OwnedSemaphorePermit,
+    _user_slot: UserSlot,
 }
 
 impl TunnelCtx {
@@ -281,15 +407,62 @@ impl TunnelCtx {
     }
 }
 
+/// Resolves when `user` is removed, their credential changes, or their
+/// account expires.
 async fn wait_for_revocation(auth: &Authenticator, user: &User, changes: &mut watch::Receiver<u64>) {
+    let expiry = async {
+        match user.time_left() {
+            Some(left) => tokio::time::sleep(left).await,
+            None => std::future::pending().await,
+        }
+    };
+    tokio::pin!(expiry);
     loop {
         if !auth.is_current(user) {
             return;
         }
-        if changes.changed().await.is_err() {
-            return std::future::pending().await;
+        tokio::select! {
+            _ = &mut expiry => return,
+            changed = changes.changed() => if changed.is_err() {
+                return (&mut expiry).await;
+            },
         }
     }
+}
+
+/// Process-wide budget for logging authentication failures: a burst, then a
+/// few a second, with a count of what was left out.
+static AUTH_LOGS: OnceLock<Mutex<(TokenBucket, u64)>> = OnceLock::new();
+
+/// Whether to log one more authentication failure, and how many were left
+/// out since the last one logged.
+fn auth_log_allowed() -> Option<u64> {
+    let mut state = AUTH_LOGS.get_or_init(|| Mutex::new((TokenBucket::new(5.0, 10.0), 0))).lock().unwrap();
+    if state.0.try_take(1.0, Instant::now()) {
+        Some(std::mem::take(&mut state.1))
+    } else {
+        state.1 += 1;
+        None
+    }
+}
+
+/// Logs why a proxy request was not authenticated. Failures carry the
+/// client's chosen user name, so they are rate-limited: a flood of wrong
+/// passwords must not flood the journal.
+fn log_denied(denied: &Denied, conn: &ConnInfo) {
+    let (what, name) = match denied {
+        Denied::Missing | Denied::Malformed => {
+            debug!(remote = %conn.remote, transport = conn.transport, "proxy request without valid credentials");
+            return;
+        }
+        Denied::Rejected { user } => ("authentication failed", user),
+        Denied::Throttled { user } => ("authentication refused: too many new credentials from this client", user),
+    };
+    let Some(suppressed) = auth_log_allowed() else { return };
+    // The name is the client's text: quoted and escaped, so it cannot forge
+    // log lines.
+    let name: String = name.chars().take(64).collect();
+    info!(remote = %conn.remote, user = ?name, transport = conn.transport, suppressed, "{what}");
 }
 
 /// Header values shown in request logs: credentials are reduced to the
@@ -340,19 +513,21 @@ impl Relay {
                 }
             }
         };
+        // A client certificate that belongs to a user authenticates on its
+        // own; otherwise the password.
+        if let Some(user) = conn.client_cert.and_then(|fp| self.inner.auth.verify_certificate(&fp)) {
+            conn.authenticated(&user.name);
+            return Some(Authorized { kind, user, target });
+        }
         let header = req.headers.get(PROXY_AUTHORIZATION).or_else(|| req.headers.get(AUTHORIZATION));
         let header = header.map(HeaderValue::as_bytes);
-        let Some(user) = self.inner.auth.verify(header).await else {
-            match header.and_then(auth::parse_basic) {
-                // The name is the client's text: quoted and escaped, so it
-                // cannot forge log lines.
-                Some((name, _)) => {
-                    let name: String = name.chars().take(64).collect();
-                    info!(remote = %conn.remote, user = ?name, transport = conn.transport, "authentication failed")
-                }
-                None => debug!(remote = %conn.remote, transport = conn.transport, "proxy request without credentials"),
+        let client = auth::Client { ip: conn.remote.ip(), pending: &conn.pending_auth, bound: &conn.bound };
+        let user = match self.inner.auth.verify(header, &client).await {
+            Ok(user) => user,
+            Err(denied) => {
+                log_denied(&denied, conn);
+                return None;
             }
-            return None;
         };
         conn.authenticated(&user.name);
         Some(Authorized { kind, user, target })
@@ -390,6 +565,11 @@ impl Relay {
             return Err(Refusal::UserRevoked);
         }
         let target = a.target.clone()?;
+        let user_slot = self
+            .inner
+            .user_tunnels
+            .try_acquire(&a.user.name, settings.max_tunnels_per_user)
+            .ok_or(Refusal::TooManyUserTunnels)?;
         let permit = self.inner.tunnels.clone().try_acquire_owned().map_err(|_| Refusal::TooManyTunnels)?;
         let connecting = async {
             let addrs = settings.policy.resolve(&target).await?;
@@ -423,7 +603,9 @@ impl Relay {
             changes,
             peer_closed: Box::pin(std::future::pending()),
             udp_idle_timeout: settings.udp_idle_timeout,
+            budget: self.budget(&a.user.name, settings.budget),
             _permit: permit,
+            _user_slot: user_slot,
         };
         Ok((opened, ctx))
     }
@@ -436,7 +618,10 @@ fn http_date() -> HeaderValue {
 /// Runs the server until SIGINT or SIGTERM. `config` was loaded from
 /// `config_path`, which SIGHUP reads again.
 pub async fn run(config_path: PathBuf, config: Config) -> Result<()> {
-    sys::raise_open_file_limit(config.relay.max_tunnels.saturating_mul(2).saturating_add(1024) as _);
+    sys::raise_open_file_limit(
+        config.relay.max_tunnels().saturating_mul(2).saturating_add(config.relay.max_connections).saturating_add(1024)
+            as _,
+    );
     let certs = CertStore::open(&config.tls.cert, &config.tls.key)?;
     let relay = Relay::new(&config)?;
     let udp =
@@ -449,14 +634,15 @@ pub async fn run(config_path: PathBuf, config: Config) -> Result<()> {
         );
     }
     debug!(rcv, snd, "UDP socket buffers");
-    let endpoint = quic_endpoint(certs.clone(), udp)?;
+    let endpoint = quic_endpoint(certs.clone(), udp, config.tls.client_certificates)?;
     let tcp = TcpListener::bind(config.listen).await.with_context(|| format!("listening on TCP {}", config.listen))?;
+    let tcp_tls = tcp_tls_config(certs.clone(), config.tls.client_certificates)?;
     // Registered before the listeners start, so an early SIGHUP or SIGTERM is
     // handled rather than killing the process by default action.
     let mut sighup = signal(SignalKind::hangup())?;
     let mut sigterm = signal(SignalKind::terminate())?;
     let mut quic_task = tokio::spawn(relay.clone().serve_quic(endpoint.clone()));
-    let mut tcp_task = tokio::spawn(relay.clone().serve_tcp(tcp, tcp_tls_config(certs.clone())?));
+    let mut tcp_task = tokio::spawn(relay.clone().serve_tcp(tcp, tcp_tls));
     let mut reload_task =
         tokio::spawn(certs.clone().run_schedule(Schedule::from_config(config.tls.reload_interval_days)));
     info!(
@@ -465,6 +651,7 @@ pub async fn run(config_path: PathBuf, config: Config) -> Result<()> {
         website = %config.web.as_ref().map_or_else(|| "none (404)".to_string(), |w| w.root.display().to_string()),
         udp_template = %config.relay.udp_template,
         open_files = sys::open_file_limit().unwrap_or(0),
+        max_tunnels = relay.inner.max_tunnels,
         "network-relay {} ready (HTTP/3 on UDP, HTTP/2 and HTTP/1.1 on TCP)",
         env!("CARGO_PKG_VERSION")
     );
@@ -487,12 +674,18 @@ pub async fn run(config_path: PathBuf, config: Config) -> Result<()> {
                     }
                     if c.listen != config.listen
                         || c.relay.max_tunnels != config.relay.max_tunnels
+                        || c.relay.max_connections != config.relay.max_connections
+                        || c.relay.max_connections_per_ip != config.relay.max_connections_per_ip
+                        || c.tls.client_certificates != config.tls.client_certificates
                         || c.log_dir != config.log_dir
                         || c.tls.cert != config.tls.cert
                         || c.tls.key != config.tls.key
                         || c.tls.reload_interval_days != config.tls.reload_interval_days
                     {
-                        warn!("listen, log_dir, relay.max_tunnels and the [tls] settings take effect after a restart");
+                        warn!(
+                            "listen, log_dir, relay.max_tunnels, relay.max_connections(_per_ip) and the [tls] \
+                             settings take effect after a restart"
+                        );
                     }
                 }
                 Err(e) => warn!("not reloading, configuration is invalid: {e:#}"),
@@ -507,7 +700,7 @@ pub async fn run(config_path: PathBuf, config: Config) -> Result<()> {
     reload_task.abort();
     tcp_task.abort();
     quic_task.abort();
-    endpoint.close(0u32.into(), b"server shutting down");
+    endpoint.close(over_h3::H3_NO_ERROR.into(), b"server shutting down");
     let _ = tokio::time::timeout(Duration::from_secs(2), endpoint.wait_idle()).await;
     match failed {
         None => Ok(()),
@@ -522,12 +715,55 @@ mod tests {
     #[tokio::test]
     async fn revocation_is_detected_even_when_subscription_is_late() {
         let hash = auth::hash_password("test-password").unwrap();
-        let user = User { name: "alice".into(), hash: hash.clone() };
-        let auth =
-            Authenticator::new(&[crate::config::UserEntry { name: user.name.clone(), password_hash: hash }]).unwrap();
-        auth.replace(&[]);
+        let user = User { name: "alice".into(), credential: hash.clone(), expires: None };
+        let auth = Authenticator::new(&[crate::config::UserEntry::with_password(&user.name, &hash)]).unwrap();
+        auth.replace(&[]).unwrap();
         let mut changes = auth.changes();
         tokio::time::timeout(Duration::from_secs(1), wait_for_revocation(&auth, &user, &mut changes)).await.unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn expiry_revokes_tunnels_on_time() {
+        let hash = auth::hash_password("test-password").unwrap();
+        let expires = std::time::SystemTime::now() + Duration::from_secs(90);
+        let mut entry = crate::config::UserEntry::with_password("alice", &hash);
+        entry.expires = Some(chrono::DateTime::<chrono::Utc>::from(expires).to_rfc3339());
+        let auth = Authenticator::new(&[entry]).unwrap();
+        let user = User { name: "alice".into(), credential: hash, expires: Some(expires) };
+        assert!(auth.is_current(&user));
+        let mut changes = auth.changes();
+        let started = tokio::time::Instant::now();
+        wait_for_revocation(&auth, &user, &mut changes).await;
+        assert!(started.elapsed() >= Duration::from_secs(89), "{:?}", started.elapsed());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn connections_go_idle_without_requests() {
+        let conn = ConnInfo::new("HTTP/2", "192.0.2.1:1".parse().unwrap(), None);
+        let started = tokio::time::Instant::now();
+        conn.idle(Duration::from_secs(300)).await;
+        assert_eq!(started.elapsed().as_secs(), 30, "unauthenticated connections get 30 s");
+        conn.authenticated("alice");
+        let request = conn.request_started();
+        let waiting = tokio::spawn({
+            let conn = conn.clone();
+            async move {
+                let started = tokio::time::Instant::now();
+                conn.idle(Duration::from_secs(300)).await;
+                started.elapsed()
+            }
+        });
+        tokio::time::sleep(Duration::from_secs(1000)).await;
+        assert!(!waiting.is_finished(), "an open request keeps the connection");
+        drop(request);
+        let elapsed = waiting.await.unwrap();
+        assert_eq!(elapsed.as_secs(), 1300);
+    }
+
+    #[test]
+    fn authentication_failure_logs_are_rate_limited() {
+        let allowed = (0..100).filter(|_| auth_log_allowed().is_some()).count();
+        assert!(allowed <= 11, "{allowed}");
     }
 
     #[test]

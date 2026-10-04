@@ -7,8 +7,9 @@
 //! checking the name alone would let a DNS answer pointing to 127.0.0.1 or
 //! 10.0.0.1 through ("DNS rebinding").
 
-use std::net::{IpAddr, SocketAddr};
-use std::time::Duration;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use http::StatusCode;
 use ipnet::IpNet;
@@ -114,6 +115,8 @@ pub enum Refusal {
     Unreachable(String),
     /// The configured maximum number of tunnels is reached.
     TooManyTunnels,
+    /// The user's share of tunnels is used up.
+    TooManyUserTunnels,
 }
 
 impl Refusal {
@@ -125,7 +128,7 @@ impl Refusal {
             Refusal::DnsError(_) | Refusal::NoAddresses | Refusal::ConnectionRefused | Refusal::Unreachable(_) => {
                 StatusCode::BAD_GATEWAY
             }
-            Refusal::TooManyTunnels => StatusCode::SERVICE_UNAVAILABLE,
+            Refusal::TooManyTunnels | Refusal::TooManyUserTunnels => StatusCode::SERVICE_UNAVAILABLE,
         }
     }
 
@@ -142,7 +145,7 @@ impl Refusal {
             Refusal::ConnectionRefused => "connection_refused",
             Refusal::ConnectionTimeout => "connection_timeout",
             Refusal::Unreachable(_) => "destination_unavailable",
-            Refusal::TooManyTunnels => "connection_limit_reached",
+            Refusal::TooManyTunnels | Refusal::TooManyUserTunnels => "connection_limit_reached",
         }
     }
 
@@ -166,7 +169,92 @@ impl std::fmt::Display for Refusal {
             Refusal::ConnectionTimeout => f.write_str("connection timed out"),
             Refusal::Unreachable(e) => write!(f, "unreachable: {e}"),
             Refusal::TooManyTunnels => f.write_str("relay.max_tunnels reached"),
+            Refusal::TooManyUserTunnels => f.write_str("relay.max_tunnels_per_user reached"),
         }
+    }
+}
+
+/// How long the list of this machine's own addresses is reused.
+const OWN_ADDRESSES_TTL: Duration = Duration::from_secs(10);
+
+/// The addresses of this machine's network interfaces. A connection to one
+/// of them stays on the machine, so it reaches services that only a cloud
+/// or host firewall keeps from the internet (RFC 9298 §7).
+pub struct OwnAddresses {
+    read: fn() -> std::io::Result<Vec<IpAddr>>,
+    cache: Mutex<Option<(Instant, Vec<IpAddr>)>>,
+}
+
+impl std::fmt::Debug for OwnAddresses {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OwnAddresses").finish_non_exhaustive()
+    }
+}
+
+impl OwnAddresses {
+    /// The interface addresses of this machine, shared by all policies.
+    pub fn system() -> Arc<Self> {
+        static SYSTEM: OnceLock<Arc<OwnAddresses>> = OnceLock::new();
+        SYSTEM.get_or_init(|| Arc::new(Self::with_reader(interface_addresses))).clone()
+    }
+
+    fn with_reader(read: fn() -> std::io::Result<Vec<IpAddr>>) -> Self {
+        Self { read, cache: Mutex::new(None) }
+    }
+
+    /// The current list, read again at most every ten seconds so new
+    /// addresses are noticed. If they cannot be read, the last list is kept;
+    /// `None` when they could never be read.
+    fn get(&self) -> Option<Vec<IpAddr>> {
+        let mut cache = self.cache.lock().unwrap();
+        if let Some((at, list)) = cache.as_ref() {
+            if at.elapsed() < OWN_ADDRESSES_TTL {
+                return Some(list.clone());
+            }
+        }
+        match (self.read)() {
+            Ok(list) => {
+                let list: Vec<IpAddr> = list.into_iter().map(|ip| ip.to_canonical()).collect();
+                *cache = Some((Instant::now(), list.clone()));
+                Some(list)
+            }
+            Err(e) => {
+                tracing::warn!("reading this machine's addresses: {e}");
+                cache.as_ref().map(|(_, list)| list.clone())
+            }
+        }
+    }
+}
+
+fn interface_addresses() -> std::io::Result<Vec<IpAddr>> {
+    let mut out = Vec::new();
+    for ifa in nix::ifaddrs::getifaddrs().map_err(std::io::Error::from)? {
+        let Some(addr) = ifa.address else { continue };
+        if let Some(v4) = addr.as_sockaddr_in() {
+            out.push(IpAddr::V4(v4.ip()));
+        } else if let Some(v6) = addr.as_sockaddr_in6() {
+            out.push(IpAddr::V6(v6.ip()));
+        }
+    }
+    Ok(out)
+}
+
+/// IPv4 addresses carried inside an IPv6 address that the network
+/// translates or tunnels to that IPv4 address: the NAT64 well-known prefix
+/// (RFC 6052), 6to4 (RFC 3056), Teredo server and client (RFC 4380), and
+/// deprecated IPv4-compatible addresses (RFC 4291 §2.5.5.1).
+pub fn embedded_ipv4(ip: Ipv6Addr) -> Vec<Ipv4Addr> {
+    let o = ip.octets();
+    let v4 = |b: &[u8]| Ipv4Addr::new(b[0], b[1], b[2], b[3]);
+    match (o[0], o[1], o[2], o[3]) {
+        (0x00, 0x64, 0xff, 0x9b) if o[4..12] == [0; 8] => vec![v4(&o[12..16])],
+        (0x20, 0x02, _, _) => vec![v4(&o[2..6])],
+        (0x20, 0x01, 0x00, 0x00) => {
+            let client: Vec<u8> = o[12..16].iter().map(|b| !b).collect();
+            vec![v4(&o[4..8]), v4(&client)]
+        }
+        _ if o[..12] == [0; 12] => vec![v4(&o[12..16])],
+        _ => Vec::new(),
     }
 }
 
@@ -175,18 +263,36 @@ impl std::fmt::Display for Refusal {
 pub struct Policy {
     blocked: Vec<IpNet>,
     blocked_ports: Vec<u16>,
+    own: Option<Arc<OwnAddresses>>,
 }
 
 impl Policy {
     pub fn new(relay: &Relay) -> Self {
-        Self { blocked: relay.blocked_destinations.clone(), blocked_ports: relay.blocked_ports.clone() }
+        Self {
+            blocked: relay.blocked_destinations.clone(),
+            blocked_ports: relay.blocked_ports.clone(),
+            own: relay.block_own_addresses.then(OwnAddresses::system),
+        }
     }
 
     /// Whether clients may reach `ip`. IPv4-mapped IPv6 addresses are checked
-    /// as the IPv4 addresses they are.
+    /// as the IPv4 addresses they are, and IPv6 addresses that carry an IPv4
+    /// address (NAT64, 6to4, Teredo) also by that address. The machine's own
+    /// addresses are refused too; if they cannot be read at all, everything
+    /// is refused rather than risk reaching the machine itself.
     pub fn allows_ip(&self, ip: IpAddr) -> bool {
         let ip = ip.to_canonical();
-        !self.blocked.iter().any(|net| net.contains(&ip))
+        let mut candidates = vec![ip];
+        if let IpAddr::V6(v6) = ip {
+            candidates.extend(embedded_ipv4(v6).into_iter().map(IpAddr::V4));
+        }
+        if candidates.iter().any(|c| self.blocked.iter().any(|net| net.contains(c))) {
+            return false;
+        }
+        match &self.own {
+            None => true,
+            Some(own) => own.get().is_some_and(|list| !candidates.iter().any(|c| list.contains(c))),
+        }
     }
 
     /// Resolves `target` and returns the addresses clients may reach, in
@@ -273,12 +379,66 @@ mod tests {
     }
 
     fn policy(blocked: &[&str], ports: &[u16]) -> Policy {
-        Policy { blocked: blocked.iter().map(|s| s.parse().unwrap()).collect(), blocked_ports: ports.to_vec() }
+        Policy {
+            blocked: blocked.iter().map(|s| s.parse().unwrap()).collect(),
+            blocked_ports: ports.to_vec(),
+            own: None,
+        }
+    }
+
+    #[test]
+    fn embedded_ipv4_addresses_are_checked_as_ipv4() {
+        let p = policy(&["10.0.0.0/8", "127.0.0.0/8", "192.0.2.0/24"], &[]);
+        assert_eq!(embedded_ipv4("64:ff9b::a00:1".parse().unwrap()), ["10.0.0.1".parse::<Ipv4Addr>().unwrap()]);
+        for blocked in [
+            "64:ff9b::a00:1",  // NAT64 to 10.0.0.1
+            "64:ff9b::7f00:1", // NAT64 to 127.0.0.1
+            "2002:a00:1::1",   // 6to4 of 10.0.0.1
+            "::a00:1",         // IPv4-compatible 10.0.0.1
+            // RFC 4380 example: server 65.54.227.120, client 192.0.2.45.
+            "2001:0:4136:e378:8000:63bf:3fff:fdd2",
+        ] {
+            assert!(!p.allows_ip(blocked.parse().unwrap()), "{blocked}");
+        }
+        for allowed in ["64:ff9b::808:808", "2002:808:808::1", "2606:4700:4700::1111", "2001:db8::1"] {
+            assert!(p.allows_ip(allowed.parse().unwrap()), "{allowed}");
+        }
+    }
+
+    #[test]
+    fn own_addresses_are_refused_and_unreadable_ones_fail_closed() {
+        fn ours() -> std::io::Result<Vec<IpAddr>> {
+            Ok(vec!["203.0.113.5".parse().unwrap(), "2001:db8:5::1".parse().unwrap()])
+        }
+        fn broken() -> std::io::Result<Vec<IpAddr>> {
+            Err(std::io::Error::other("no"))
+        }
+        let mut p = policy(&[], &[]);
+        p.own = Some(Arc::new(OwnAddresses::with_reader(ours)));
+        assert!(!p.allows_ip("203.0.113.5".parse().unwrap()));
+        assert!(!p.allows_ip("::ffff:203.0.113.5".parse().unwrap()));
+        assert!(!p.allows_ip("64:ff9b::cb00:7105".parse().unwrap()), "NAT64 of our own address");
+        assert!(!p.allows_ip("2001:db8:5::1".parse().unwrap()));
+        assert!(p.allows_ip("203.0.113.6".parse().unwrap()));
+        p.own = Some(Arc::new(OwnAddresses::with_reader(broken)));
+        assert!(!p.allows_ip("1.1.1.1".parse().unwrap()), "fail closed");
+        // The real interfaces of this machine include loopback.
+        let system = OwnAddresses::system().get().unwrap();
+        assert!(system.iter().any(|ip| ip.is_loopback()), "{system:?}");
+    }
+
+    #[test]
+    fn default_list_covers_special_purpose_ranges() {
+        let p = Policy::new(&Relay { block_own_addresses: false, ..Relay::default() });
+        for blocked in ["192.88.99.1", "3fff::1", "5f00::1", "2001:2::1", "2001:10::1", "2001:20::1", "255.255.255.255"]
+        {
+            assert!(!p.allows_ip(blocked.parse().unwrap()), "{blocked}");
+        }
     }
 
     #[test]
     fn blocked_addresses_include_mapped_ones() {
-        let p = Policy::new(&Relay::default());
+        let p = Policy::new(&Relay { block_own_addresses: false, ..Relay::default() });
         for blocked in ["127.0.0.1", "10.1.2.3", "::1", "::ffff:127.0.0.1", "::ffff:10.0.0.1", "fd00::1", "fe80::1"] {
             assert!(!p.allows_ip(blocked.parse().unwrap()), "{blocked}");
         }

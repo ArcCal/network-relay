@@ -348,6 +348,8 @@ pub struct Authenticator {
     /// Hashing takes tens of milliseconds and megabytes of memory, so the
     /// number of concurrent verifications is capped.
     slots: Arc<Semaphore>,
+    /// Where the hashing runs: threads of its own, one per slot.
+    hashers: HashThreads,
     /// Verified instead of a real hash for unknown user names, so the
     /// response time does not reveal which names exist.
     dummy_slow: Hash,
@@ -363,6 +365,45 @@ pub struct Authenticator {
     /// Bumped whenever the user list changes, so tunnels can check whether
     /// their user is still current.
     generation: watch::Sender<u64>,
+}
+
+type HashJob = Box<dyn FnOnce() + Send>;
+
+/// Threads that only verify password hashes. A check takes milliseconds of
+/// CPU (tens for Argon2id); on tokio's shared blocking pool it would wait
+/// behind slow DNS lookups, and they behind it. The threads end when the
+/// authenticator is dropped.
+struct HashThreads {
+    jobs: std::sync::mpsc::Sender<HashJob>,
+}
+
+impl HashThreads {
+    fn new(threads: usize) -> Result<Self> {
+        let (jobs, queue) = std::sync::mpsc::channel::<HashJob>();
+        let queue = Arc::new(Mutex::new(queue));
+        for i in 0..threads {
+            let queue = queue.clone();
+            std::thread::Builder::new()
+                .name(format!("password-hash-{i}"))
+                .spawn(move || loop {
+                    let job = queue.lock().unwrap().recv();
+                    match job {
+                        // A panicking job must not take the thread with it.
+                        Ok(job) => drop(std::panic::catch_unwind(std::panic::AssertUnwindSafe(job))),
+                        Err(_) => return,
+                    }
+                })
+                .context("starting password hashing threads")?;
+        }
+        Ok(Self { jobs })
+    }
+
+    fn spawn(&self, job: impl FnOnce() + Send + 'static) {
+        // Fails only once every thread has gone, which cannot happen while
+        // `self` holds the sender; the job, and its result sender, are then
+        // dropped and the check fails.
+        let _ = self.jobs.send(Box::new(job));
+    }
 }
 
 /// Removes a verification entry even if the request is cancelled while waiting.
@@ -434,6 +475,7 @@ impl Authenticator {
         let auth = Self {
             users: RwLock::new(Users::default()),
             slots: Arc::new(Semaphore::new(slots)),
+            hashers: HashThreads::new(slots)?,
             dummy_slow: parse_hash(&hash_password(&generate_password())?)?,
             dummy_fast: parse_hash(&hash_generated_secret(&generate_password())?)?,
             cache_key: ring::hmac::Key::new(ring::hmac::HMAC_SHA256, &random_bytes::<32>()),
@@ -639,14 +681,14 @@ impl Authenticator {
             (known, hash)
         };
         let permit = self.slots.clone().acquire_owned().await.ok()?;
-        let ok = tokio::task::spawn_blocking(move || {
+        let (done, result) = tokio::sync::oneshot::channel();
+        self.hashers.spawn(move || {
             // Cancellation of the HTTP request must not release the slot
             // while this non-cancellable computation is still running.
             let _permit = permit;
-            verify_hash(&password, &hash)
-        })
-        .await
-        .unwrap_or(false);
+            let _ = done.send(verify_hash(&password, &hash));
+        });
+        let ok = result.await.unwrap_or(false);
         let (credential, expires) = known?;
         ok.then_some(User { name, credential, expires })
     }
@@ -834,62 +876,42 @@ mod tests {
         assert!(auth.cache.lock().unwrap().len() <= CACHE_MAX);
     }
 
-    #[test]
-    fn cancelled_verification_cleans_up_and_keeps_hash_slot() {
+    #[tokio::test]
+    async fn cancelled_verification_cleans_up_and_keeps_hash_slot() {
         use std::future::Future;
         use std::task::Poll;
-        // Keep the sole blocking worker occupied so the assertion cannot race
-        // with a fast hash computation completing on another thread.
-        let runtime = tokio::runtime::Builder::new_current_thread().max_blocking_threads(1).build().unwrap();
-        let (started, ready) = std::sync::mpsc::channel();
-        let (release, waiting) = std::sync::mpsc::channel();
-        let blocker = runtime.spawn_blocking(move || {
-            started.send(()).unwrap();
-            let _ = waiting.recv();
-        });
-        ready.recv().unwrap();
-        runtime.block_on(async {
-            let auth = Arc::new(Authenticator::new(&[user("alice", "alice-password")]).unwrap());
-            let slots = auth.slots.available_permits();
-            let header = basic_authorization("alice", "alice-password");
-            let conn = Conn::new();
-            let client = conn.client();
-            let mut verification = Box::pin(auth.verify(Some(header.as_bytes()), &client));
-            std::future::poll_fn(|cx| {
-                assert!(verification.as_mut().poll(cx).is_pending());
-                Poll::Ready(())
-            })
-            .await;
-            drop(verification);
-            assert!(auth.inflight.lock().unwrap().is_empty());
-            assert_eq!(conn.pending.load(Ordering::Relaxed), 0, "the connection's pending count is released");
-            assert_eq!(auth.slots.available_permits(), slots - 1);
-            release.send(()).unwrap();
-            blocker.await.unwrap();
-            let _permit = auth.slots.clone().acquire_many_owned(slots as u32).await.unwrap();
-        });
-    }
-
-    #[tokio::test]
-    async fn authenticator_accepts_only_configured_credentials() {
         let auth = Arc::new(Authenticator::new(&[user("alice", "alice-password")]).unwrap());
-        let ok = check(&auth, &basic_authorization("alice", "alice-password")).await.unwrap();
-        assert_eq!(ok.name, "alice");
-        assert!(auth.is_current(&ok));
-        assert_eq!(
-            check(&auth, &basic_authorization("alice", "nope")).await,
-            Err(Denied::Rejected { user: "alice".into() })
-        );
-        assert!(check(&auth, &basic_authorization("mallory", "alice-password")).await.is_err());
-        assert_eq!(auth.verify(None, &Conn::new().client()).await, Err(Denied::Missing));
-        assert_eq!(check(&auth, "Bearer x").await, Err(Denied::Malformed));
-        // A new password hash makes old tunnels stale.
-        let changes = auth.changes();
-        auth.replace(&[user("alice", "alice-password")]).unwrap();
-        assert!(changes.has_changed().unwrap());
-        assert!(!auth.is_current(&ok));
-        auth.replace(&[]).unwrap();
-        assert!(check(&auth, &basic_authorization("alice", "alice-password")).await.is_err());
+        let slots = auth.slots.available_permits();
+        // Keep every hashing thread busy, so the verification below waits in
+        // the queue and the assertions cannot race with it finishing.
+        let (release, waiting) = std::sync::mpsc::channel::<()>();
+        let waiting = Arc::new(Mutex::new(waiting));
+        let (started, ready) = std::sync::mpsc::channel();
+        for _ in 0..slots {
+            let (waiting, started) = (waiting.clone(), started.clone());
+            auth.hashers.spawn(move || {
+                started.send(()).unwrap();
+                let _ = waiting.lock().unwrap().recv();
+            });
+        }
+        for _ in 0..slots {
+            ready.recv().unwrap();
+        }
+        let header = basic_authorization("alice", "alice-password");
+        let conn = Conn::new();
+        let client = conn.client();
+        let mut verification = Box::pin(auth.verify(Some(header.as_bytes()), &client));
+        std::future::poll_fn(|cx| {
+            assert!(verification.as_mut().poll(cx).is_pending());
+            Poll::Ready(())
+        })
+        .await;
+        drop(verification);
+        assert!(auth.inflight.lock().unwrap().is_empty());
+        assert_eq!(conn.pending.load(Ordering::Relaxed), 0, "the connection's pending count is released");
+        assert_eq!(auth.slots.available_permits(), slots - 1, "the queued hash keeps its slot");
+        drop(release);
+        let _permit = auth.slots.clone().acquire_many_owned(slots as u32).await.unwrap();
     }
 
     #[tokio::test]

@@ -374,8 +374,26 @@ Xy3... (a 24-character password)
 
 ### Step 8: Write the configuration
 
+The relay runs as its own user, `network-relay`, not as root. It reads the configuration, and a copy of the certificate, through its group: certbot's own files can be read by root alone. Create the user and the copy; the renewal hook from the source does the copying, now and after every renewal (when it also has the relay pick up the new certificate at once). Run these in the extracted source directory:
+
 ```bash
-mkdir -p /etc/network-relay
+useradd --system --user-group --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin network-relay
+```
+
+```bash
+install -d -m 750 -g network-relay /etc/network-relay /etc/network-relay/tls
+```
+
+```bash
+echo /etc/letsencrypt/live/relay.example.com > /etc/network-relay/tls/source
+```
+
+```bash
+install -m 755 deploy/certbot-hook.sh /etc/letsencrypt/renewal-hooks/deploy/network-relay
+```
+
+```bash
+/etc/letsencrypt/renewal-hooks/deploy/network-relay
 ```
 
 ```bash
@@ -388,8 +406,8 @@ nano /etc/network-relay/relay.toml
 listen = "[::]:443"
 
 [tls]
-cert = "/etc/letsencrypt/live/relay.example.com/fullchain.pem"
-key = "/etc/letsencrypt/live/relay.example.com/privkey.pem"
+cert = "/etc/network-relay/tls/fullchain.pem"
+key = "/etc/network-relay/tls/privkey.pem"
 
 [web]
 root = "/var/www/relay"
@@ -402,11 +420,13 @@ password_hash = "$argon2id$v=19$..."
 Press `Ctrl+O` and Enter to save, `Ctrl+X` to exit.
 
 ```bash
-chmod 600 /etc/network-relay/relay.toml
+chgrp network-relay /etc/network-relay/relay.toml && chmod 640 /etc/network-relay/relay.toml
 ```
 
+Check it as the user the relay runs as, so that a file it cannot read shows up now:
+
 ```bash
-network-relay serve --check
+runuser -u network-relay -- network-relay serve --check
 ```
 
 **You should see:** `... configuration, certificate and website are fine; users: 1`
@@ -452,18 +472,7 @@ INFO network-relay 0.1.0 ready (HTTP/3 on UDP, HTTP/2 and HTTP/1.1 on TCP) ...
 
 - From now on it starts at boot and restarts automatically after a crash.
 - Always read the logs with the `journalctl` command above; `systemctl status` truncates long lines.
-
-To have the relay pick up a renewed certificate immediately:
-
-```bash
-printf '#!/bin/sh\nsystemctl reload network-relay\n' > /etc/letsencrypt/renewal-hooks/deploy/network-relay
-```
-
-```bash
-chmod 755 /etc/letsencrypt/renewal-hooks/deploy/network-relay
-```
-
-(Optional: the relay rereads the certificate by itself every day at 3 a.m.)
+- After a certificate renewal, the hook from step 8 copies the new certificate and reloads the relay.
 
 ### Step 11: Self-check
 
@@ -797,7 +806,7 @@ A device usually keeps just one HTTP/3 connection to the relay, carrying many re
 | Decoy website | Requests without the correct password (including every CONNECT) get the website's answer, the same as visiting a page that does not exist. Missing files under `/.well-known/` get 404 (Apple devices may query `/.well-known/pvd`) |
 | Destination restrictions | By default the server's own addresses (every address on its interfaces, public ones included), private networks, link-local, multicast and the other special-purpose ranges cannot be reached; **every** address a domain resolves to is checked (against DNS rebinding), and IPv6 addresses carrying an IPv4 address (NAT64, 6to4, Teredo) are checked by that address too. Port 25 is blocked by default (against spam). Configurable |
 | Error information | When an authenticated request fails, a `Proxy-Status` header per RFC 9209 states the reason (DNS failure, connection refused, timeout, address prohibited and so on) |
-| Live management | `systemctl reload` rereads users, destination rules, timeouts, the website and certificates; connections of users who were deleted or whose password changed are dropped immediately |
+| Live management | `systemctl reload` rereads users, destination rules, timeouts, the website and certificates; connections of users who were deleted or whose password changed are dropped immediately, and so are tunnels to destinations the new rules block |
 | Profile generation | `network-relay profile`: generates a `com.apple.relay.managed` profile, with a password or a client identity, which can be put on the website behind a link that works once and installed by opening it in Safari. `--ddm` writes the equivalent declarative device management declaration for an MDM server |
 | Self-check | `network-relay check`: tests TCP and UDP relaying over all three HTTP versions the way a device would, and confirms that without a password the relay is indistinguishable from a website |
 | Resource limits | Limits on relayed connections overall (sized from memory) and per user, optional per-user byte and packet rates, limits on client connections overall and per address (QUIC: refused before the handshake; address validation with Retry under load), idle connections closed; UDP flows close after 5 minutes idle; logging never blocks the relay; under systemd only the permission to bind port 443 is kept |

@@ -507,6 +507,14 @@ fn publish_profile(opts: &ProfileOptions, config_path: &std::path::Path) -> Resu
     let name = format!("{}.mobileconfig", auth::generate_password());
     let path = dir.join(&name);
     network_relay::private_file::write(&path, text.as_bytes())?;
+    // The relay runs as its own user and must be able to read the file:
+    // give it the owner of the directory (which root, say, can do).
+    use std::os::unix::fs::MetadataExt;
+    let (dir_meta, file_meta) = (std::fs::metadata(&dir)?, std::fs::metadata(&path)?);
+    if (dir_meta.uid(), dir_meta.gid()) != (file_meta.uid(), file_meta.gid()) {
+        std::os::unix::fs::chown(&path, Some(dir_meta.uid()), Some(dir_meta.gid()))
+            .with_context(|| format!("{} is owned by another user, who could not read the profile", dir.display()))?;
+    }
     let port = if opts.port == 443 { String::new() } else { format!(":{}", opts.port) };
     println!("Wrote {}", path.display());
     println!();

@@ -318,20 +318,41 @@ impl Policy {
         }
     }
 
+    /// Whether clients may reach `addr`: its port and its address.
+    pub fn allows(&self, addr: SocketAddr) -> bool {
+        !self.blocked_ports.contains(&addr.port()) && self.allows_ip(addr.ip())
+    }
+
     /// Resolves `target` and returns the addresses clients may reach, in
     /// the resolver's order of preference (RFC 6724).
-    pub async fn resolve(&self, target: &Target) -> Result<Vec<SocketAddr>, Refusal> {
+    ///
+    /// A name lookup first waits for `permit`, a share of the lookups that
+    /// may run at once, and holds it until the system resolver returns, even
+    /// after [`DNS_TIMEOUT`] has given up on it: the resolver cannot be
+    /// cancelled, so abandoned lookups still occupy a thread.
+    pub async fn resolve<P: Send + 'static>(
+        &self,
+        target: &Target,
+        permit: impl std::future::Future<Output = P>,
+    ) -> Result<Vec<SocketAddr>, Refusal> {
         if self.blocked_ports.contains(&target.port) {
             return Err(Refusal::PortBlocked);
         }
         let addrs: Vec<SocketAddr> = match target.ip() {
             Some(ip) => vec![SocketAddr::new(ip, target.port)],
             None => {
-                let lookup = tokio::net::lookup_host((target.host.as_str(), target.port));
-                match tokio::time::timeout(DNS_TIMEOUT, lookup).await {
+                let deadline = tokio::time::Instant::now() + DNS_TIMEOUT;
+                let held = tokio::time::timeout_at(deadline, permit).await.map_err(|_| Refusal::DnsTimeout)?;
+                let (host, port) = (target.host.clone(), target.port);
+                let lookup = tokio::task::spawn_blocking(move || {
+                    let _held = held;
+                    std::net::ToSocketAddrs::to_socket_addrs(&(host.as_str(), port)).map(Iterator::collect::<Vec<_>>)
+                });
+                match tokio::time::timeout_at(deadline, lookup).await {
                     Err(_) => return Err(Refusal::DnsTimeout),
                     Ok(Err(e)) => return Err(Refusal::DnsError(e.to_string())),
-                    Ok(Ok(found)) => found.collect(),
+                    Ok(Ok(Err(e))) => return Err(Refusal::DnsError(e.to_string())),
+                    Ok(Ok(Ok(found))) => found,
                 }
             }
         };
@@ -475,20 +496,29 @@ mod tests {
     #[tokio::test]
     async fn resolution_applies_the_rules() {
         let p = policy(&["127.0.0.0/8", "::1/128"], &[25]);
-        assert_eq!(p.resolve(&t("192.0.2.1", 25)).await, Err(Refusal::PortBlocked));
-        assert_eq!(p.resolve(&t("127.0.0.1", 80)).await, Err(Refusal::AddressBlocked));
-        assert_eq!(p.resolve(&t("localhost", 80)).await.unwrap_err(), Refusal::AddressBlocked, "rebinding");
-        assert_eq!(p.resolve(&t("192.0.2.1", 80)).await, Ok(vec!["192.0.2.1:80".parse().unwrap()]));
+        assert_eq!(p.resolve(&t("192.0.2.1", 25), async {}).await, Err(Refusal::PortBlocked));
+        assert_eq!(p.resolve(&t("127.0.0.1", 80), async {}).await, Err(Refusal::AddressBlocked));
+        assert_eq!(p.resolve(&t("localhost", 80), async {}).await.unwrap_err(), Refusal::AddressBlocked, "rebinding");
+        assert_eq!(p.resolve(&t("192.0.2.1", 80), async {}).await, Ok(vec!["192.0.2.1:80".parse().unwrap()]));
         assert_eq!(
-            p.resolve(&t("::ffff:192.0.2.1", 80)).await,
+            p.resolve(&t("::ffff:192.0.2.1", 80), async {}).await,
             Ok(vec!["192.0.2.1:80".parse().unwrap()]),
             "mapped addresses are connected to as IPv4"
         );
         let open = policy(&[], &[]);
-        let local = open.resolve(&t("localhost", 80)).await.unwrap();
+        let local = open.resolve(&t("localhost", 80), async {}).await.unwrap();
         assert!(local.iter().all(|a| a.ip().is_loopback() && a.port() == 80), "{local:?}");
-        let e = open.resolve(&t("does-not-exist.invalid", 80)).await.unwrap_err();
+        let e = open.resolve(&t("does-not-exist.invalid", 80), async {}).await.unwrap_err();
         assert!(matches!(e, Refusal::DnsError(_) | Refusal::DnsTimeout | Refusal::NoAddresses), "{e:?}");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn name_lookups_wait_for_a_permit_within_the_dns_timeout() {
+        let p = policy(&[], &[]);
+        let literal = p.resolve(&t("192.0.2.1", 80), std::future::pending::<()>()).await;
+        assert_eq!(literal, Ok(vec!["192.0.2.1:80".parse().unwrap()]), "an address needs no lookup");
+        let name = p.resolve(&t("example.com", 80), std::future::pending::<()>()).await;
+        assert_eq!(name, Err(Refusal::DnsTimeout), "no permit, no lookup");
     }
 
     #[test]

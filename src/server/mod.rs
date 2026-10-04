@@ -30,7 +30,7 @@ use tracing::{debug, info, warn};
 use crate::auth::{self, Authenticator, CacheTag, Denied, User};
 use crate::certs::{CertStore, Schedule};
 use crate::config::{Config, Web};
-use crate::limits::{Budget, Connections, TokenBucket, UserSlot, UserTunnels};
+use crate::limits::{Budget, Connections, KeyedLimit, TokenBucket, UserSlot, UserTunnels};
 use crate::policy::{Policy, Refusal, Target};
 use crate::proto::{UriTemplate, CONNECT_TCP_PROTOCOL, CONNECT_UDP_PROTOCOL};
 use crate::web::Website;
@@ -48,6 +48,12 @@ const UNAUTHENTICATED_IDLE: Duration = Duration::from_secs(30);
 /// which clients must first prove their address with a Retry (RFC 9000 §8.1).
 const HANDSHAKE_RATE: f64 = 200.0;
 const HANDSHAKE_BURST: f64 = 400.0;
+/// Name lookups at once. The system resolver blocks a thread per lookup, so
+/// this stays well below tokio's blocking pool (512 threads).
+const DNS_LOOKUPS: usize = 256;
+/// Name lookups at once for one user, so that one device opening many
+/// tunnels cannot delay everyone else's.
+const DNS_LOOKUPS_PER_USER: usize = 32;
 /// On SIGTERM, how long connections get to finish their requests after
 /// GOAWAY before they are closed. Short, because a restart waits for it.
 const DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
@@ -81,7 +87,9 @@ impl Settings {
 }
 
 struct Inner {
-    settings: RwLock<Arc<Settings>>,
+    /// Replaced by a reload; open tunnels watch it so that a destination
+    /// the new rules block is cut off.
+    settings: watch::Sender<Arc<Settings>>,
     auth: Arc<Authenticator>,
     site: RwLock<Option<Arc<Website>>>,
     /// One permit per relayed TCP connection or UDP flow.
@@ -89,6 +97,9 @@ struct Inner {
     max_tunnels: usize,
     /// Tunnels per user.
     user_tunnels: Arc<UserTunnels>,
+    /// Name lookups under way, in total and per user.
+    dns_lookups: Arc<Semaphore>,
+    dns_lookups_per_user: Arc<KeyedLimit>,
     /// Traffic budgets per user; they survive reloads that leave the limits
     /// alone, so reconnecting or reloading does not renew a budget.
     budgets: Mutex<HashMap<String, Arc<Budget>>>,
@@ -126,12 +137,14 @@ impl Relay {
         let consumed = Arc::default();
         Ok(Self {
             inner: Arc::new(Inner {
-                settings: RwLock::new(Arc::new(Settings::new(config)?)),
+                settings: watch::Sender::new(Arc::new(Settings::new(config)?)),
                 auth: Arc::new(Authenticator::new(&config.users)?),
                 site: RwLock::new(load_site(config.web.as_ref(), &consumed)?),
                 tunnels: Arc::new(Semaphore::new(max_tunnels)),
                 max_tunnels,
                 user_tunnels: Arc::default(),
+                dns_lookups: Arc::new(Semaphore::new(DNS_LOOKUPS)),
+                dns_lookups_per_user: KeyedLimit::new(DNS_LOOKUPS_PER_USER),
                 budgets: Mutex::default(),
                 connections: Connections::new(config.relay.max_connections, config.relay.max_connections_per_ip),
                 handshakes: Mutex::new(TokenBucket::new(HANDSHAKE_RATE, HANDSHAKE_BURST)),
@@ -151,7 +164,7 @@ impl Relay {
         let settings = Settings::new(config)?;
         let site = load_site(config.web.as_ref(), &self.inner.consumed);
         self.inner.auth.replace(&config.users)?;
-        *self.inner.settings.write().unwrap() = Arc::new(settings);
+        self.inner.settings.send_replace(Arc::new(settings));
         match site {
             Ok(site) => *self.inner.site.write().unwrap() = site,
             Err(e) => warn!("keeping the current website: {e:#}"),
@@ -165,7 +178,7 @@ impl Relay {
     }
 
     fn settings(&self) -> Arc<Settings> {
-        self.inner.settings.read().unwrap().clone()
+        self.inner.settings.borrow().clone()
     }
 
     fn site(&self) -> Option<Arc<Website>> {
@@ -439,6 +452,13 @@ enum Opened {
 }
 
 impl Opened {
+    fn peer_addr(&self) -> std::io::Result<SocketAddr> {
+        match self {
+            Self::Tcp(tcp) => tcp.peer_addr(),
+            Self::Udp(udp) => udp.peer_addr(),
+        }
+    }
+
     /// A failed HTTP handshake must not look like an orderly TCP close to
     /// a destination that was already connected (RFC 9113/9114 CONNECT).
     fn abort(&self) {
@@ -452,9 +472,14 @@ impl Opened {
 struct TunnelCtx {
     user: User,
     target: Target,
+    /// The address the tunnel is connected to.
+    destination: SocketAddr,
     conn: Arc<ConnInfo>,
     auth: Arc<Authenticator>,
     changes: watch::Receiver<u64>,
+    /// The settings in force; a reload whose rules block `destination`
+    /// ends the tunnel.
+    settings: watch::Receiver<Arc<Settings>>,
     peer_closed: std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>,
     udp_idle_timeout: Duration,
     /// The user's traffic budget, if limits are configured.
@@ -468,7 +493,23 @@ impl TunnelCtx {
     async fn cancelled(&mut self) {
         tokio::select! {
             _ = wait_for_revocation(&self.auth, &self.user, &mut self.changes) => {}
+            _ = wait_for_block(&mut self.settings, self.destination) => {
+                debug!(user = %self.user.name, target = %self.target, "destination blocked by a reload");
+            }
             _ = &mut self.peer_closed => {}
+        }
+    }
+}
+
+/// Resolves when a reload brings destination rules that do not allow
+/// `destination` (RFC 9298 §7: the policy applies to open tunnels too).
+async fn wait_for_block(settings: &mut watch::Receiver<Arc<Settings>>, destination: SocketAddr) {
+    loop {
+        if !settings.borrow_and_update().policy.allows(destination) {
+            return;
+        }
+        if settings.changed().await.is_err() {
+            return std::future::pending().await;
         }
     }
 }
@@ -629,6 +670,7 @@ impl Relay {
     ) -> Result<(Opened, TunnelCtx), Refusal> {
         // Subscribe before any asynchronous work, then check the current user.
         let mut changes = self.inner.auth.changes();
+        let settings_rx = self.inner.settings.subscribe();
         if !self.inner.auth.is_current(&a.user) {
             return Err(Refusal::UserRevoked);
         }
@@ -640,7 +682,14 @@ impl Relay {
             .ok_or(Refusal::TooManyUserTunnels)?;
         let permit = self.inner.tunnels.clone().try_acquire_owned().map_err(|_| Refusal::TooManyTunnels)?;
         let connecting = async {
-            let addrs = settings.policy.resolve(&target).await?;
+            // The user's share first, so that lookups waiting for it do not
+            // hold places in the total.
+            let lookup_permit = async {
+                let mine = self.inner.dns_lookups_per_user.acquire(&a.user.name).await;
+                let any = self.inner.dns_lookups.clone().acquire_owned().await.expect("never closed");
+                (mine, any)
+            };
+            let addrs = settings.policy.resolve(&target, lookup_permit).await?;
             if !self.inner.auth.is_current(&a.user) {
                 return Err(Refusal::UserRevoked);
             }
@@ -660,6 +709,7 @@ impl Relay {
         if !self.inner.auth.is_current(&a.user) {
             return Err(Refusal::UserRevoked);
         }
+        let destination = opened.peer_addr().map_err(|e| Refusal::Unreachable(e.to_string()))?;
         match a.kind {
             Kind::Tcp => &conn.tcp,
             Kind::Udp => &conn.udp,
@@ -670,9 +720,11 @@ impl Relay {
         let ctx = TunnelCtx {
             user: a.user.clone(),
             target,
+            destination,
             conn: conn.clone(),
             auth: self.inner.auth.clone(),
             changes,
+            settings: settings_rx,
             peer_closed: Box::pin(std::future::pending()),
             udp_idle_timeout: settings.udp_idle_timeout,
             budget: self.budget(&a.user.name, settings.budget),

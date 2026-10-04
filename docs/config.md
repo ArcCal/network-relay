@@ -19,8 +19,8 @@ The default location is `/etc/network-relay/relay.toml` (change it with `network
 
 | Key | Default | Description |
 |---|---|---|
-| `cert` | — | Certificate chain file, certbot's `fullchain.pem` |
-| `key` | — | Private key file, certbot's `privkey.pem` |
+| `cert` | — | Certificate chain file (`/etc/network-relay/tls/fullchain.pem`, the hook's copy of certbot's `fullchain.pem`) |
+| `key` | — | Private key file. The relay runs as user `network-relay`, which cannot read certbot's `privkey.pem`; point this at the copy that `deploy/certbot-hook.sh` keeps in `/etc/network-relay/tls` |
 | `reload_interval_days` | not set | Reread the certificate files every this many days (1 to 7). When not set, they are reread every day at 3 a.m. (system time zone). `systemctl reload` also rereads them immediately |
 | `client_certificates` | `false` | Ask TLS clients for a certificate (optional for them), so that users with a `certificate_sha256` can authenticate without a password. Off by default, because a website that asks for client certificates is unusual and can make a browser offer its user a certificate to choose. Needs a restart after a change |
 
@@ -186,7 +186,7 @@ What the profile contains:
 - The identifier is the domain and the user name joined with a dot: a profile regenerated for the same domain and user replaces the old one when installed. This means a dot in the user name can "join up" with the domain: domain `relay.example` with user `com.alice` gives the same identifier as domain `relay.example.com` with user `alice`, and whichever is installed later replaces the other. When installing several relays on the same device, do not use dotted user names like this. (The way the identifier is built stays unchanged so that profiles already installed can still be replaced.)
 - New options are written into the profile only when given explicitly. Choose them according to the device's OS version: for example, a configuration that uses only `--match-fqdn` does not suit older systems that do not support that key. Domains are converted to lower case and trailing dots are removed.
 - DNS failover lets the device use the local network's system DNS; to keep DNS going through the relay at all times, leave the default.
-- Saving and overwriting both use atomic replacement with a mode-600 temporary file, and symlinks are never overwritten. Generate published files as the user that runs the relay service, so that the service can read them.
+- Saving and overwriting both use atomic replacement with a mode-600 temporary file, and symlinks are never overwritten. A published file gets the owner of the `.publish` directory, so that the relay, which runs as user `network-relay`, can read it even when root runs the command.
 
 Warnings are printed for choices that may not do what was meant: `UIToggleEnabled` false (a relay that is down cannot be switched off), only `--match-fqdn` (older systems do not know the key), and excluded host names that are not under any matched domain (Apple ignores them).
 

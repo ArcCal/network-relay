@@ -110,15 +110,7 @@ As prompted, add a TXT record for `_acme-challenge.relay.qolita.com` in the doma
 
 ### When a renewal takes effect
 
-By default the relay rereads the certificate files every day at 3 a.m. (system time zone); for an immediate effect, run `systemctl reload network-relay`. You can also have certbot notify the relay after every renewal:
-
-```bash
-printf '#!/bin/sh\nsystemctl reload network-relay\n' > /etc/letsencrypt/renewal-hooks/deploy/network-relay
-```
-
-```bash
-chmod 755 /etc/letsencrypt/renewal-hooks/deploy/network-relay
-```
+The relay runs as user `network-relay` and reads a copy of the certificate in `/etc/network-relay/tls`, since certbot's own files can be read by root alone. `deploy/certbot-hook.sh`, installed as certbot's deploy hook (`/etc/letsencrypt/renewal-hooks/deploy/network-relay`), makes that copy after every renewal of the certificate named in `/etc/network-relay/tls/source` and reloads the relay; see step 8 of the manual install in the README. The relay also rereads the files by itself every day at 3 a.m. (system time zone).
 
 ## Firewall on the server
 
@@ -155,7 +147,7 @@ The relay needs TCP 443 and UDP 443 to itself. If nginx or similar already holds
 
 `deploy/network-relay.service`:
 
-- Starts as root only so it can read certbot's private key (readable only by root); all other root privileges are dropped, keeping only the permission to bind port 443 (`CapabilityBoundingSet=CAP_NET_BIND_SERVICE`).
+- Runs as user `network-relay` (`User=`, `Group=`), with only the permission to bind port 443 added (`AmbientCapabilities=CAP_NET_BIND_SERVICE`, and nothing else in `CapabilityBoundingSet`). The configuration and the copy of the TLS key are readable by group `network-relay`; the one-step installer and step 8 of the manual install set this up.
 - System directories are read-only, /home is hidden, /tmp is private, and so on.
 - `systemctl reload` sends SIGHUP, which rereads the configuration.
 - The open-file limit is 1048576: each relayed connection uses one.

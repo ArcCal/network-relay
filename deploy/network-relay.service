@@ -13,9 +13,12 @@ ExecStart=/usr/local/bin/network-relay serve --config /etc/network-relay/relay.t
 ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
 RestartSec=5
-# Runs as root only so it can read the certificate key, which certbot makes
-# readable by root alone. Of root's privileges it keeps just the one to use
+# Runs as its own user, which reads the configuration and the TLS key
+# through group network-relay (certbot's own copies are root's alone; see
+# deploy/certbot-hook.sh). Of root's privileges it keeps just the one to use
 # port 443; everything else below is locked down.
+User=network-relay
+Group=network-relay
 CapabilityBoundingSet=CAP_NET_BIND_SERVICE
 AmbientCapabilities=CAP_NET_BIND_SERVICE
 NoNewPrivileges=yes

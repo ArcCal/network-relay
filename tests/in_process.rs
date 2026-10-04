@@ -1960,3 +1960,97 @@ async fn shutdown_sends_goaway_and_drains_open_tunnels() {
         "{closed:?}"
     );
 }
+
+/// RFC 9298 §7: destination rules apply to open tunnels. A reload that
+/// blocks some other address leaves them alone; one that blocks their
+/// destination closes them.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn reload_closes_tunnels_to_newly_blocked_destinations() {
+    let relay = TestRelay::start("").await;
+    let (echo, _e) = echo_server().await;
+    let (dns, _d) = udp_echo().await;
+    let users = relay.users.clone();
+    let (mut sender, conn, _driver) = raw_h3(&relay, true).await;
+    let req = Request::builder()
+        .method(Method::CONNECT)
+        .uri(echo.to_string())
+        .header("authorization", auth::basic_authorization(ALICE.0, ALICE.1))
+        .body(())
+        .unwrap();
+    let mut tcp = sender.send_request(req).await.unwrap();
+    assert_eq!(tcp.recv_response().await.unwrap().status(), StatusCode::OK);
+    let mut udp = sender
+        .send_request(udp_request(dns).extension(h3::ext::Protocol::CONNECT_UDP).body(()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(udp.recv_response().await.unwrap().status(), StatusCode::OK);
+    assert_eq!(relay.relay.active_tunnels(), 2);
+
+    relay.reload("blocked_destinations = [\"127.0.0.2/32\"]", &users);
+    tcp.send_data(Bytes::from_static(b"still")).await.unwrap();
+    let mut b = within("echo after an unrelated reload", tcp.recv_data()).await.unwrap().unwrap();
+    assert_eq!(b.copy_to_bytes(b.remaining()), "still");
+    let mut packet = bytes::BytesMut::new();
+    network_relay::proto::varint::encode(udp.id().into_inner() / 4, &mut packet);
+    packet.extend_from_slice(&datagram::udp_payload(b"ok"));
+    conn.send_datagram(packet.freeze()).unwrap();
+    within("UDP echo after an unrelated reload", async {
+        loop {
+            let d = conn.read_datagram().await.unwrap();
+            if d.ends_with(b"ok") {
+                break;
+            }
+        }
+    })
+    .await;
+    assert_eq!(relay.relay.active_tunnels(), 2);
+
+    relay.reload("blocked_destinations = [\"127.0.0.0/8\"]", &users);
+    let tcp_end = within("TCP tunnel to end", tcp.recv_data()).await;
+    assert!(tcp_end.is_err(), "the TCP tunnel is reset: {:?}", tcp_end.map(|b| b.is_some()));
+    let udp_end = within("UDP flow to end", udp.recv_data()).await;
+    assert!(udp_end.is_err(), "the UDP flow is reset: {:?}", udp_end.map(|b| b.is_some()));
+    within("the permits to be returned", async {
+        while relay.relay.active_tunnels() != 0 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+}
+
+/// The relay runs as its own user: a profile that root publishes is given
+/// to the owner of the `.publish` directory, or the relay could not read it.
+/// Needs root to own a directory as another user; skipped otherwise.
+#[test]
+fn published_profiles_belong_to_the_publish_directory_owner() {
+    use std::os::unix::fs::MetadataExt;
+    let env = Env::new();
+    let site = env.path("site");
+    let publish = site.join(network_relay::web::PUBLISH_DIR);
+    std::fs::create_dir_all(&publish).unwrap();
+    let (uid, gid) = (65_534, 65_534);
+    if std::os::unix::fs::chown(&publish, Some(uid), Some(gid)).is_err() {
+        return; // not root
+    }
+    let config = env.path("relay.toml");
+    std::fs::write(
+        &config,
+        format!(
+            "[tls]\ncert = {:?}\nkey = {:?}\n[web]\nroot = {:?}\n",
+            env.path("fullchain.pem"),
+            env.path("privkey.pem"),
+            site
+        ),
+    )
+    .unwrap();
+    let result = std::process::Command::new(env!("CARGO_BIN_EXE_network-relay"))
+        .args(["profile", "--host", "relay.test", "--user", ALICE.0, "--password", ALICE.1, "--publish", "--config"])
+        .arg(&config)
+        .output()
+        .unwrap();
+    assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+    let published: Vec<_> = std::fs::read_dir(&publish).unwrap().map(|e| e.unwrap().path()).collect();
+    assert_eq!(published.len(), 1);
+    let meta = std::fs::metadata(&published[0]).unwrap();
+    assert_eq!((meta.uid(), meta.gid(), meta.mode() & 0o777), (uid, gid, 0o600));
+}

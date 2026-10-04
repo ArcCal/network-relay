@@ -216,6 +216,51 @@ impl UserTunnels {
     }
 }
 
+/// At most `max` operations at once per key (a user name); more wait their
+/// turn. Keys with nothing under way take no memory.
+pub struct KeyedLimit {
+    max: usize,
+    keys: Mutex<HashMap<String, Arc<tokio::sync::Semaphore>>>,
+}
+
+/// One operation counted against its key until dropped.
+pub struct KeyedPermit {
+    limit: Arc<KeyedLimit>,
+    key: String,
+    permit: Option<tokio::sync::OwnedSemaphorePermit>,
+}
+
+impl KeyedLimit {
+    pub fn new(max: usize) -> Arc<Self> {
+        Arc::new(Self { max, keys: Mutex::default() })
+    }
+
+    pub async fn acquire(self: &Arc<Self>, key: &str) -> KeyedPermit {
+        let semaphore = {
+            let mut keys = self.keys.lock().unwrap();
+            keys.entry(key.to_string()).or_insert_with(|| Arc::new(tokio::sync::Semaphore::new(self.max))).clone()
+        };
+        let permit = semaphore.acquire_owned().await.expect("never closed");
+        KeyedPermit { limit: self.clone(), key: key.to_string(), permit: Some(permit) }
+    }
+
+    #[cfg(test)]
+    fn keys(&self) -> usize {
+        self.keys.lock().unwrap().len()
+    }
+}
+
+impl Drop for KeyedPermit {
+    fn drop(&mut self) {
+        self.permit = None;
+        let mut keys = self.limit.keys.lock().unwrap();
+        // Only the map still holds it: nobody runs or waits under this key.
+        if keys.get(&self.key).is_some_and(|s| Arc::strong_count(s) == 1) {
+            keys.remove(&self.key);
+        }
+    }
+}
+
 /// One user's traffic budget, shared by all their tunnels and both
 /// directions. It outlives the tunnels, so reconnecting does not renew it.
 #[derive(Debug)]
@@ -379,6 +424,28 @@ mod tests {
         assert!(tunnels.try_acquire("alice", 2).is_some());
         assert!(tunnels.try_acquire("carol", 0).is_none());
         assert_eq!(tunnels.count("carol"), 0);
+    }
+
+    #[tokio::test]
+    async fn keyed_limits_queue_per_key_and_forget_idle_keys() {
+        let limit = KeyedLimit::new(2);
+        let a1 = limit.acquire("alice").await;
+        let _a2 = limit.acquire("alice").await;
+        let mut third = Box::pin(limit.acquire("alice"));
+        assert!(futures_poll(&mut third).is_none(), "alice waits for her own share");
+        let _b = tokio::time::timeout(Duration::from_secs(1), limit.acquire("bob")).await.expect("bob does not wait");
+        drop(a1);
+        let a3 = tokio::time::timeout(Duration::from_secs(1), third).await.expect("alice's turn comes");
+        drop((a3, _a2, _b));
+        assert_eq!(limit.keys(), 0, "idle keys are removed");
+    }
+
+    fn futures_poll<F: std::future::Future + Unpin>(f: &mut F) -> Option<F::Output> {
+        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+        match std::pin::Pin::new(f).poll(&mut cx) {
+            std::task::Poll::Ready(v) => Some(v),
+            std::task::Poll::Pending => None,
+        }
     }
 
     #[test]

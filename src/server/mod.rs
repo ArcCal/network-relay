@@ -32,7 +32,7 @@ use crate::certs::{CertStore, Schedule};
 use crate::config::{Config, Web};
 use crate::limits::{Budget, Connections, TokenBucket, UserSlot, UserTunnels};
 use crate::policy::{Policy, Refusal, Target};
-use crate::proto::{UriTemplate, CONNECT_TCP_PROTOCOL};
+use crate::proto::{UriTemplate, CONNECT_TCP_PROTOCOL, CONNECT_UDP_PROTOCOL};
 use crate::web::Website;
 use crate::{connect, sys};
 
@@ -202,6 +202,13 @@ enum Kind {
     Tcp,
     /// CONNECT-UDP: the path names a UDP destination.
     Udp,
+    /// An extended CONNECT for a protocol this relay does not implement,
+    /// such as `connect-tcp` or `connect-ip`: 501 once authenticated.
+    Unsupported,
+    /// A UDP proxying request that breaks RFC 9298 §3 (an HTTP/1.1
+    /// `Upgrade: connect-udp` that is not a GET with `Connection: Upgrade`,
+    /// or a `:scheme` other than https): 400 once authenticated.
+    Malformed,
 }
 
 impl Kind {
@@ -209,6 +216,21 @@ impl Kind {
         match self {
             Kind::Tcp => "TCP",
             Kind::Udp => "UDP",
+            Kind::Unsupported => "unsupported",
+            Kind::Malformed => "malformed",
+        }
+    }
+
+    /// The kind of an HTTP/2 or HTTP/3 request: CONNECT, with or without
+    /// `:protocol` (RFC 8441, RFC 9220).
+    fn of_connect(is_connect: bool, protocol: Option<&str>, scheme: Option<&str>) -> Option<Self> {
+        match (is_connect, protocol) {
+            (false, _) => None,
+            (true, None) => Some(Kind::Tcp),
+            // RFC 9298 §3.4: the scheme of a UDP proxying request is https.
+            (true, Some(CONNECT_UDP_PROTOCOL)) if scheme == Some("https") => Some(Kind::Udp),
+            (true, Some(CONNECT_UDP_PROTOCOL)) => Some(Kind::Malformed),
+            (true, Some(_)) => Some(Kind::Unsupported),
         }
     }
 }
@@ -512,6 +534,8 @@ impl Relay {
                     _ => Err(Refusal::BadTarget),
                 }
             }
+            Kind::Unsupported => Err(Refusal::UnsupportedProtocol),
+            Kind::Malformed => Err(Refusal::MalformedRequest),
         };
         // A client certificate that belongs to a user authenticates on its
         // own; otherwise the password.
@@ -579,6 +603,9 @@ impl Relay {
             match a.kind {
                 Kind::Tcp => Ok(Opened::Tcp(connect::tcp(&addrs, settings.connect_timeout).await?)),
                 Kind::Udp => Ok(Opened::Udp(connect::udp(&addrs).await?)),
+                // Their target is always a refusal, returned above.
+                Kind::Unsupported => Err(Refusal::UnsupportedProtocol),
+                Kind::Malformed => Err(Refusal::MalformedRequest),
             }
         };
         let opened = tokio::select! {
@@ -589,11 +616,12 @@ impl Relay {
         if !self.inner.auth.is_current(&a.user) {
             return Err(Refusal::UserRevoked);
         }
-        let counter = match a.kind {
+        match a.kind {
             Kind::Tcp => &conn.tcp,
             Kind::Udp => &conn.udp,
-        };
-        counter.fetch_add(1, Ordering::Relaxed);
+            Kind::Unsupported | Kind::Malformed => &conn.refused,
+        }
+        .fetch_add(1, Ordering::Relaxed);
         debug!(user = %a.user.name, kind = a.kind.as_str(), %target, "tunnel opened");
         let ctx = TunnelCtx {
             user: a.user.clone(),

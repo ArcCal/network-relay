@@ -151,13 +151,11 @@ impl Relay {
         req: Request<h2::RecvStream>,
         mut response: h2::server::SendResponse<Bytes>,
     ) -> Result<()> {
+        // h2 rejects malformed requests (RFC 9113 §8.1.1, §8.3, §8.5; RFC
+        // 8441 §4) with a PROTOCOL_ERROR stream reset before they get here.
         let protocol = req.extensions().get::<h2::ext::Protocol>().map(|p| p.as_str());
         let is_connect = req.method() == Method::CONNECT;
-        let kind = match (is_connect, protocol) {
-            (true, None) => Some(Kind::Tcp),
-            (true, Some(CONNECT_UDP_PROTOCOL)) => Some(Kind::Udp),
-            _ => None,
-        };
+        let kind = Kind::of_connect(is_connect, protocol, req.uri().scheme_str());
         let settings = self.settings();
         let incoming = Incoming {
             method: req.method(),
@@ -263,12 +261,16 @@ impl Relay {
                 .any(|v| v.split(',').any(|t| t.trim().eq_ignore_ascii_case(token)))
         };
         let protocol = req.headers().get(UPGRADE).and_then(|v| v.to_str().ok()).map(str::to_string);
-        let udp =
-            req.method() == Method::GET && has_token(CONNECTION, "upgrade") && has_token(UPGRADE, CONNECT_UDP_PROTOCOL);
+        // RFC 9110 §7.8: Upgrade in an HTTP/1.0 request MUST be ignored.
+        let wants_udp = req.version() == http::Version::HTTP_11 && has_token(UPGRADE, CONNECT_UDP_PROTOCOL);
         let kind = if is_connect {
             Some(Kind::Tcp)
-        } else if udp {
+        } else if wants_udp && req.method() == Method::GET && has_token(CONNECTION, "upgrade") {
             Some(Kind::Udp)
+        } else if wants_udp {
+            // RFC 9298 §3.2: a malformed UDP proxying request MUST get an
+            // error status (SHOULD 400), not the website's 200.
+            Some(Kind::Malformed)
         } else {
             None
         };
@@ -328,13 +330,14 @@ impl Relay {
         });
         let builder = Response::builder().header(DATE, http_date());
         match authorized.kind {
-            Kind::Tcp => builder.status(StatusCode::OK),
             // RFC 9298 §3.3.
             Kind::Udp => builder
                 .status(StatusCode::SWITCHING_PROTOCOLS)
                 .header(CONNECTION, "Upgrade")
                 .header(UPGRADE, CONNECT_UDP_PROTOCOL)
                 .header(CAPSULE_PROTOCOL_HEADER, "?1"),
+            // Only tunnels that opened get here.
+            Kind::Tcp | Kind::Unsupported | Kind::Malformed => builder.status(StatusCode::OK),
         }
         .body(Full::default())
         .expect("valid")

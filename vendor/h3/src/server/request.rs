@@ -225,7 +225,7 @@ where
             },
             Err(err) => Err(err),
         };
-        let (method, uri, protocol, headers) = match result {
+        let (method, uri, protocol, other_protocol, headers) = match result {
             Ok(parts) => parts,
             Err(err) => {
                 //= https://www.rfc-editor.org/rfc/rfc9114#section-4.1.2
@@ -250,6 +250,9 @@ where
         *req.headers_mut() = headers;
         // NOTE: insert `Protocol` and not `Option<Protocol>`
         if let Some(protocol) = protocol {
+            req.extensions_mut().insert(protocol);
+        }
+        if let Some(protocol) = other_protocol {
             req.extensions_mut().insert(protocol);
         }
         *req.version_mut() = http::Version::HTTP_3;

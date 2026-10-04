@@ -62,17 +62,17 @@ Looked at during research: Envoy (the configuration above), quic-go's [masque-go
 | HTTP/2 | Same (RFC 9113 §8.5) | Same (RFC 8441 extended CONNECT) |
 | HTTP/1.1 | `CONNECT host:port HTTP/1.1` (RFC 9110 §9.3.6) | `GET path` + `Connection: Upgrade` + `Upgrade: connect-udp` (RFC 9298 §3.2), answered with 101 |
 
-Every other request goes to the decoy website.
+Every other request goes to the decoy website. Malformed HTTP/3 requests (RFC 9114 §4.1.2: a pseudo-header field twice or missing, `:scheme`/`:path` on a classic CONNECT, `:protocol` without CONNECT, and so on) are reset with `H3_MESSAGE_ERROR` before any of this, as h2 resets malformed HTTP/2 requests with `PROTOCOL_ERROR`. Once authenticated, an extended CONNECT for another protocol (`connect-tcp`, `connect-ip`, `websocket`) gets 501, and a malformed UDP proxying request (RFC 9298 §3.2, §3.4: `:scheme` other than `https`; on HTTP/1.1 an `Upgrade: connect-udp` that is not a GET with `Connection: Upgrade`) gets 400. `Upgrade` on HTTP/1.0 is ignored (RFC 9110 §7.8).
 
 ### 2.2 Handling a request
 
 1. **Classify**: not one of the requests in the table above → website. A UDP request whose path does not match the template → website.
-2. **Authenticate**: look at `Proxy-Authorization` first, then `Authorization`, both parsed as Basic. Failure → website (CONNECT gets 404). Authentication failures are logged (the user name is escaped first, so log lines cannot be forged).
-3. **Slots**: the number of concurrent tunnels has reached `max_tunnels` → 503.
+2. **Authenticate**: a client certificate whose fingerprint belongs to a user; otherwise `Proxy-Authorization` first, then `Authorization`, both parsed as Basic. Failure → website (CONNECT gets 404). Authentication failures are logged at a bounded rate (the user name is escaped first, so log lines cannot be forged).
+3. **Slots**: the user's tunnels have reached `max_tunnels_per_user`, or all tunnels `max_tunnels` → 503 (`connection_limit_reached`).
 4. **Target**: for TCP, parse `host:port` from `:authority` (the port is required, IPv6 in brackets); for UDP, take `target_host` (IPv6 without brackets, colons encoded) and `target_port` from the template variables. Malformed → 400.
-5. **Policy**: port in `blocked_ports` → 403; resolve the domain (5-second timeout); check every resolved address against `blocked_destinations`, IPv4-mapped addresses as IPv4; none left → 403.
+5. **Policy**: port in `blocked_ports` → 403 (`http_request_denied`); resolve the domain (5-second timeout); check every resolved address against `blocked_destinations` and the server's own addresses, IPv6 addresses carrying an IPv4 address also by that address; none left → 502 (`destination_ip_prohibited`).
 6. **Connect**: TCP uses Happy Eyeballs (RFC 8305): in resolution order, alternating between the two address families, one more attempt every 250 milliseconds, moving on immediately when one fails, with `connect_timeout_secs` as the overall timeout. UDP creates a connected UDP socket (receiving only packets sent back by the target) and picks the first address that has a route.
-7. **Respond**: 200 on success (101 for CONNECT-UDP over HTTP/1.1), with `Capsule-Protocol: ?1` for CONNECT-UDP. On failure, the status codes above with RFC 9209's `Proxy-Status: network-relay; error=...` (`dns_error`, `dns_timeout`, `destination_not_found`, `destination_ip_prohibited`, `http_request_denied`, `connection_refused`, `connection_timeout`, `destination_unavailable`, `connection_limit_reached`, `http_request_error`).
+7. **Respond**: 200 on success (101 for CONNECT-UDP over HTTP/1.1), with `Capsule-Protocol: ?1` for CONNECT-UDP. On failure, RFC 9209's `Proxy-Status: network-relay; error=...` with the status code §2.3 recommends for it: `dns_error` 502 (also for a name without addresses), `dns_timeout` 504, `destination_ip_prohibited` 502, `destination_ip_unroutable` 502, `connection_refused` 502, `connection_timeout` 504, `connection_limit_reached` 503, `http_request_denied` 403, `http_request_error` 400.
 
 ### 2.3 TCP relaying
 

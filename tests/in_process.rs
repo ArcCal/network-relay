@@ -856,7 +856,7 @@ async fn blocked_destinations_and_ports_are_refused() {
     let outcomes = within("checks", check::run(&opts)).await;
     for o in outcomes.iter().filter(|o| !o.name.starts_with("hidden")) {
         let e = format!("{:#}", o.result.as_ref().unwrap_err());
-        assert!(e.contains("403") && e.contains("destination_ip_prohibited"), "{}: {e}", o.name);
+        assert!(e.contains("502") && e.contains("destination_ip_prohibited"), "{}: {e}", o.name);
     }
 
     relay.reload("blocked_destinations = []\nblocked_ports = [25]", &relay.users);
@@ -904,7 +904,7 @@ async fn unreachable_destinations_get_proxy_status() {
             status,
             "network-relay; error=dns_error"
                 | "network-relay; error=dns_timeout"
-                | "network-relay; error=destination_not_found"
+                | "network-relay; error=dns_error; details=\"no addresses\""
         ),
         "{status}"
     );
@@ -1549,7 +1549,7 @@ async fn the_hosts_own_addresses_are_blocked_by_default() {
     let outcomes = within("checks", check::run(&relay.options(ALICE, web, dns))).await;
     for o in outcomes.iter().filter(|o| !o.name.starts_with("hidden")) {
         let e = format!("{:#}", o.result.as_ref().unwrap_err());
-        assert!(e.contains("403") && e.contains("destination_ip_prohibited"), "{}: {e}", o.name);
+        assert!(e.contains("502") && e.contains("destination_ip_prohibited"), "{}: {e}", o.name);
     }
 }
 
@@ -1598,4 +1598,217 @@ async fn quic_path_mtu_grows_to_carry_full_size_relayed_packets() {
         }
     })
     .await;
+}
+
+// ------------------------------------------------- request validation
+
+/// A QPACK field section with literal names and values only (RFC 9204
+/// §4.5.6), which needs no table: enough to send requests the h3 client
+/// would refuse to build.
+fn qpack_literal(fields: &[(&str, &str)]) -> Vec<u8> {
+    fn prefixed(out: &mut Vec<u8>, flags: u8, bits: u8, mut v: usize) {
+        let max = (1usize << bits) - 1;
+        if v < max {
+            out.push(flags | v as u8);
+            return;
+        }
+        out.push(flags | max as u8);
+        v -= max;
+        while v >= 128 {
+            out.push((v % 128) as u8 | 0x80);
+            v /= 128;
+        }
+        out.push(v as u8);
+    }
+    let mut out = vec![0, 0];
+    for (name, value) in fields {
+        prefixed(&mut out, 0x20, 3, name.len());
+        out.extend_from_slice(name.as_bytes());
+        prefixed(&mut out, 0, 7, value.len());
+        out.extend_from_slice(value.as_bytes());
+    }
+    out
+}
+
+/// Sends `fields` as a request on a new stream of `conn`, and returns what
+/// came back: the type of the first frame, or the reset code.
+async fn raw_h3_request(conn: &quinn::Connection, fields: &[(&str, &str)]) -> Result<u64, u64> {
+    let (mut send, mut recv) = conn.open_bi().await.unwrap();
+    let block = qpack_literal(fields);
+    let mut frame = bytes::BytesMut::new();
+    network_relay::proto::varint::encode(1, &mut frame);
+    network_relay::proto::varint::encode(block.len() as u64, &mut frame);
+    frame.extend_from_slice(&block);
+    send.write_all(&frame).await.unwrap();
+    let _ = send.finish();
+    within("response or reset", async {
+        let mut first = [0u8; 1];
+        match recv.read_exact(&mut first).await {
+            Ok(()) => Ok(u64::from(first[0])),
+            Err(quinn::ReadExactError::ReadError(quinn::ReadError::Reset(code))) => Err(code.into_inner()),
+            Err(e) => panic!("{e}"),
+        }
+    })
+    .await
+}
+
+#[tokio::test]
+async fn malformed_http3_requests_are_message_errors() {
+    let relay = TestRelay::start("").await;
+    let (_sender, conn, _driver) = raw_h3(&relay, true).await;
+    let auth = auth::basic_authorization(ALICE.0, ALICE.1);
+    let message_error = h3::error::Code::H3_MESSAGE_ERROR.value();
+    let udp_path = "/.well-known/masque/udp/127.0.0.1/53/";
+    let cases: &[&[(&str, &str)]] = &[
+        // RFC 9114 §4.4: a classic CONNECT has no :scheme or :path, and an
+        // :authority.
+        &[(":method", "CONNECT"), (":scheme", "https"), (":authority", "127.0.0.1:80"), ("authorization", &auth)],
+        &[(":method", "CONNECT"), (":path", "/"), (":authority", "127.0.0.1:80"), ("authorization", &auth)],
+        &[(":method", "CONNECT"), ("host", "127.0.0.1:80"), ("authorization", &auth)],
+        // RFC 8441 §4 (RFC 9220): extended CONNECT carries :scheme and :path.
+        &[(":method", "CONNECT"), (":protocol", "connect-udp"), (":authority", "relay.test"), (":path", udp_path)],
+        &[(":method", "CONNECT"), (":protocol", "connect-udp"), (":authority", "relay.test"), (":scheme", "https")],
+        // RFC 9114 §4.3.1: exactly one :method, :scheme and :path.
+        &[(":method", "GET"), (":authority", "relay.test"), (":path", "/")],
+        &[(":method", "GET"), (":scheme", "https"), (":authority", "relay.test")],
+        &[(":method", "GET"), (":method", "GET"), (":scheme", "https"), (":authority", "relay.test"), (":path", "/")],
+        // RFC 9114 §4.3: response pseudo-headers in a request.
+        &[(":method", "GET"), (":scheme", "https"), (":authority", "relay.test"), (":path", "/"), (":status", "200")],
+        // :protocol is only defined for CONNECT.
+        &[(":method", "GET"), (":protocol", "connect-udp"), (":scheme", "https"), (":authority", "a"), (":path", "/")],
+    ];
+    for fields in cases {
+        assert_eq!(raw_h3_request(&conn, fields).await, Err(message_error), "{fields:?}");
+    }
+    // A well-formed request on the same connection is answered: a HEADERS
+    // frame (type 1) comes back.
+    let ok = [(":method", "GET"), (":scheme", "https"), (":authority", "relay.test"), (":path", "/")];
+    assert_eq!(raw_h3_request(&conn, &ok).await, Ok(1));
+    // An extended CONNECT with a protocol h3 does not know is well-formed:
+    // without credentials it gets the website, not a reset.
+    let tcp = [
+        (":method", "CONNECT"),
+        (":protocol", "connect-tcp"),
+        (":scheme", "https"),
+        (":authority", "relay.test"),
+        (":path", "/"),
+    ];
+    assert_eq!(raw_h3_request(&conn, &tcp).await, Ok(1));
+    assert_eq!(relay.relay.active_tunnels(), 0);
+}
+
+#[tokio::test]
+async fn unsupported_and_malformed_proxy_requests_get_errors_once_authenticated() {
+    let relay = TestRelay::start("").await;
+    let (udp, _u) = udp_echo().await;
+    let auth_header = auth::basic_authorization(ALICE.0, ALICE.1);
+
+    // HTTP/3: a protocol this relay does not implement gets 501; a UDP
+    // proxying request whose scheme is not https gets 400 (RFC 9298 §3.4).
+    let (mut sender, _conn, _driver) = raw_h3(&relay, true).await;
+    let websocket = Request::builder()
+        .method(Method::CONNECT)
+        .uri("https://relay.test/chat")
+        .header("authorization", &auth_header)
+        .extension(h3::ext::Protocol::WEBSOCKET)
+        .body(())
+        .unwrap();
+    let mut stream = sender.send_request(websocket).await.unwrap();
+    let response = within("501", stream.recv_response()).await.unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
+    assert!(response.headers()["proxy-status"].to_str().unwrap().contains("unsupported"));
+    let http_scheme = Request::builder()
+        .method(Method::CONNECT)
+        .uri(format!("http://relay.test/.well-known/masque/udp/127.0.0.1/{}/", udp.port()))
+        .header("authorization", &auth_header)
+        .header("capsule-protocol", "?1")
+        .extension(h3::ext::Protocol::CONNECT_UDP)
+        .body(())
+        .unwrap();
+    let mut stream = sender.send_request(http_scheme).await.unwrap();
+    assert_eq!(within("400", stream.recv_response()).await.unwrap().status(), StatusCode::BAD_REQUEST);
+    // Without credentials, the same requests get the website.
+    let anonymous = Request::builder()
+        .method(Method::CONNECT)
+        .uri("https://relay.test/chat")
+        .extension(h3::ext::Protocol::WEBSOCKET)
+        .body(())
+        .unwrap();
+    let mut stream = sender.send_request(anonymous).await.unwrap();
+    assert_eq!(within("website", stream.recv_response()).await.unwrap().status(), StatusCode::NOT_FOUND);
+
+    // HTTP/2: connect-tcp (draft-ietf-httpbis-connect-tcp) is not implemented.
+    let (mut h2, _driver2) = raw_h2(&relay).await;
+    for (credentials, expected) in [(true, StatusCode::NOT_IMPLEMENTED), (false, StatusCode::NOT_FOUND)] {
+        let mut req = Request::builder().method(Method::CONNECT).uri("https://relay.test/");
+        if credentials {
+            req = req.header("authorization", &auth_header);
+        }
+        let req = req.extension(h2::ext::Protocol::from("connect-tcp")).body(()).unwrap();
+        let (response, _send) = h2.send_request(req, true).unwrap();
+        assert_eq!(within("HTTP/2 answer", response).await.unwrap().status(), expected, "credentials: {credentials}");
+    }
+    let req = Request::builder()
+        .method(Method::CONNECT)
+        .uri(format!("http://relay.test/.well-known/masque/udp/127.0.0.1/{}/", udp.port()))
+        .header("authorization", &auth_header)
+        .header("capsule-protocol", "?1")
+        .extension(h2::ext::Protocol::from(network_relay::proto::CONNECT_UDP_PROTOCOL))
+        .body(())
+        .unwrap();
+    let (response, _send) = h2.send_request(req, false).unwrap();
+    assert_eq!(within("HTTP/2 400", response).await.unwrap().status(), StatusCode::BAD_REQUEST);
+
+    // HTTP/1.1 (RFC 9298 §3.2): connect-udp without "Connection: Upgrade",
+    // or with a method other than GET, is malformed: 400, not the website.
+    // HTTP/1.0 must ignore Upgrade (RFC 9110 §7.8): that is a plain GET.
+    let ca = network_relay::tls::client_config(Some(&relay.env.path("ca.pem")), &[b"http/1.1"]).unwrap();
+    let connector = tokio_rustls::TlsConnector::from(std::sync::Arc::new(ca));
+    let path = format!("/.well-known/masque/udp/127.0.0.1/{}/", udp.port());
+    let cases = [
+        (format!("GET {path} HTTP/1.1\r\nHost: relay.test\r\nUpgrade: connect-udp\r\nCapsule-Protocol: ?1\r\nAuthorization: {auth_header}\r\n\r\n"), "400"),
+        (format!("POST {path} HTTP/1.1\r\nHost: relay.test\r\nConnection: Upgrade\r\nUpgrade: connect-udp\r\nCapsule-Protocol: ?1\r\nContent-Length: 0\r\nAuthorization: {auth_header}\r\n\r\n"), "400"),
+        (format!("GET {path} HTTP/1.0\r\nHost: relay.test\r\nConnection: Upgrade\r\nUpgrade: connect-udp\r\nCapsule-Protocol: ?1\r\nAuthorization: {auth_header}\r\n\r\n"), "404"),
+        (format!("GET {path} HTTP/1.1\r\nHost: relay.test\r\nUpgrade: connect-udp\r\n\r\n"), "404"),
+    ];
+    for (request, status) in cases {
+        let tcp = tokio::net::TcpStream::connect(relay.addr).await.unwrap();
+        let mut tls = connector.connect("relay.test".try_into().unwrap(), tcp).await.unwrap();
+        tls.write_all(request.as_bytes()).await.unwrap();
+        let mut head = Vec::new();
+        within("response", async {
+            let mut byte = [0u8; 1];
+            while !head.ends_with(b"\r\n") && tls.read(&mut byte).await.unwrap() == 1 {
+                head.push(byte[0]);
+            }
+        })
+        .await;
+        let line = String::from_utf8_lossy(&head);
+        assert_eq!(line.split(' ').nth(1), Some(status), "{request:?}: {line}");
+    }
+    assert_eq!(relay.relay.active_tunnels(), 0);
+}
+
+/// RFC 9297 §2.1: a datagram on a request without datagram semantics, after
+/// the request's receive side has closed, is dropped, not a stream error.
+#[tokio::test]
+async fn http3_datagram_on_finished_website_request_is_dropped() {
+    let relay = TestRelay::start("").await;
+    let (mut sender, conn, _driver) = raw_h3(&relay, true).await;
+    for _ in 0..20 {
+        let req = Request::builder().method(Method::GET).uri("https://relay.test/").body(()).unwrap();
+        let mut stream = sender.send_request(req).await.unwrap();
+        stream.finish().await.unwrap();
+        let mut datagram = bytes::BytesMut::new();
+        network_relay::proto::varint::encode(stream.id().into_inner() / 4, &mut datagram);
+        datagram.extend_from_slice(b"\0stray");
+        conn.send_datagram(datagram.freeze()).unwrap();
+        let response = within("website", stream.recv_response()).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let mut body = Vec::new();
+        while let Some(mut chunk) = within("body", stream.recv_data()).await.unwrap() {
+            body.extend_from_slice(&chunk.copy_to_bytes(chunk.remaining()));
+        }
+        assert_eq!(body, INDEX);
+    }
 }

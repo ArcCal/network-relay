@@ -1,6 +1,7 @@
 //! HTTP/3 on QUIC.
 
 use std::collections::{HashMap, VecDeque};
+use std::future::Future;
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
@@ -16,7 +17,7 @@ use tracing::debug;
 use super::{http_date, pump, ConnInfo, Incoming, Kind, Opened, Relay, HEADER_TIMEOUT};
 use crate::certs::CertStore;
 use crate::policy::Refusal;
-use crate::proto::{CAPSULE_PROTOCOL_HEADER, CONNECT_UDP_PROTOCOL};
+use crate::proto::CAPSULE_PROTOCOL_HEADER;
 use crate::tls;
 use crate::tunnel::{Datagrams, DgramSender, QuicDatagrams, Tunnel};
 use crate::web::{self, Cover};
@@ -214,8 +215,8 @@ impl Relay {
                             let _active = active;
                             let (req, stream) = match tokio::time::timeout(HEADER_TIMEOUT, resolver.resolve_request()).await {
                                 Ok(Ok(r)) => r,
-                                // Includes requests with a :protocol the h3
-                                // library does not know, such as connect-tcp.
+                                // Malformed (RFC 9114 §4.1.2): h3 has reset
+                                // the stream with H3_MESSAGE_ERROR.
                                 Ok(Err(e)) if relay.settings().log_requests => {
                                     return tracing::info!(remote = %info.remote, "malformed HTTP/3 request: {e}")
                                 }
@@ -267,43 +268,56 @@ impl Relay {
             }
         });
         let is_connect = req.method() == Method::CONNECT;
-        let protocol = req.extensions().get::<h3::ext::Protocol>().copied();
-        let kind = match (is_connect, protocol) {
-            (true, None) => Some(Kind::Tcp),
-            (true, Some(p)) if p.as_str() == CONNECT_UDP_PROTOCOL => Some(Kind::Udp),
-            _ => None,
-        };
+        // The vendored h3 rejects malformed requests (RFC 9114 §4.1.2,
+        // §4.3.1, §4.4) with H3_MESSAGE_ERROR before they get here, and passes
+        // :protocol tokens it does not know as `OtherProtocol`.
+        let protocol = req
+            .extensions()
+            .get::<h3::ext::Protocol>()
+            .map(|p| p.as_str().to_string())
+            .or_else(|| req.extensions().get::<h3::ext::OtherProtocol>().map(|p| p.as_str().to_string()));
+        let kind = Kind::of_connect(is_connect, protocol.as_deref(), req.uri().scheme_str());
         let authority = req.uri().authority().map(|a| a.as_str().to_string());
         let path_and_query = req.uri().path_and_query().map_or("/", |p| p.as_str()).to_string();
         let settings = self.settings();
         let incoming = Incoming {
             method: req.method(),
-            protocol: protocol.as_ref().map(|p| p.as_str()),
+            protocol: protocol.as_deref(),
             kind,
             authority: authority.as_deref(),
             path_and_query: &path_and_query,
             headers: req.headers(),
         };
         let stream_id = stream.id();
-        let (bad_tx, mut bad_datagram) = oneshot::channel();
+        let (bad_tx, mut bad_datagram) = oneshot::channel::<()>();
         let pending = if kind == Some(Kind::Udp) { Flow::PendingUdp } else { Flow::Other(Some(bad_tx)) };
         routes.lock().unwrap().register(stream_id, pending);
         let _route = RouteGuard { routes: routes.clone(), stream_id };
-        let authorized = tokio::select! {
-            biased;
-            _ = &mut peer_closed => return,
-            Ok(()) = &mut bad_datagram => {
-                abort_datagram(&mut stream);
-                return;
+        let authorizing = self.authorize(&incoming, &info, &settings);
+        tokio::pin!(authorizing);
+        let authorized = loop {
+            tokio::select! {
+                biased;
+                _ = &mut peer_closed => return,
+                Ok(()) = &mut bad_datagram => {
+                    // A CONNECT's request stream stays open for its tunnel;
+                    // reading it here would take the tunnel's first bytes.
+                    if kind == Some(Kind::Tcp) || !receive_side_closed(&mut stream) {
+                        abort_datagram(&mut stream);
+                        return;
+                    }
+                    bad_datagram = closed_receiver();
+                }
+                authorized = &mut authorizing => break authorized,
             }
-            authorized = self.authorize(&incoming, &info, &settings) => authorized,
         };
         let Some(authorized) = authorized else {
             let cover = web::cover(self.site().as_deref(), req.method(), req.uri().path(), is_connect);
+            // `send_cover` stops the receive side first, so datagrams that
+            // arrive meanwhile are dropped (RFC 9297 §2.1).
             tokio::select! {
                 biased;
                 _ = &mut peer_closed => {},
-                Ok(()) = &mut bad_datagram => abort_datagram(&mut stream),
                 _ = send_cover(&mut stream, cover) => {}
             }
             return;
@@ -389,6 +403,27 @@ impl Drop for RouteGuard {
         }
         router.closed.push_back(self.stream_id);
     }
+}
+
+/// Whether the client has finished sending on this request, reading and
+/// discarding whatever body is already buffered. RFC 9297 §2.1: a datagram
+/// on a request without datagram semantics aborts it with H3_DATAGRAM_ERROR,
+/// unless the request's receive side is closed: then it is dropped.
+fn receive_side_closed(stream: &mut H3Stream) -> bool {
+    let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+    loop {
+        match std::pin::pin!(stream.recv_data()).poll(&mut cx) {
+            std::task::Poll::Ready(Ok(Some(_))) => continue,
+            std::task::Poll::Ready(Ok(None) | Err(_)) => return true,
+            std::task::Poll::Pending => return false,
+        }
+    }
+}
+
+/// A receiver that never yields a value, to disarm a datagram notification
+/// that was already handled (a completed oneshot must not be polled again).
+fn closed_receiver() -> oneshot::Receiver<()> {
+    oneshot::channel().1
 }
 
 fn abort_datagram(stream: &mut H3Stream) {

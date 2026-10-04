@@ -11,7 +11,10 @@ use http::{
     Extensions, HeaderMap, Method, StatusCode,
 };
 
-use crate::{ext::Protocol, qpack::HeaderField};
+use crate::{
+    ext::{OtherProtocol, Protocol},
+    qpack::HeaderField,
+};
 
 #[derive(Debug)]
 #[cfg_attr(test, derive(PartialEq, Clone))]
@@ -58,7 +61,78 @@ impl Header {
 
     pub fn into_request_parts(
         self,
-    ) -> Result<(Method, Uri, Option<Protocol>, HeaderMap), HeaderError> {
+    ) -> Result<
+        (
+            Method,
+            Uri,
+            Option<Protocol>,
+            Option<OtherProtocol>,
+            HeaderMap,
+        ),
+        HeaderError,
+    > {
+        //= https://www.rfc-editor.org/rfc/rfc9114#section-4.3
+        //# Pseudo-header fields defined for requests MUST NOT appear
+        //# in responses; pseudo-header fields defined for responses MUST NOT
+        //# appear in requests.
+        if self.pseudo.status.is_some() {
+            return Err(HeaderError::MalformedRequest(
+                ":status in a request".into(),
+            ));
+        }
+        let method = self.pseudo.method.ok_or(HeaderError::MissingMethod)?;
+        let has_protocol = self.pseudo.protocol.is_some() || self.pseudo.other_protocol.is_some();
+        if method == Method::CONNECT && !has_protocol {
+            //= https://www.rfc-editor.org/rfc/rfc9114#section-4.4
+            //# The :scheme and :path pseudo-header fields are omitted.
+            //# The :authority pseudo-header field contains the host and port
+            //# to connect to
+            //# A CONNECT request that does not conform to these restrictions
+            //# is malformed; see Section 4.1.2.
+            if self.pseudo.scheme.is_some() || self.pseudo.path.is_some() {
+                return Err(HeaderError::MalformedRequest(
+                    "CONNECT with :scheme or :path".into(),
+                ));
+            }
+            if self.pseudo.authority.is_none() {
+                return Err(HeaderError::MissingAuthority);
+            }
+        } else {
+            //= https://www.rfc-editor.org/rfc/rfc8441#section-4
+            //# A CONNECT request with :protocol (extended CONNECT, RFC 9220)
+            //# includes :scheme and :path; :protocol is only defined for
+            //# CONNECT.
+            if has_protocol && method != Method::CONNECT {
+                return Err(HeaderError::MalformedRequest(
+                    ":protocol without CONNECT".into(),
+                ));
+            }
+            //= https://www.rfc-editor.org/rfc/rfc9114#section-4.3.1
+            //# All HTTP/3 requests MUST include exactly one value for the :method,
+            //# :scheme, and :path pseudo-header fields, unless the request is a
+            //# CONNECT request; see Section 4.4.
+            let (Some(scheme), Some(path)) = (&self.pseudo.scheme, &self.pseudo.path) else {
+                return Err(HeaderError::MalformedRequest(
+                    "missing :scheme or :path".into(),
+                ));
+            };
+            //= https://www.rfc-editor.org/rfc/rfc9114#section-4.3.1
+            //# This pseudo-header field MUST NOT be empty for "http" or "https"
+            //# URIs
+            let http = *scheme == Scheme::HTTP || *scheme == Scheme::HTTPS;
+            if http && self.pseudo.path_empty {
+                return Err(HeaderError::MalformedRequest("empty :path".into()));
+            }
+            if http && path.as_str() == "*" && method != Method::OPTIONS {
+                return Err(HeaderError::MalformedRequest(
+                    "\"*\" :path without OPTIONS".into(),
+                ));
+            }
+            if has_protocol && self.pseudo.authority.is_none() {
+                return Err(HeaderError::MissingAuthority);
+            }
+        }
+
         let mut uri = Uri::builder();
 
         if let Some(path) = self.pseudo.path {
@@ -93,13 +167,14 @@ impl Header {
         }
 
         Ok((
-            self.pseudo.method.ok_or(HeaderError::MissingMethod)?,
+            method,
             // When empty host field is built into an uri it fails
             //= https://www.rfc-editor.org/rfc/rfc9114#section-4.3.1
             //# If these fields are present, they MUST NOT be
             //# empty.
             uri.build().map_err(HeaderError::InvalidRequest)?,
             self.pseudo.protocol,
+            self.pseudo.other_protocol,
             self.fields,
         ))
     }
@@ -111,6 +186,18 @@ impl Header {
         //# carries the HTTP status code; see Section 15 of [HTTP].  This pseudo-
         //# header field MUST be included in all responses; otherwise, the
         //# response is malformed (see Section 4.1.2).
+        let p = &self.pseudo;
+        if p.method.is_some()
+            || p.scheme.is_some()
+            || p.authority.is_some()
+            || p.path.is_some()
+            || p.protocol.is_some()
+            || p.other_protocol.is_some()
+        {
+            return Err(HeaderError::MalformedRequest(
+                "request pseudo-header in a response".into(),
+            ));
+        }
         Ok((
             self.pseudo.status.ok_or(HeaderError::MissingStatus)?,
             self.fields,
@@ -221,9 +308,25 @@ impl TryFrom<Vec<HeaderField>> for Header {
                 | Field::Path(_)
                 | Field::Status(_)
                 | Field::Protocol(_)
+                | Field::OtherProtocol(_)
                     if regular_field_seen =>
                 {
                     return Err(HeaderError::PseudoAfterRegularField)
+                }
+                //= https://www.rfc-editor.org/rfc/rfc9114#section-4.3.1
+                //# All HTTP/3 requests MUST include exactly one value for the :method,
+                //# :scheme, and :path pseudo-header fields
+                Field::Method(_) if pseudo.method.is_some() => return Err(HeaderError::DuplicatePseudo),
+                Field::Scheme(_) if pseudo.scheme.is_some() => return Err(HeaderError::DuplicatePseudo),
+                Field::Authority(_) if pseudo.authority.is_some() => {
+                    return Err(HeaderError::DuplicatePseudo)
+                }
+                Field::Path(_) if pseudo.path.is_some() => return Err(HeaderError::DuplicatePseudo),
+                Field::Status(_) if pseudo.status.is_some() => return Err(HeaderError::DuplicatePseudo),
+                Field::Protocol(_) | Field::OtherProtocol(_)
+                    if pseudo.protocol.is_some() || pseudo.other_protocol.is_some() =>
+                {
+                    return Err(HeaderError::DuplicatePseudo)
                 }
                 Field::Method(m) => {
                     pseudo.method = Some(m);
@@ -237,8 +340,9 @@ impl TryFrom<Vec<HeaderField>> for Header {
                     pseudo.authority = Some(a);
                     pseudo.len += 1;
                 }
-                Field::Path(p) => {
+                Field::Path((p, empty)) => {
                     pseudo.path = Some(p);
+                    pseudo.path_empty = empty;
                     pseudo.len += 1;
                 }
                 Field::Status(s) => {
@@ -253,6 +357,10 @@ impl TryFrom<Vec<HeaderField>> for Header {
                     pseudo.protocol = Some(p);
                     pseudo.len += 1;
                 }
+                Field::OtherProtocol(p) => {
+                    pseudo.other_protocol = Some(p);
+                    pseudo.len += 1;
+                }
             }
         }
 
@@ -264,9 +372,11 @@ enum Field {
     Method(Method),
     Scheme(Scheme),
     Authority(Authority),
-    Path(PathAndQuery),
+    /// The path, and whether the field was empty.
+    Path((PathAndQuery, bool)),
     Status(StatusCode),
     Protocol(Protocol),
+    OtherProtocol(OtherProtocol),
     Header((HeaderName, HeaderValue)),
 }
 
@@ -310,7 +420,10 @@ impl Field {
             //# If these fields are present, they MUST NOT be
             //# empty.
             b":authority" => Field::Authority(try_value(name, value)?),
-            b":path" => Field::Path(try_value(name, value)?),
+            b":path" => {
+                let value = value.as_ref();
+                Field::Path((try_value(name, value)?, value.is_empty()))
+            }
             b":method" => Field::Method(
                 Method::from_bytes(value.as_ref())
                     .map_err(|_| HeaderError::invalid_value(name, value))?,
@@ -319,13 +432,30 @@ impl Field {
                 StatusCode::from_bytes(value.as_ref())
                     .map_err(|_| HeaderError::invalid_value(name, value))?,
             ),
-            b":protocol" => Field::Protocol(try_value(name, value)?),
+            //= https://www.rfc-editor.org/rfc/rfc8441#section-4
+            //# The :protocol pseudo-header field takes values from the HTTP
+            //# Upgrade Token Registry: any token is well-formed.
+            b":protocol" => match try_value::<_, _, Protocol>(name, value.as_ref()) {
+                Ok(p) => Field::Protocol(p),
+                Err(_) if is_token(value.as_ref()) => Field::OtherProtocol(OtherProtocol(
+                    String::from_utf8(value.as_ref().to_vec()).expect("tokens are ASCII"),
+                )),
+                Err(e) => return Err(e),
+            },
             //= https://www.rfc-editor.org/rfc/rfc9114#section-4.3
             //# Endpoints MUST treat a request or response that contains
             //# undefined or invalid pseudo-header fields as malformed.
             _ => return Err(HeaderError::invalid_name(name)),
         })
     }
+}
+
+/// An RFC 9110 section 5.6.2 token.
+fn is_token(value: &[u8]) -> bool {
+    !value.is_empty()
+        && value.iter().all(|c| {
+            c.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(c)
+        })
 }
 
 fn try_value<N, V, R>(name: N, value: V) -> Result<R, HeaderError>
@@ -363,6 +493,10 @@ struct Pseudo {
     status: Option<StatusCode>,
 
     protocol: Option<Protocol>,
+    /// A received `:protocol` that is not a known [`Protocol`].
+    other_protocol: Option<OtherProtocol>,
+    /// Whether a received `:path` was empty.
+    path_empty: bool,
 
     len: usize,
 }
@@ -430,6 +564,8 @@ impl Pseudo {
             path,
             status: None,
             protocol,
+            other_protocol: None,
+            path_empty: false,
             len,
         }
     }
@@ -448,6 +584,8 @@ impl Pseudo {
             status: Some(status),
             len: 1,
             protocol: None,
+            other_protocol: None,
+            path_empty: false,
         }
     }
 
@@ -466,6 +604,8 @@ pub enum HeaderError {
     MissingAuthority,
     ContradictedAuthority,
     PseudoAfterRegularField,
+    DuplicatePseudo,
+    MalformedRequest(String),
 }
 
 impl HeaderError {
@@ -509,6 +649,8 @@ impl fmt::Display for HeaderError {
                     "pseudo-header field appears after a regular header field"
                 )
             }
+            HeaderError::DuplicatePseudo => write!(f, "pseudo-header field appears twice"),
+            HeaderError::MalformedRequest(why) => write!(f, "malformed request: {}", why),
         }
     }
 }
@@ -526,7 +668,12 @@ mod tests {
         //# mandatory authority component (including "http" and "https"), the
         //# request MUST contain either an :authority pseudo-header field or a
         //# Host header field.
-        let headers = Header::try_from(vec![(b":method", Method::GET.as_str()).into()]).unwrap();
+        let headers = Header::try_from(vec![
+            (b":method", Method::GET.as_str()).into(),
+            (b":scheme", b"https").into(),
+            (b":path", b"/").into(),
+        ])
+        .unwrap();
         assert!(headers.pseudo.authority.is_none());
         assert_matches!(
             headers.into_request_parts(),
@@ -557,6 +704,8 @@ mod tests {
         //# empty.
         let headers = Header::try_from(vec![
             (b":method", Method::GET.as_str()).into(),
+            (b":scheme", b"https").into(),
+            (b":path", b"/").into(),
             (b"host", b"").into(),
         ])
         .unwrap();
@@ -576,6 +725,8 @@ mod tests {
         //# Host header field.
         let headers = Header::try_from(vec![
             (b":method", Method::GET.as_str()).into(),
+            (b":scheme", b"https").into(),
+            (b":path", b"/").into(),
             (b":authority", b"test.com").into(),
         ])
         .unwrap();
@@ -592,6 +743,8 @@ mod tests {
         //# Host header field.
         let headers = Header::try_from(vec![
             (b":method", Method::GET.as_str()).into(),
+            (b":scheme", b"https").into(),
+            (b":path", b"/").into(),
             (b"host", b"test.com").into(),
         ])
         .unwrap();
@@ -606,6 +759,8 @@ mod tests {
         //# If both fields are present, they MUST contain the same value.
         let headers = Header::try_from(vec![
             (b":method", Method::GET.as_str()).into(),
+            (b":scheme", b"https").into(),
+            (b":path", b"/").into(),
             (b":authority", b"test.com").into(),
             (b"host", b"test.com").into(),
         ])
@@ -619,6 +774,8 @@ mod tests {
         //# If both fields are present, they MUST contain the same value.
         let headers = Header::try_from(vec![
             (b":method", Method::GET.as_str()).into(),
+            (b":scheme", b"https").into(),
+            (b":path", b"/").into(),
             (b":authority", b"authority.com").into(),
             (b"host", b"host.com").into(),
         ])
@@ -633,6 +790,8 @@ mod tests {
     fn preserves_duplicate_headers() {
         let headers = Header::try_from(vec![
             (b":method", Method::GET.as_str()).into(),
+            (b":scheme", b"https").into(),
+            (b":path", b"/").into(),
             (b":authority", b"test.com").into(),
             (b"set-cookie", b"foo=foo").into(),
             (b"set-cookie", b"bar=bar").into(),
@@ -695,5 +854,94 @@ mod tests {
             ]),
             Err(HeaderError::PseudoAfterRegularField)
         );
+    }
+
+    fn request(fields: &[(&str, &str)]) -> Result<Header, HeaderError> {
+        Header::try_from(
+            fields
+                .iter()
+                .map(|(n, v)| HeaderField::new(n.as_bytes().to_vec(), v.as_bytes().to_vec()))
+                .collect::<Vec<_>>(),
+        )
+    }
+
+    #[test]
+    fn classic_connect_has_only_method_and_authority() {
+        //= https://www.rfc-editor.org/rfc/rfc9114#section-4.4
+        //= type=test
+        //# A CONNECT request that does not conform to these restrictions is
+        //# malformed
+        let ok = request(&[(":method", "CONNECT"), (":authority", "example.com:443")]).unwrap();
+        let (method, uri, ..) = ok.into_request_parts().unwrap();
+        assert_eq!((method, uri.authority().unwrap().as_str()), (Method::CONNECT, "example.com:443"));
+        for extra in [(":scheme", "https"), (":path", "/")] {
+            let h = request(&[(":method", "CONNECT"), extra, (":authority", "example.com:443")]).unwrap();
+            assert_matches!(h.into_request_parts(), Err(HeaderError::MalformedRequest(_)));
+        }
+        let host_only = request(&[(":method", "CONNECT"), ("host", "example.com:443")]).unwrap();
+        assert_matches!(host_only.into_request_parts(), Err(HeaderError::MissingAuthority));
+    }
+
+    #[test]
+    fn extended_connect_needs_scheme_path_and_authority() {
+        //= https://www.rfc-editor.org/rfc/rfc8441#section-4
+        //= type=test
+        //# On requests that contain the :protocol pseudo-header field, the
+        //# :scheme and :path pseudo-header fields of the target URI MUST also
+        //# be included.
+        let full = [
+            (":method", "CONNECT"),
+            (":protocol", "connect-udp"),
+            (":scheme", "https"),
+            (":path", "/.well-known/masque/udp/192.0.2.1/443/"),
+            (":authority", "relay.example"),
+        ];
+        let (_, _, protocol, other, _) = request(&full).unwrap().into_request_parts().unwrap();
+        assert_eq!((protocol, other), (Some(Protocol::CONNECT_UDP), None));
+        for skip in [2, 3, 4] {
+            let partial: Vec<_> = full.iter().enumerate().filter(|(i, _)| *i != skip).map(|(_, f)| *f).collect();
+            assert!(request(&partial).unwrap().into_request_parts().is_err(), "without {:?}", full[skip]);
+        }
+        let get = [(":method", "GET"), (":protocol", "connect-udp"), (":scheme", "https"), (":path", "/"), (":authority", "a")];
+        assert_matches!(request(&get).unwrap().into_request_parts(), Err(HeaderError::MalformedRequest(_)));
+    }
+
+    #[test]
+    fn unknown_protocol_tokens_reach_the_application() {
+        let h = request(&[
+            (":method", "CONNECT"),
+            (":protocol", "connect-tcp"),
+            (":scheme", "https"),
+            (":path", "/"),
+            (":authority", "relay.example"),
+        ])
+        .unwrap();
+        let (_, _, protocol, other, _) = h.into_request_parts().unwrap();
+        assert_eq!(protocol, None);
+        assert_eq!(other.unwrap().as_str(), "connect-tcp");
+        assert!(request(&[(":method", "CONNECT"), (":protocol", "not a token")]).is_err());
+    }
+
+    #[test]
+    fn requests_need_exactly_one_method_scheme_and_path() {
+        //= https://www.rfc-editor.org/rfc/rfc9114#section-4.3.1
+        //= type=test
+        //# All HTTP/3 requests MUST include exactly one value for the :method,
+        //# :scheme, and :path pseudo-header fields, unless the request is a
+        //# CONNECT request
+        let missing_path = request(&[(":method", "GET"), (":scheme", "https"), (":authority", "a")]).unwrap();
+        assert_matches!(missing_path.into_request_parts(), Err(HeaderError::MalformedRequest(_)));
+        let missing_scheme = request(&[(":method", "GET"), (":path", "/"), (":authority", "a")]).unwrap();
+        assert_matches!(missing_scheme.into_request_parts(), Err(HeaderError::MalformedRequest(_)));
+        for twice in [":method", ":scheme", ":path", ":authority"] {
+            let mut fields = vec![(":method", "GET"), (":scheme", "https"), (":path", "/"), (":authority", "a")];
+            let value = fields.iter().find(|(n, _)| *n == twice).unwrap().1;
+            fields.insert(1, (twice, value));
+            assert_matches!(request(&fields), Err(HeaderError::DuplicatePseudo), "{}", twice);
+        }
+        let empty_path = request(&[(":method", "GET"), (":scheme", "https"), (":path", ""), (":authority", "a")]);
+        assert!(empty_path.map_or(true, |h| h.into_request_parts().is_err()));
+        let status = request(&[(":method", "GET"), (":scheme", "https"), (":path", "/"), (":authority", "a"), (":status", "200")]).unwrap();
+        assert_matches!(status.into_request_parts(), Err(HeaderError::MalformedRequest(_)));
     }
 }

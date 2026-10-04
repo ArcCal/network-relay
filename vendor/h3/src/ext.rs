@@ -41,6 +41,21 @@ enum ProtocolInner {
 /// Error when parsing the protocol
 pub struct InvalidProtocol;
 
+/// A `:protocol` of an extended CONNECT that is a valid token but not one of
+/// the [`Protocol`] values this library knows, such as `connect-tcp`. Server
+/// requests carry it as an extension instead of [`Protocol`], so the
+/// application can answer it (RFC 8441 section 4 lets any upgrade token
+/// appear) rather than the request being rejected as malformed.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct OtherProtocol(pub(crate) String);
+
+impl OtherProtocol {
+    /// The token as received.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
 impl FromStr for Protocol {
     type Err = InvalidProtocol;
 

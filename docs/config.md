@@ -65,7 +65,7 @@ Default `blocked_destinations`: the local host (`127.0.0.0/8`, `::1`), unspecifi
 
 - To let devices reach the network the server is on (a NAS at home, say), remove the corresponding range from the list. **Do not empty it entirely**: devices could then reach services on the server itself that listen only on 127.0.0.1.
 - The server's own public address is not in the list; `block_own_addresses` covers it. Addresses that reach the server some other way (a floating IP that is not configured on an interface, a load balancer) must be added to the list by hand.
-- Refused requests get 403, with the reason in the `Proxy-Status` header (`destination_ip_prohibited` or `http_request_denied`).
+- Refused requests get the reason in the `Proxy-Status` header (RFC 9209): a blocked address is `destination_ip_prohibited` with 502, a blocked port `http_request_denied` with 403.
 
 ### `[debug]` (optional)
 

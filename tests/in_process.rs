@@ -2017,3 +2017,40 @@ async fn reload_closes_tunnels_to_newly_blocked_destinations() {
     })
     .await;
 }
+
+/// The relay runs as its own user: a profile that root publishes is given
+/// to the owner of the `.publish` directory, or the relay could not read it.
+/// Needs root to own a directory as another user; skipped otherwise.
+#[test]
+fn published_profiles_belong_to_the_publish_directory_owner() {
+    use std::os::unix::fs::MetadataExt;
+    let env = Env::new();
+    let site = env.path("site");
+    let publish = site.join(network_relay::web::PUBLISH_DIR);
+    std::fs::create_dir_all(&publish).unwrap();
+    let (uid, gid) = (65_534, 65_534);
+    if std::os::unix::fs::chown(&publish, Some(uid), Some(gid)).is_err() {
+        return; // not root
+    }
+    let config = env.path("relay.toml");
+    std::fs::write(
+        &config,
+        format!(
+            "[tls]\ncert = {:?}\nkey = {:?}\n[web]\nroot = {:?}\n",
+            env.path("fullchain.pem"),
+            env.path("privkey.pem"),
+            site
+        ),
+    )
+    .unwrap();
+    let result = std::process::Command::new(env!("CARGO_BIN_EXE_network-relay"))
+        .args(["profile", "--host", "relay.test", "--user", ALICE.0, "--password", ALICE.1, "--publish", "--config"])
+        .arg(&config)
+        .output()
+        .unwrap();
+    assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+    let published: Vec<_> = std::fs::read_dir(&publish).unwrap().map(|e| e.unwrap().path()).collect();
+    assert_eq!(published.len(), 1);
+    let meta = std::fs::metadata(&published[0]).unwrap();
+    assert_eq!((meta.uid(), meta.gid(), meta.mode() & 0o777), (uid, gid, 0o600));
+}

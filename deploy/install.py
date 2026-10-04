@@ -11,6 +11,7 @@ import json
 import os
 from pathlib import Path
 import platform
+import pwd
 import plistlib
 import re
 import secrets
@@ -35,6 +36,11 @@ BINARY = Path('/usr/local/bin/network-relay')
 UNIT = Path('/etc/systemd/system/network-relay.service')
 SYSCTL = Path('/etc/sysctl.d/99-network-relay.conf')
 HOOK = Path('/etc/letsencrypt/renewal-hooks/deploy/network-relay')
+# The relay runs as this user; it reads the configuration and the TLS key
+# through its group.
+SERVICE_USER = 'network-relay'
+# Copies of certbot's certificate and key that the service user can read.
+TLS = ETC / 'tls'
 CERTS = Path('/etc/letsencrypt/live')
 SITE = Path('/var/www/relay')
 UDP_TEMPLATE = '/.well-known/masque/udp/{target_host}/{target_port}/'
@@ -145,7 +151,54 @@ def render_state(identity):
             + '\n').encode()
 
 
-def atomic_write(path, data, mode=0o600):
+def service_ids():
+    """User and group ID of the service account."""
+    entry = pwd.getpwnam(SERVICE_USER)
+    return entry.pw_uid, entry.pw_gid
+
+
+def ensure_service_user():
+    if run(['id', '-u', SERVICE_USER], capture=True, check=False).returncode:
+        run(['useradd', '--system', '--user-group', '--no-create-home', '--home-dir', '/nonexistent',
+             '--shell', '/usr/sbin/nologin', SERVICE_USER])
+
+
+def require_readable(paths):
+    """External certificate files must be readable by the service user."""
+    for path in paths:
+        if run(['runuser', '-u', SERVICE_USER, '--', 'test', '-r', path], check=False).returncode:
+            raise ValueError(f'The relay runs as user {SERVICE_USER} and cannot read {path}. Let it read the file '
+                             f'(for example: chgrp {SERVICE_USER} {path} && chmod g+r {path}, with the directories '
+                             'above it searchable), then run the installer again.')
+
+
+def copy_certificate(lineage):
+    """Copies certbot's certificate and key where the service user can read
+    them; deploy/certbot-hook.sh does the same on every renewal."""
+    gid = service_ids()[1]
+    TLS.mkdir(mode=0o750, parents=True, exist_ok=True)
+    os.chown(TLS, 0 if os.geteuid() == 0 else -1, gid)
+    os.chmod(TLS, 0o750)
+    for name in ('fullchain.pem', 'privkey.pem'):
+        atomic_write(TLS / name, (lineage / name).read_bytes(), 0o640, group=gid)
+    atomic_write(TLS / 'source', f'{lineage}\n'.encode(), 0o644)
+
+
+def retarget_tls(config_data, old, new):
+    """Points [tls] of an installer-written configuration from `old` to `new`."""
+    text = config_data.decode()
+    for before, after in zip(old, new):
+        if text.count(json.dumps(str(before))) != 1:
+            raise ValueError(f'Could not find {before} in {CONFIG}; point [tls] cert and key at {new[0]} and '
+                             f'{new[1]} by hand, then run the installer again.')
+        text = text.replace(json.dumps(str(before)), json.dumps(str(after)))
+    tls = tomllib.loads(text)['tls']
+    if (Path(tls['cert']), Path(tls['key'])) != tuple(new):
+        raise ValueError(f'Could not update [tls] in {CONFIG}.')
+    return text.encode()
+
+
+def atomic_write(path, data, mode=0o600, group=None):
     path = Path(path)
     if path.is_symlink() or (path.exists() and not path.is_file()):
         raise ValueError(f'Refusing to overwrite a non-regular file: {path}')
@@ -153,6 +206,8 @@ def atomic_write(path, data, mode=0o600):
     fd, name = tempfile.mkstemp(prefix='.network-relay-', dir=path.parent)
     try:
         with os.fdopen(fd, 'wb') as stream:
+            if group is not None:
+                os.fchown(stream.fileno(), -1, group)
             os.fchmod(stream.fileno(), mode)
             stream.write(data)
             stream.flush()
@@ -239,15 +294,19 @@ def preflight():
 
 
 def certificate_paths(args, identity, existing_config):
-    """Returns (cert, key, automated) for this run.
+    """Returns (cert, key, automated, migrate_from) for this run.
 
-    An existing installation keeps the certificate it was set up with, so an
-    upgrade without --cert/--key does not switch to certbot, and a different
-    --cert/--key is refused rather than silently ignored. Paths are kept as
-    given, not resolved: Let's Encrypt's live/ files are symlinks that move
-    to the newest archive/ file on renewal.
+    An automated certificate is certbot's, copied to TLS for the service
+    user. An existing installation keeps the certificate it was set up with,
+    so an upgrade without --cert/--key does not switch to certbot, and a
+    different --cert/--key is refused rather than silently ignored. One that
+    used certbot's files directly, as root, moves to the copies:
+    `migrate_from` names the paths to replace in its configuration. Given
+    paths are kept as given, not resolved: Let's Encrypt's live/ files are
+    symlinks that move to the newest archive/ file on renewal.
     """
-    automated = (CERTS / identity.domain / 'fullchain.pem', CERTS / identity.domain / 'privkey.pem')
+    automated = (TLS / 'fullchain.pem', TLS / 'privkey.pem')
+    legacy = (CERTS / identity.domain / 'fullchain.pem', CERTS / identity.domain / 'privkey.pem')
     given = None
     if args.cert:
         given = tuple(Path(os.path.abspath(p)) for p in (args.cert, args.key))
@@ -261,10 +320,12 @@ def certificate_paths(args, identity, existing_config):
             raise ValueError(f'The existing installation uses {current[0]} and {current[1]}, not the given '
                              f'--cert/--key. To change the certificate, edit [tls] in {CONFIG}, run '
                              'systemctl restart network-relay, then run this installer without --cert/--key.')
-        return (*current, current == automated)
+        if current == legacy:
+            return (*automated, True, legacy)
+        return (*current, current == automated, None)
     if given:
-        return (*given, False)
-    return (*automated, True)
+        return (*given, False, None)
+    return (*automated, True, None)
 
 
 def install(args):
@@ -312,7 +373,8 @@ def install(args):
             and not hmac.compare_digest(installed.password.encode(), identity.password.encode())):
         raise ValueError("The profile's password differs from the existing installation's; "
                          'the existing account will not be reset automatically.')
-    cert, key, automated_cert = certificate_paths(args, identity, CONFIG.read_bytes() if existing else None)
+    cert, key, automated_cert, migrate_from = certificate_paths(args, identity,
+                                                                CONFIG.read_bytes() if existing else None)
     if identity.port == 80 and automated_cert:
         raise ValueError('Automatic certificate renewal needs TCP 80 to itself; '
                          'choose another port for the relay (default 443).')
@@ -327,6 +389,9 @@ def install(args):
     run(APT + ['update'], env=env)
     run(APT + ['install', '-y', '--no-install-recommends', 'build-essential', 'pkg-config',
          'git', 'curl', 'ca-certificates', 'certbot', 'iproute2', 'procps'], env=env)
+    ensure_service_user()
+    if not automated_cert:
+        require_readable((cert, key))
     main_pid = run(['systemctl', 'show', 'network-relay.service', '-p', 'MainPID', '--value'],
                    capture=True, check=False).stdout.strip()
     port_available(identity.port, int(main_pid or 0))
@@ -351,14 +416,28 @@ def install(args):
         run(command, timeout=600)
         run(['systemctl', 'enable', '--now', 'certbot.timer'])
 
-    ETC.mkdir(mode=0o700, parents=True, exist_ok=True)
+    uid, gid = service_ids()
+    root = 0 if os.geteuid() == 0 else -1
+    ETC.mkdir(mode=0o750, parents=True, exist_ok=True)
+    # Readable by the service's group: the configuration and the TLS copies;
+    # install.json and the backups stay root's.
+    os.chown(ETC, root, gid)
+    os.chmod(ETC, 0o750)
+    if automated_cert:
+        copy_certificate(CERTS / identity.domain)
     SITE.mkdir(mode=0o755, parents=True, exist_ok=True)
     if not (SITE / 'index.html').exists():
         atomic_write(SITE / 'index.html', b'<!doctype html><title>Welcome</title><h1>Welcome</h1>\n', 0o644)
+    # One-time profile links: written by `profile --publish`, read by the relay.
+    publish = SITE / '.publish'
+    publish.mkdir(mode=0o700, exist_ok=True)
+    os.chown(publish, uid, gid)
     with tempfile.TemporaryDirectory(prefix='.install-', dir=ETC) as directory:
         staging = Path(directory)
         if existing:
             config_data = CONFIG.read_bytes()
+            if migrate_from:
+                config_data = retarget_tls(config_data, migrate_from, (cert, key))
         else:
             # A generated password is a long random secret, which a fast
             # hash protects as well as a slow one does a chosen password,
@@ -448,16 +527,16 @@ def apply_install(binary, config_data, state_data, identity, *, automated_cert):
         if current:
             old_sysctl[name] = int(current)
         sysctl_values.append(f'{name} = {max(int(current or 0), 8388608)}\n')
+    gid = service_ids()[1]
     updates = {
-        BINARY: (binary.read_bytes(), 0o755),
-        CONFIG: (config_data, 0o600),
-        STATE: (state_data, 0o600),
-        UNIT: ((REPO / 'deploy/network-relay.service').read_bytes(), 0o644),
-        SYSCTL: (''.join(sysctl_values).encode(), 0o644),
+        BINARY: (binary.read_bytes(), 0o755, None),
+        CONFIG: (config_data, 0o640, gid),
+        STATE: (state_data, 0o600, None),
+        UNIT: ((REPO / 'deploy/network-relay.service').read_bytes(), 0o644, None),
+        SYSCTL: (''.join(sysctl_values).encode(), 0o644, None),
     }
     if automated_cert:
-        updates[HOOK] = (b'#!/bin/sh\nif systemctl is-active --quiet network-relay; then\n'
-                         b'    systemctl reload network-relay\nfi\n', 0o755)
+        updates[HOOK] = ((REPO / 'deploy/certbot-hook.sh').read_bytes(), 0o755, None)
     snapshots = {}
     for index, path in enumerate(updates):
         if path.is_symlink() or (path.exists() and not path.is_file()):
@@ -471,8 +550,8 @@ def apply_install(binary, config_data, state_data, identity, *, automated_cert):
     atomic_write(backup / 'manifest.json', json.dumps({str(k): str(v) if v else None for k, v in snapshots.items()},
                                                      indent=2).encode())
     try:
-        for path, (data, mode) in updates.items():
-            atomic_write(path, data, mode)
+        for path, (data, mode, group) in updates.items():
+            atomic_write(path, data, mode, group)
         if run(['sysctl', '-p', SYSCTL], check=False).returncode:
             print('Could not raise the UDP buffer limits (some VPSes restrict sysctl); '
                   'keeping the current kernel settings.', file=sys.stderr)

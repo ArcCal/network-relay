@@ -374,8 +374,26 @@ Xy3... (a 24-character password)
 
 ### Step 8: Write the configuration
 
+The relay runs as its own user, `network-relay`, not as root. It reads the configuration, and a copy of the certificate, through its group: certbot's own files can be read by root alone. Create the user and the copy; the renewal hook from the source does the copying, now and after every renewal (when it also has the relay pick up the new certificate at once). Run these in the extracted source directory:
+
 ```bash
-mkdir -p /etc/network-relay
+useradd --system --user-group --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin network-relay
+```
+
+```bash
+install -d -m 750 -g network-relay /etc/network-relay /etc/network-relay/tls
+```
+
+```bash
+echo /etc/letsencrypt/live/relay.example.com > /etc/network-relay/tls/source
+```
+
+```bash
+install -m 755 deploy/certbot-hook.sh /etc/letsencrypt/renewal-hooks/deploy/network-relay
+```
+
+```bash
+/etc/letsencrypt/renewal-hooks/deploy/network-relay
 ```
 
 ```bash
@@ -388,8 +406,8 @@ nano /etc/network-relay/relay.toml
 listen = "[::]:443"
 
 [tls]
-cert = "/etc/letsencrypt/live/relay.example.com/fullchain.pem"
-key = "/etc/letsencrypt/live/relay.example.com/privkey.pem"
+cert = "/etc/network-relay/tls/fullchain.pem"
+key = "/etc/network-relay/tls/privkey.pem"
 
 [web]
 root = "/var/www/relay"
@@ -402,11 +420,13 @@ password_hash = "$argon2id$v=19$..."
 Press `Ctrl+O` and Enter to save, `Ctrl+X` to exit.
 
 ```bash
-chmod 600 /etc/network-relay/relay.toml
+chgrp network-relay /etc/network-relay/relay.toml && chmod 640 /etc/network-relay/relay.toml
 ```
 
+Check it as the user the relay runs as, so that a file it cannot read shows up now:
+
 ```bash
-network-relay serve --check
+runuser -u network-relay -- network-relay serve --check
 ```
 
 **You should see:** `... configuration, certificate and website are fine; users: 1`
@@ -452,18 +472,7 @@ INFO network-relay 0.1.0 ready (HTTP/3 on UDP, HTTP/2 and HTTP/1.1 on TCP) ...
 
 - From now on it starts at boot and restarts automatically after a crash.
 - Always read the logs with the `journalctl` command above; `systemctl status` truncates long lines.
-
-To have the relay pick up a renewed certificate immediately:
-
-```bash
-printf '#!/bin/sh\nsystemctl reload network-relay\n' > /etc/letsencrypt/renewal-hooks/deploy/network-relay
-```
-
-```bash
-chmod 755 /etc/letsencrypt/renewal-hooks/deploy/network-relay
-```
-
-(Optional: the relay rereads the certificate by itself every day at 3 a.m.)
+- After a certificate renewal, the hook from step 8 copies the new certificate and reloads the relay.
 
 ### Step 11: Self-check
 

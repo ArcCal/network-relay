@@ -13,9 +13,10 @@ listen = "[::]:443"
 # log_dir = "/var/log/network-relay"
 
 [tls]
-# Replace relay.example.com with your domain (the certificate from certbot).
-cert = "/etc/letsencrypt/live/relay.example.com/fullchain.pem"
-key = "/etc/letsencrypt/live/relay.example.com/privkey.pem"
+# The relay runs as user network-relay, which cannot read certbot's files;
+# deploy/certbot-hook.sh keeps a copy here that it can (see the README).
+cert = "/etc/network-relay/tls/fullchain.pem"
+key = "/etc/network-relay/tls/privkey.pem"
 # The files are read again every day at 03:00, so renewed certificates
 # are picked up without a restart.
 # Let devices authenticate with a client certificate (`network-relay

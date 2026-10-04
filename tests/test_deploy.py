@@ -2,6 +2,7 @@
 
 import argparse
 import base64
+import os
 from contextlib import ExitStack, redirect_stdout
 import importlib.util
 import io
@@ -49,16 +50,21 @@ class DeploymentTests(unittest.TestCase):
         self.addCleanup(self.stack.close)
         for name, relative in {
             'ETC': 'etc', 'CONFIG': 'etc/relay.toml', 'STATE': 'etc/install.json',
-            'LEGACY_PROFILE': 'etc/device.mobileconfig',
+            'LEGACY_PROFILE': 'etc/device.mobileconfig', 'TLS': 'etc/tls',
             'BINARY': 'bin/network-relay', 'UNIT': 'units/network-relay.service',
             'SYSCTL': 'sysctl/network-relay.conf', 'HOOK': 'renew/network-relay', 'SITE': 'site', 'CERTS': 'certs',
         }.items():
             self.stack.enter_context(mock.patch.object(deploy, name, self.root / relative))
         self.calls = []
+        self.missing_user = False
+        self.unreadable = set()
         self.fail_restart = False
         self.fail_tls = False
         self.active = False
         self.stack.enter_context(mock.patch.object(deploy, 'preflight'))
+        # The service account: this test's own user and group, which it may
+        # give files to without being root.
+        self.stack.enter_context(mock.patch.object(deploy, 'service_ids', return_value=(os.getuid(), os.getgid())))
         self.stack.enter_context(mock.patch.object(deploy.socket, 'getaddrinfo', return_value=[
             (2, 1, 6, '', ('127.0.0.1', 443))]))
 
@@ -73,7 +79,11 @@ class DeploymentTests(unittest.TestCase):
         if Path(command[0]) == BINARY and command[1] in ('passwd', 'profile', 'serve', '--version'):
             return deploy_run(args, **kwargs)
         output, status = '', 0
-        if command[:2] == ['systemctl', 'show']:
+        if command[:2] == ['id', '-u'] and self.missing_user:
+            status = 1
+        elif command[0] == 'runuser':
+            status = 1 if command[-1] in self.unreadable else 0
+        elif command[:2] == ['systemctl', 'show']:
             output = '123\n'
         elif command[:2] in (['systemctl', 'is-active'], ['systemctl', 'is-enabled']):
             status = 0 if self.active else 1
@@ -85,7 +95,7 @@ class DeploymentTests(unittest.TestCase):
             status = 60
         elif command[0] == 'certbot':
             directory = deploy.CERTS / 'relay.example.com'
-            directory.mkdir(parents=True)
+            directory.mkdir(parents=True, exist_ok=True)
             (directory / 'fullchain.pem').write_bytes((self.root / 'cert.pem').read_bytes())
             (directory / 'privkey.pem').write_bytes((self.root / 'key.pem').read_bytes())
         return subprocess.CompletedProcess(command, status, stdout=output, stderr='')
@@ -242,7 +252,7 @@ class DeploymentTests(unittest.TestCase):
         with mock.patch.object(deploy, 'run', side_effect=self.fake_run), redirect_stdout(io.StringIO()):
             self.assertEqual(deploy.install(self.args(profile_out=out)), 0)
         self.assertEqual(out.stat().st_mode & 0o777, 0o600)
-        self.assertFalse((deploy.SITE / '.publish').exists())
+        self.assertEqual(list((deploy.SITE / '.publish').glob('*.mobileconfig')), [], 'nothing published')
         self.assertEqual(deploy.read_profile(out)[0].user, 'iphone')
 
     @unittest.skipUnless(BINARY.exists(), 'run cargo build first')
@@ -317,7 +327,91 @@ class DeploymentTests(unittest.TestCase):
         self.assertEqual(certbot[certbot.index('-d') + 1], 'relay.example.com')
         self.assertIn(['systemctl', 'enable', '--now', 'certbot.timer'], self.calls)
         self.assertIn('systemctl reload network-relay', deploy.HOOK.read_text())
+        self.assertEqual(deploy.HOOK.read_bytes(), (ROOT / 'deploy/certbot-hook.sh').read_bytes())
         self.assertEqual(deploy.HOOK.stat().st_mode & 0o777, 0o755)
+        # The relay runs as its own user: it reads copies of certbot's files
+        # through its group, and the configuration likewise.
+        tls = tomllib.loads(deploy.CONFIG.read_text())['tls']
+        self.assertEqual((tls['cert'], tls['key']), (str(deploy.TLS / 'fullchain.pem'), str(deploy.TLS / 'privkey.pem')))
+        live = deploy.CERTS / 'relay.example.com'
+        self.assertEqual((deploy.TLS / 'privkey.pem').read_bytes(), (live / 'privkey.pem').read_bytes())
+        self.assertEqual((deploy.TLS / 'source').read_text().strip(), str(live))
+        for path, mode in ((deploy.TLS / 'privkey.pem', 0o640), (deploy.CONFIG, 0o640), (deploy.ETC, 0o750),
+                           (deploy.TLS, 0o750), (deploy.STATE, 0o600)):
+            self.assertEqual(path.stat().st_mode & 0o777, mode, path)
+        self.assertEqual(deploy.CONFIG.stat().st_gid, os.getgid())
+        publish = deploy.SITE / '.publish'
+        self.assertEqual((publish.stat().st_mode & 0o777, publish.stat().st_uid), (0o700, os.getuid()))
+
+    @unittest.skipUnless(BINARY.exists(), 'run cargo build first')
+    def test_upgrade_moves_a_root_era_certbot_setup_to_readable_copies(self):
+        self.certificates()
+        with mock.patch.object(deploy, 'run', side_effect=self.fake_run), redirect_stdout(io.StringIO()):
+            self.assertEqual(deploy.install(self.args(cert=None, key=None, profile=self.profile_file())), 0)
+            # As earlier versions wrote it: certbot's files, read as root.
+            live = deploy.CERTS / 'relay.example.com'
+            config = deploy.CONFIG.read_text()
+            for name in ('fullchain.pem', 'privkey.pem'):
+                config = config.replace(f'"{deploy.TLS / name}"', f'"{live / name}"')
+            deploy.CONFIG.write_text(config + '\n[debug]\nlog_requests = true\n')
+            self.assertEqual(deploy.install(self.args(cert=None, key=None)), 0)
+        config = tomllib.loads(deploy.CONFIG.read_text())
+        self.assertEqual(config['tls']['cert'], str(deploy.TLS / 'fullchain.pem'))
+        self.assertEqual(config['tls']['key'], str(deploy.TLS / 'privkey.pem'))
+        self.assertTrue(config['debug']['log_requests'], 'the rest of the configuration is kept')
+
+    def test_certbot_hook_copies_only_its_certificate_and_reloads(self):
+        import grp
+        tls, live, bin_dir = self.root / 'tls', self.root / 'live/relay.example.com', self.root / 'bin'
+        for d in (tls, live, bin_dir):
+            d.mkdir(parents=True)
+        (tls / 'source').write_text(f'{live}\n')
+        (live / 'fullchain.pem').write_text('chain v2')
+        (live / 'privkey.pem').write_text('key v2')
+        log = self.root / 'systemctl.log'
+        fake = bin_dir / 'systemctl'
+        fake.write_text(f'#!/bin/sh\necho "$@" >> {log}\nexit 0\n')
+        fake.chmod(0o755)
+        env = dict(os.environ, NETWORK_RELAY_TLS=str(tls), NETWORK_RELAY_GROUP=grp.getgrgid(os.getgid()).gr_name,
+                   PATH=f'{bin_dir}:{os.environ["PATH"]}')
+        hook = ROOT / 'deploy/certbot-hook.sh'
+        other = subprocess.run(['sh', hook], env=dict(env, RENEWED_LINEAGE=str(self.root / 'live/other')),
+                               capture_output=True, text=True)
+        self.assertEqual(other.returncode, 0, other.stderr)
+        self.assertFalse((tls / 'privkey.pem').exists(), 'another certificate is not copied')
+        ours = subprocess.run(['sh', hook], env=dict(env, RENEWED_LINEAGE=str(live)), capture_output=True, text=True)
+        self.assertEqual(ours.returncode, 0, ours.stderr)
+        self.assertEqual((tls / 'privkey.pem').read_text(), 'key v2')
+        self.assertEqual((tls / 'fullchain.pem').read_text(), 'chain v2')
+        self.assertEqual((tls / 'privkey.pem').stat().st_mode & 0o777, 0o640)
+        self.assertEqual(list(tls.glob('.*.new')), [], 'no temporary files left')
+        self.assertIn('reload network-relay', log.read_text())
+        by_hand = subprocess.run(['sh', hook], env=env, capture_output=True, text=True)
+        self.assertEqual(by_hand.returncode, 0, 'run by hand, without RENEWED_LINEAGE, it copies too')
+
+    def test_the_service_account_is_created_when_missing(self):
+        self.missing_user = True
+        with mock.patch.object(deploy, 'run', side_effect=self.fake_run):
+            deploy.ensure_service_user()
+        useradd = [c for c in self.calls if c[0] == 'useradd']
+        self.assertEqual(len(useradd), 1)
+        self.assertIn('--system', useradd[0])
+        self.assertEqual(useradd[0][-1], 'network-relay')
+        self.calls.clear()
+        self.missing_user = False
+        with mock.patch.object(deploy, 'run', side_effect=self.fake_run):
+            deploy.ensure_service_user()
+        self.assertFalse(any(c[0] == 'useradd' for c in self.calls))
+
+    @unittest.skipUnless(BINARY.exists(), 'run cargo build first')
+    def test_an_external_key_the_service_cannot_read_is_refused(self):
+        self.certificates()
+        self.unreadable = {str(self.root / 'key.pem')}
+        with mock.patch.object(deploy, 'run', side_effect=self.fake_run), redirect_stdout(io.StringIO()), \
+                self.assertRaisesRegex(ValueError, 'chgrp network-relay'):
+            deploy.install(self.args(profile=self.profile_file()))
+        self.assertFalse(deploy.CONFIG.exists())
+        self.assertFalse(any(c[:2] == ['systemctl', 'restart'] for c in self.calls))
 
     def test_profile_domain_mismatch_fails_before_changing_the_system(self):
         with mock.patch.object(deploy, 'run') as commands, self.assertRaises(ValueError):

@@ -142,7 +142,18 @@ pub fn quic_endpoint(
 impl Relay {
     /// Serves HTTP/3 on a QUIC endpoint until it closes.
     pub async fn serve_quic(self, endpoint: quinn::Endpoint) {
-        while let Some(incoming) = endpoint.accept().await {
+        let shutting_down = self.shutting_down();
+        tokio::pin!(shutting_down);
+        loop {
+            let incoming = tokio::select! {
+                incoming = endpoint.accept() => incoming,
+                _ = &mut shutting_down => {
+                    // New connections are refused; open ones carry on.
+                    endpoint.set_server_config(None);
+                    return;
+                }
+            };
+            let Some(incoming) = incoming else { return };
             let remote = incoming.remote_address();
             // When handshakes arrive faster than usual, clients first prove
             // they can receive at their address (RFC 9000 §8.1), so spoofed
@@ -203,6 +214,9 @@ impl Relay {
         // only the connection can create.
         let (sender_tx, mut sender_rx) = mpsc::channel::<(StreamId, oneshot::Sender<DgramSender>)>(64);
 
+        let shutting_down = self.shutting_down();
+        tokio::pin!(shutting_down);
+        let mut draining = false;
         let result = loop {
             tokio::select! {
                 accepted = h3_conn.accept() => match accepted {
@@ -236,9 +250,21 @@ impl Relay {
                 // QUIC keep-alives keep a connection open indefinitely; one
                 // without requests is closed after the idle timeout (sooner
                 // if it never authenticated), with GOAWAY first.
-                _ = info.idle(idle_timeout) => {
+                _ = info.idle(idle_timeout), if !draining => {
                     debug!(%remote, "closing idle HTTP/3 connection");
                     let _ = h3_conn.shutdown(0).await;
+                    conn.close(VarInt::from_u32(H3_NO_ERROR), b"");
+                    break Ok(());
+                }
+                // Server shutdown: GOAWAY, so the client sends no new
+                // requests here and may retry later ones elsewhere (RFC 9114
+                // §5.2); the open ones go on until done or the process exits.
+                _ = &mut shutting_down, if !draining => {
+                    debug!(%remote, "server shutting down: GOAWAY");
+                    let _ = h3_conn.shutdown(0).await;
+                    draining = true;
+                }
+                _ = info.drained(), if draining => {
                     conn.close(VarInt::from_u32(H3_NO_ERROR), b"");
                     break Ok(());
                 }

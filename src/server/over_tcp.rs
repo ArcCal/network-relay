@@ -39,8 +39,15 @@ impl Relay {
     pub async fn serve_tcp(self, listener: TcpListener, tls_config: Arc<rustls::ServerConfig>) {
         let acceptor = tokio_rustls::TlsAcceptor::from(tls_config);
         let builder = Arc::new(builder());
+        let shutting_down = self.shutting_down();
+        tokio::pin!(shutting_down);
         loop {
-            let (tcp, remote) = match listener.accept().await {
+            let accepted = tokio::select! {
+                accepted = listener.accept() => accepted,
+                // Dropping the listener refuses new connections.
+                _ = &mut shutting_down => return,
+            };
+            let (tcp, remote) = match accepted {
                 Ok(c) => c,
                 Err(e) => {
                     warn!("TCP accept failed: {e}");
@@ -75,11 +82,23 @@ impl Relay {
                     }
                     return;
                 }
+                let shutting_down = relay.shutting_down();
                 let service = hyper::service::service_fn(move |req| {
                     let (relay, info) = (relay.clone(), info.clone());
                     async move { Ok::<_, Infallible>(relay.handle_http(info, req).await) }
                 });
-                if let Err(e) = builder.serve_connection(TokioIo::new(tls), service).with_upgrades().await {
+                let connection = builder.serve_connection(TokioIo::new(tls), service).with_upgrades();
+                tokio::pin!(connection, shutting_down);
+                let result = tokio::select! {
+                    result = &mut connection => result,
+                    _ = &mut shutting_down => {
+                        // Finishes a response under way, then closes; an
+                        // upgraded tunnel has left the connection already.
+                        connection.as_mut().graceful_shutdown();
+                        connection.await
+                    }
+                };
+                if let Err(e) = result {
                     debug!(%remote, "HTTP connection ended: {e}");
                 }
             });
@@ -115,6 +134,8 @@ impl Relay {
         // a connection without requests is closed after the idle timeout
         // (sooner if it never authenticated), with GOAWAY first.
         let idle_timeout = self.settings().idle_timeout;
+        let shutting_down = self.shutting_down();
+        tokio::pin!(shutting_down);
         let mut closing = false;
         loop {
             tokio::select! {
@@ -138,6 +159,13 @@ impl Relay {
                 }
                 _ = info.idle(idle_timeout), if !closing => {
                     debug!(remote = %info.remote, "closing idle HTTP/2 connection");
+                    conn.graceful_shutdown();
+                    closing = true;
+                }
+                // Server shutdown: GOAWAY (RFC 9113 §6.8); h2 closes the
+                // connection once the open streams are done.
+                _ = &mut shutting_down, if !closing => {
+                    debug!(remote = %info.remote, "server shutting down: GOAWAY");
                     conn.graceful_shutdown();
                     closing = true;
                 }

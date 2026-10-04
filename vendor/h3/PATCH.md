@@ -21,6 +21,10 @@ Original source and MIT license retained. Changes are confined to:
   know (`connect-tcp`, say) is passed to the server as `ext::OtherProtocol`
   instead of failing the request, so the application can answer it (501).
   Upstream accepted most of these malformed forms.
+- `server/connection.rs`: the GOAWAY a server sends carries the first request
+  stream it will not process, and streams with that ID or higher are
+  rejected (RFC 9114 section 5.2). Upstream sent the last accepted ID, the
+  HTTP/2 meaning, so a client could retry a request that was processed.
 
 The relay integration tests cover trailers without FIN, empty DATA, ordinary
 half-close, bulk transfers and the malformed requests above; `proto::headers`

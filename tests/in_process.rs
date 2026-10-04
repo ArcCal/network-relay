@@ -1812,3 +1812,151 @@ async fn http3_datagram_on_finished_website_request_is_dropped() {
         assert_eq!(body, INDEX);
     }
 }
+
+/// RFC 9298 §3.1: when the OS reports the UDP socket unusable, as it does
+/// after ICMP Destination Unreachable (here: port unreachable on loopback),
+/// the request stream MUST be closed.
+#[tokio::test]
+async fn udp_flows_close_when_the_destination_is_unreachable() {
+    let relay = TestRelay::start("").await;
+    let closed = {
+        let s = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        s.local_addr().unwrap()
+    };
+
+    let (mut sender, conn, _driver) = raw_h3(&relay, true).await;
+    let req = udp_request(closed).extension(h3::ext::Protocol::CONNECT_UDP).body(()).unwrap();
+    let mut stream = sender.send_request(req).await.unwrap();
+    assert_eq!(stream.recv_response().await.unwrap().status(), StatusCode::OK);
+    let error = within("H3_CONNECT_ERROR", async {
+        loop {
+            let mut packet = bytes::BytesMut::new();
+            network_relay::proto::varint::encode(stream.id().into_inner() / 4, &mut packet);
+            packet.extend_from_slice(&datagram::udp_payload(b"anyone there?"));
+            let _ = conn.send_datagram(packet.freeze());
+            tokio::select! {
+                result = stream.recv_data() => match result {
+                    Err(e) => return e,
+                    Ok(_) => panic!("the flow ended without an error"),
+                },
+                _ = tokio::time::sleep(Duration::from_millis(100)) => {}
+            }
+        }
+    })
+    .await;
+    assert!(
+        matches!(error, h3::error::StreamError::RemoteTerminate { code } if code == h3::error::Code::H3_CONNECT_ERROR),
+        "{error:?}"
+    );
+
+    let (mut h2, _driver2) = raw_h2(&relay).await;
+    let req = udp_request(closed).extension(h2::ext::Protocol::from_static("connect-udp")).body(()).unwrap();
+    let (response, mut send) = h2.send_request(req, false).unwrap();
+    let response = within("CONNECT-UDP response", response).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let mut recv = response.into_body();
+    let reason = within("CONNECT_ERROR", async {
+        loop {
+            let mut wire = bytes::BytesMut::new();
+            capsule::encode(0, &datagram::udp_payload(b"anyone there?"), &mut wire);
+            write_h2(&mut send, wire.freeze()).await;
+            tokio::select! {
+                data = recv.data() => match data {
+                    Some(Err(e)) => return e.reason(),
+                    other => panic!("{other:?}"),
+                },
+                _ = tokio::time::sleep(Duration::from_millis(100)) => {}
+            }
+        }
+    })
+    .await;
+    assert_eq!(reason, Some(h2::Reason::CONNECT_ERROR));
+    within("tunnel slots released", async {
+        while relay.relay.active_tunnels() != 0 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+}
+
+/// On shutdown every connection gets GOAWAY: open tunnels keep working,
+/// new requests are refused (RFC 9113 §6.8, RFC 9114 §5.2), and once the
+/// tunnels end the connections close and the drain completes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn shutdown_sends_goaway_and_drains_open_tunnels() {
+    let relay = TestRelay::start("").await;
+    let (echo, _e) = echo_server().await;
+    let connect = || {
+        Request::builder()
+            .method(Method::CONNECT)
+            .uri(echo.to_string())
+            .header("authorization", auth::basic_authorization(ALICE.0, ALICE.1))
+            .body(())
+            .unwrap()
+    };
+    let (mut h3, conn, _driver) = raw_h3(&relay, true).await;
+    let mut h3_tunnel = h3.send_request(connect()).await.unwrap();
+    assert_eq!(h3_tunnel.recv_response().await.unwrap().status(), StatusCode::OK);
+    let (mut h2, _driver2) = raw_h2(&relay).await;
+    let (response, mut h2_send) = h2.send_request(connect(), false).unwrap();
+    let response = within("HTTP/2 CONNECT", response).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let mut h2_recv = response.into_body();
+
+    relay.relay.begin_shutdown();
+    assert!(!relay.relay.drain(Duration::from_millis(300)).await, "open tunnels hold their connections");
+
+    // Both tunnels still carry data.
+    h3_tunnel.send_data(Bytes::from_static(b"h3")).await.unwrap();
+    let mut got = within("HTTP/3 echo", h3_tunnel.recv_data()).await.unwrap().unwrap();
+    assert_eq!(got.copy_to_bytes(got.remaining()), "h3");
+    write_h2(&mut h2_send, Bytes::from_static(b"h2")).await;
+    let got = within("HTTP/2 echo", h2_recv.data()).await.unwrap().unwrap();
+    assert_eq!(got, "h2");
+
+    // New requests are refused: the clients have had GOAWAY, and a request
+    // sent anyway is rejected with H3_REQUEST_REJECTED.
+    match h3.send_request(connect()).await {
+        Err(e) => assert!(matches!(e, h3::error::StreamError::RemoteClosing), "{e:?}"),
+        Ok(mut late) => {
+            let error = within("H3_REQUEST_REJECTED", late.recv_response()).await.unwrap_err();
+            assert!(
+                matches!(error, h3::error::StreamError::RemoteTerminate { code }
+                    if code == h3::error::Code::H3_REQUEST_REJECTED),
+                "{error:?}"
+            );
+        }
+    }
+    // A raw stream bypasses the client's own GOAWAY check: the server
+    // rejects it (RFC 9114 §5.2).
+    let rejected = raw_h3_request(
+        &conn,
+        &[(":method", "GET"), (":scheme", "https"), (":authority", "relay.test"), (":path", "/")],
+    )
+    .await;
+    assert_eq!(rejected, Err(h3::error::Code::H3_REQUEST_REJECTED.value()));
+    let refused = within("HTTP/2 after GOAWAY", async {
+        match h2.clone().ready().await {
+            Err(_) => true,
+            Ok(mut ready) => match ready.send_request(connect(), true) {
+                Err(_) => true,
+                Ok((response, _)) => response.await.is_err(),
+            },
+        }
+    })
+    .await;
+    assert!(refused, "HTTP/2 accepted a request after GOAWAY");
+
+    // Ending the tunnels lets the connections close.
+    h3_tunnel.finish().await.unwrap();
+    while within("HTTP/3 end", h3_tunnel.recv_data()).await.unwrap().is_some() {}
+    h2_send.send_data(Bytes::new(), true).unwrap();
+    while within("HTTP/2 end", h2_recv.data()).await.is_some() {}
+    assert!(relay.relay.drain(WAIT).await, "connections closed once their tunnels ended");
+    let closed = within("HTTP/3 close", conn.closed()).await;
+    assert!(
+        matches!(closed, quinn::ConnectionError::ApplicationClosed(ref c)
+            if c.error_code.into_inner() == h3::error::Code::H3_NO_ERROR.value()),
+        "{closed:?}"
+    );
+}

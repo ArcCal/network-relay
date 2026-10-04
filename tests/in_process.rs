@@ -85,7 +85,7 @@ impl Drop for Env {
 }
 
 fn user(name: &str, password: &str) -> UserEntry {
-    UserEntry { name: name.into(), password_hash: auth::hash_password(password).unwrap() }
+    UserEntry::with_password(name, &auth::hash_password(password).unwrap())
 }
 
 /// UDP and TCP sockets on the same loopback port.
@@ -120,18 +120,22 @@ impl TestRelay {
     /// by default only 10.0.0.0/8 and port 25 are blocked, so the local test
     /// servers on 127.0.0.1 are reachable.
     async fn start(relay_toml: &str) -> Self {
+        Self::start_with(relay_toml, vec![user(ALICE.0, ALICE.1)]).await
+    }
+
+    async fn start_with(relay_toml: &str, users: Vec<UserEntry>) -> Self {
         init_logging();
         let env = Env::new();
-        let users = vec![user(ALICE.0, ALICE.1)];
         let (udp, tcp) = bind_pair().await;
         let addr = udp.local_addr().unwrap();
         let config = config(&env, addr, relay_toml, &users);
         let certs = CertStore::open(&config.tls.cert, &config.tls.key).unwrap();
         let relay = Relay::new(&config).unwrap();
-        let endpoint = server::quic_endpoint(certs.clone(), udp).unwrap();
+        let client_certificates = config.tls.client_certificates;
+        let endpoint = server::quic_endpoint(certs.clone(), udp, client_certificates).unwrap();
         let tasks = vec![
             tokio::spawn(relay.clone().serve_quic(endpoint)),
-            tokio::spawn(relay.clone().serve_tcp(tcp, server::tcp_tls_config(certs).unwrap())),
+            tokio::spawn(relay.clone().serve_tcp(tcp, server::tcp_tls_config(certs, client_certificates).unwrap())),
         ];
         Self { env, relay, addr, users, tasks }
     }
@@ -148,6 +152,7 @@ impl TestRelay {
             udp_target: (udp_target.ip().to_string(), udp_target.port()),
             dns_name: "example.com".into(),
             ca: Some(self.env.path("ca.pem")),
+            client_cert: None,
             timeout: Duration::from_secs(5),
         }
     }
@@ -163,14 +168,28 @@ fn config(env: &Env, addr: SocketAddr, relay_toml: &str, users: &[UserEntry]) ->
     } else {
         relay_toml
     };
+    // The test servers listen on this machine's loopback address, which the
+    // relay blocks as one of its own unless told otherwise.
+    let own = if relay_toml.contains("block_own_addresses") { "" } else { "block_own_addresses = false\n" };
+    let client_certificates = users.iter().any(|u| u.certificate_sha256.is_some());
     let mut text = format!(
-        "listen = \"{addr}\"\n[tls]\ncert = {:?}\nkey = {:?}\n[web]\nroot = {:?}\n[relay]\n{relay_toml}\n",
+        "listen = \"{addr}\"\n[tls]\ncert = {:?}\nkey = {:?}\nclient_certificates = {client_certificates}\n\
+         [web]\nroot = {:?}\n[relay]\n{own}{relay_toml}\n",
         env.path("fullchain.pem"),
         env.path("privkey.pem"),
         env.path("site"),
     );
     for u in users {
-        text.push_str(&format!("[[user]]\nname = \"{}\"\npassword_hash = \"{}\"\n", u.name, u.password_hash));
+        text.push_str(&format!("[[user]]\nname = \"{}\"\n", u.name));
+        if let Some(h) = &u.password_hash {
+            text.push_str(&format!("password_hash = \"{h}\"\n"));
+        }
+        if let Some(c) = &u.certificate_sha256 {
+            text.push_str(&format!("certificate_sha256 = \"{c}\"\n"));
+        }
+        if let Some(e) = &u.expires {
+            text.push_str(&format!("expires = \"{e}\"\n"));
+        }
     }
     let config: Config = toml::from_str(&text).unwrap();
     config.validate().unwrap();
@@ -388,7 +407,7 @@ fn profile_cli_writes_private_files_and_apple_controls() {
     )
     .unwrap();
     run(&["--publish".as_ref(), "--config".as_ref(), config.as_os_str()]);
-    let published: Vec<_> = std::fs::read_dir(env.path("site"))
+    let published: Vec<_> = std::fs::read_dir(env.path("site").join(network_relay::web::PUBLISH_DIR))
         .unwrap()
         .map(|entry| entry.unwrap().path())
         .filter(|path| path.extension().is_some_and(|ext| ext == "mobileconfig"))
@@ -1381,4 +1400,202 @@ async fn http1_requests_need_exactly_one_host() {
         assert_eq!(String::from_utf8_lossy(&head).trim(), "HTTP/1.1 400 Bad Request", "{request:?}");
     }
     assert_eq!(relay.relay.active_tunnels(), 0);
+}
+
+// ------------------------------------------------- limits and credentials
+
+/// A self-signed client certificate in `env`, and its fingerprint.
+fn client_identity(env: &Env, name: &str) -> ((PathBuf, PathBuf), String) {
+    let key = rcgen::KeyPair::generate().unwrap();
+    let cert = rcgen::CertificateParams::new(vec![format!("{name}.device")]).unwrap().self_signed(&key).unwrap();
+    let (cert_path, key_path) = (env.path(&format!("{name}-cert.pem")), env.path(&format!("{name}-key.pem")));
+    std::fs::write(&cert_path, cert.pem()).unwrap();
+    std::fs::write(&key_path, key.serialize_pem()).unwrap();
+    ((cert_path, key_path), auth::fingerprint_hex(&auth::fingerprint(cert.der())))
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn client_certificates_authenticate_without_a_password() {
+    let identity_env = Env::new();
+    let (paths, fp) = client_identity(&identity_env, "ipad");
+    let (other_paths, _) = client_identity(&identity_env, "stranger");
+    let ipad = UserEntry { name: "ipad".into(), password_hash: None, certificate_sha256: Some(fp), expires: None };
+    let relay = TestRelay::start_with("", vec![user(ALICE.0, ALICE.1), ipad]).await;
+    let (web, _w) = http_server().await;
+    let (dns, _d) = udp_echo().await;
+    let mut opts = relay.options(("ipad", ""), web, dns);
+    opts.client_cert = Some(paths);
+    for o in within("checks", check::run(&opts)).await {
+        if o.name.starts_with("hidden") {
+            // The certificate authenticates even without a password.
+            assert!(o.result.is_err(), "{}", o.name);
+        } else {
+            o.result.unwrap_or_else(|e| panic!("{}: {e:#}", o.name));
+        }
+    }
+    // Password users on a relay that asks for certificates still work.
+    let outcomes = within("checks", check::run(&relay.options(ALICE, web, dns))).await;
+    assert!(outcomes.iter().all(|o| o.result.is_ok()), "{outcomes:?}");
+    // An unknown certificate is just a visitor.
+    let mut stranger = relay.options(("ipad", ""), web, dns);
+    stranger.client_cert = Some(other_paths);
+    let outcomes = within("checks", check::run(&stranger)).await;
+    let e = format!("{:#}", outcomes[0].result.as_ref().unwrap_err());
+    assert!(e.contains("plain website"), "{e}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn per_user_tunnel_limit_is_enforced() {
+    let bob = ("bob", "bob-password-456");
+    let relay = TestRelay::start_with(
+        "blocked_destinations = []\nmax_tunnels_per_user = 1",
+        vec![user(ALICE.0, ALICE.1), user(bob.0, bob.1)],
+    )
+    .await;
+    let (echo, _e) = echo_server().await;
+    let opts = relay.options(ALICE, echo, echo);
+    let mut h3 = H3::connect(&opts, &opts.addresses).await.unwrap();
+    let connect = |(name, password): (&str, &str)| {
+        Request::builder()
+            .method(Method::CONNECT)
+            .uri(echo.to_string())
+            .header("authorization", auth::basic_authorization(name, password))
+            .body(())
+            .unwrap()
+    };
+    let mut first = h3.request(connect(ALICE)).await.unwrap();
+    assert_eq!(first.recv_response().await.unwrap().status(), StatusCode::OK);
+    assert_eq!(relay.relay.user_tunnels(ALICE.0), 1);
+    let mut second = h3.request(connect(ALICE)).await.unwrap();
+    let resp = second.recv_response().await.unwrap();
+    assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(resp.headers()["proxy-status"], "network-relay; error=connection_limit_reached");
+    let mut other = h3.request(connect(bob)).await.unwrap();
+    assert_eq!(other.recv_response().await.unwrap().status(), StatusCode::OK, "another user is unaffected");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn connections_per_address_are_limited() {
+    let relay = TestRelay::start("max_connections_per_ip = 2").await;
+    let tls =
+        std::sync::Arc::new(network_relay::tls::client_config(Some(&relay.env.path("ca.pem")), &[b"h2"]).unwrap());
+    let connect = || async {
+        let tcp = tokio::net::TcpStream::connect(relay.addr).await.unwrap();
+        tokio_rustls::TlsConnector::from(tls.clone()).connect("relay.test".try_into().unwrap(), tcp).await
+    };
+    let first = connect().await.unwrap();
+    let second = connect().await.unwrap();
+    assert!(within("refused handshake", connect()).await.is_err(), "a third connection is closed at once");
+    within("count", async {
+        while relay.relay.open_connections() != 2 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    drop((first, second));
+    within("slots to be released", async {
+        while relay.relay.open_connections() != 0 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    assert!(connect().await.is_ok());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn per_user_byte_budget_slows_tcp_tunnels() {
+    // 128 KiB/s with a 128 KiB burst; 192 KiB echoed is 384 KiB of traffic.
+    let relay = TestRelay::start("blocked_destinations = []\nmax_bytes_per_second_per_user = 131072").await;
+    let (echo, _e) = echo_server().await;
+    let opts = relay.options(ALICE, echo, echo);
+    let mut h3 = H3::connect(&opts, &opts.addresses).await.unwrap();
+    let req = Request::builder()
+        .method(Method::CONNECT)
+        .uri(echo.to_string())
+        .header("authorization", auth::basic_authorization(ALICE.0, ALICE.1))
+        .body(())
+        .unwrap();
+    let mut stream = h3.request(req).await.unwrap();
+    assert_eq!(stream.recv_response().await.unwrap().status(), StatusCode::OK);
+    let (mut send, mut recv) = stream.split();
+    let data = pattern(192 * 1024);
+    let expected = data.clone();
+    let started = std::time::Instant::now();
+    let writer = tokio::spawn(async move {
+        for chunk in data.chunks(16 * 1024) {
+            send.send_data(Bytes::copy_from_slice(chunk)).await.unwrap();
+        }
+        send.finish().await.unwrap();
+    });
+    let mut got = Vec::new();
+    within("echoed data", async {
+        while let Some(mut b) = recv.recv_data().await.unwrap() {
+            got.extend_from_slice(&b.copy_to_bytes(b.remaining()));
+        }
+    })
+    .await;
+    writer.await.unwrap();
+    let elapsed = started.elapsed();
+    assert!(got == expected, "data corrupted");
+    assert!(elapsed >= Duration::from_millis(1500), "budget not applied: {elapsed:?}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_hosts_own_addresses_are_blocked_by_default() {
+    // Nothing in the list: only the "own addresses" rule can refuse loopback.
+    let relay = TestRelay::start("blocked_destinations = []\nblock_own_addresses = true").await;
+    let (web, _w) = http_server().await;
+    let (dns, _d) = udp_echo().await;
+    let outcomes = within("checks", check::run(&relay.options(ALICE, web, dns))).await;
+    for o in outcomes.iter().filter(|o| !o.name.starts_with("hidden")) {
+        let e = format!("{:#}", o.result.as_ref().unwrap_err());
+        assert!(e.contains("403") && e.contains("destination_ip_prohibited"), "{}: {e}", o.name);
+    }
+}
+
+/// Relayed QUIC packets are at least 1200 bytes, more than fits in a
+/// DATAGRAM frame of a 1200-byte packet: the connection starts small and
+/// path MTU discovery makes room within moments.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn quic_path_mtu_grows_to_carry_full_size_relayed_packets() {
+    let relay = TestRelay::start("").await;
+    let (echo, _e) = udp_echo().await;
+    let opts = relay.options(ALICE, echo, echo);
+    let mut h3 = H3::connect(&opts, &opts.addresses).await.unwrap();
+    within("path MTU discovery", async {
+        while h3.connection().max_datagram_size().unwrap_or(0) < 1300 {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    let path = format!("/.well-known/masque/udp/127.0.0.1/{}/", echo.port());
+    let req = Request::builder()
+        .method(Method::CONNECT)
+        .uri(format!("https://relay.test:{}{path}", relay.addr.port()))
+        .header("capsule-protocol", "?1")
+        .header("authorization", auth::basic_authorization(ALICE.0, ALICE.1))
+        .extension(h3::ext::Protocol::CONNECT_UDP)
+        .body(())
+        .unwrap();
+    let mut stream = h3.request(req).await.unwrap();
+    assert_eq!(stream.recv_response().await.unwrap().status(), StatusCode::OK);
+    let (mut tunnel, _filter) = h3.udp_tunnel(stream);
+    let packet = pattern(1250);
+    within("a 1250-byte echo", async {
+        loop {
+            assert_eq!(
+                tunnel.send_datagram(datagram::udp_payload(&packet)).unwrap(),
+                network_relay::tunnel::Sent::Sent
+            );
+            let wait = tokio::time::sleep(Duration::from_millis(200));
+            tokio::select! {
+                ev = tunnel.next_event() => if let Event::Datagram(p) = ev.unwrap() {
+                    assert_eq!(&p[1..], &packet[..]);
+                    return;
+                },
+                _ = wait => {}
+            }
+        }
+    })
+    .await;
 }

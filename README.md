@@ -94,7 +94,7 @@ All of these happened in real deployments.
 | Editing the profile in macOS TextEdit | It is saved as rich text and the file is ruined | First choose Format → Make Plain Text, or use an editor such as VS Code |
 | The profile was saved as `.txt` | The device does not recognize it | It must end in `.mobileconfig` |
 | Leaving the profile in Downloads or in the website directory | Anyone who gets it can use your relay | Delete it right after installing |
-| Forgetting to delete it after `--publish` put it on the website | Anyone who guesses the link can download it | Right after installing, `rm` it and run `systemctl reload network-relay` |
+| Forgetting to delete it after `--publish` put it on the website | The link works only once and only for 15 minutes, but the file with the password stays on the server | Right after installing, `rm` the file the command printed |
 
 ### On the device
 
@@ -205,18 +205,24 @@ bash deploy/install-debian13.sh --domain relay.example.com
 **On success, the end of the output looks like:**
 
 ```
-Installation complete. Device profile: /etc/network-relay/device.mobileconfig (contains the password, mode 600, not published on the website).
+Installation complete.
+Within 15 minutes, open this link in Safari on the iPhone, iPad or Mac and install the profile. The link works once; the password is not stored anywhere else on this server:
+
+    https://relay.example.com/AbC...xyz.mobileconfig
+
 Checking the TCP/UDP relay over all three HTTP versions from this machine; access from the internet still has to be confirmed from a device.
 ✓ HTTP/3 TCP (CONNECT) ...
 ...
 All checks passed.
 ```
 
-- The password is 32 random characters. It is **not printed**, only written into this profile.
+- The password is 32 random characters. It is **not printed** and **not kept** on the server (the server has only its hash): it exists only in the profile behind that link. Open the link on the device within 15 minutes; it works once. Then delete the file it names (`rm /var/www/relay/.publish/...`).
+- To get the profile as a file instead (to AirDrop it from a Mac, say), add `--profile-out /root/iphone.mobileconfig`; delete that file once the device has it.
+- If the link expired before you used it, make a new password and profile as in [Changing the password](#changing-the-password).
 - The generated profile relays only Google / Gemini / YouTube / Claude / ChatGPT / X and similar services by default (the list is in `deploy/domains/google-ai-social.txt`); other websites connect directly. For a wider scope, see [A profile for named services plus gfwlist](#a-profile-for-named-services-plus-gfwlist).
 - Passing the self-check on the machine **does not mean** the relay is reachable from the internet (the cloud firewall filters incoming traffic). The device is the final test.
 
-**Running it again is safe**: running it again on the same machine (to update to newer source, for example) keeps the password, the user and any configuration you edited by hand, and only updates the program.
+**Running it again is safe**: running it again on the same machine (to update to newer source, for example) keeps the password, the user and any configuration you edited by hand, and only updates the program. It reads the domain, port and user name from `/etc/network-relay/install.json`, which holds no secret. (Earlier versions kept the whole profile, password included, in `/etc/network-relay/device.mobileconfig`; an upgrade still reads it, and tells you to delete it.)
 
 ### Less than 2 GiB of memory: add swap first
 
@@ -490,16 +496,16 @@ At the `Password:` prompt, enter the password. Then install it on the device as 
 
 ### Step 1: Get the file from the server to the Mac
 
-In the **Mac**'s Terminal, run (the one-step install puts the file at `/etc/network-relay/device.mobileconfig`; a manual install puts it where you pointed `--out`):
+With the one-step install's link, open it in Safari on the device and skip to [Step 3](#step-3-install). With a file (a manual install's `--out`, or the installer's `--profile-out`), in the **Mac**'s Terminal, run:
 
 ```bash
-scp -i ~/.ssh/your-key root@203.0.113.10:/etc/network-relay/device.mobileconfig ~/Downloads/
+scp -i ~/.ssh/your-key root@203.0.113.10:/root/iphone.mobileconfig ~/Downloads/
 ```
 
 **On servers where you log in as an ordinary user** (`admin` on Lightsail, `ubuntu` and so on), root's files cannot be downloaded directly and you get `Permission denied`. First, on the server (as root), copy it for that user:
 
 ```bash
-install -m 600 -o admin -g admin /etc/network-relay/device.mobileconfig /home/admin/
+install -m 600 -o admin -g admin /root/iphone.mobileconfig /home/admin/device.mobileconfig
 ```
 
 Then on the Mac:
@@ -518,7 +524,7 @@ Disconnect **Stash, Clash, Shadowrocket, Surge** and similar on the device first
 
 **iPhone / iPad:**
 
-1. In Finder on the Mac, right-click the profile → Share → **AirDrop** it to the iPhone. (You can also put it on the website with `--publish` and open it in Safari; see [docs/config.md](docs/config.md#network-relay-profile).)
+1. In Finder on the Mac, right-click the profile → Share → **AirDrop** it to the iPhone. (You can also put it on the website with `--publish` and open the printed link in Safari within 15 minutes; it works once. See [docs/config.md](docs/config.md#network-relay-profile).)
 2. The iPhone says "Profile Downloaded"; tap "Close".
 3. Open **Settings**; **Profile Downloaded** appears near the top → **Install** at the top right → enter the passcode → **Install**.
    If you don't see it: Settings → General → VPN & Device Management → "Downloaded Profile" below.
@@ -570,27 +576,23 @@ For all options, see [docs/config.md](docs/config.md#network-relay-profile).
 - `deploy/domains/global-services.txt`: Meta AI, Instagram, Spotify, Pandora, The New York Times, Wikipedia, YouTube Music and others;
 - the domains in the [gfwlist](https://github.com/gfwlist/gfwlist) (downloaded when it runs, not stored in the repository).
 
-Run it **in the source directory on the server** (the one-step install's password exists only in `device.mobileconfig`, so read it from there into a variable first, without printing it):
+Run it **in the source directory on the server** and enter the user's password when prompted. The one-step install does not keep its password on the server, so for this profile make a new user first (or use one whose password you have):
 
 ```bash
-P=$(python3 -c "import plistlib,base64;r=plistlib.load(open('/etc/network-relay/device.mobileconfig','rb'))['PayloadContent'][0]['Relays'][0];print(base64.b64decode(r['AdditionalHTTPHeaderFields']['Authorization'].split()[1]).decode().split(':',1)[1])")
+network-relay passwd --name iphone-global
 ```
 
-```bash
-python3 deploy/global-profile.py --host relay.example.com --user iphone --password "$P" --out /etc/network-relay/global.mobileconfig; unset P
-```
-
-For a manual install, just run this and enter the password when prompted:
+Append the printed `[[user]]` lines to `/etc/network-relay/relay.toml`, run `network-relay serve --check` and `systemctl reload network-relay`, then:
 
 ```bash
-python3 deploy/global-profile.py --host relay.example.com --user iphone --out /root/global.mobileconfig
+python3 deploy/global-profile.py --host relay.example.com --user iphone-global --out /root/global.mobileconfig
 ```
 
 When it finishes, it prints how many domains are matched and how many gfwlist rules were dropped or widened. Then install it on the device as described in [the previous section](#installing-the-profile-on-iphone-ipad-and-mac).
 
 **Notes:**
 
-- The default is `--ui-toggle-enabled false` (cannot be turned off in Settings). To allow turning it off, add `--ui-toggle-enabled true`.
+- The default is `--ui-toggle-enabled true`: the relay can be turned off in Settings, so that a blocked or unreachable relay does not take every listed domain down with it. `--ui-toggle-enabled false` prevents that; read [Common pitfalls](#on-the-device) first.
 - Regular expressions, IP addresses and exception rules in the gfwlist cannot be expressed in Apple's profile and are dropped; a rule aimed at a particular URL path sends its whole domain through the relay.
 - This is a snapshot. When the gfwlist is updated, run it again and reinstall.
 - The country your relay server is in decides where your traffic exits: for US-only services (Pandora and others), the server must be in the US.
@@ -619,7 +621,7 @@ Find the existing section:
 ```toml
 [[user]]
 name = "iphone"
-password_hash = "$argon2id$..."
+password_hash = "$pbkdf2-sha256$..."
 ```
 
 **Replace only the `password_hash` line with the new one. Do not append another `[[user]]` section**; two sections with the same name give `user iphone appears twice`. Save and exit.
@@ -688,8 +690,10 @@ Same as [installing on the device](#installing-the-profile-on-iphone-ipad-and-ma
 | Remove the relay from a device | iPhone: Settings → General → VPN & Device Management → tap the profile → Remove. Mac: System Settings → General → Device Management |
 | Read the logs | `journalctl -u network-relay -n 50 --no-pager -o cat`; add `-f` to follow live |
 | See the details of requests from devices | Add a `[debug]` section with `log_requests = true` to the configuration → reload. Each request is logged on one line (passwords hidden). Set it back to `false` when done |
-| Changed the configuration | `network-relay serve --check` → `systemctl reload network-relay`. `listen`, `max_tunnels`, `log_dir` and `[tls]` need `systemctl restart network-relay` |
-| Upgrade the program (one-step install) | Download the new source ZIP, extract it, enter the directory, and run `bash deploy/install-debian13.sh` again (no options needed; it keeps the original domain, user and password) |
+| Changed the configuration | `network-relay serve --check` → `systemctl reload network-relay`. `listen`, `log_dir`, `[tls]` and the connection limits `max_tunnels`, `max_connections` and `max_connections_per_ip` need `systemctl restart network-relay` |
+| Let an account expire | Add `expires = 2027-01-31T00:00:00Z` to its `[[user]]` section → reload. From then on it is refused, and its open tunnels close |
+| Limit what one device may use | `max_tunnels_per_user`, `max_bytes_per_second_per_user` and `max_udp_packets_per_second_per_user` under `[relay]`; see [docs/config.md](docs/config.md) |
+| Upgrade the program (one-step install) | Download the new source ZIP, extract it, enter the directory, and run `bash deploy/install-debian13.sh` again (no options needed; it keeps the original domain, user and password, and does not touch the devices' profiles) |
 | Upgrade the program (manual install) | Get the new `network-relay` file → `install -m 755 network-relay /usr/local/bin/` → `systemctl restart network-relay` |
 | Certificates | certbot renews automatically, and the relay rereads them every day at 3 a.m.; with the renewal hook installed, it rereads them immediately |
 | Check the service is running | `systemctl is-active network-relay` should print `active` |
@@ -789,21 +793,22 @@ A device usually keeps just one HTTP/3 connection to the relay, carrying many re
 | Three HTTP versions | HTTP/3 (QUIC, UDP 443), HTTP/2 and HTTP/1.1 (TLS, TCP 443), all served on the same port at once |
 | TCP relay | Classic CONNECT (RFC 9110 §9.3.6, RFC 9113 §8.5, RFC 9114 §4.4). Half-close (FIN) is passed on in both directions; when either side fails, both are reset (H3_CONNECT_ERROR on HTTP/3, TCP RST on the target side). Targets are connected with Happy Eyeballs (RFC 8305) |
 | UDP relay | CONNECT-UDP (RFC 9298), with a configurable URI template. QUIC datagrams on HTTP/3, DATAGRAM capsules (RFC 9297) on HTTP/2 and HTTP/1.1. Unknown context IDs and capsules are dropped/skipped as specified. Datagrams the device sends right after the request, before receiving the response, are held rather than dropped |
-| Authentication | HTTP Basic (RFC 7617), accepted in either `Authorization` or `Proxy-Authorization`. The server stores only Argon2id hashes (RFC 9106). Verification results are cached for 10 minutes (the cache key is an HMAC of the request header; passwords are not stored), so a device's stream of requests costs only one hash |
+| Authentication | HTTP Basic (RFC 7617), accepted in either `Authorization` or `Proxy-Authorization`, or a client certificate whose fingerprint is configured (the profile carries it as a PKCS#12 payload referred to by `PayloadCertificateUUID`). The server stores only hashes: PBKDF2-SHA256 for generated passwords, Argon2id (RFC 9106) for chosen ones. Verified credentials stay cached while they are used and are bound to their connection (the cache key is an HMAC of the request header; passwords are not stored), so a device's stream of requests costs only one hash. New credentials are limited per client address and per connection, so guessing cannot tie up the server. Accounts can expire |
 | Decoy website | Requests without the correct password (including every CONNECT) get the website's answer, the same as visiting a page that does not exist. Missing files under `/.well-known/` get 404 (Apple devices may query `/.well-known/pvd`) |
-| Destination restrictions | By default the server itself, private networks, link-local, multicast and similar addresses cannot be reached; **every** address a domain resolves to is checked (against DNS rebinding). Port 25 is blocked by default (against spam). Configurable |
+| Destination restrictions | By default the server's own addresses (every address on its interfaces, public ones included), private networks, link-local, multicast and the other special-purpose ranges cannot be reached; **every** address a domain resolves to is checked (against DNS rebinding), and IPv6 addresses carrying an IPv4 address (NAT64, 6to4, Teredo) are checked by that address too. Port 25 is blocked by default (against spam). Configurable |
 | Error information | When an authenticated request fails, a `Proxy-Status` header per RFC 9209 states the reason (DNS failure, connection refused, timeout, address prohibited and so on) |
 | Live management | `systemctl reload` rereads users, destination rules, timeouts, the website and certificates; connections of users who were deleted or whose password changed are dropped immediately |
-| Profile generation | `network-relay profile`: generates a `com.apple.relay.managed` profile, which can be put straight on the website and installed by opening it in Safari |
+| Profile generation | `network-relay profile`: generates a `com.apple.relay.managed` profile, with a password or a client identity, which can be put on the website behind a link that works once and installed by opening it in Safari. `--ddm` writes the equivalent declarative device management declaration for an MDM server |
 | Self-check | `network-relay check`: tests TCP and UDP relaying over all three HTTP versions the way a device would, and confirms that without a password the relay is indistinguishable from a website |
-| Resource limits | Limit on concurrently relayed connections; UDP flows close after 5 minutes idle; under systemd only the permission to bind port 443 is kept |
+| Resource limits | Limits on relayed connections overall (sized from memory) and per user, optional per-user byte and packet rates, limits on client connections overall and per address (QUIC: refused before the handshake; address validation with Retry under load), idle connections closed; UDP flows close after 5 minutes idle; logging never blocks the relay; under systemd only the permission to bind port 443 is kept |
+| QUIC path MTU | Starts at 1200 bytes and probes up to 1452 (DPLPMTUD, RFC 8899), so full-size relayed QUIC packets fit in datagrams on ordinary paths |
 
 ## Limitations
 
 - **Not tested on real devices** (see the top).
 - According to Apple, the relay applies to connections made through the system networking frameworks (URLSession, Network.framework); programs with their own network stack or that use low-level sockets directly may bypass it. It is not a VPN: ICMP (ping) and the like do not go through the relay.
 - TCP supports only classic CONNECT. The draft [draft-ietf-httpbis-connect-tcp](https://datatracker.ietf.org/doc/draft-ietf-httpbis-connect-tcp/) (`:protocol = connect-tcp`) is not implemented yet; Apple's documentation currently says the CONNECT method is used.
-- Only user name and password. Authentication with a client certificate in the profile (`PayloadCertificateUUID`) is not implemented.
+- Client certificates are self-signed and pinned by fingerprint; there is no CA or revocation list (remove the `[[user]]` or let it expire instead). Profiles are not signed by the program (see [docs/config.md](docs/config.md#network-relay-profile) for signing one with openssl).
 - The server runs only on Linux (`check` and `profile` also build and run on a Mac).
 
 ## Standards followed
@@ -837,7 +842,7 @@ cargo test
 ```
 
 - **Unit tests**: URI templates, capsule and datagram formats, target parsing and blocklists, authentication and caching, profile format, the website, logging and more.
-- **In-process integration tests** (`tests/in_process.rs`): a real relay and client in one process, over real TLS, QUIC and TCP on the loopback interface, relaying to local TCP and UDP services. They cover TCP and UDP on all three HTTP versions, bulk data and half-close, seeing the website with a wrong password, blocklists and port restrictions, Proxy-Status when the target is unreachable, dropping connections after a user is deleted, the connection limit, and early datagrams.
+- **In-process integration tests** (`tests/in_process.rs`): a real relay and client in one process, over real TLS, QUIC and TCP on the loopback interface, relaying to local TCP and UDP services. They cover TCP and UDP on all three HTTP versions, bulk data and half-close, seeing the website with a wrong password, blocklists and port restrictions, Proxy-Status when the target is unreachable, dropping connections after a user is deleted, the connection limits overall, per user and per address, per-user byte rates, idle connections, client certificates, the server's own addresses, QUIC path MTU growth, and early datagrams.
 - **Interoperability tests** (manual): curl with CONNECT over HTTP/1.1 and HTTP/2; quic-go's [masque-go](https://github.com/quic-go/masque-go) client sending and receiving 1200- and 1300-byte datagrams with CONNECT-UDP over HTTP/3; `network-relay check` querying 1.1.1.1 over the real internet. For the steps, see [docs/design.md](docs/design.md#7-interoperability-tests).
 
 GitHub Actions runs the format check, clippy and all tests on every push to `main`, and runs them again on arm64 (qemu); when a release is published, the x86_64 and arm64 packages are attached automatically.

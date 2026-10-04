@@ -24,7 +24,7 @@ From Apple's [Relay payload documentation](https://developer.apple.com/documenta
 | `Relays[].HTTP3RelayURL` | "A URL or a URI template as defined in RFC 9298 for a relay reached over HTTP/3 that **proxies TCP and UDP using the CONNECT method**" | URI template `https://domain/.well-known/masque/udp/{target_host}/{target_port}/` |
 | `Relays[].HTTP2RelayURL` | Same, over HTTP/2 | The same template |
 | `Relays[].AdditionalHTTPHeaderFields` | HTTP headers added to every request | `Authorization: Basic ...` |
-| `Relays[].PayloadCertificateUUID` | Client authentication with an identity certificate in the profile | Not used (passwords only) |
+| `Relays[].PayloadCertificateUUID` | Client authentication with an identity certificate in the profile | `--identity file.p12`: a `com.apple.security.pkcs12` payload in the same profile, referred to by its UUID |
 | `Relays[].RawPublicKeys` | Verify the server with fixed public keys instead of a CA | Not used (uses a public CA certificate) |
 | `MatchDomains` | Only these domains and their subdomains go through the relay; when it and `MatchFQDNs` are both empty, everything does | `--match-domain` |
 | `ExcludedDomains` | These domains and their subdomains do not go through the relay | `--exclude-domain` |
@@ -32,6 +32,8 @@ From Apple's [Relay payload documentation](https://developer.apple.com/documenta
 | `UIToggleEnabled` | Lets the user turn the relay off, default true (iOS/macOS 26 and later; the legacy payload supports it too) | `--ui-toggle-enabled true/false` |
 | `AllowDNSFailover` | Allows falling back to the device's default system DNS, default false (iOS/macOS 26 and later) | `--allow-dns-failover true/false` |
 | `RelayUUID` | Identifier for managed app routing, required for user enrollment; not supported on macOS | `--relay-uuid`; the app association is still configured in MDM |
+
+The same settings exist as a declarative device management configuration, `com.apple.configuration.network.relay`, whose relays name an identity by `IdentityAssetReference` instead of a certificate payload. `network-relay profile --ddm` writes one as JSON (`Type`, `Identifier`, `ServerToken`, `Payload`) for an MDM server, with `--identity-asset` for the identity asset's identifier.
 
 ### 1.2 How devices use the relay
 
@@ -101,22 +103,27 @@ Every other request goes to the decoy website.
 - **Early datagrams**: RFC 9298 §5 lets the device start sending UDP packets after sending the request but before receiving the response (QUIC's first packet, for example). The relay may still be authenticating, so the datagrams have no matching flow yet. Each connection holds up to 64 such datagrams and hands them over when the flow is set up; any beyond that are dropped first in, first out.
 - Each request is parsed and handled in its own task, so a slow request does not hold up other requests on the same connection.
 - Transport parameters: at most 1024 concurrent bidirectional streams (each TCP connection from a device is one stream); a 4 MiB receive window per stream and 32 MiB per connection; 4 MiB each of datagram send and receive buffer; 300-second idle timeout (in practice the smaller of the two sides' values).
-- **Initial MTU 1350**: relayed QUIC packets are at least 1200 bytes (RFC 9000 §14.1); with the outer QUIC header, DATAGRAM frame and context ID, they need about 1250 bytes of UDP payload, which QUIC's default initial value of 1200 cannot hold. 1350 works on the common 1500- and 1492-byte paths, and path MTU discovery raises it further afterwards.
+- **Path MTU**: relayed QUIC packets are at least 1200 bytes (RFC 9000 §14.1); with the outer QUIC header, DATAGRAM frame and context ID, they need about 1250 bytes of UDP payload. The connection starts at the 1200 bytes every QUIC path must carry, so the handshake works on any path, and DPLPMTUD (RFC 8899, RFC 9000 §14.3) probes up to 1452 bytes (a 1500-byte link with IPv6 and UDP headers) within the first round trips. Until a probe succeeds, or on a path that cannot carry more, datagrams too large to send are dropped and the device's own QUIC falls back to smaller packets, as on any path with a small MTU. A fixed larger initial MTU would instead lose the whole connection on such paths.
+- **Admission**: connections beyond `max_connections` or `max_connections_per_ip` are refused before the TLS handshake. When new handshakes arrive faster than 200 per second (after a burst of 400), clients must first prove their address with a Retry (RFC 9000 §8.1.2), so spoofed sources cannot make the relay do handshake work. A connection gets 10 seconds to finish its handshake.
 - UDP sockets request 8 MiB send and receive buffers; if the kernel limit is too small a message is logged, and `deploy/99-network-relay.conf` raises the limit.
 
 ### 2.6 HTTP/2 details
 
 - `SETTINGS_ENABLE_CONNECT_PROTOCOL` (RFC 8441); without it, devices cannot send CONNECT-UDP.
 - At most 1024 concurrent streams; a 4 MiB receive window per stream and a 32 MiB connection window; a PING every 30 seconds, disconnecting after 20 seconds without a reply. Both HTTP/2 and HTTP/3 limit request headers to 32 KiB.
+- Connections over `max_connections` or `max_connections_per_ip` are closed as soon as they are accepted. A connection with no open request for `idle_timeout_secs` (30 seconds if none of its requests authenticated) is closed with GOAWAY.
 - TLS offers both HTTP/2 and HTTP/1.1 (ALPN) and allows TLS 1.2, like an ordinary website. HTTP/3 uses only TLS 1.3.
 
 ## 3. Authentication
 
-- The server stores only Argon2id hashes (default parameters: 19 MiB, 2 iterations, as OWASP recommends). `network-relay passwd` generates 144-bit random passwords, which cannot be guessed online, so there is no need to block IPs or accounts.
-- **Cache**: a device sends a request for almost every connection it opens, each with the same credentials, and one Argon2id verification takes tens of milliseconds. So results are cached by request header: successes for 10 minutes, failures for 1 minute (to keep a device with a wrong password from burning CPU repeatedly). The cache key is an HMAC-SHA256 of the request header (with a random key per start), so no passwords are kept in memory. When several requests with the same header arrive at once, the hash is computed only once and the others wait for the result. The cache holds at most 4096 entries; once full, failures are no longer cached and cannot evict authenticated entries, so a batch of wrong credentials cannot force every device to recompute its hash.
-- When the user list changes (reload), the cache is cleared and every active tunnel is told to check whether its user is still valid; invalid ones are disconnected immediately. Results from verifications already under way cannot be written back into the cache; if the user was deleted or the password changed, such a result cannot pass authentication either, while users that did not change are unaffected by the reload. Changes are subscribed to before resolving the target and connecting, and the user is checked again after connecting and when forwarding starts, so no revocation is missed.
-- The number of concurrent hash computations is capped (twice the number of CPU cores), and cancelling the HTTP request does not release a slot that is still computing. At most 4096 distinct credentials can wait for authentication, cleaned up on cancellation; this is not the same as a limit on the server's total connections.
-- An unknown user name still costs one hash computation (against a random hash), so response times do not reveal which user names exist.
+- **Hashes**: `network-relay passwd` generates 144-bit random passwords, which cannot be guessed, online or from a stolen hash, so they get a fast hash: PBKDF2-HMAC-SHA256 with 1000 rounds (`$pbkdf2-sha256$i=1000,l=32$salt$hash`, the same format the Caddy plugin uses). Passwords people choose (`passwd --stdin`) get Argon2id (19 MiB, 2 iterations, as OWASP recommends), whose parameters are bounded (at most 64 MiB, 10 passes, 4 lanes) so that a configured hash cannot make one check exhaust the server.
+- **Who pays for a check**: every authenticated request carries the credentials. A request whose header is bound to its connection (it authenticated there before) or cached costs no hash. Only new credentials are checked, and those checks are limited: per client address (IPv4 address or IPv6 /64), about one per second after a burst of 30, and per connection, four at a time. Requests with the same new header wait for one check instead of each starting one, and waiting does not count against the connection's limit. Over the limits, the request gets the website, as for wrong credentials. So an attacker without credentials can make the server compute at most one cheap hash per second per address, and a device opening many tunnels with its credentials costs one.
+- **Cache**: results are cached by request header: successes for 10 minutes after their last use, failures for 1 minute. The cache key is an HMAC-SHA256 of the request header (with a random key per start), so no passwords are kept in memory. The cache holds at most 4096 entries; once full, failures are no longer cached and cannot evict authenticated entries, so a batch of wrong credentials cannot force every device to recompute its hash.
+- When the user list changes (reload), cached failures are dropped, and successes are kept only for users whose entry did not change; every active tunnel is told to check whether its user is still valid, and invalid ones are disconnected immediately. Results from verifications already under way cannot be written back into the cache; if the user was deleted or the password changed, such a result cannot pass authentication either, while users that did not change are unaffected by the reload. Changes are subscribed to before resolving the target and connecting, and the user is checked again after connecting and when forwarding starts, so no revocation is missed.
+- **Expiry**: a user may have `expires`; from then on its credentials are refused, and its tunnels are closed at that moment.
+- **Client certificates**: with `[tls] client_certificates`, TLS asks for an optional client certificate; any certificate whose handshake signature verifies is accepted at the TLS layer, and authorization compares its SHA-256 fingerprint with the configured users, so a certificate that matches no user is treated like no credentials (the website). `network-relay identity` creates the self-signed ECDSA certificate and a PKCS#12 file (3DES/SHA-1 key protection, which Apple devices require).
+- The number of concurrent hash computations is capped (twice the number of CPU cores), and cancelling the HTTP request does not release a slot that is still computing. At most 4096 distinct credentials can wait for authentication, cleaned up on cancellation.
+- An unknown user name still costs one hash computation (against a random hash of the same kind as the configured ones), so response times do not reveal which user names exist.
 
 ## 4. Camouflage
 
@@ -127,33 +134,37 @@ Every other request goes to the decoy website.
 
 ## 5. Security considerations
 
-- **SSRF / internal network access**: by default the server itself, private networks, cloud metadata services and so on are blocked (`blocked_destinations`), checking every address a domain resolves to, against DNS rebinding. IPv4-mapped IPv6 addresses are checked as IPv4, and the local-use NAT64 prefix is also in the default list.
-- **Abuse**: port 25 is blocked by default; `max_tunnels` limits the total number of tunnels; idle UDP flows are closed.
-- **Relay loops**: a device can make the relay connect to itself (via its public address), but every layer requires authentication, so this cannot be exploited by anyone unauthenticated.
+- **SSRF / internal network access**: by default private networks, cloud metadata services and the other special-purpose ranges are blocked (`blocked_destinations`), checking every address a domain resolves to, against DNS rebinding. IPv6 addresses that embed an IPv4 address (IPv4-mapped and -compatible, NAT64 `64:ff9b::/96`, 6to4, Teredo server and client) are also checked by that IPv4 address, and the local-use NAT64 prefix is in the default list. The server's own addresses, public ones included, are blocked as well (`block_own_addresses`, from the interface list, re-read at most every 10 seconds; if it cannot be read, everything is refused): a connection to the server's public address stays on the host and reaches services that a cloud firewall hides from the internet. Addresses that reach the host without being configured on an interface (some floating IPs, a load balancer) must be listed by hand.
+- **Abuse**: port 25 is blocked by default; `max_tunnels` (sized from memory by default) limits the total number of tunnels and `max_tunnels_per_user` one user's share; optional per-user byte and packet rates; idle UDP flows are closed.
+- **Connection floods**: connections are limited overall and per address; QUIC connections over the limits are refused before the handshake, and Retry makes clients prove their address when handshakes arrive fast; idle connections are closed (unauthenticated ones after 30 seconds); the process raises its open-file limit to fit `max_tunnels` and `max_connections`.
+- **Logging under load**: logs go through a bounded queue to a separate thread, and lines are dropped rather than blocking the relay when the journal or disk is slow; failed authentications are logged at most about five per second with a count of those left out.
+- **Relay loops**: a device cannot make the relay connect to its own addresses (above), and every layer requires authentication anyway.
 - **Privileges**: under systemd it starts as root only to read the private key, keeps only the `CAP_NET_BIND_SERVICE` capability, has a read-only file system, and so on.
 - **Logs**: passwords are never logged; `log_requests` shows only the user name from Basic credentials; user names supplied by clients are escaped before being logged.
 - **Website files**: read into memory as a whole at startup and on reload. Only public files inside the site directory are included; after opening, the file actually opened is checked through `/proc/self/fd`, so a parent directory swapped for a symlink between the check and the open cannot expose files outside the site (the service runs as root).
 - **HTTP/1.1 requests**: no `Host` or more than one `Host` gets 400 (RFC 9112 §3.2), as on an ordinary website.
-- **Profiles**: they contain Basic credentials in recoverable form (Apple's format dictates this). `--publish` uses a 144-bit random file name; saving, publishing and overwriting all go through atomic replacement with a mode-600 file and refuse symlink targets. After installing, delete the published file and reload to clear the copy in the website's memory.
+- **Profiles**: with a password they contain Basic credentials in recoverable form (Apple's format dictates this); with `--identity`, they contain a PKCS#12 encrypted with a separate password the device asks for. `--publish` writes into the hidden `.publish` directory under a 144-bit random name; the website serves each such file once, within 15 minutes of its creation, and remembers served names across reloads. Saving, publishing and overwriting all go through atomic replacement with a mode-600 file and refuse symlink targets. The installer keeps no copy: the server holds only hashes, and `install.json` holds only the domain, port and user name. Profiles are not signed; signing with the administrator's own certificate (openssl `smime -sign`, or `security cms -S` on a Mac) is documented in config.md.
 
 ## 6. Code structure
 
-A single crate, one program `network-relay`, four subcommands (`serve`, `passwd`, `profile`, `check`).
+A single crate, one program `network-relay`, five subcommands (`serve`, `passwd`, `identity`, `profile`, `check`).
 
 | Module | Contents |
 |---|---|
 | `proto/` | Variable-length integers, capsules, datagram format, URI templates. No I/O, all unit tested. Copied from masque-vpn and changed to CONNECT-UDP semantics |
 | `config` | Configuration file and validation |
-| `auth` | Basic authentication, Argon2id, verification cache, user change notifications |
+| `auth` | Basic authentication, password hashes, certificate fingerprints, verification cache, attempt limits, expiry, user change notifications |
+| `limits` | Token buckets, per-address connection counts, per-user tunnel counts and traffic budgets, the memory-based default for `max_tunnels` |
+| `identity` | Client certificates and PKCS#12 files for `network-relay identity` |
 | `policy` | Target parsing and checks, refusal reasons and Proxy-Status |
 | `connect` | Happy Eyeballs TCP connections, UDP sockets |
 | `tunnel` | The CONNECT-UDP request stream (datagrams and capsules), independent of HTTP version |
 | `server/` | `mod.rs`: request classification, authentication, opening targets, connection statistics, reload, `run`; `over_h3.rs`: QUIC and HTTP/3, datagram dispatch; `over_tcp.rs`: HTTP/2 and HTTP/1.1; `h2_stream.rs`: HTTP/2 byte streams, flow control and explicit resets; `pump.rs`: moving TCP and UDP data |
 | `web` | Decoy website |
 | `certs`, `tls` | Certificate loading, periodic rereading, rustls configuration |
-| `profile`, `private_file` | Generating `.mobileconfig` files and saving them atomically with private permissions |
+| `profile`, `private_file` | Generating `.mobileconfig` files and DDM declarations, and saving them atomically with private permissions |
 | `check` | Self-check client (HTTP/3, HTTP/2, HTTP/1.1), also used by the integration tests |
-| `logging` | Logging (optionally split into hourly files) |
+| `logging` | Non-blocking logging (optionally split into hourly files) |
 | `sys` | Open-file limits, socket options |
 
 `auth`, `certs`, `tls`, `web`, `logging` and `proto` were originally copied from [masque-vpn](https://github.com/ArcCal/masque-vpn) and then modified. The two projects do not share code and are released independently.
@@ -194,8 +205,8 @@ Result: several hundred datagrams each of 60, 1200 and 1300 bytes all came back 
 
 - After verifying on real devices, adjust to their actual behavior (`log_requests` exists for this).
 - `connect-tcp` ([draft-ietf-httpbis-connect-tcp](https://datatracker.ietf.org/doc/draft-ietf-httpbis-connect-tcp/)): add it once devices start using it. The h3 library in use does not recognize this `:protocol`, so the library has to be changed first.
-- Client certificate authentication (the profile's `PayloadCertificateUUID`).
-- Per-user connection limits and traffic statistics.
+- Per-user traffic statistics.
+- Certificate authorities and revocation for client certificates (today they are pinned by fingerprint).
 - `next-hop` in `Proxy-Status` on successful responses (the address actually connected to).
 
 ## References

@@ -20,8 +20,8 @@ use crate::tunnel::Tunnel;
 use crate::{sys, tls, web};
 
 /// TLS configuration for HTTP/2 and HTTP/1.1 over TCP.
-pub fn tcp_tls_config(certs: Arc<CertStore>) -> Result<Arc<rustls::ServerConfig>> {
-    Ok(Arc::new(tls::server_config(certs, &[tls::ALPN_H2, tls::ALPN_HTTP11], true)?))
+pub fn tcp_tls_config(certs: Arc<CertStore>, client_certificates: bool) -> Result<Arc<rustls::ServerConfig>> {
+    Ok(Arc::new(tls::server_config(certs, &[tls::ALPN_H2, tls::ALPN_HTTP11], true, client_certificates)?))
 }
 
 type Builder = hyper::server::conn::http1::Builder;
@@ -48,18 +48,27 @@ impl Relay {
                     continue;
                 }
             };
+            // Over the limit, in total or for this address: close at once,
+            // before spending a TLS handshake on it.
+            let Some(permit) = self.inner.connections.try_acquire(remote.ip()) else {
+                debug!(%remote, "connection limit reached");
+                drop(tcp);
+                continue;
+            };
             if let Err(e) = sys::tune_client_tcp(socket2::SockRef::from(&tcp)) {
                 debug!(%remote, "could not set TCP options: {e}");
             }
             let (relay, acceptor, builder) = (self.clone(), acceptor.clone(), builder.clone());
             tokio::spawn(async move {
+                let _permit = permit;
                 let tls = match tokio::time::timeout(HEADER_TIMEOUT, acceptor.accept(tcp)).await {
                     Ok(Ok(tls)) => tls,
                     Ok(Err(e)) => return debug!(%remote, "TLS handshake failed: {e}"),
                     Err(_) => return,
                 };
                 let h2 = tls.get_ref().1.alpn_protocol() == Some(tls::ALPN_H2);
-                let info = ConnInfo::new(if h2 { "HTTP/2" } else { "HTTP/1.1" }, remote);
+                let client_cert = tls::client_fingerprint(tls.get_ref().1.peer_certificates());
+                let info = ConnInfo::new(if h2 { "HTTP/2" } else { "HTTP/1.1" }, remote, client_cert);
                 if h2 {
                     if let Err(e) = relay.serve_h2(tls, info).await {
                         debug!(%remote, "HTTP/2 connection ended: {e}");
@@ -102,12 +111,19 @@ impl Relay {
             }
         };
         tokio::pin!(keepalive);
+        // PINGs keep a connection alive as long as the peer answers them, so
+        // a connection without requests is closed after the idle timeout
+        // (sooner if it never authenticated), with GOAWAY first.
+        let idle_timeout = self.settings().idle_timeout;
+        let mut closing = false;
         loop {
             tokio::select! {
                 accepted = conn.accept() => match accepted {
                     Some(Ok((req, response))) => {
                         let (relay, info) = (self.clone(), info.clone());
+                        let active = info.request_started();
                         tokio::spawn(async move {
+                            let _active = active;
                             if let Err(e) = relay.handle_h2(info, req, response).await {
                                 debug!("HTTP/2 request ended: {e:#}");
                             }
@@ -119,6 +135,11 @@ impl Relay {
                 result = &mut keepalive => {
                     conn.abrupt_shutdown(h2::Reason::NO_ERROR);
                     return result;
+                }
+                _ = info.idle(idle_timeout), if !closing => {
+                    debug!(remote = %info.remote, "closing idle HTTP/2 connection");
+                    conn.graceful_shutdown();
+                    closing = true;
                 }
             }
         }

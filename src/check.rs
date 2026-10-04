@@ -45,6 +45,8 @@ pub struct Options {
     pub dns_name: String,
     /// Trust only this CA instead of the system's (for tests).
     pub ca: Option<PathBuf>,
+    /// Present this client certificate and key (PEM files) to the relay.
+    pub client_cert: Option<(PathBuf, PathBuf)>,
     pub timeout: Duration,
 }
 
@@ -70,8 +72,18 @@ impl Options {
         Ok(t.expand(&[("target_host", &self.udp_target.0), ("target_port", &self.udp_target.1.to_string())]))
     }
 
-    fn basic(&self) -> String {
-        basic_authorization(&self.user, &self.password)
+    /// The Basic credentials, unless the check authenticates with a client
+    /// certificate only (no password).
+    fn basic(&self) -> Option<String> {
+        (!self.password.is_empty()).then(|| basic_authorization(&self.user, &self.password))
+    }
+
+    fn tls(&self, alpn: &[&[u8]]) -> Result<rustls::ClientConfig> {
+        let identity = match &self.client_cert {
+            None => None,
+            Some((cert, key)) => Some((tls::load_certs(cert)?, tls::load_key(key)?)),
+        };
+        tls::client_config_with_identity(self.ca.as_deref(), alpn, identity)
     }
 
     async fn addresses(&self) -> Result<Vec<SocketAddr>> {
@@ -126,6 +138,20 @@ async fn timed(name: &'static str, f: impl std::future::Future<Output = Result<S
 
 async fn within<T>(opts: &Options, what: &str, f: impl std::future::Future<Output = Result<T>>) -> Result<T> {
     tokio::time::timeout(opts.timeout, f).await.map_err(|_| anyhow!("{what} timed out"))?
+}
+
+/// Adds the Basic credentials, when the check uses a password.
+trait Credentials {
+    fn credentials(self, header: http::header::HeaderName, opts: &Options) -> Self;
+}
+
+impl Credentials for http::request::Builder {
+    fn credentials(self, header: http::header::HeaderName, opts: &Options) -> Self {
+        match opts.basic() {
+            Some(value) => self.header(header, value),
+            None => self,
+        }
+    }
 }
 
 /// Explains a status the relay answered a proxy request with.
@@ -256,11 +282,13 @@ impl Drop for AbortOnDrop {
 impl H3 {
     /// Opens a QUIC connection to the first address that answers.
     pub async fn connect(opts: &Options, addrs: &[SocketAddr]) -> Result<Self> {
-        let crypto = tls::client_config(opts.ca.as_deref(), &[tls::ALPN_H3])?;
+        let crypto = opts.tls(&[tls::ALPN_H3])?;
         let crypto = quinn::crypto::rustls::QuicClientConfig::try_from(crypto)?;
         let mut config = quinn::ClientConfig::new(Arc::new(crypto));
         let mut transport = quinn::TransportConfig::default();
-        transport.initial_mtu(1350);
+        // As a device would: QUIC's guaranteed 1200 bytes first, then path
+        // MTU discovery (on by default) finds the real size.
+        transport.initial_mtu(1200);
         config.transport_config(Arc::new(transport));
         let mut last = anyhow!("no address");
         for addr in addrs {
@@ -301,6 +329,11 @@ impl H3 {
         Err(last)
     }
 
+    /// The QUIC connection, for its path properties.
+    pub fn connection(&self) -> &quinn::Connection {
+        &self.conn
+    }
+
     /// Sends a request; the response is read from the returned stream.
     pub async fn request(&mut self, req: Request<()>) -> Result<H3ClientStream> {
         Ok(self.send.send_request(req).await?)
@@ -334,7 +367,7 @@ impl H3 {
         let req = Request::builder()
             .method(Method::CONNECT)
             .uri(opts.tcp_target.as_str())
-            .header(AUTHORIZATION, opts.basic())
+            .credentials(AUTHORIZATION, opts)
             .body(())?;
         let mut stream = within(opts, "CONNECT", async { Ok(self.send.send_request(req).await?) }).await?;
         let resp = within(opts, "CONNECT response", async { Ok(stream.recv_response().await?) }).await?;
@@ -370,7 +403,7 @@ impl H3 {
             .method(Method::CONNECT)
             .uri(format!("https://{}{}", opts.authority(), opts.udp_path()?))
             .header(CAPSULE_PROTOCOL_HEADER, "?1")
-            .header(AUTHORIZATION, opts.basic())
+            .credentials(AUTHORIZATION, opts)
             .extension(h3::ext::Protocol::CONNECT_UDP)
             .body(())?;
         let mut stream = within(opts, "CONNECT-UDP", async { Ok(self.send.send_request(req).await?) }).await?;
@@ -387,7 +420,7 @@ impl H3 {
 type Tls = tokio_rustls::client::TlsStream<TcpStream>;
 
 async fn tls_connect(opts: &Options, addrs: &[SocketAddr], alpn: &[&[u8]]) -> Result<Tls> {
-    let config = Arc::new(tls::client_config(opts.ca.as_deref(), alpn)?);
+    let config = Arc::new(opts.tls(alpn)?);
     let mut last = anyhow!("no address");
     for addr in addrs {
         let tcp = match within(opts, "TCP connect", async { Ok(TcpStream::connect(addr).await?) }).await {
@@ -438,7 +471,7 @@ async fn h2_tcp(opts: &Options, addrs: &[SocketAddr]) -> Result<String> {
     let req = Request::builder()
         .method(Method::CONNECT)
         .uri(opts.tcp_target.as_str())
-        .header(AUTHORIZATION, opts.basic())
+        .credentials(AUTHORIZATION, opts)
         .body(Empty::new())?;
     let mut resp = within(opts, "CONNECT", async { Ok(sender.send_request(req).await?) }).await?;
     let proxy_status = resp.headers().get("proxy-status").and_then(|v| v.to_str().ok()).map(str::to_string);
@@ -453,7 +486,7 @@ async fn h2_udp(opts: &Options, addrs: &[SocketAddr]) -> Result<String> {
         .method(Method::CONNECT)
         .uri(format!("https://{}{}", opts.authority(), opts.udp_path()?))
         .header(CAPSULE_PROTOCOL_HEADER, "?1")
-        .header(AUTHORIZATION, opts.basic())
+        .credentials(AUTHORIZATION, opts)
         .extension(hyper::ext::Protocol::from_static(CONNECT_UDP_PROTOCOL))
         .body(Empty::new())?;
     let mut resp = within(opts, "CONNECT-UDP", async { Ok(sender.send_request(req).await?) }).await?;
@@ -483,7 +516,7 @@ async fn h1_tcp(opts: &Options, addrs: &[SocketAddr]) -> Result<String> {
         .method(Method::CONNECT)
         .uri(opts.tcp_target.as_str())
         .header(HOST, opts.tcp_target.as_str())
-        .header(PROXY_AUTHORIZATION, opts.basic())
+        .credentials(PROXY_AUTHORIZATION, opts)
         .body(Empty::new())?;
     let mut resp = within(opts, "CONNECT", async { Ok(sender.send_request(req).await?) }).await?;
     let proxy_status = resp.headers().get("proxy-status").and_then(|v| v.to_str().ok()).map(str::to_string);
@@ -501,7 +534,7 @@ async fn h1_udp(opts: &Options, addrs: &[SocketAddr]) -> Result<String> {
         .header(CONNECTION, "Upgrade")
         .header(UPGRADE, CONNECT_UDP_PROTOCOL)
         .header(CAPSULE_PROTOCOL_HEADER, "?1")
-        .header(AUTHORIZATION, opts.basic())
+        .credentials(AUTHORIZATION, opts)
         .body(Empty::new())?;
     let mut resp = within(opts, "Upgrade request", async { Ok(sender.send_request(req).await?) }).await?;
     let proxy_status = resp.headers().get("proxy-status").and_then(|v| v.to_str().ok()).map(str::to_string);

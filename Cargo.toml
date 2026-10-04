@@ -26,24 +26,31 @@ hyper-util = { version = "0.1", features = ["tokio", "server-auto", "http1", "ht
 ipnet = { version = "2", features = ["serde"] }
 # Open file limit: every relayed TCP connection needs a file descriptor.
 # Terminal settings: passwords are typed without echo.
-nix = { version = "0.31", default-features = false, features = ["resource", "term"] }
+nix = { version = "0.31", default-features = false, features = ["resource", "term", "net"] }
+# PKCS#12 identities for client-certificate profiles (legacy 3DES/SHA-1
+# encryption, which every Apple OS version imports).
+p12 = "0.6"
+rcgen = "0.14"
 quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring", "log"] }
 ring = "0.17"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "logging"] }
 rustls-native-certs = "0.8"
 rustls-pki-types = { version = "1", features = ["std"] }
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 socket2 = { version = "0.6", features = ["all"] }
 thiserror = "2"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "signal", "sync", "io-util"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "logging"] }
 toml = "0.9"
 tracing = "0.1"
+tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 x509-parser = "0.18"
 
 [dev-dependencies]
-rcgen = "0.14"
+# Paused clocks for timer tests.
+tokio = { version = "1", features = ["test-util"] }
 
 # Local frame-validation and idle-cancellation fixes; see vendor/*/PATCH.md.
 [patch."https://github.com/hyperium/h3"]

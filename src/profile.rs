@@ -1,13 +1,19 @@
 //! `network-relay profile`: writes a configuration profile (`.mobileconfig`)
-//! that sets up the relay on an iPhone, iPad or Mac.
+//! that sets up the relay on an iPhone, iPad or Mac, or the equivalent
+//! declarative device management (DDM) configuration for an MDM server.
 //!
 //! The profile holds one `com.apple.relay.managed` payload (iOS 17+,
-//! macOS 14+; installable by hand, no supervision needed). Its relay entry
-//! names the server by URI template (RFC 9298 §2) for HTTP/3 and HTTP/2, and
-//! carries the user's credentials in `AdditionalHTTPHeaderFields`, which the
-//! device sends with every CONNECT request.
+//! macOS 14+; installable by hand, no supervision needed; deprecated from
+//! iOS/macOS 27 in favour of the DDM `com.apple.configuration.network.relay`
+//! declaration). Its relay entry names the server by URI template (RFC 9298
+//! §2) for HTTP/3 and HTTP/2, and carries the user's credentials: a password
+//! in `AdditionalHTTPHeaderFields`, which the device sends with every CONNECT
+//! request, and/or an identity certificate (`com.apple.security.pkcs12`
+//! payload referenced by `PayloadCertificateUUID`).
 
 use anyhow::{ensure, Result};
+use base64::engine::general_purpose::STANDARD;
+use base64::Engine;
 
 use crate::auth::basic_authorization;
 use crate::proto::{UriTemplate, DEFAULT_UDP_PATH_TEMPLATE};
@@ -15,13 +21,27 @@ use crate::proto::{UriTemplate, DEFAULT_UDP_PATH_TEMPLATE};
 /// Reverse-DNS prefix of the payload identifiers.
 const IDENTIFIER_PREFIX: &str = "com.github.arccal.network-relay";
 
+/// A PKCS#12 identity to install with the profile.
+#[derive(Debug, Clone)]
+pub struct IdentityPayload {
+    pub p12: Vec<u8>,
+    /// Embedded in the profile when given; otherwise the device asks for it
+    /// during installation, so the profile alone does not unlock the key.
+    pub password: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 pub struct ProfileOptions {
     /// The relay's host name, as in its certificate.
     pub host: String,
     pub port: u16,
     pub user: String,
-    pub password: String,
+    /// Basic-auth password; optional when an identity is given.
+    pub password: Option<String>,
+    /// A client identity (PKCS#12) for certificate authentication.
+    pub identity: Option<IdentityPayload>,
+    /// DDM only: identifier of the identity asset declaration.
+    pub identity_asset: Option<String>,
     /// Path and query of the CONNECT-UDP template.
     pub udp_template: String,
     /// These domains and their subdomains use the relay. If both this list
@@ -50,7 +70,9 @@ impl ProfileOptions {
             host: host.to_string(),
             port: 443,
             user: user.to_string(),
-            password: password.to_string(),
+            password: Some(password.to_string()),
+            identity: None,
+            identity_asset: None,
             udp_template: DEFAULT_UDP_PATH_TEMPLATE.to_string(),
             match_domains: Vec::new(),
             excluded_domains: Vec::new(),
@@ -115,11 +137,13 @@ fn string_array(key: &str, values: &[String], indent: &str) -> String {
     out
 }
 
-/// Builds the profile. Installing a profile with the same host and user
-/// again replaces the earlier one, since the identifiers are derived from
-/// them.
-pub fn generate(opts: &ProfileOptions) -> Result<String> {
+/// The checks shared by both output formats.
+fn check(opts: &ProfileOptions) -> Result<()> {
     ensure!(opts.http3 || opts.http2, "the profile needs HTTP/3, HTTP/2 or both");
+    ensure!(
+        opts.password.is_some() || opts.identity.is_some() || opts.identity_asset.is_some(),
+        "the profile needs a password, an identity certificate, or both"
+    );
     ensure!(opts.port != 0, "the relay port must be between 1 and 65535");
     crate::auth::validate_user_name(&opts.user)?;
     check_domain(&opts.host)?;
@@ -150,10 +174,63 @@ pub fn generate(opts: &ProfileOptions) -> Result<String> {
         ensure!(template.has_variable(var), "the UDP template must contain {{{var}}}");
     }
     template.check_round_trip()?;
+    Ok(())
+}
+
+/// Builds the profile. Installing a profile with the same host and user
+/// again replaces the earlier one, since the identifiers are derived from
+/// them.
+pub fn generate(opts: &ProfileOptions) -> Result<String> {
+    check(opts)?;
+    ensure!(opts.identity_asset.is_none(), "an identity asset reference is only for DDM declarations (--ddm)");
     let url = escape(&opts.relay_url());
     let name = escape(opts.name.as_deref().unwrap_or(&opts.host));
     let id = format!("{IDENTIFIER_PREFIX}.{}.{}", opts.host.to_ascii_lowercase(), opts.user);
-    let authorization = escape(&basic_authorization(&opts.user, &opts.password));
+    let cert_uuid = uuid();
+    let mut credentials = String::new();
+    if let Some(password) = &opts.password {
+        credentials.push_str(&format!(
+            "          <key>AdditionalHTTPHeaderFields</key>\n          <dict>\n            <key>Authorization</key>\n            \
+             <string>{}</string>\n          </dict>\n",
+            escape(&basic_authorization(&opts.user, password))
+        ));
+    }
+    if opts.identity.is_some() {
+        credentials.push_str(&format!(
+            "          <key>PayloadCertificateUUID</key>\n          <string>{cert_uuid}</string>\n"
+        ));
+    }
+    let identity_payload = match &opts.identity {
+        None => String::new(),
+        Some(identity) => {
+            let password = identity
+                .password
+                .as_ref()
+                .map(|p| format!("      <key>Password</key>\n      <string>{}</string>\n", escape(p)))
+                .unwrap_or_default();
+            format!(
+                r#"    <dict>
+      <key>PayloadType</key>
+      <string>com.apple.security.pkcs12</string>
+      <key>PayloadVersion</key>
+      <integer>1</integer>
+      <key>PayloadIdentifier</key>
+      <string>{id}.identity</string>
+      <key>PayloadUUID</key>
+      <string>{cert_uuid}</string>
+      <key>PayloadDisplayName</key>
+      <string>{name} identity</string>
+      <key>PayloadCertificateFileName</key>
+      <string>{user}.p12</string>
+{password}      <key>PayloadContent</key>
+      <data>{data}</data>
+    </dict>
+"#,
+                user = escape(&opts.user),
+                data = STANDARD.encode(&identity.p12),
+            )
+        }
+    };
     let scope = if opts.match_domains.is_empty() && opts.match_fqdns.is_empty() {
         "all of this device's traffic".to_string()
     } else {
@@ -190,7 +267,7 @@ pub fn generate(opts: &ProfileOptions) -> Result<String> {
 <dict>
   <key>PayloadContent</key>
   <array>
-    <dict>
+{identity_payload}    <dict>
       <key>PayloadType</key>
       <string>com.apple.relay.managed</string>
       <key>PayloadVersion</key>
@@ -204,12 +281,7 @@ pub fn generate(opts: &ProfileOptions) -> Result<String> {
       <key>Relays</key>
       <array>
         <dict>
-{urls}          <key>AdditionalHTTPHeaderFields</key>
-          <dict>
-            <key>Authorization</key>
-            <string>{authorization}</string>
-          </dict>
-        </dict>
+{urls}{credentials}        </dict>
       </array>
 {domains}{controls}    </dict>
   </array>
@@ -231,6 +303,95 @@ pub fn generate(opts: &ProfileOptions) -> Result<String> {
         relay_uuid = uuid(),
         profile_uuid = uuid(),
     ))
+}
+
+/// Builds the DDM declaration (`com.apple.configuration.network.relay`,
+/// iOS/macOS/visionOS 27+) for an MDM server, as JSON. A client identity
+/// is referenced as an asset declaration (`IdentityAssetReference`), which
+/// the MDM server provides.
+pub fn generate_ddm(opts: &ProfileOptions) -> Result<String> {
+    check(opts)?;
+    ensure!(
+        opts.identity.is_none(),
+        "a DDM declaration references the identity as an asset: use --identity-asset with the asset's identifier"
+    );
+    let url = opts.relay_url();
+    let mut relay = serde_json::Map::new();
+    if opts.http3 {
+        relay.insert("HTTP3RelayURL".into(), url.clone().into());
+    }
+    if opts.http2 {
+        relay.insert("HTTP2RelayURL".into(), url.into());
+    }
+    if let Some(password) = &opts.password {
+        relay.insert(
+            "AdditionalHTTPHeaderFields".into(),
+            serde_json::json!({ "Authorization": basic_authorization(&opts.user, password) }),
+        );
+    }
+    if let Some(asset) = &opts.identity_asset {
+        relay.insert("IdentityAssetReference".into(), asset.clone().into());
+    }
+    let mut payload = serde_json::Map::new();
+    payload.insert("VisibleName".into(), opts.name.clone().unwrap_or_else(|| opts.host.clone()).into());
+    payload.insert("Relays".into(), serde_json::Value::Array(vec![relay.into()]));
+    for (key, values) in [
+        ("MatchDomains", &opts.match_domains),
+        ("ExcludedDomains", &opts.excluded_domains),
+        ("MatchFQDNs", &opts.match_fqdns),
+        ("ExcludedFQDNs", &opts.excluded_fqdns),
+    ] {
+        if !values.is_empty() {
+            let list: Vec<String> =
+                values.iter().map(|v| v.strip_suffix('.').unwrap_or(v).to_ascii_lowercase()).collect();
+            payload.insert(key.into(), list.into());
+        }
+    }
+    if let Some(id) = &opts.relay_uuid {
+        payload.insert("RelayUUID".into(), id.to_ascii_uppercase().into());
+    }
+    if let Some(v) = opts.ui_toggle_enabled {
+        payload.insert("UIToggleEnabled".into(), v.into());
+    }
+    if let Some(v) = opts.allow_dns_failover {
+        payload.insert("AllowDNSFailover".into(), v.into());
+    }
+    let declaration = serde_json::json!({
+        "Type": "com.apple.configuration.network.relay",
+        "Identifier": format!("{IDENTIFIER_PREFIX}.{}.{}", opts.host.to_ascii_lowercase(), opts.user),
+        "ServerToken": uuid(),
+        "Payload": payload,
+    });
+    Ok(serde_json::to_string_pretty(&declaration)? + "\n")
+}
+
+/// Warnings about settings that are valid but probably not what was meant.
+pub fn warnings(opts: &ProfileOptions) -> Vec<String> {
+    let mut out = Vec::new();
+    if opts.match_domains.is_empty() && (!opts.match_fqdns.is_empty() || !opts.excluded_fqdns.is_empty()) {
+        out.push(
+            "MatchFQDNs/ExcludedFQDNs need iOS 18.4 / macOS 15.4; older systems ignore them, and a profile with no \
+             MatchDomains then relays all traffic"
+                .to_string(),
+        );
+    }
+    if !opts.match_domains.is_empty() {
+        let norm = |d: &String| d.strip_suffix('.').unwrap_or(d).to_ascii_lowercase();
+        let matches: Vec<String> = opts.match_domains.iter().map(norm).collect();
+        for fqdn in opts.excluded_fqdns.iter().map(norm) {
+            if !matches.iter().any(|m| fqdn == *m || fqdn.ends_with(&format!(".{m}"))) {
+                out.push(format!("excluded FQDN {fqdn} is not under any match domain, so it has no effect"));
+            }
+        }
+    }
+    if opts.ui_toggle_enabled == Some(false) {
+        out.push(
+            "UIToggleEnabled is false: the relay cannot be turned off in Settings; if it is unreachable, every \
+             matching site stops working until the profile is removed"
+                .to_string(),
+        );
+    }
+    out
 }
 
 #[cfg(test)]
@@ -256,6 +417,7 @@ mod tests {
         assert!(p.contains(&format!("<key>HTTP3RelayURL</key>\n          <string>{url}</string>")));
         assert!(p.contains(&format!("<key>HTTP2RelayURL</key>\n          <string>{url}</string>")));
         let basic = basic_authorization("iphone", "p&ss<word>");
+        assert!(!p.contains("PayloadCertificateUUID") && !p.contains("pkcs12"));
         assert!(p.contains(&format!("<string>{}</string>", escape(&basic))));
         assert!(p.contains("<key>MatchDomains</key>\n      <array>\n        <string>ifconfig.me</string>"));
         assert!(!p.contains("ExcludedDomains"));
@@ -305,6 +467,78 @@ mod tests {
         let mut o = ProfileOptions::new("relay.example.com", "iphone", "pw");
         o.excluded_domains = vec!["bad domain".into()];
         assert!(generate(&o).is_err());
+    }
+
+    #[test]
+    fn identity_certificates_are_embedded_and_referenced() {
+        let mut o = ProfileOptions::new("relay.example.com", "ipad", "unused");
+        o.password = None;
+        assert!(generate(&o).is_err(), "no credentials at all");
+        o.identity = Some(IdentityPayload { p12: vec![1, 2, 3], password: None });
+        let p = generate(&o).unwrap();
+        assert!(p.contains("<string>com.apple.security.pkcs12</string>"));
+        assert!(p.contains("<data>AQID</data>"));
+        assert!(!p.contains("<key>Password</key>"), "the device asks for it");
+        assert!(!p.contains("AdditionalHTTPHeaderFields"));
+        let uuid_of = |key: &str, p: &str| {
+            let start = p.find(&format!("<key>{key}</key>")).unwrap();
+            let rest = &p[start..];
+            let s = rest.find("<string>").unwrap() + 8;
+            rest[s..s + 36].to_string()
+        };
+        let pkcs12 = &p[p.find("com.apple.security.pkcs12").unwrap()..];
+        assert_eq!(uuid_of("PayloadCertificateUUID", &p), uuid_of("PayloadUUID", pkcs12));
+        o.identity = Some(IdentityPayload { p12: vec![1], password: Some("p<w".into()) });
+        o.password = Some("also".into());
+        let p = generate(&o).unwrap();
+        assert!(p.contains("<string>p&lt;w</string>") && p.contains("AdditionalHTTPHeaderFields"));
+        for tag in ["dict", "array", "plist"] {
+            assert_eq!(p.matches(&format!("<{tag}")).count(), p.matches(&format!("</{tag}>")).count(), "{tag}");
+        }
+    }
+
+    #[test]
+    fn ddm_declarations_follow_apples_schema() {
+        let mut o = ProfileOptions::new("Relay.example.com", "iphone", "pw");
+        o.host = "relay.example.com".into();
+        o.match_domains = vec!["Example.COM.".into()];
+        o.ui_toggle_enabled = Some(true);
+        o.relay_uuid = Some("00112233-4455-6677-8899-aabbccddeeff".into());
+        let v: serde_json::Value = serde_json::from_str(&generate_ddm(&o).unwrap()).unwrap();
+        assert_eq!(v["Type"], "com.apple.configuration.network.relay");
+        assert_eq!(v["Payload"]["VisibleName"], "relay.example.com");
+        let relay = &v["Payload"]["Relays"][0];
+        let url = "https://relay.example.com/.well-known/masque/udp/{target_host}/{target_port}/";
+        assert_eq!((relay["HTTP3RelayURL"].as_str(), relay["HTTP2RelayURL"].as_str()), (Some(url), Some(url)));
+        assert_eq!(relay["AdditionalHTTPHeaderFields"]["Authorization"], basic_authorization("iphone", "pw"));
+        assert_eq!(v["Payload"]["MatchDomains"][0], "example.com");
+        assert_eq!(v["Payload"]["UIToggleEnabled"], true);
+        assert_eq!(v["Payload"]["RelayUUID"], "00112233-4455-6677-8899-AABBCCDDEEFF");
+        assert!(v["Payload"].get("AllowDNSFailover").is_none());
+        o.password = None;
+        o.identity_asset = Some("identity.ipad".into());
+        let v: serde_json::Value = serde_json::from_str(&generate_ddm(&o).unwrap()).unwrap();
+        assert_eq!(v["Payload"]["Relays"][0]["IdentityAssetReference"], "identity.ipad");
+        assert!(generate(&o).is_err(), "asset references are only for DDM");
+        o.identity = Some(IdentityPayload { p12: vec![1], password: None });
+        assert!(generate_ddm(&o).is_err());
+    }
+
+    #[test]
+    fn risky_settings_are_warned_about() {
+        let mut o = ProfileOptions::new("relay.example.com", "iphone", "pw");
+        assert!(warnings(&o).is_empty());
+        o.match_fqdns = vec!["api.example.com".into()];
+        assert!(warnings(&o)[0].contains("18.4"));
+        o.match_fqdns.clear();
+        o.match_domains = vec!["example.com".into()];
+        o.excluded_fqdns = vec!["a.example.com".into(), "b.example.org".into()];
+        let w = warnings(&o);
+        assert_eq!(w.len(), 1);
+        assert!(w[0].contains("b.example.org"));
+        o.excluded_fqdns.clear();
+        o.ui_toggle_enabled = Some(false);
+        assert!(warnings(&o)[0].contains("cannot be turned off"));
     }
 
     #[test]

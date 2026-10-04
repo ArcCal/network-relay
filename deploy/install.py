@@ -26,7 +26,11 @@ from urllib.parse import urlsplit
 REPO = Path(__file__).resolve().parent.parent
 ETC = Path('/etc/network-relay')
 CONFIG = ETC / 'relay.toml'
-PROFILE = ETC / 'device.mobileconfig'
+# What the installation was set up with: domain, port and user name. No secret.
+STATE = ETC / 'install.json'
+# Earlier versions kept the device profile here, password included, and
+# read the installation's identity back from it.
+LEGACY_PROFILE = ETC / 'device.mobileconfig'
 BINARY = Path('/usr/local/bin/network-relay')
 UNIT = Path('/etc/systemd/system/network-relay.service')
 SYSCTL = Path('/etc/sysctl.d/99-network-relay.conf')
@@ -38,6 +42,7 @@ UDP_TEMPLATE = '/.well-known/masque/udp/{target_host}/{target_port}/'
 # dpkg lock instead of failing.
 APT = ['apt-get', '-o', 'DPkg::Lock::Timeout=1800']
 SUPPORTED_DEBIAN = ('12', '13')
+PROFILE_NAME = 'Google / AI / X — everything else direct'
 
 
 @dataclass(frozen=True)
@@ -45,7 +50,8 @@ class Identity:
     domain: str
     port: int
     user: str
-    password: str = field(repr=False)
+    # None for an installation whose password the installer never kept.
+    password: str | None = field(repr=False)
 
 
 def domain_name(value):
@@ -69,7 +75,8 @@ def validate_identity(identity):
     if not re.fullmatch(r'[A-Za-z0-9_-][A-Za-z0-9_.-]{0,63}', identity.user):
         raise ValueError('The user name may contain only letters, digits, underscores, dots and hyphens, '
                          'and must not start with a dot.')
-    if len(identity.password) < 12 or any(ord(c) < 32 or ord(c) == 127 for c in identity.password):
+    if identity.password is not None and (len(identity.password) < 12
+                                          or any(ord(c) < 32 or ord(c) == 127 for c in identity.password)):
         raise ValueError('The password must be at least 12 characters and contain no control characters.')
     return identity
 
@@ -126,6 +133,16 @@ def read_profile(path):
     identity = validate_identity(Identity(domain_name(url.hostname or ''),
                                           443 if url.port is None else url.port, user, password))
     return identity, raw
+
+
+def read_state(path):
+    data = json.loads(Path(path).read_text())
+    return validate_identity(Identity(domain_name(data['domain']), int(data['port']), str(data['user']), None))
+
+
+def render_state(identity):
+    return (json.dumps({'domain': identity.domain, 'port': identity.port, 'user': identity.user}, indent=2)
+            + '\n').encode()
 
 
 def atomic_write(path, data, mode=0o600):
@@ -253,13 +270,17 @@ def certificate_paths(args, identity, existing_config):
 def install(args):
     preflight()
     existing = CONFIG.exists()
-    old_identity = read_profile(PROFILE)[0] if PROFILE.exists() else None
-    if existing and old_identity is None:
+    if STATE.exists():
+        installed = read_state(STATE)
+    elif LEGACY_PROFILE.exists():
+        installed = read_profile(LEGACY_PROFILE)[0]
+    else:
+        installed = None
+    if existing and installed is None:
         raise ValueError('Found an existing manual installation; refusing to overwrite it. '
                          'Back it up and follow the update steps in docs/deploy-debian13.md.')
-    imported = args.profile or (PROFILE if existing else None)
-    if imported:
-        identity, profile_data = read_profile(imported)
+    if args.profile:
+        identity = read_profile(args.profile)[0]
         if args.domain and domain_name(args.domain) != identity.domain:
             raise ValueError('--domain does not match the server domain in the profile.')
         if ((args.user is not None and args.user != identity.user)
@@ -267,19 +288,28 @@ def install(args):
             raise ValueError('--user/--port do not match the profile.')
         if args.domains:
             raise ValueError('--profile already carries its domain rules; --domains cannot be used with it.')
+    elif existing:
+        identity = installed
+        if ((args.domain and domain_name(args.domain) != identity.domain)
+                or (args.user is not None and args.user != identity.user)
+                or (args.port is not None and args.port != identity.port)):
+            raise ValueError('The existing installation has a different domain, port or user name; '
+                             'refusing to overwrite it.')
     else:
         domain = args.domain
         if not domain and sys.stdin.isatty():
             domain = input('Relay domain (must already resolve to this VPS): ').strip()
         identity = validate_identity(Identity(domain_name(domain or ''), 443 if args.port is None else args.port,
                                               args.user or 'iphone', secrets.token_urlsafe(24)))
-        profile_data = None
-    domains = load_domains(args.domains or REPO / 'deploy/domains/google-ai-social.txt')
-    if existing and (old_identity.domain, old_identity.port, old_identity.user) != (
+    # A new account gets a profile for its devices; an upgrade leaves both alone.
+    new_account = not existing
+    domains = load_domains(args.domains or REPO / 'deploy/domains/google-ai-social.txt') if new_account else None
+    if existing and (installed.domain, installed.port, installed.user) != (
             identity.domain, identity.port, identity.user):
         raise ValueError('The existing installation has a different domain, port or user name; '
                          'refusing to overwrite it.')
-    if existing and not hmac.compare_digest(old_identity.password.encode(), identity.password.encode()):
+    if (existing and args.profile and installed.password is not None
+            and not hmac.compare_digest(installed.password.encode(), identity.password.encode())):
         raise ValueError("The profile's password differs from the existing installation's; "
                          'the existing account will not be reset automatically.')
     cert, key, automated_cert = certificate_paths(args, identity, CONFIG.read_bytes() if existing else None)
@@ -327,29 +357,46 @@ def install(args):
         atomic_write(SITE / 'index.html', b'<!doctype html><title>Welcome</title><h1>Welcome</h1>\n', 0o644)
     with tempfile.TemporaryDirectory(prefix='.install-', dir=ETC) as directory:
         staging = Path(directory)
-        if profile_data is None:
-            generated = staging / 'device.mobileconfig'
-            command = [binary, 'profile', '--host', identity.domain, '--port', str(identity.port),
-                       '--user', identity.user, '--name', 'Google / AI / X — everything else direct',
-                       '--out', generated]
-            for domain in domains:
-                command.extend(['--match-domain', domain])
-            run(command, input=identity.password + '\n', capture=True)
-            profile_data = generated.read_bytes()
         if existing:
             config_data = CONFIG.read_bytes()
         else:
-            result = run([binary, 'passwd', '--name', identity.user, '--stdin'],
-                         input=identity.password + '\n', capture=True)
+            # A generated password is a long random secret, which a fast
+            # hash protects as well as a slow one does a chosen password,
+            # and which then costs the server almost nothing to check.
+            command = [binary, 'passwd', '--name', identity.user, '--stdin']
+            if args.profile is None:
+                command.append('--fast-hash')
+            result = run(command, input=identity.password + '\n', capture=True)
             password_hash = tomllib.loads(result.stdout)['user'][0]['password_hash']
             config_data = render_config(identity, password_hash, cert, key, SITE)
         candidate = staging / 'relay.toml'
         atomic_write(candidate, config_data)
         run([binary, 'serve', '--config', candidate, '--check'])
-        apply_install(binary, config_data, profile_data, identity, automated_cert=automated_cert)
+        apply_install(binary, config_data, render_state(identity), identity, automated_cert=automated_cert)
 
-    print(f'\nInstallation complete. Device profile: {PROFILE} '
-          '(contains the password, mode 600, not published on the website).', flush=True)
+    print('\nInstallation complete.', flush=True)
+    if new_account and args.profile is None:
+        try:
+            hand_over_profile(binary, identity, domains, args.profile_out)
+        except (OSError, RuntimeError, subprocess.SubprocessError) as error:
+            # The relay runs; only the hand-over failed, and the password is
+            # gone with this process. A new one is quickly made by hand.
+            print(f'The relay is installed, but its device profile could not be handed over ({error}). '
+                  'Create a new password and profile as in "Another device" in docs/deploy-debian13.md.',
+                  file=sys.stderr)
+            return 2
+    elif existing:
+        print('The account and its devices are unchanged. To set up another device, see '
+              '"Another device" in docs/deploy-debian13.md.', flush=True)
+    if LEGACY_PROFILE.exists():
+        print(f'An earlier version of this installer kept the device profile, password included, in '
+              f'{LEGACY_PROFILE}. It is no longer used; once your devices have it, delete it: '
+              f'rm {LEGACY_PROFILE}', flush=True)
+    if identity.password is None:
+        print('The installer does not keep the password, so it cannot test the relay with it. Test it with: '
+              f'network-relay check --server {identity.domain} --port {identity.port} --user {identity.user}',
+              flush=True)
+        return 0
     print('Checking the TCP/UDP relay over all three HTTP versions from this machine; '
           'access from the internet still has to be confirmed from a device.', flush=True)
     result = run([BINARY, 'check', '--server', identity.domain, '--address', '127.0.0.1',
@@ -362,7 +409,34 @@ def install(args):
     return 0
 
 
-def apply_install(binary, config_data, profile_data, identity, *, automated_cert):
+def hand_over_profile(binary, identity, domains, out):
+    """Gives the new account's device profile to the administrator without
+    leaving the password on the server: a link that works once, or a file
+    where they asked for one."""
+    command = [binary, 'profile', '--host', identity.domain, '--port', str(identity.port),
+               '--user', identity.user, '--name', PROFILE_NAME]
+    for domain in domains:
+        command.extend(['--match-domain', domain])
+    if out:
+        run(command + ['--out', out], input=identity.password + '\n', capture=True)
+        print(f'Device profile: {out} (contains the password, mode 600). Install it on the iPhone, iPad or '
+              'Mac, then delete it.', flush=True)
+        return
+    result = run(command + ['--publish', '--config', CONFIG], input=identity.password + '\n', capture=True)
+    written = re.search(r'^Wrote (.+)$', result.stdout, re.MULTILINE)
+    if not written:
+        raise RuntimeError('Could not publish the device profile; create one with network-relay profile.')
+    published = Path(written.group(1))
+    run(['systemctl', 'reload', 'network-relay'])
+    port = '' if identity.port == 443 else f':{identity.port}'
+    print('Within 15 minutes, open this link in Safari on the iPhone, iPad or Mac and install the profile. '
+          'The link works once; the password is not stored anywhere else on this server:', flush=True)
+    print(f'\n    https://{identity.domain}{port}/{published.name}\n', flush=True)
+    print(f'If it expires, or for a Mac without Safari access, delete {published} and run the installer\'s '
+          'profile step by hand: see "Another device" in docs/deploy-debian13.md.', flush=True)
+
+
+def apply_install(binary, config_data, state_data, identity, *, automated_cert):
     backup = ETC / 'backups' / datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S.%fZ')
     backup.mkdir(mode=0o700, parents=True)
     was_active = run(['systemctl', 'is-active', '--quiet', 'network-relay'], check=False).returncode == 0
@@ -377,7 +451,7 @@ def apply_install(binary, config_data, profile_data, identity, *, automated_cert
     updates = {
         BINARY: (binary.read_bytes(), 0o755),
         CONFIG: (config_data, 0o600),
-        PROFILE: (profile_data, 0o600),
+        STATE: (state_data, 0o600),
         UNIT: ((REPO / 'deploy/network-relay.service').read_bytes(), 0o644),
         SYSCTL: (''.join(sysctl_values).encode(), 0o644),
     }
@@ -436,8 +510,8 @@ def apply_install(binary, config_data, profile_data, identity, *, automated_cert
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Install or update Network Relay on Debian 12/13 x64 and generate '
-                                                 'a mobileconfig that relays selected domains.')
+    parser = argparse.ArgumentParser(description='Install or update Network Relay on Debian 12/13 x64 and hand '
+                                                 'over a mobileconfig that relays selected domains.')
     parser.add_argument('--profile', type=Path, help='import the server address and credentials from an existing '
                         'mobileconfig; recommended when one was provided')
     parser.add_argument('--domain', help='relay domain; required without --profile, '
@@ -454,6 +528,9 @@ def main():
     parser.add_argument('--cert', type=Path,
                         help='use an existing certificate instead of obtaining one from Let’s Encrypt')
     parser.add_argument('--key', type=Path, help='private key for --cert')
+    parser.add_argument('--profile-out', type=Path,
+                        help='for a new installation, write the device profile (with its password) to this file '
+                             'instead of publishing it once on the website')
     args = parser.parse_args()
     if bool(args.cert) != bool(args.key) or not 1 <= args.jobs <= 128:
         parser.error('--cert and --key must be given together, and --jobs must be between 1 and 128.')

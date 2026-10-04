@@ -17,8 +17,12 @@ pub const DEFAULT_PATH: &str = "/etc/network-relay/relay.toml";
 
 /// Destinations clients may not reach unless the configuration says
 /// otherwise: this host, private and shared address space, link-local,
-/// multicast, reserved and documentation ranges. A relay on the public
-/// internet should only reach the public internet (RFC 9298 §7).
+/// multicast, reserved, benchmarking, documentation and other ranges that
+/// the IANA special-purpose registries mark as not globally reachable. A
+/// relay on the public internet should only reach the public internet
+/// (RFC 9298 §7). IPv6 forms that carry an IPv4 address (NAT64, 6to4,
+/// Teredo) are checked by the IPv4 address they carry; the relay's own
+/// addresses are blocked separately (`relay.block_own_addresses`).
 pub const DEFAULT_BLOCKED: &[&str] = &[
     "0.0.0.0/8",
     "10.0.0.0/8",
@@ -32,13 +36,19 @@ pub const DEFAULT_BLOCKED: &[&str] = &[
     "198.18.0.0/15",
     "198.51.100.0/24",
     "203.0.113.0/24",
+    "192.88.99.0/24",
     "224.0.0.0/4",
     "240.0.0.0/4",
     "::/127",
     "::ffff:0:0/96",
     "64:ff9b:1::/48",
     "100::/64",
+    "2001:2::/48",
+    "2001:10::/28",
+    "2001:20::/28",
     "2001:db8::/32",
+    "3fff::/20",
+    "5f00::/16",
     "fc00::/7",
     "fe80::/10",
     "ff00::/8",
@@ -74,6 +84,12 @@ pub struct Tls {
     /// Reload the files every this many days (1-7). Without it, reload
     /// every day at 03:00 in the system time zone.
     pub reload_interval_days: Option<u32>,
+    /// Ask TLS clients for a certificate (optional for them), so users can
+    /// authenticate with `certificate_sha256` instead of a password. Off by
+    /// default: a website that asks for client certificates is unusual and
+    /// can make browsers offer the user a certificate to choose.
+    #[serde(default)]
+    pub client_certificates: bool,
 }
 
 /// Longest allowed certificate reload interval.
@@ -114,8 +130,35 @@ pub struct Relay {
     #[serde(default = "default_udp_idle_timeout")]
     pub udp_idle_timeout_secs: u64,
     /// Most TCP connections and UDP flows relayed at once, over all users.
-    #[serde(default = "default_max_tunnels")]
-    pub max_tunnels: usize,
+    /// Without it, sized from this machine's memory (512-20000).
+    pub max_tunnels: Option<usize>,
+    /// Most TCP connections and UDP flows relayed at once for one user.
+    #[serde(default = "default_max_tunnels_per_user")]
+    pub max_tunnels_per_user: usize,
+    /// Payload bytes per second one user may move, both directions and all
+    /// tunnels together; 0 is unlimited. TCP waits, UDP drops the excess.
+    #[serde(default)]
+    pub max_bytes_per_second_per_user: u64,
+    /// UDP packets per second one user may relay, both directions together;
+    /// 0 is unlimited.
+    #[serde(default)]
+    pub max_udp_packets_per_second_per_user: u64,
+    /// Most client connections (TCP and QUIC) open at once.
+    #[serde(default = "default_max_connections")]
+    pub max_connections: usize,
+    /// Most client connections open at once from one IPv4 address or IPv6
+    /// /64.
+    #[serde(default = "default_max_connections_per_ip")]
+    pub max_connections_per_ip: usize,
+    /// Close a client connection after this many seconds without an open
+    /// request. Connections that never authenticated get at most 30.
+    #[serde(default = "default_idle_timeout")]
+    pub idle_timeout_secs: u64,
+    /// Also block every address of this machine's network interfaces, which
+    /// the default list cannot know (a connection to the host's own public
+    /// address stays on the host, past cloud firewalls).
+    #[serde(default = "default_true")]
+    pub block_own_addresses: bool,
 }
 
 impl Default for Relay {
@@ -126,7 +169,14 @@ impl Default for Relay {
             blocked_ports: default_blocked_ports(),
             connect_timeout_secs: default_connect_timeout(),
             udp_idle_timeout_secs: default_udp_idle_timeout(),
-            max_tunnels: default_max_tunnels(),
+            max_tunnels: None,
+            max_tunnels_per_user: default_max_tunnels_per_user(),
+            max_bytes_per_second_per_user: 0,
+            max_udp_packets_per_second_per_user: 0,
+            max_connections: default_max_connections(),
+            max_connections_per_ip: default_max_connections_per_ip(),
+            idle_timeout_secs: default_idle_timeout(),
+            block_own_addresses: true,
         }
     }
 }
@@ -148,6 +198,15 @@ impl Relay {
     pub fn udp_idle_timeout(&self) -> Duration {
         Duration::from_secs(self.udp_idle_timeout_secs)
     }
+
+    /// `max_tunnels`, or the default for this machine's memory.
+    pub fn max_tunnels(&self) -> usize {
+        self.max_tunnels.unwrap_or_else(|| crate::limits::default_max_tunnels(crate::limits::total_memory()))
+    }
+
+    pub fn idle_timeout(&self) -> Duration {
+        Duration::from_secs(self.idle_timeout_secs)
+    }
 }
 
 /// Settings for finding out what clients send.
@@ -165,8 +224,38 @@ pub struct Debug {
 #[serde(deny_unknown_fields)]
 pub struct UserEntry {
     pub name: String,
-    /// Argon2id hash in PHC format, as printed by `network-relay passwd`.
-    pub password_hash: String,
+    /// Password hash in PHC format, as printed by `network-relay passwd`.
+    #[serde(default)]
+    pub password_hash: Option<String>,
+    /// SHA-256 fingerprint of the user's client certificate, as printed by
+    /// `network-relay identity`. Needs `[tls] client_certificates = true`.
+    #[serde(default)]
+    pub certificate_sha256: Option<String>,
+    /// The account stops working at this time (RFC 3339, for example
+    /// `2027-01-31T00:00:00Z`); open tunnels are closed then.
+    #[serde(default, deserialize_with = "time_or_string")]
+    pub expires: Option<String>,
+}
+
+impl UserEntry {
+    /// A user with a password hash only.
+    pub fn with_password(name: &str, password_hash: &str) -> Self {
+        Self { name: name.into(), password_hash: Some(password_hash.into()), certificate_sha256: None, expires: None }
+    }
+}
+
+/// Accepts a TOML date-time as well as a string.
+fn time_or_string<'de, D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Option<String>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Time {
+        Text(String),
+        Toml(toml::value::Datetime),
+    }
+    Ok(Option::<Time>::deserialize(d)?.map(|t| match t {
+        Time::Text(s) => s,
+        Time::Toml(t) => t.to_string(),
+    }))
 }
 
 fn default_listen() -> SocketAddr {
@@ -193,8 +282,24 @@ fn default_udp_idle_timeout() -> u64 {
     300
 }
 
-fn default_max_tunnels() -> usize {
-    20_000
+fn default_max_tunnels_per_user() -> usize {
+    512
+}
+
+fn default_max_connections() -> usize {
+    16_384
+}
+
+fn default_max_connections_per_ip() -> usize {
+    64
+}
+
+fn default_idle_timeout() -> u64 {
+    300
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl Config {
@@ -229,16 +334,41 @@ impl Config {
             "relay.udp_idle_timeout_secs must be between 120 and 3600, got {}",
             r.udp_idle_timeout_secs
         );
+        if let Some(n) = r.max_tunnels {
+            ensure!(
+                (1..=tokio::sync::Semaphore::MAX_PERMITS).contains(&n),
+                "relay.max_tunnels is outside the supported range"
+            );
+        }
+        ensure!(r.max_tunnels_per_user >= 1, "relay.max_tunnels_per_user must be at least 1");
         ensure!(
-            (1..=tokio::sync::Semaphore::MAX_PERMITS).contains(&r.max_tunnels),
-            "relay.max_tunnels is outside the supported range"
+            r.max_bytes_per_second_per_user <= 1 << 40 && r.max_udp_packets_per_second_per_user <= 1 << 30,
+            "relay per-user traffic limits are outside the supported range"
+        );
+        ensure!(
+            r.max_connections >= 1 && r.max_connections_per_ip >= 1,
+            "relay.max_connections and relay.max_connections_per_ip must be at least 1"
+        );
+        ensure!(
+            (30..=3600).contains(&r.idle_timeout_secs),
+            "relay.idle_timeout_secs must be between 30 and 3600, got {}",
+            r.idle_timeout_secs
         );
         let mut names = HashSet::new();
+        let mut certificates = HashSet::new();
         for u in &self.users {
             auth::validate_user_name(&u.name).with_context(|| format!("user name {:?}", u.name))?;
-            auth::validate_hash(&u.password_hash).with_context(|| format!("user {}", u.name))?;
+            auth::validate_entry(u).with_context(|| format!("user {}", u.name))?;
             if !names.insert(u.name.clone()) {
                 bail!("user {} appears twice", u.name);
+            }
+            if let Some(c) = &u.certificate_sha256 {
+                ensure!(
+                    self.tls.client_certificates,
+                    "user {} has a certificate_sha256, which needs [tls] client_certificates = true",
+                    u.name
+                );
+                ensure!(certificates.insert(auth::parse_fingerprint(c)?), "user {}: certificate used twice", u.name);
             }
         }
         Ok(())
@@ -269,6 +399,23 @@ mod tests {
         assert_eq!(c.relay.blocked_ports, [25]);
         assert_eq!(c.relay.connect_timeout(), Duration::from_secs(10));
         assert_eq!(c.relay.udp_idle_timeout(), Duration::from_secs(300));
+        assert!(c.relay.max_tunnels.is_none() && (512..=20_000).contains(&c.relay.max_tunnels()));
+        assert_eq!(c.relay.max_tunnels_per_user, 512);
+        assert_eq!((c.relay.max_bytes_per_second_per_user, c.relay.max_udp_packets_per_second_per_user), (0, 0));
+        assert_eq!((c.relay.max_connections, c.relay.max_connections_per_ip), (16_384, 64));
+        assert_eq!(c.relay.idle_timeout(), Duration::from_secs(300));
+        assert!(c.relay.block_own_addresses && !c.tls.client_certificates);
+    }
+
+    #[test]
+    fn limits_are_checked() {
+        assert_eq!(parse("[relay]\nmax_tunnels = 7").unwrap().relay.max_tunnels(), 7);
+        assert!(parse("[relay]\nmax_tunnels_per_user = 0").is_err());
+        assert!(parse("[relay]\nmax_connections_per_ip = 0").is_err());
+        assert!(parse("[relay]\nidle_timeout_secs = 5").is_err());
+        assert!(
+            parse("[relay]\nmax_bytes_per_second_per_user = 10000\nmax_udp_packets_per_second_per_user = 100").is_ok()
+        );
     }
 
     #[test]
@@ -306,6 +453,20 @@ mod tests {
         assert!(parse(&ok.replace(HASH, "secret")).is_err(), "plain text is not a hash");
         assert!(parse(&format!("{ok}\n{ok}")).is_err(), "same name twice");
         assert!(parse(&ok.replace("iphone", "a:b")).is_err());
+        let expiring = format!("{ok}\nexpires = 2027-01-31T00:00:00Z");
+        assert_eq!(parse(&expiring).unwrap().users[0].expires.as_deref(), Some("2027-01-31T00:00:00Z"));
+        assert!(parse(&format!("{ok}\nexpires = \"2027-01-31T00:00:00+08:00\"")).is_ok());
+        assert!(parse(&format!("{ok}\nexpires = \"soon\"")).is_err());
+        let fp = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
+        let cert = format!("[[user]]\nname = \"ipad\"\ncertificate_sha256 = \"{fp}\"");
+        assert!(parse(&cert).is_err(), "needs client_certificates");
+        let tls = "[tls]\ncert = \"/c\"\nkey = \"/k\"\nclient_certificates = true\n";
+        let c: Config = toml::from_str(&format!("{tls}{cert}")).unwrap();
+        c.validate().unwrap();
+        assert!(c.users[0].password_hash.is_none());
+        let twice = format!("{tls}{cert}\n{}", cert.replace("ipad", "ipad2"));
+        assert!(toml::from_str::<Config>(&twice).unwrap().validate().is_err(), "one certificate, two users");
+        assert!(parse("[[user]]\nname = \"none\"").is_err(), "a user needs a credential");
     }
 
     #[test]
@@ -324,5 +485,10 @@ mod tests {
         let c: Config = toml::from_str(text).unwrap();
         c.validate().unwrap();
         assert!(c.web.is_some());
+        let mut listed = c.relay.blocked_destinations.clone();
+        let mut defaults = default_blocked();
+        listed.sort();
+        defaults.sort();
+        assert_eq!(listed, defaults, "the example shows the defaults");
     }
 }

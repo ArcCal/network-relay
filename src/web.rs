@@ -16,12 +16,19 @@
 //!
 //! The directory is read into memory when the server starts or reloads, so
 //! requests can never reach files outside it.
+//!
+//! Configuration profiles that `network-relay profile --publish` puts in the
+//! hidden `.publish` directory are served under `/<name>`, but only once
+//! and only within [`PUBLISH_TTL`] of being written: they carry credentials,
+//! so a link must not keep working after the device has fetched it.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::Read;
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, SystemTime};
 
 use anyhow::{bail, ensure, Context, Result};
 use bytes::Bytes;
@@ -35,6 +42,12 @@ use http::{Method, StatusCode};
 const MAX_FILES: usize = 1000;
 const MAX_TOTAL_BYTES: u64 = 64 << 20;
 
+/// Directory, inside the website, of profiles published for one download.
+pub const PUBLISH_DIR: &str = ".publish";
+/// How long a published profile stays available, from when it was written.
+pub const PUBLISH_TTL: Duration = Duration::from_secs(15 * 60);
+const MAX_PUBLISHED_BYTES: u64 = 1 << 20;
+
 struct StaticFile {
     body: Bytes,
     content_type: &'static str,
@@ -46,6 +59,10 @@ struct StaticFile {
 pub struct Website {
     files: HashMap<String, StaticFile>,
     headers: Vec<(HeaderName, HeaderValue)>,
+    /// Published profiles not downloaded yet, with when they expire.
+    one_time: Mutex<HashMap<String, (StaticFile, SystemTime)>>,
+    /// Names of published profiles already downloaded, kept across reloads.
+    consumed: Arc<Mutex<HashSet<String>>>,
 }
 
 /// A response that does not reveal the proxy.
@@ -61,6 +78,16 @@ impl Website {
     /// `extra_headers` are added to every response, for example a
     /// Content-Security-Policy.
     pub fn load(root: &Path, extra_headers: &BTreeMap<String, String>) -> Result<Self> {
+        Self::load_with(root, extra_headers, Arc::default())
+    }
+
+    /// Like [`Website::load`], remembering downloaded one-time profiles in
+    /// `consumed`, which outlives reloads.
+    pub fn load_with(
+        root: &Path,
+        extra_headers: &BTreeMap<String, String>,
+        consumed: Arc<Mutex<HashSet<String>>>,
+    ) -> Result<Self> {
         let root = root.canonicalize().with_context(|| format!("resolving website {}", root.display()))?;
         let mut files = HashMap::new();
         let mut total = 0u64;
@@ -91,7 +118,17 @@ impl Website {
             headers.retain(|(n, _)| *n != name);
             headers.push((name, value));
         }
-        Ok(Self { files, headers })
+        let one_time = read_published(&root, &consumed.lock().unwrap());
+        Ok(Self { files, headers, one_time: Mutex::new(one_time), consumed })
+    }
+
+    /// Takes a published profile for `path`, if there is one that is still
+    /// valid; it is gone afterwards.
+    fn take_published(&self, path: &str) -> Option<StaticFile> {
+        let name = normalize(path)?;
+        let (file, expires) = self.one_time.lock().unwrap().remove(&name)?;
+        self.consumed.lock().unwrap().insert(name);
+        (SystemTime::now() < expires).then_some(file)
     }
 
     pub fn file_count(&self) -> usize {
@@ -156,6 +193,11 @@ pub fn cover(site: Option<&Website>, method: &Method, path: &str, connect: bool)
     };
     if connect || *method == Method::CONNECT {
         return site.respond(StatusCode::NOT_FOUND, site.index(), true);
+    }
+    if *method == Method::GET {
+        if let Some(file) = site.take_published(path) {
+            return site.respond(StatusCode::OK, &file, true);
+        }
     }
     match *method {
         Method::GET | Method::HEAD => match site.lookup(path) {
@@ -268,6 +310,49 @@ fn read_dir(root: &Path, dir: &Path, files: &mut HashMap<String, StaticFile>, to
         files.insert(key, StaticFile { body: body.into(), content_type, cache_control, last_modified });
     }
     Ok(())
+}
+
+/// Reads the published profiles that are still valid and not downloaded
+/// yet. Only regular files directly in `.publish` count; anything odd is
+/// skipped rather than failing the website.
+fn read_published(root: &Path, consumed: &HashSet<String>) -> HashMap<String, (StaticFile, SystemTime)> {
+    let mut out = HashMap::new();
+    let Ok(entries) = std::fs::read_dir(root.join(PUBLISH_DIR)) else { return out };
+    for entry in entries.flatten() {
+        let Some(name) = entry.file_name().to_str().map(str::to_string) else { continue };
+        if !name.ends_with(".mobileconfig") || name.starts_with('.') || consumed.contains(&name) {
+            continue;
+        }
+        let Ok(meta) = std::fs::symlink_metadata(entry.path()) else { continue };
+        if !meta.is_file() || meta.len() > MAX_PUBLISHED_BYTES {
+            continue;
+        }
+        let Some(expires) = meta.modified().ok().map(|m| m + PUBLISH_TTL) else { continue };
+        if SystemTime::now() >= expires {
+            continue;
+        }
+        let Ok(file) = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(nix::libc::O_NOFOLLOW | nix::libc::O_NONBLOCK)
+            .open(entry.path())
+        else {
+            continue;
+        };
+        let mut body = Vec::new();
+        if file.take(MAX_PUBLISHED_BYTES + 1).read_to_end(&mut body).is_err() || body.len() as u64 > MAX_PUBLISHED_BYTES
+        {
+            continue;
+        }
+        let (content_type, cache_control) = file_type(&name);
+        let last_modified = HeaderValue::try_from(
+            DateTime::<Utc>::from(meta.modified().unwrap_or_else(|_| SystemTime::now()))
+                .format("%a, %d %b %Y %H:%M:%S GMT")
+                .to_string(),
+        )
+        .expect("date is a valid header value");
+        out.insert(name, (StaticFile { body: body.into(), content_type, cache_control, last_modified }, expires));
+    }
+    out
 }
 
 /// Whether `path` (already resolved) lies inside `root` and is public: no
@@ -383,6 +468,33 @@ mod tests {
         let post = cover(Some(&site), &Method::POST, "/", false);
         assert_eq!(post.status, StatusCode::METHOD_NOT_ALLOWED);
         assert_eq!(header(&post, ALLOW), Some("GET, HEAD"));
+    }
+
+    #[test]
+    fn published_profiles_are_served_once_and_expire() {
+        let s = Site::new("publish");
+        std::fs::create_dir(s.0.join(PUBLISH_DIR)).unwrap();
+        std::fs::write(s.0.join(PUBLISH_DIR).join("token.mobileconfig"), "<plist/>").unwrap();
+        std::fs::write(s.0.join(PUBLISH_DIR).join("old.mobileconfig"), "<plist/>").unwrap();
+        let old = std::fs::File::options().write(true).open(s.0.join(PUBLISH_DIR).join("old.mobileconfig")).unwrap();
+        old.set_modified(SystemTime::now() - PUBLISH_TTL - Duration::from_secs(1)).unwrap();
+        let consumed = Arc::default();
+        let site = Website::load_with(&s.0, &BTreeMap::new(), Arc::clone(&consumed)).unwrap();
+        let get = |site: &Website, path: &str| cover(Some(site), &Method::GET, path, false);
+        // HEAD does not use it up.
+        let head = cover(Some(&site), &Method::HEAD, "/token.mobileconfig", false);
+        assert_eq!(header(&head, CONTENT_TYPE), Some("text/html; charset=utf-8"));
+        let first = get(&site, "/token.mobileconfig");
+        assert_eq!((first.status, &first.body[..]), (StatusCode::OK, &b"<plist/>"[..]));
+        assert_eq!(header(&first, CONTENT_TYPE), Some("application/x-apple-aspen-config"));
+        assert_eq!(header(&first, CACHE_CONTROL), Some("no-store"));
+        let second = get(&site, "/token.mobileconfig");
+        assert_eq!(&second.body[..], b"<h1>home</h1>", "only once");
+        assert_eq!(&get(&site, "/old.mobileconfig").body[..], b"<h1>home</h1>", "expired");
+        assert_eq!(&get(&site, "/.publish/token.mobileconfig").body[..], b"<h1>home</h1>", "not under its directory");
+        // A reload does not bring it back.
+        let reloaded = Website::load_with(&s.0, &BTreeMap::new(), consumed).unwrap();
+        assert_eq!(&get(&reloaded, "/token.mobileconfig").body[..], b"<h1>home</h1>");
     }
 
     #[test]

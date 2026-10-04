@@ -30,6 +30,11 @@ type Routes = Arc<Mutex<Router>>;
 /// HTTP/3 error code for an orderly close (RFC 9114 §8.1).
 pub(super) const H3_NO_ERROR: u32 = 0x100;
 
+/// How long a draining connection waits for its last stream data to be
+/// acknowledged before it is closed: three round trips, within these bounds.
+const DRAIN_ACK_MIN: std::time::Duration = std::time::Duration::from_millis(100);
+const DRAIN_ACK_MAX: std::time::Duration = std::time::Duration::from_secs(1);
+
 /// Datagrams queued per UDP flow before new ones are dropped.
 const FLOW_QUEUE: usize = 1024;
 /// Datagrams held per connection for streams not yet set up.
@@ -265,6 +270,12 @@ impl Relay {
                     draining = true;
                 }
                 _ = info.drained(), if draining => {
+                    // Closing discards stream data the peer has not yet
+                    // acknowledged, such as the last response's FIN: give it
+                    // a few round trips, or until the client, which has had
+                    // GOAWAY, closes the connection itself.
+                    let grace = (conn.rtt() * 3).clamp(DRAIN_ACK_MIN, DRAIN_ACK_MAX);
+                    let _ = tokio::time::timeout(grace, conn.closed()).await;
                     conn.close(VarInt::from_u32(H3_NO_ERROR), b"");
                     break Ok(());
                 }

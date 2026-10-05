@@ -26,8 +26,232 @@ const WAIT: Duration = Duration::from_secs(20);
 const INDEX: &[u8] = b"<!doctype html><title>Cover page</title><h1>cover</h1>";
 const ALICE: (&str, &str) = ("alice", "alice-password-123");
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn http1_upgraded_tunnel_holds_connection_admission_and_shutdown_drain() {
+    let relay = TestRelay::start("max_connections_per_ip = 1\nblocked_destinations = []").await;
+    let (echo, task) = echo_server().await;
+    let opts = relay.options(ALICE, echo, echo);
+    let (mut sender, _driver) = check::h1_sender(&opts, &opts.addresses).await.unwrap();
+    let request = Request::builder()
+        .method(Method::CONNECT)
+        .uri(echo.to_string())
+        .header("host", echo.to_string())
+        .header("authorization", auth::basic_authorization(ALICE.0, ALICE.1))
+        .body(Empty::<Bytes>::new())
+        .unwrap();
+    let mut response = within("HTTP/1 CONNECT", sender.send_request(request)).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let mut tunnel = TokioIo::new(hyper::upgrade::on(&mut response).await.unwrap());
+    tunnel.write_all(b"alive").await.unwrap();
+    let mut reply = [0; 5];
+    within("echo", tunnel.read_exact(&mut reply)).await.unwrap();
+    assert_eq!(&reply, b"alive");
+    assert_eq!(relay.relay.open_connections(), 1, "upgrading released the connection slot");
+    assert!(check::h1_sender(&opts, &opts.addresses).await.is_err(), "upgrades bypassed admission");
+    relay.relay.begin_shutdown();
+    assert!(!relay.relay.drain(Duration::from_millis(100)).await, "shutdown forgot the upgraded tunnel");
+    drop(tunnel);
+    assert!(relay.relay.drain(WAIT).await);
+    task.abort();
+}
+
 async fn within<T>(what: &str, fut: impl std::future::Future<Output = T>) -> T {
     tokio::time::timeout(WAIT, fut).await.unwrap_or_else(|_| panic!("timed out waiting for {what}"))
+}
+
+fn bodyless_request_finished(result: Result<(), h3::error::StreamError>) {
+    // RFC 9114 §4.1: a server may stop the unused request body with
+    // H3_NO_ERROR while returning its complete response. FIN can race that
+    // STOP_SENDING; all other errors and response corruption still fail.
+    match result {
+        Ok(()) => {}
+        Err(h3::error::StreamError::RemoteTerminate { code }) if code == h3::error::Code::H3_NO_ERROR => {}
+        Err(error) => panic!("finishing bodyless request: {error:?}"),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn expiry_reload_revokes_existing_http2_and_http3_tunnels_and_refreshes_connection_auth() {
+    let relay = TestRelay::start("").await;
+    let (echo, echo_task) = echo_server().await;
+    let (mut h2, _h2_driver) = raw_h2(&relay).await;
+    let (mut h3, _conn, _h3_driver) = raw_h3(&relay, true).await;
+    let request = || {
+        Request::builder()
+            .method(Method::CONNECT)
+            .uri(echo.to_string())
+            .header("authorization", auth::basic_authorization(ALICE.0, ALICE.1))
+            .body(())
+            .unwrap()
+    };
+    let (response, _send) = h2.send_request(request(), false).unwrap();
+    let mut recv = response.await.unwrap().into_body();
+    let mut stream = h3.send_request(request()).await.unwrap();
+    assert_eq!(stream.recv_response().await.unwrap().status(), StatusCode::OK);
+    let mut users = relay.users.clone();
+    users[0].expires = Some((chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339());
+    relay.reload("", &users);
+    assert!(within("HTTP/2 expiry revocation", recv.data()).await.unwrap().is_err());
+    assert!(within("HTTP/3 expiry revocation", stream.recv_data()).await.is_err());
+    within("revoked slots", async {
+        while relay.relay.active_tunnels() != 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
+    // The same transport sessions must authenticate again with the new expiry.
+    let (response, mut send) = h2.send_request(request(), false).unwrap();
+    assert_eq!(response.await.unwrap().status(), StatusCode::OK);
+    send.send_reset(h2::Reason::CANCEL);
+    let mut stream = h3.send_request(request()).await.unwrap();
+    assert_eq!(stream.recv_response().await.unwrap().status(), StatusCode::OK);
+    stream.stop_sending(h3::error::Code::H3_REQUEST_CANCELLED);
+    echo_task.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn http2_udp_read_reset_aborts_both_directions_and_releases_capacity() {
+    let relay = TestRelay::start("").await;
+    let (udp, task) = udp_echo().await;
+    let (mut sender, _driver) = raw_h2(&relay).await;
+    let req = udp_request(udp).extension(h2::ext::Protocol::from_static("connect-udp")).body(()).unwrap();
+    let (response, mut send) = sender.send_request(req, false).unwrap();
+    let response = response.await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let mut recv = response.into_body();
+    send.send_reset(h2::Reason::CANCEL);
+    assert!(within("reset UDP response", recv.data()).await.unwrap().is_err());
+    within("UDP capacity refund", async {
+        while relay.relay.active_tunnels() != 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
+    task.abort();
+}
+
+#[tokio::test]
+async fn http3_udp_read_reset_is_an_error_not_a_clean_response_fin() {
+    let relay = TestRelay::start("").await;
+    let (udp, task) = udp_echo().await;
+    let (mut sender, _conn, _driver) = raw_h3(&relay, false).await;
+    let request = udp_request(udp).extension(h3::ext::Protocol::CONNECT_UDP).body(()).unwrap();
+    let mut stream = sender.send_request(request).await.unwrap();
+    assert_eq!(stream.recv_response().await.unwrap().status(), StatusCode::OK);
+    stream.stop_stream(h3::error::Code::H3_REQUEST_CANCELLED);
+    let error = within("UDP receive reset", stream.recv_data()).await.err().expect("read reset became a clean FIN");
+    assert!(
+        matches!(error, h3::error::StreamError::RemoteTerminate { code }
+        if code == h3::error::Code::H3_CONNECT_ERROR),
+        "{error:?}"
+    );
+    within("UDP capacity refund", async {
+        while relay.relay.active_tunnels() != 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
+    task.abort();
+}
+
+#[tokio::test]
+async fn http3_setup_without_control_stream_credit_times_out_and_refunds_admission() {
+    let relay = TestRelay::start("").await;
+    let tls = network_relay::tls::client_config(Some(&relay.env.path("ca.pem")), &[b"h3"]).unwrap();
+    let crypto = quinn::crypto::rustls::QuicClientConfig::try_from(tls).unwrap();
+    let mut config = quinn::ClientConfig::new(std::sync::Arc::new(crypto));
+    let mut transport = quinn::TransportConfig::default();
+    transport.max_concurrent_uni_streams(0u32.into());
+    config.transport_config(std::sync::Arc::new(transport));
+    let endpoint = quinn::Endpoint::client("127.0.0.1:0".parse().unwrap()).unwrap();
+    let conn = endpoint.connect_with(config, relay.addr, "relay.test").unwrap().await.unwrap();
+    within("server setup timeout", conn.closed()).await;
+    within("setup connection slot refunded", async {
+        while relay.relay.open_connections() != 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_transport_churn_preserves_payloads_and_refunds_all_slots() {
+    use std::sync::Arc;
+    let relay = Arc::new(TestRelay::start("blocked_destinations = []\nmax_tunnels = 1024").await);
+    let (echo, echo_task) = echo_server().await;
+    for use_h3 in [false, true] {
+        let barrier = Arc::new(tokio::sync::Barrier::new(33));
+        let mut clients = tokio::task::JoinSet::new();
+        for _ in 0..32 {
+            let relay = relay.clone();
+            let barrier = barrier.clone();
+            clients.spawn(async move {
+                let request = || {
+                    Request::builder()
+                        .method(Method::CONNECT)
+                        .uri(echo.to_string())
+                        .header("authorization", auth::basic_authorization(ALICE.0, ALICE.1))
+                        .body(())
+                        .unwrap()
+                };
+                let payload = Bytes::from(pattern(64 * 1024));
+                if use_h3 {
+                    let (mut sender, _conn, _driver) = raw_h3(&relay, true).await;
+                    let mut streams = Vec::new();
+                    for _ in 0..4 {
+                        let mut stream = sender.send_request(request()).await.unwrap();
+                        assert_eq!(stream.recv_response().await.unwrap().status(), StatusCode::OK);
+                        stream.send_data(payload.clone()).await.unwrap();
+                        let mut received = Vec::new();
+                        while received.len() < payload.len() {
+                            let mut chunk = stream.recv_data().await.unwrap().unwrap();
+                            received.extend_from_slice(&chunk.copy_to_bytes(chunk.remaining()));
+                        }
+                        assert_eq!(received.as_slice(), payload.as_ref());
+                        streams.push(stream);
+                    }
+                    barrier.wait().await;
+                    for mut stream in streams {
+                        stream.stop_sending(h3::error::Code::H3_REQUEST_CANCELLED);
+                    }
+                } else {
+                    let (mut sender, _driver) = raw_h2(&relay).await;
+                    let mut streams = Vec::new();
+                    for _ in 0..4 {
+                        let (response, mut send) = sender.send_request(request(), false).unwrap();
+                        let response = response.await.unwrap();
+                        assert_eq!(response.status(), StatusCode::OK);
+                        write_h2(&mut send, payload.clone()).await;
+                        let mut recv = response.into_body();
+                        let mut received = Vec::new();
+                        while received.len() < payload.len() {
+                            let chunk = recv.data().await.unwrap().unwrap();
+                            recv.flow_control().release_capacity(chunk.len()).unwrap();
+                            received.extend_from_slice(&chunk);
+                        }
+                        assert_eq!(received.as_slice(), payload.as_ref());
+                        streams.push((send, recv));
+                    }
+                    barrier.wait().await;
+                    for (mut send, _) in streams {
+                        send.send_reset(h2::Reason::CANCEL);
+                    }
+                }
+            });
+        }
+        within("128 concurrent tunnels", barrier.wait()).await;
+        while let Some(result) = within("client completion", clients.join_next()).await {
+            result.unwrap();
+        }
+        within("all connection and tunnel slots refunded", async {
+            while relay.relay.active_tunnels() != 0 || relay.relay.open_connections() != 0 {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+        assert_eq!(relay.relay.user_tunnels(ALICE.0), 0);
+    }
+    echo_task.abort();
 }
 
 fn init_logging() {
@@ -1189,7 +1413,7 @@ async fn visitors_see_the_website() {
     let mut h3 = H3::connect(&opts, &opts.addresses).await.unwrap();
     let req = Request::builder().uri(format!("https://relay.test:{}/", relay.addr.port())).body(()).unwrap();
     let mut stream = h3.request(req).await.unwrap();
-    stream.finish().await.unwrap();
+    bodyless_request_finished(stream.finish().await);
     assert_eq!(stream.recv_response().await.unwrap().status(), StatusCode::OK);
     let mut body = Vec::new();
     while let Some(mut b) = stream.recv_data().await.unwrap() {
@@ -1798,7 +2022,7 @@ async fn http3_datagram_on_finished_website_request_is_dropped() {
     for _ in 0..20 {
         let req = Request::builder().method(Method::GET).uri("https://relay.test/").body(()).unwrap();
         let mut stream = sender.send_request(req).await.unwrap();
-        stream.finish().await.unwrap();
+        bodyless_request_finished(stream.finish().await);
         let mut datagram = bytes::BytesMut::new();
         network_relay::proto::varint::encode(stream.id().into_inner() / 4, &mut datagram);
         datagram.extend_from_slice(b"\0stray");

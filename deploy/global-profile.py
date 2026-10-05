@@ -24,6 +24,14 @@ REPO = Path(__file__).resolve().parent.parent
 DOMAINS = REPO / 'deploy/domains'
 GFWLIST_URL = 'https://raw.githubusercontent.com/gfwlist/gfwlist/refs/heads/master/list.txt'
 LABEL = re.compile(r'^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$')
+MAX_LIST_BYTES = 16 << 20
+
+
+def read_bounded(stream):
+    raw = stream.read(MAX_LIST_BYTES + 1)
+    if len(raw) > MAX_LIST_BYTES:
+        raise ValueError('The domain list exceeds 16 MiB.')
+    return raw
 
 
 def clean_host(host):
@@ -43,10 +51,14 @@ def clean_host(host):
 
 def load_domain_file(path):
     domains = []
-    for line in Path(path).read_text().splitlines():
+    seen = set()
+    with Path(path).open('rb') as stream:
+        text = read_bounded(stream).decode('utf-8')
+    for line in text.splitlines():
         host = clean_host(line.split('#', 1)[0])
-        if host and host not in domains:
+        if host and host not in seen:
             domains.append(host)
+            seen.add(host)
     return domains
 
 
@@ -135,13 +147,16 @@ def main(argv=None):
         services += load_domain_file(path)
     gfwlist_text = None
     if args.gfwlist_file:
-        gfwlist_text = decode_gfwlist(args.gfwlist_file.read_bytes())
+        with args.gfwlist_file.open('rb') as stream:
+            gfwlist_text = decode_gfwlist(read_bounded(stream))
     elif not args.no_gfwlist:
         with urllib.request.urlopen(args.gfwlist_url, timeout=60) as response:
-            gfwlist_text = decode_gfwlist(response.read())
+            gfwlist_text = decode_gfwlist(read_bounded(response))
     domains, stats = build_domains(services, gfwlist_text)
     host = args.host.lower().removesuffix('.')
     domains = [d for d in domains if d != host]
+    if not domains:
+        raise ValueError('No matched domains remain; an empty Apple match list would relay all traffic.')
 
     password = args.password or getpass.getpass('Password: ')
     out = args.out or Path(f'{host}-{args.user}.mobileconfig')

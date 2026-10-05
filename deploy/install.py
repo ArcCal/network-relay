@@ -89,12 +89,18 @@ def validate_identity(identity):
 
 def load_domains(path):
     domains = []
-    for line in Path(path).read_text().splitlines():
+    seen = set()
+    with Path(path).open('rb') as stream:
+        raw = stream.read((16 << 20) + 1)
+    if len(raw) > 16 << 20:
+        raise ValueError('The domain list is larger than 16 MiB.')
+    for line in raw.decode('utf-8').splitlines():
         value = line.split('#', 1)[0].strip()
         if value:
             value = domain_name(value)
-            if value not in domains:
+            if value not in seen:
                 domains.append(value)
+                seen.add(value)
     if not domains:
         raise ValueError('The domain list must not be empty; Apple treats an empty list as matching all traffic.')
     return domains
@@ -172,33 +178,50 @@ def require_readable(paths):
                              'above it searchable), then run the installer again.')
 
 
-def copy_certificate(lineage):
-    """Copies certbot's certificate and key where the service user can read
-    them; deploy/certbot-hook.sh does the same on every renewal."""
+def certificate_updates(lineage):
+    """Stages certbot's pair for validation and transactional installation;
+    deploy/certbot-hook.sh updates the service-readable copies on renewal."""
     gid = service_ids()[1]
     TLS.mkdir(mode=0o750, parents=True, exist_ok=True)
     os.chown(TLS, 0 if os.geteuid() == 0 else -1, gid)
     os.chmod(TLS, 0o750)
-    for name in ('fullchain.pem', 'privkey.pem'):
-        atomic_write(TLS / name, (lineage / name).read_bytes(), 0o640, group=gid)
-    atomic_write(TLS / 'source', f'{lineage}\n'.encode(), 0o644)
+    updates = {TLS / name: ((lineage / name).read_bytes(), 0o640, gid)
+               for name in ('fullchain.pem', 'privkey.pem')}
+    updates[TLS / 'source'] = (f'{lineage}\n'.encode(), 0o644, None)
+    return updates
 
 
 def retarget_tls(config_data, old, new):
     """Points [tls] of an installer-written configuration from `old` to `new`."""
     text = config_data.decode()
-    for before, after in zip(old, new):
-        if text.count(json.dumps(str(before))) != 1:
-            raise ValueError(f'Could not find {before} in {CONFIG}; point [tls] cert and key at {new[0]} and '
-                             f'{new[1]} by hand, then run the installer again.')
-        text = text.replace(json.dumps(str(before)), json.dumps(str(after)))
+    current = tomllib.loads(text)['tls']
+    if (Path(current['cert']), Path(current['key'])) != tuple(old):
+        raise ValueError(f'Could not find the expected TLS paths in {CONFIG}.')
+    # TOML permits either quote style and comments. A textual JSON-string
+    # replacement rejected otherwise valid edited configurations on upgrade.
+    in_tls, replaced, lines = False, set(), []
+    for line in text.splitlines(keepends=True):
+        if line.lstrip().startswith('['):
+            try:
+                in_tls = tomllib.loads(line) == {'tls': {}}
+            except tomllib.TOMLDecodeError:
+                in_tls = False
+        match = re.match(r'''^(\s*)(cert|key|"cert"|"key"|'cert'|'key')\s*=''', line) if in_tls else None
+        if match:
+            key = match.group(2).strip('"\'')
+            line = f'{match.group(1)}{key} = {json.dumps(str(new[0 if key == "cert" else 1]))}\n'
+            replaced.add(key)
+        lines.append(line)
+    text = ''.join(lines)
+    if replaced != {'cert', 'key'}:
+        raise ValueError(f'Could not locate the TLS path assignments in {CONFIG}.')
     tls = tomllib.loads(text)['tls']
     if (Path(tls['cert']), Path(tls['key'])) != tuple(new):
         raise ValueError(f'Could not update [tls] in {CONFIG}.')
     return text.encode()
 
 
-def atomic_write(path, data, mode=0o600, group=None):
+def atomic_write(path, data, mode=0o600, group=None, owner=None):
     path = Path(path)
     if path.is_symlink() or (path.exists() and not path.is_file()):
         raise ValueError(f'Refusing to overwrite a non-regular file: {path}')
@@ -206,8 +229,8 @@ def atomic_write(path, data, mode=0o600, group=None):
     fd, name = tempfile.mkstemp(prefix='.network-relay-', dir=path.parent)
     try:
         with os.fdopen(fd, 'wb') as stream:
-            if group is not None:
-                os.fchown(stream.fileno(), -1, group)
+            if group is not None or owner is not None:
+                os.fchown(stream.fileno(), -1 if owner is None else owner, -1 if group is None else group)
             os.fchmod(stream.fileno(), mode)
             stream.write(data)
             stream.flush()
@@ -423,8 +446,7 @@ def install(args):
     # install.json and the backups stay root's.
     os.chown(ETC, root, gid)
     os.chmod(ETC, 0o750)
-    if automated_cert:
-        copy_certificate(CERTS / identity.domain)
+    certificates = certificate_updates(CERTS / identity.domain) if automated_cert else {}
     SITE.mkdir(mode=0o755, parents=True, exist_ok=True)
     if not (SITE / 'index.html').exists():
         atomic_write(SITE / 'index.html', b'<!doctype html><title>Welcome</title><h1>Welcome</h1>\n', 0o644)
@@ -449,21 +471,33 @@ def install(args):
             password_hash = tomllib.loads(result.stdout)['user'][0]['password_hash']
             config_data = render_config(identity, password_hash, cert, key, SITE)
         candidate = staging / 'relay.toml'
-        atomic_write(candidate, config_data)
+        validation_data = config_data
+        if certificates:
+            staged_cert, staged_key = staging / 'fullchain.pem', staging / 'privkey.pem'
+            atomic_write(staged_cert, certificates[cert][0])
+            atomic_write(staged_key, certificates[key][0])
+            validation_data = retarget_tls(config_data, (cert, key), (staged_cert, staged_key))
+        atomic_write(candidate, validation_data)
         run([binary, 'serve', '--config', candidate, '--check'])
-        apply_install(binary, config_data, render_state(identity), identity, automated_cert=automated_cert)
+        profile = None
+        if new_account and args.profile is None:
+            # Generate before committing the account. A generation failure must
+            # not leave a running account whose only password dies with us.
+            command = [binary, 'profile', '--host', identity.domain, '--port', str(identity.port),
+                       '--user', identity.user, '--name', PROFILE_NAME]
+            for domain in domains:
+                command.extend(['--match-domain', domain])
+            staged_profile = staging / 'device.mobileconfig'
+            run(command + ['--out', staged_profile], input=identity.password + '\n', capture=True)
+            profile_path = args.profile_out or publish / f'{secrets.token_urlsafe(18)}.mobileconfig'
+            profile = (Path(os.path.abspath(profile_path)), staged_profile.read_bytes(),
+                       None if args.profile_out else uid, None if args.profile_out else gid)
+        apply_install(binary, config_data, render_state(identity), identity, automated_cert=automated_cert,
+                      profile=profile, certificates=certificates)
 
     print('\nInstallation complete.', flush=True)
     if new_account and args.profile is None:
-        try:
-            hand_over_profile(binary, identity, domains, args.profile_out)
-        except (OSError, RuntimeError, subprocess.SubprocessError) as error:
-            # The relay runs; only the hand-over failed, and the password is
-            # gone with this process. A new one is quickly made by hand.
-            print(f'The relay is installed, but its device profile could not be handed over ({error}). '
-                  'Create a new password and profile as in "Another device" in docs/deploy-debian13.md.',
-                  file=sys.stderr)
-            return 2
+        hand_over_profile(identity, profile[0], bool(args.profile_out))
     elif existing:
         print('The account and its devices are unchanged. To set up another device, see '
               '"Another device" in docs/deploy-debian13.md.', flush=True)
@@ -488,25 +522,14 @@ def install(args):
     return 0
 
 
-def hand_over_profile(binary, identity, domains, out):
+def hand_over_profile(identity, published, out):
     """Gives the new account's device profile to the administrator without
     leaving the password on the server: a link that works once, or a file
     where they asked for one."""
-    command = [binary, 'profile', '--host', identity.domain, '--port', str(identity.port),
-               '--user', identity.user, '--name', PROFILE_NAME]
-    for domain in domains:
-        command.extend(['--match-domain', domain])
     if out:
-        run(command + ['--out', out], input=identity.password + '\n', capture=True)
-        print(f'Device profile: {out} (contains the password, mode 600). Install it on the iPhone, iPad or '
+        print(f'Device profile: {published} (contains the password, mode 600). Install it on the iPhone, iPad or '
               'Mac, then delete it.', flush=True)
         return
-    result = run(command + ['--publish', '--config', CONFIG], input=identity.password + '\n', capture=True)
-    written = re.search(r'^Wrote (.+)$', result.stdout, re.MULTILINE)
-    if not written:
-        raise RuntimeError('Could not publish the device profile; create one with network-relay profile.')
-    published = Path(written.group(1))
-    run(['systemctl', 'reload', 'network-relay'])
     port = '' if identity.port == 443 else f':{identity.port}'
     print('Within 15 minutes, open this link in Safari on the iPhone, iPad or Mac and install the profile. '
           'The link works once; the password is not stored anywhere else on this server:', flush=True)
@@ -515,7 +538,7 @@ def hand_over_profile(binary, identity, domains, out):
           'profile step by hand: see "Another device" in docs/deploy-debian13.md.', flush=True)
 
 
-def apply_install(binary, config_data, state_data, identity, *, automated_cert):
+def apply_install(binary, config_data, state_data, identity, *, automated_cert, profile=None, certificates=None):
     backup = ETC / 'backups' / datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S.%fZ')
     backup.mkdir(mode=0o700, parents=True)
     was_active = run(['systemctl', 'is-active', '--quiet', 'network-relay'], check=False).returncode == 0
@@ -537,12 +560,20 @@ def apply_install(binary, config_data, state_data, identity, *, automated_cert):
     }
     if automated_cert:
         updates[HOOK] = ((REPO / 'deploy/certbot-hook.sh').read_bytes(), 0o755, None)
+    updates.update(certificates or {})
+    if profile is not None:
+        path, data, owner, group = profile
+        if path in updates or path in (HOOK, LEGACY_PROFILE) or path == binary.resolve():
+            raise ValueError('The device profile must not overwrite an installed service file or the source binary.')
+        updates[path] = (data, 0o600, group)
     snapshots = {}
+    metadata = {}
     for index, path in enumerate(updates):
         if path.is_symlink() or (path.exists() and not path.is_file()):
             raise ValueError(f'Refusing to replace a non-regular installed file: {path}')
         saved = backup / str(index)
         if path.exists():
+            metadata[path] = path.stat()
             shutil.copy2(path, saved)
             snapshots[path] = saved
         else:
@@ -551,7 +582,8 @@ def apply_install(binary, config_data, state_data, identity, *, automated_cert):
                                                      indent=2).encode())
     try:
         for path, (data, mode, group) in updates.items():
-            atomic_write(path, data, mode, group)
+            owner = profile[2] if profile is not None and path == profile[0] else None
+            atomic_write(path, data, mode, group, owner)
         if run(['sysctl', '-p', SYSCTL], check=False).returncode:
             print('Could not raise the UDP buffer limits (some VPSes restrict sysctl); '
                   'keeping the current kernel settings.', file=sys.stderr)
@@ -577,7 +609,8 @@ def apply_install(binary, config_data, state_data, identity, *, automated_cert):
             run(['systemctl', 'disable', 'network-relay'], check=False)
         for path, saved in snapshots.items():
             if saved:
-                atomic_write(path, saved.read_bytes(), saved.stat().st_mode & 0o777)
+                previous = metadata[path]
+                atomic_write(path, saved.read_bytes(), previous.st_mode & 0o777, previous.st_gid, previous.st_uid)
             elif path.exists():
                 path.unlink()
         for name, value in old_sysctl.items():

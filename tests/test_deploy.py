@@ -234,7 +234,9 @@ class DeploymentTests(unittest.TestCase):
         self.assertEqual(len(published), 1)
         self.assertEqual(published[0].stat().st_mode & 0o777, 0o600)
         self.assertIn(f'https://relay.example.com/{published[0].name}', output.getvalue())
-        self.assertIn(['systemctl', 'reload', 'network-relay'], self.calls, 'the relay picks the profile up')
+        generation = next(i for i, c in enumerate(self.calls) if len(c) > 1 and c[1] == 'profile')
+        restart = self.calls.index(['systemctl', 'restart', 'network-relay'])
+        self.assertLess(generation, restart, 'the profile is ready before the account starts')
         identity, raw = deploy.read_profile(published[0])
         self.assertGreaterEqual(len(identity.password), 24)
         self.assertNotIn(identity.password, output.getvalue())
@@ -388,6 +390,13 @@ class DeploymentTests(unittest.TestCase):
         self.assertIn('reload network-relay', log.read_text())
         by_hand = subprocess.run(['sh', hook], env=env, capture_output=True, text=True)
         self.assertEqual(by_hand.returncode, 0, 'run by hand, without RENEWED_LINEAGE, it copies too')
+        (live / 'fullchain.pem').write_text('chain v3')
+        (live / 'privkey.pem').unlink()
+        failed = subprocess.run(['sh', hook], env=env, capture_output=True, text=True)
+        self.assertNotEqual(failed.returncode, 0)
+        self.assertEqual((tls / 'fullchain.pem').read_text(), 'chain v2', 'keep the old pair when staging fails')
+        self.assertEqual((tls / 'privkey.pem').read_text(), 'key v2')
+        self.assertEqual(list(tls.glob('.*.new')), [])
 
     def test_the_service_account_is_created_when_missing(self):
         self.missing_user = True
@@ -424,24 +433,77 @@ class DeploymentTests(unittest.TestCase):
                      deploy.STATE: b'old state', deploy.UNIT: b'old unit'}
         for path, contents in old_files.items():
             deploy.atomic_write(path, contents)
+        old_gid = 12345 if os.geteuid() == 0 else os.getgid()
+        os.chown(deploy.CONFIG, -1, old_gid)
+        deploy.CONFIG.chmod(0o640)
         new_binary = self.root / 'new-binary'
         new_binary.write_bytes(b'new binary')
-        with mock.patch.object(deploy, 'run', side_effect=self.fake_run), self.assertRaises(subprocess.CalledProcessError):
+        with mock.patch.object(deploy, 'run', side_effect=self.fake_run), \
+                mock.patch.object(deploy, 'atomic_write', wraps=deploy.atomic_write) as writes, \
+                self.assertRaises(subprocess.CalledProcessError):
             deploy.apply_install(new_binary, b'new config', b'new state',
                                  deploy.Identity('relay.example.com', 443, 'iphone', PASSWORD), automated_cert=True)
+        config_writes = [call for call in writes.call_args_list if call.args[0] == deploy.CONFIG]
+        self.assertEqual(config_writes[-1].args[3:5], (old_gid, os.getuid()),
+                         'rollback must explicitly restore ownership even when the test user has only one group')
         for path, contents in old_files.items():
             self.assertEqual(path.read_bytes(), contents)
+        self.assertEqual(deploy.CONFIG.stat().st_gid, old_gid, 'the service must still be able to read its config')
+        self.assertEqual(deploy.CONFIG.stat().st_mode & 0o777, 0o640)
         self.assertFalse(deploy.SYSCTL.exists())
         self.assertFalse(deploy.HOOK.exists())
         self.assertIn(['systemctl', 'start', 'network-relay'], self.calls)
+
+    def test_staged_tls_validation_accepts_both_toml_quote_styles(self):
+        original = b"[tls]\ncert = '/old/cert.pem' # administrator comment\nkey = '/old/key.pem'\n[debug]\nlog_requests = true\n"
+        updated = deploy.retarget_tls(original, (Path('/old/cert.pem'), Path('/old/key.pem')),
+                                      (Path('/staged/cert.pem'), Path('/staged/key.pem')))
+        parsed = tomllib.loads(updated.decode())
+        self.assertEqual(parsed['tls'], {'cert': '/staged/cert.pem', 'key': '/staged/key.pem'})
+        self.assertTrue(parsed['debug']['log_requests'])
+
+    @unittest.skipUnless(BINARY.exists(), 'run cargo build first')
+    def test_profile_generation_failure_never_installs_an_unrecoverable_account(self):
+        self.certificates()
+        def fail_profile(args, **kwargs):
+            if len(args) > 1 and args[1] == 'profile':
+                raise subprocess.CalledProcessError(1, args)
+            return self.fake_run(args, **kwargs)
+        with mock.patch.object(deploy, 'run', side_effect=fail_profile), redirect_stdout(io.StringIO()), \
+                self.assertRaises(subprocess.CalledProcessError):
+            deploy.install(self.args())
+        self.assertFalse(deploy.CONFIG.exists())
+        self.assertFalse(deploy.BINARY.exists())
+        self.assertFalse(any(c[:2] == ['systemctl', 'restart'] for c in self.calls))
+
+    def test_failed_install_restores_an_existing_profile_and_its_ownership(self):
+        self.fail_restart = True
+        binary = self.root / 'candidate'
+        binary.write_bytes(b'new binary')
+        path = self.root / 'device.mobileconfig'
+        deploy.atomic_write(path, b'old profile', 0o640)
+        with mock.patch.object(deploy, 'run', side_effect=self.fake_run), self.assertRaises(subprocess.CalledProcessError):
+            deploy.apply_install(binary, b'new config', b'new state',
+                                 deploy.Identity('relay.example.com', 443, 'iphone', PASSWORD), automated_cert=False,
+                                 profile=(path, b'new profile', None, None))
+        self.assertEqual(path.read_bytes(), b'old profile')
+        self.assertEqual(path.stat().st_mode & 0o777, 0o640)
 
     def test_failed_fresh_install_removes_new_files_and_disables_unit(self):
         self.fail_restart = True
         new_binary = self.root / 'new-binary'
         new_binary.write_bytes(b'new binary')
+        cert = deploy.TLS / 'fullchain.pem'
+        key = deploy.TLS / 'privkey.pem'
+        deploy.atomic_write(cert, b'old cert', 0o640)
+        deploy.atomic_write(key, b'old key', 0o640)
         with mock.patch.object(deploy, 'run', side_effect=self.fake_run), self.assertRaises(subprocess.CalledProcessError):
             deploy.apply_install(new_binary, b'new config', b'new state',
-                                 deploy.Identity('relay.example.com', 443, 'iphone', PASSWORD), automated_cert=True)
+                                 deploy.Identity('relay.example.com', 443, 'iphone', PASSWORD), automated_cert=True,
+                                 certificates={cert: (b'new cert', 0o640, os.getgid()),
+                                               key: (b'new key', 0o640, os.getgid())})
+        self.assertEqual(cert.read_bytes(), b'old cert')
+        self.assertEqual(key.read_bytes(), b'old key')
         self.assertFalse(deploy.CONFIG.exists())
         self.assertFalse(deploy.UNIT.exists())
         self.assertIn(['systemctl', 'disable', 'network-relay'], self.calls)
@@ -478,6 +540,27 @@ keyword-only
 
 
 class GlobalProfileTests(unittest.TestCase):
+    def test_domain_downloads_have_a_byte_limit(self):
+        with mock.patch.object(global_profile, 'MAX_LIST_BYTES', 64):
+            self.assertEqual(global_profile.read_bounded(io.BytesIO(b'x' * 64)), b'x' * 64)
+            with self.assertRaises(ValueError):
+                global_profile.read_bounded(io.BytesIO(b'x' * 65))
+
+    def test_empty_service_selection_never_generates_an_all_traffic_profile(self):
+        with tempfile.TemporaryDirectory() as directory:
+            services = Path(directory) / 'services.txt'
+            out = Path(directory) / 'original.mobileconfig'
+            out.write_bytes(b'previous profile')
+            for content in ['# no valid services\n', 'relay.example.com\n']:
+                services.write_text(content)
+                with mock.patch.object(global_profile.subprocess, 'run') as generate:
+                    with self.assertRaises(ValueError):
+                        global_profile.main(['--host', 'relay.example.com', '--user', 'iphone',
+                            '--password', PASSWORD, '--binary', str(BINARY), '--no-gfwlist', '--services', str(services),
+                            '--out', str(out)])
+                    generate.assert_not_called()
+                self.assertEqual(out.read_bytes(), b'previous profile')
+
     def test_gfwlist_rules_become_domains_and_the_rest_is_counted(self):
         domains, stats = global_profile.extract_gfwlist(GFWLIST)
         self.assertEqual(domains, ['bare.example', 'blocked.example', 'dotted.example', 'example.com',

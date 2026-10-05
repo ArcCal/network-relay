@@ -36,9 +36,10 @@ const DRAIN_ACK_MIN: std::time::Duration = std::time::Duration::from_millis(100)
 const DRAIN_ACK_MAX: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// Datagrams queued per UDP flow before new ones are dropped.
-const FLOW_QUEUE: usize = 1024;
+const FLOW_QUEUE: usize = 64;
 /// Datagrams held per connection for streams not yet set up.
 const EARLY_DATAGRAMS: usize = 64;
+const EARLY_DATAGRAM_BYTES: usize = 256 * 1024;
 
 /// Hands each datagram of a connection to the flow of its stream.
 #[derive(Default)]
@@ -52,6 +53,7 @@ struct Router {
     /// response (RFC 9298 §5); they can arrive before the relay has checked
     /// the request. A few are held, oldest dropped first.
     early: VecDeque<(StreamId, Bytes)>,
+    early_bytes: usize,
 }
 
 enum Flow {
@@ -73,9 +75,15 @@ impl Router {
             }
             None if self.closed.contains(&stream_id) => {}
             Some(Flow::PendingUdp) | None => {
-                if self.early.len() == EARLY_DATAGRAMS {
-                    self.early.pop_front();
+                if payload.len() > EARLY_DATAGRAM_BYTES {
+                    return;
                 }
+                while self.early.len() >= EARLY_DATAGRAMS || self.early_bytes + payload.len() > EARLY_DATAGRAM_BYTES {
+                    if let Some((_, dropped)) = self.early.pop_front() {
+                        self.early_bytes -= dropped.len();
+                    }
+                }
+                self.early_bytes += payload.len();
                 self.early.push_back((stream_id, payload));
             }
         }
@@ -88,10 +96,12 @@ impl Router {
     fn register(&mut self, stream_id: StreamId, flow: Flow) {
         self.flows.insert(stream_id, flow);
         let early = std::mem::take(&mut self.early);
+        self.early_bytes = 0;
         for (id, payload) in early {
             if id == stream_id {
                 self.deliver(id, payload);
             } else {
+                self.early_bytes += payload.len();
                 self.early.push_back((id, payload));
             }
         }
@@ -115,12 +125,14 @@ pub const MTU_UPPER_BOUND: u16 = 1452;
 /// reliably (RFC 9298 §6.1), and the relayed protocol retransmits them.
 pub(super) fn transport_config() -> TransportConfig {
     let mut t = TransportConfig::default();
-    t.max_concurrent_bidi_streams(VarInt::from_u32(1024));
-    t.stream_receive_window(VarInt::from_u32(4 << 20));
-    t.receive_window(VarInt::from_u32(32 << 20));
-    t.send_window(32 << 20);
-    t.datagram_receive_buffer_size(Some(4 << 20));
-    t.datagram_send_buffer_size(4 << 20);
+    let reserved = crate::limits::connection_memory(crate::limits::total_memory());
+    let window = (reserved / 4) as u32;
+    t.max_concurrent_bidi_streams(VarInt::from_u32((reserved / (256 * 1024)).max(1) as u32));
+    t.stream_receive_window(VarInt::from_u32(window.min(1 << 20)));
+    t.receive_window(VarInt::from_u32(window));
+    t.send_window(u64::from(window));
+    t.datagram_receive_buffer_size(Some((reserved / 32) as usize));
+    t.datagram_send_buffer_size((reserved / 32) as usize);
     t.initial_mtu(1200);
     t.min_mtu(1200);
     let mut mtu = MtuDiscoveryConfig::default();
@@ -174,15 +186,18 @@ impl Relay {
             };
             let relay = self.clone();
             tokio::spawn(async move {
-                let _permit = permit;
-                if let Err(e) = relay.handle_quic_connection(incoming).await {
+                if let Err(e) = relay.handle_quic_connection(incoming, permit).await {
                     debug!(%remote, "connection ended: {e:#}");
                 }
             });
         }
     }
 
-    async fn handle_quic_connection(self, incoming: quinn::Incoming) -> Result<()> {
+    async fn handle_quic_connection(
+        self,
+        incoming: quinn::Incoming,
+        permit: crate::limits::ConnectionPermit,
+    ) -> Result<()> {
         let remote = incoming.remote_address();
         let conn = match tokio::time::timeout(HEADER_TIMEOUT, incoming).await {
             Ok(Ok(conn)) => conn,
@@ -201,14 +216,19 @@ impl Relay {
             .and_then(|certs| tls::client_fingerprint(Some(&certs)));
         let transport = h3_quinn::Connection::new(conn.clone());
         let stopped = transport.send_stopped();
-        let mut h3_conn: H3Connection = h3::server::builder()
-            .max_field_section_size(32 * 1024)
-            .enable_extended_connect(true)
-            .enable_datagram(true)
-            .build(transport)
-            .await
-            .context("HTTP/3 setup")?;
+        let mut h3_conn: H3Connection = tokio::time::timeout(
+            HEADER_TIMEOUT,
+            h3::server::builder()
+                .max_field_section_size(32 * 1024)
+                .enable_extended_connect(true)
+                .enable_datagram(true)
+                .build(transport),
+        )
+        .await
+        .context("HTTP/3 setup timed out")?
+        .context("HTTP/3 setup")?;
         let info = ConnInfo::new("HTTP/3", remote, client_cert);
+        *info.connection_permit.lock().unwrap() = Some(permit);
         let idle_timeout = self.settings().idle_timeout;
 
         // Exactly one datagram reader per connection; it hands each datagram
@@ -339,7 +359,7 @@ impl Relay {
                 Ok(()) = &mut bad_datagram => {
                     // A CONNECT's request stream stays open for its tunnel;
                     // reading it here would take the tunnel's first bytes.
-                    if kind == Some(Kind::Tcp) || !receive_side_closed(&mut stream) {
+                    if kind == Some(Kind::Tcp) || !receive_side_closed(&mut stream).await {
                         abort_datagram(&mut stream);
                         return;
                     }
@@ -411,11 +431,20 @@ impl Relay {
         match opened {
             Opened::Tcp(tcp) => pump::tcp_over_h3(stream, tcp, ctx, bad_datagram).await,
             Opened::Udp(sock) => {
+                let mut ctx = ctx;
                 let (reply_tx, reply_rx) = oneshot::channel();
-                if sender_tx.send((stream_id, reply_tx)).await.is_err() {
-                    return;
-                }
-                let Ok(sender) = reply_rx.await else { return };
+                let sender = tokio::select! {
+                    biased;
+                    _ = ctx.cancelled() => {
+                        stream.stop_stream(h3::error::Code::H3_REQUEST_CANCELLED);
+                        stream.stop_sending(h3::error::Code::H3_REQUEST_CANCELLED);
+                        return;
+                    },
+                    sender = async {
+                        sender_tx.send((stream_id, reply_tx)).await.ok()?;
+                        reply_rx.await.ok()
+                    } => match sender { Some(sender) => sender, None => return },
+                };
                 let rx = flow.expect("UDP flows have a route");
                 let datagrams = Datagrams::Quic(QuicDatagrams::new(sender, conn, stream_id, rx));
                 pump::udp(Tunnel::h3_server(stream, datagrams), sock, ctx).await;
@@ -435,6 +464,7 @@ impl Drop for RouteGuard {
         let mut router = self.routes.lock().unwrap();
         router.flows.remove(&self.stream_id);
         router.early.retain(|(id, _)| *id != self.stream_id);
+        router.early_bytes = router.early.iter().map(|(_, payload)| payload.len()).sum();
         if router.closed.len() == 1024 {
             router.closed.pop_front();
         }
@@ -446,13 +476,23 @@ impl Drop for RouteGuard {
 /// discarding whatever body is already buffered. RFC 9297 §2.1: a datagram
 /// on a request without datagram semantics aborts it with H3_DATAGRAM_ERROR,
 /// unless the request's receive side is closed: then it is dropped.
-fn receive_side_closed(stream: &mut H3Stream) -> bool {
-    let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+async fn receive_side_closed(stream: &mut H3Stream) -> bool {
+    let mut drained = 0;
     loop {
-        match std::pin::pin!(stream.recv_data()).poll(&mut cx) {
-            std::task::Poll::Ready(Ok(Some(_))) => continue,
-            std::task::Poll::Ready(Ok(None) | Err(_)) => return true,
-            std::task::Poll::Pending => return false,
+        {
+            let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+            match std::pin::pin!(stream.recv_data()).poll(&mut cx) {
+                std::task::Poll::Ready(Ok(Some(_))) => {}
+                std::task::Poll::Ready(Ok(None) | Err(_)) => return true,
+                std::task::Poll::Pending => return false,
+            }
+        }
+        drained += 1;
+        if drained == 64 {
+            // Empty DATA frames must not monopolise a runtime worker. Keep
+            // checking for FIN instead of misclassifying a buffered closed side.
+            tokio::task::yield_now().await;
+            drained = 0;
         }
     }
 }
@@ -532,6 +572,14 @@ mod tests {
             r.deliver(id(8), Bytes::from_static(b"x"));
         }
         assert_eq!(r.early.len(), EARLY_DATAGRAMS, "bounded");
+        for _ in 0..100 {
+            r.deliver(id(12), Bytes::from(vec![0; 65_535]));
+        }
+        assert!(r.early_bytes <= EARLY_DATAGRAM_BYTES, "counts alone do not bound bytes");
+        assert!(r.early.len() < EARLY_DATAGRAMS);
+        let (tx, _rx) = mpsc::channel(8);
+        r.add(id(12), tx);
+        assert_eq!(r.early_bytes, 0, "registering the flow refunds early capacity");
     }
 
     #[test]

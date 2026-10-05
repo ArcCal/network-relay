@@ -44,7 +44,7 @@ const TIME_FORMAT: &str = "%Y-%m-%d %H:%M:%S%.3f %:z";
 pub struct LogGuard(#[allow(dead_code)] Vec<tracing_appender::non_blocking::WorkerGuard>);
 
 /// Lines buffered per writer before new ones are dropped.
-const BUFFERED_LINES: usize = 64 * 1024;
+const BUFFERED_LINES: usize = 1024;
 
 /// Sets up logging for `program` (`network-relay` or `other-program`): to
 /// stdout, and with `dir` also to files there. `RUST_LOG` overrides the

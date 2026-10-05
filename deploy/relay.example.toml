@@ -40,7 +40,7 @@ blocked_destinations = [
     "0.0.0.0/8", "10.0.0.0/8", "100.64.0.0/10", "127.0.0.0/8", "169.254.0.0/16",
     "172.16.0.0/12", "192.0.0.0/24", "192.0.2.0/24", "192.168.0.0/16", "198.18.0.0/15",
     "198.51.100.0/24", "203.0.113.0/24", "192.88.99.0/24", "224.0.0.0/4", "240.0.0.0/4",
-    "::/127", "::ffff:0:0/96", "64:ff9b:1::/48", "100::/64", "2001:2::/48", "2001:10::/28",
+    "::/127", "::ffff:0:0/96", "64:ff9b:1::/48", "100::/64", "100:0:0:1::/64", "2001:2::/48", "2001:10::/28",
     "2001:20::/28", "2001:db8::/32", "3fff::/20", "5f00::/16", "fc00::/7", "fe80::/10", "ff00::/8",
 ]
 # Also block every address of this server's own network interfaces, its
@@ -55,7 +55,7 @@ udp_idle_timeout_secs = 300
 # Limits. A device with stolen credentials, or a flood of connections, can
 # use only a share of the server.
 # Most TCP connections and UDP flows at once, over all users. Without it,
-# sized from the server's memory (512-20000).
+# a quarter of available host/container memory at 16 MiB per tunnel (1-20000).
 # max_tunnels = 4096
 max_tunnels_per_user = 512
 # Per-user traffic, both directions together; 0 is unlimited.

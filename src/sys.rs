@@ -2,6 +2,24 @@
 
 use std::time::Duration;
 
+/// Per-direction requested TCP buffer sizes. Linux accounts up to twice the
+/// request for socket bookkeeping; explicit sizes disable TCP autotuning.
+pub const CLIENT_TCP_BUFFER: usize = 512 * 1024;
+pub const TARGET_TCP_BUFFER: usize = 1024 * 1024;
+
+/// Bounds kernel TCP buffers before a connection can consume relay capacity.
+/// Check the granted sizes too: a kernel minimum or platform-specific policy
+/// must not silently exceed the amount included in the admission reservation.
+pub fn limit_tcp_buffers(sock: socket2::SockRef<'_>, bytes: usize) -> std::io::Result<()> {
+    let maximum = bytes.checked_mul(2).ok_or_else(|| std::io::Error::other("TCP buffer limit overflow"))?;
+    sock.set_recv_buffer_size(bytes)?;
+    sock.set_send_buffer_size(bytes)?;
+    if sock.recv_buffer_size()? > maximum || sock.send_buffer_size()? > maximum {
+        return Err(std::io::Error::other("kernel TCP buffers exceed the relay capacity reservation"));
+    }
+    Ok(())
+}
+
 /// Raises this process's soft limit on open files to `want`, or as far as the
 /// hard limit allows. Every relayed TCP connection and UDP flow needs a file
 /// descriptor; failing only costs capacity, so it is logged.
@@ -111,10 +129,23 @@ mod tests {
     fn socket_options_apply() {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let client = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let sock = socket2::SockRef::from(&client);
+        limit_tcp_buffers(socket2::SockRef::from(&client), CLIENT_TCP_BUFFER).unwrap();
+        assert!(sock.recv_buffer_size().unwrap() <= 2 * CLIENT_TCP_BUFFER);
+        assert!(sock.send_buffer_size().unwrap() <= 2 * CLIENT_TCP_BUFFER);
         tune_client_tcp(socket2::SockRef::from(&client)).unwrap();
+        limit_tcp_buffers(socket2::SockRef::from(&client), TARGET_TCP_BUFFER).unwrap();
+        assert!(sock.recv_buffer_size().unwrap() <= 2 * TARGET_TCP_BUFFER);
+        assert!(sock.send_buffer_size().unwrap() <= 2 * TARGET_TCP_BUFFER);
         tune_target_tcp(socket2::SockRef::from(&client)).unwrap();
         let udp = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
         let (rcv, snd) = grow_buffers(socket2::SockRef::from(&udp), 1 << 20);
         assert!(rcv > 0 && snd > 0);
+    }
+
+    #[test]
+    fn kernel_minimum_cannot_silently_exceed_the_tcp_buffer_reservation() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        assert!(limit_tcp_buffers(socket2::SockRef::from(&listener), 1).is_err());
     }
 }

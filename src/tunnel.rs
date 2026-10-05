@@ -21,7 +21,11 @@ use crate::proto::{varint, CapsuleDecoder};
 pub type DgramSender = DatagramSender<h3_quinn::datagram::SendDatagramHandler, Bytes>;
 
 /// Stream chunks buffered in each direction.
-const STREAM_QUEUE: usize = 256;
+const STREAM_QUEUE: usize = 16;
+/// Split transport buffers before queueing them: a DATA frame can be as
+/// large as an entire receive window, so a message-count limit alone is
+/// insufficient to bound memory.
+const STREAM_CHUNK: usize = 16 * 1024;
 /// A peer with a closed request must not retain a blocked writer forever.
 const CLOSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
 
@@ -130,13 +134,21 @@ macro_rules! h3_pumps {
                 loop {
                     match recv.recv_data().await {
                         Ok(Some(mut buf)) => {
-                            if in_tx.send(buf.copy_to_bytes(buf.remaining())).await.is_err() {
-                                break;
+                            while buf.has_remaining() {
+                                let n = buf.remaining().min(STREAM_CHUNK);
+                                // `Bytes` slices retain their whole original
+                                // allocation; copy so queued chunks really
+                                // retain only STREAM_CHUNK bytes each.
+                                let chunk = Bytes::copy_from_slice(&buf.copy_to_bytes(n));
+                                if in_tx.send(Ok(chunk)).await.is_err() {
+                                    return;
+                                }
                             }
                         }
                         Ok(None) => break,
                         Err(e) => {
                             debug!("request stream read ended: {e}");
+                            let _ = in_tx.send(Err(TunnelError::Connection(e.to_string()))).await;
                             break;
                         }
                     }
@@ -183,7 +195,7 @@ macro_rules! h3_pumps {
 }
 
 pub struct Tunnel {
-    inbound: mpsc::Receiver<Bytes>,
+    inbound: mpsc::Receiver<Result<Bytes, TunnelError>>,
     outbound: mpsc::Sender<Bytes>,
     decoder: CapsuleDecoder,
     datagrams: Datagrams,
@@ -203,7 +215,7 @@ impl Drop for Tunnel {
 
 impl Tunnel {
     fn new(
-        inbound: mpsc::Receiver<Bytes>,
+        inbound: mpsc::Receiver<Result<Bytes, TunnelError>>,
         outbound: mpsc::Sender<Bytes>,
         datagrams: Datagrams,
         reader: tokio::task::JoinHandle<()>,
@@ -240,7 +252,8 @@ impl Tunnel {
             tokio::select! {
                 _ = outbound.closed() => return Err(TunnelError::Closed),
                 chunk = inbound.recv() => match chunk {
-                    Some(bytes) => decoder.push(bytes),
+                    Some(Ok(bytes)) => decoder.push(bytes),
+                    Some(Err(error)) => return Err(error),
                     None => {
                         decoder.finish().map_err(TunnelError::Malformed)?;
                         return Ok(Event::Closed);
@@ -336,16 +349,17 @@ impl Tunnel {
         let reader = tokio::spawn(async move {
             let reading = async {
                 loop {
-                    let mut buf = BytesMut::with_capacity(16 * 1024);
+                    let mut buf = BytesMut::with_capacity(STREAM_CHUNK);
                     match rd.read_buf(&mut buf).await {
                         Ok(0) => break,
                         Ok(_) => {
-                            if in_tx.send(buf.freeze()).await.is_err() {
+                            if in_tx.send(Ok(buf.freeze())).await.is_err() {
                                 break;
                             }
                         }
                         Err(e) => {
                             debug!("tunnel stream read ended: {e}");
+                            let _ = in_tx.send(Err(TunnelError::Connection(e.to_string()))).await;
                             break;
                         }
                     }
@@ -394,6 +408,46 @@ impl Tunnel {
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    #[tokio::test]
+    async fn stream_read_errors_do_not_become_clean_fin() {
+        struct FailedRead;
+        impl tokio::io::AsyncRead for FailedRead {
+            fn poll_read(
+                self: std::pin::Pin<&mut Self>,
+                _: &mut std::task::Context<'_>,
+                _: &mut tokio::io::ReadBuf<'_>,
+            ) -> std::task::Poll<std::io::Result<()>> {
+                std::task::Poll::Ready(Err(std::io::ErrorKind::ConnectionReset.into()))
+            }
+        }
+        impl tokio::io::AsyncWrite for FailedRead {
+            fn poll_write(
+                self: std::pin::Pin<&mut Self>,
+                _: &mut std::task::Context<'_>,
+                data: &[u8],
+            ) -> std::task::Poll<std::io::Result<usize>> {
+                std::task::Poll::Ready(Ok(data.len()))
+            }
+            fn poll_flush(
+                self: std::pin::Pin<&mut Self>,
+                _: &mut std::task::Context<'_>,
+            ) -> std::task::Poll<std::io::Result<()>> {
+                std::task::Poll::Ready(Ok(()))
+            }
+            fn poll_shutdown(
+                self: std::pin::Pin<&mut Self>,
+                _: &mut std::task::Context<'_>,
+            ) -> std::task::Poll<std::io::Result<()>> {
+                std::task::Poll::Ready(Ok(()))
+            }
+        }
+        let mut tunnel = Tunnel::stream(FailedRead);
+        assert!(
+            matches!(tunnel.next_event().await, Err(TunnelError::Connection(_))),
+            "read failure was reported as orderly EOF"
+        );
+    }
 
     #[tokio::test]
     async fn a_closed_writer_is_not_an_ordinary_udp_drop() {

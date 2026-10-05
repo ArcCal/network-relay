@@ -4,7 +4,7 @@ use std::io;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::time::Duration;
 
-use tokio::net::{TcpStream, UdpSocket};
+use tokio::net::{TcpSocket, TcpStream, UdpSocket};
 use tokio::task::JoinSet;
 
 use crate::policy::Refusal;
@@ -41,6 +41,14 @@ fn refusal(e: &io::Error) -> Refusal {
     }
 }
 
+/// Fix buffer sizes before the handshake, including data arriving before
+/// the connection future returns.
+async fn bounded_tcp_connect(addr: SocketAddr) -> io::Result<TcpStream> {
+    let socket = if addr.is_ipv6() { TcpSocket::new_v6()? } else { TcpSocket::new_v4()? };
+    sys::limit_tcp_buffers(socket2::SockRef::from(&socket), sys::TARGET_TCP_BUFFER)?;
+    socket.connect(addr).await
+}
+
 /// Connects to the first address that answers, racing them as Happy
 /// Eyeballs does (RFC 8305), within `timeout` overall.
 pub async fn tcp(addrs: &[SocketAddr], timeout: Duration) -> Result<TcpStream, Refusal> {
@@ -52,7 +60,7 @@ pub async fn tcp(addrs: &[SocketAddr], timeout: Duration) -> Result<TcpStream, R
         if attempts.is_empty() {
             match pending.next() {
                 Some(addr) => {
-                    attempts.spawn(TcpStream::connect(addr));
+                    attempts.spawn(bounded_tcp_connect(addr));
                 }
                 None => return Err(last_error.map_or(Refusal::NoAddresses, |e| refusal(&e))),
             }
@@ -70,7 +78,7 @@ pub async fn tcp(addrs: &[SocketAddr], timeout: Duration) -> Result<TcpStream, R
                     last_error = Some(e);
                     // A failed attempt starts the next one at once (§5).
                     if let Some(addr) = pending.next() {
-                        attempts.spawn(TcpStream::connect(addr));
+                        attempts.spawn(bounded_tcp_connect(addr));
                     }
                 }
                 Some(Err(e)) => last_error = Some(io::Error::other(e)),
@@ -78,7 +86,7 @@ pub async fn tcp(addrs: &[SocketAddr], timeout: Duration) -> Result<TcpStream, R
             },
             _ = tokio::time::sleep(ATTEMPT_DELAY), if more => {
                 if let Some(addr) = pending.next() {
-                    attempts.spawn(TcpStream::connect(addr));
+                    attempts.spawn(bounded_tcp_connect(addr));
                 }
             }
             _ = tokio::time::sleep_until(deadline) => return Err(Refusal::ConnectionTimeout),

@@ -5,7 +5,8 @@
 //! The relay does not need a CA: the configuration pins each user's
 //! certificate by its SHA-256 fingerprint, and the TLS handshake proves the
 //! device holds the key. Once installed, the key lives in the device's
-//! keychain and cannot be copied off it the way a password in a profile can.
+//! keychain. The generated profile requests a nonextractable key on macOS;
+//! protect and delete the original PKCS#12 file and any profile copies.
 
 use anyhow::{anyhow, Context, Result};
 use chrono::{Datelike, Utc};

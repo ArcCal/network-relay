@@ -45,6 +45,8 @@ The name on the certificate must be the domain the devices connect to. If readin
 
 ### `[relay]` (optional)
 
+Network and website buffer capacity is also admitted against one shared budget: half the smallest detected host or visible ancestor cgroup memory limit. Each TCP/QUIC client connection reserves up to 8 MiB; each tunnel reserves 16 MiB for transport, capsule queues and target socket buffers. The reservations are conservative capacity estimates, not process RSS measurements. All reservations are refunded on cancellation and closure. Raising `max_connections` or `max_tunnels` does not bypass this budget. At 1 GiB, the default tunnel limit is 16; at 4 GiB, 64. Website body allocations are also charged and retain their reservation through the last response reference, so slow clients cannot accumulate uncharged old snapshots across reloads. A reload keeps the current website if the replacement cannot fit. Password hashing and other process overhead need the remaining memory. TCP socket buffers are fixed before accepting clients or connecting to targets: 512 KiB per direction for clients and 1 MiB per direction for targets (Linux can account twice these sizes). A connection is refused if these bounds cannot be applied. These bounds can limit throughput on high-latency paths; measure capacity and throughput for your workload before deploying at scale.
+
 | Key | Default | Description |
 |---|---|---|
 | `udp_template` | `"/.well-known/masque/udp/{target_host}/{target_port}/"` | Path part of the CONNECT-UDP URI template (RFC 9298 §2). It must contain `{target_host}` and `{target_port}`, and requests expanded from it must parse back to the original target (for example, an unnamed `?{target_host}` in the query cannot be parsed back and is rejected). Profiles must use the same template (`network-relay profile --udp-template`). Usually left alone |
@@ -53,7 +55,7 @@ The name on the certificate must be the domain the devices connect to. If readin
 | `blocked_ports` | `[25]` | Ports devices may not reach, on both TCP and UDP. 25 is the mail port; blocking it keeps the server from being used to send spam |
 | `connect_timeout_secs` | `10` | Timeout for connecting to a target TCP service (1 to 120) |
 | `udp_idle_timeout_secs` | `300` | How long a UDP flow may go without data in either direction before it is closed (120 to 3600; RFC 4787 requires at least 2 minutes) |
-| `max_tunnels` | from memory | Limit on TCP connections and UDP flows relayed at the same time, across all users. When not set: a quarter of the server's memory at 256 KiB per tunnel, between 512 and 20000. New requests beyond it get 503. Needs a restart after a change |
+| `max_tunnels` | from memory | Limit on TCP connections and UDP flows relayed at the same time, across all users. When not set: a quarter of available host/container memory at 16 MiB per tunnel, between 1 and 20000 (32 if memory cannot be detected). New requests beyond it get 503. Needs a restart after a change |
 | `max_tunnels_per_user` | `512` | The same limit for one user, so that one device, or stolen credentials, cannot take every slot. Beyond it: 503 with `connection_limit_reached` |
 | `max_bytes_per_second_per_user` | `0` (unlimited) | Payload bytes per second one user may relay, both directions and all tunnels together, after a burst of 128 KiB. TCP tunnels slow down; UDP packets over the budget are dropped |
 | `max_udp_packets_per_second_per_user` | `0` (unlimited) | UDP packets per second one user may relay, both directions together, after a burst of 1024 |

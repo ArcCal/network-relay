@@ -301,7 +301,7 @@ struct Users {
 impl Users {
     fn holds(&self, user: &User) -> bool {
         let Some(account) = self.accounts.get(&user.name) else { return false };
-        if !account.live() {
+        if !account.live() || account.expires != user.expires {
             return false;
         }
         match user.credential.strip_prefix("sha256:") {
@@ -471,7 +471,9 @@ pub fn validate_entry(u: &UserEntry) -> Result<()> {
 
 impl Authenticator {
     pub fn new(users: &[UserEntry]) -> Result<Self> {
-        let slots = std::thread::available_parallelism().map_or(2, |n| n.get()) * 2;
+        let cpu_slots = std::thread::available_parallelism().map_or(2, |n| n.get()).saturating_mul(2);
+        let memory_slots = crate::limits::total_memory().unwrap_or(1 << 30) / 4 / (64 << 20);
+        let slots = cpu_slots.min(memory_slots.max(1) as usize);
         let auth = Self {
             users: RwLock::new(Users::default()),
             slots: Arc::new(Semaphore::new(slots)),
@@ -697,6 +699,24 @@ impl Authenticator {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn expiry_reload_invalidates_bound_and_cached_credentials() {
+        let mut entry = user("alice", "alice-password");
+        let auth = Arc::new(Authenticator::new(&[entry.clone()]).unwrap());
+        let header = basic_authorization("alice", "alice-password");
+        let conn = Conn::new();
+        let old = auth.verify(Some(header.as_bytes()), &conn.client()).await.unwrap();
+        entry.expires = Some("2027-01-01T00:00:00Z".into());
+        auth.replace(&[entry.clone()]).unwrap();
+        assert!(!auth.is_current(&old), "open tunnels must observe the new expiry");
+        let updated = auth.verify(Some(header.as_bytes()), &conn.client()).await.unwrap();
+        assert_eq!(updated.expires, Some(parse_expiry(entry.expires.as_deref().unwrap()).unwrap()));
+        entry.expires = None;
+        auth.replace(&[entry]).unwrap();
+        assert!(!auth.is_current(&updated));
+        assert_eq!(auth.verify(Some(header.as_bytes()), &conn.client()).await.unwrap().expires, None);
+    }
 
     fn user(name: &str, password: &str) -> UserEntry {
         UserEntry::with_password(name, &hash_password(password).unwrap())

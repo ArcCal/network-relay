@@ -9,6 +9,7 @@
 
 use std::collections::HashMap;
 use std::net::IpAddr;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -126,6 +127,7 @@ pub struct Connections {
     max_total: usize,
     max_per_client: usize,
     state: Mutex<(usize, HashMap<ClientKey, usize>)>,
+    memory: Option<(Arc<MemoryBudget>, u64)>,
 }
 
 /// Held for as long as a connection is open.
@@ -133,6 +135,7 @@ pub struct Connections {
 pub struct ConnectionPermit {
     limits: Arc<Connections>,
     key: ClientKey,
+    _memory: Option<MemoryPermit>,
 }
 
 impl Drop for ConnectionPermit {
@@ -150,7 +153,11 @@ impl Drop for ConnectionPermit {
 
 impl Connections {
     pub fn new(max_total: usize, max_per_client: usize) -> Arc<Self> {
-        Arc::new(Self { max_total, max_per_client, state: Mutex::default() })
+        Arc::new(Self { max_total, max_per_client, state: Mutex::default(), memory: None })
+    }
+
+    pub fn with_memory(max_total: usize, max_per_client: usize, memory: Arc<MemoryBudget>, bytes: u64) -> Arc<Self> {
+        Arc::new(Self { max_total, max_per_client, state: Mutex::default(), memory: Some((memory, bytes)) })
     }
 
     /// A permit for a new connection from `ip`, or `None` when the total or
@@ -161,9 +168,13 @@ impl Connections {
         if state.0 >= self.max_total || state.1.get(&key).copied().unwrap_or(0) >= self.max_per_client {
             return None;
         }
+        let memory = match &self.memory {
+            Some((budget, bytes)) => Some(budget.try_acquire(*bytes)?),
+            None => None,
+        };
         state.0 += 1;
         *state.1.entry(key).or_insert(0) += 1;
-        Some(ConnectionPermit { limits: self.clone(), key })
+        Some(ConnectionPermit { limits: self.clone(), key, _memory: memory })
     }
 
     /// Connections open now.
@@ -240,8 +251,12 @@ impl KeyedLimit {
             let mut keys = self.keys.lock().unwrap();
             keys.entry(key.to_string()).or_insert_with(|| Arc::new(tokio::sync::Semaphore::new(self.max))).clone()
         };
-        let permit = semaphore.acquire_owned().await.expect("never closed");
-        KeyedPermit { limit: self.clone(), key: key.to_string(), permit: Some(permit) }
+        // Construct cleanup before waiting. The acquire future drops its
+        // semaphore reference first on cancellation, then this guard removes
+        // a key whose last operation was that cancelled waiter.
+        let mut held = KeyedPermit { limit: self.clone(), key: key.to_string(), permit: None };
+        held.permit = Some(semaphore.acquire_owned().await.expect("never closed"));
+        held
     }
 
     #[cfg(test)]
@@ -321,30 +336,199 @@ impl Budget {
     }
 }
 
-/// Total memory of this machine, from /proc/meminfo (Linux).
+/// Memory available to this process: the host and every finite cgroup
+/// ancestor limit. Containers must never be sized from host memory alone.
 pub fn total_memory() -> Option<u64> {
-    let text = std::fs::read_to_string("/proc/meminfo").ok()?;
-    let line = text.lines().find(|l| l.starts_with("MemTotal:"))?;
-    let kib: u64 = line.split_whitespace().nth(1)?.parse().ok()?;
-    Some(kib * 1024)
+    let host = std::fs::read_to_string("/proc/meminfo").ok().and_then(|text| {
+        text.lines()
+            .find(|l| l.starts_with("MemTotal:"))
+            .and_then(|l| l.split_whitespace().nth(1))
+            .and_then(|kib| kib.parse::<u64>().ok())
+            .and_then(|kib| kib.checked_mul(1024))
+    });
+    let mut smallest = host;
+    let mounts = std::fs::read_to_string("/proc/self/mountinfo").unwrap_or_default();
+    let groups = std::fs::read_to_string("/proc/self/cgroup").unwrap_or_default();
+    for line in groups.lines() {
+        let fields: Vec<_> = line.splitn(3, ':').collect();
+        if fields.len() != 3 {
+            continue;
+        }
+        let (root, file, fs_type) = if fields[1].is_empty() {
+            ("/sys/fs/cgroup", "memory.max", "cgroup2")
+        } else if fields[1].split(',').any(|v| v == "memory") {
+            ("/sys/fs/cgroup/memory", "memory.limit_in_bytes", "cgroup")
+        } else {
+            continue;
+        };
+        let root = std::path::Path::new(root);
+        smallest = cgroup_memory(smallest, root, fields[2], file);
+        // Controller mounts need not use the conventional path, and may
+        // expose only a subtree. Translate the hierarchy root to the mount.
+        for (mount_root, mountpoint) in memory_mounts(&mounts, fs_type) {
+            let group = std::path::Path::new(fields[2]);
+            let relative = group.strip_prefix(&mount_root).unwrap_or(std::path::Path::new(""));
+            smallest = cgroup_memory(smallest, &mountpoint, &relative.to_string_lossy(), file);
+        }
+    }
+    smallest
+}
+
+fn memory_mounts(mountinfo: &str, fs_type: &str) -> Vec<(std::path::PathBuf, std::path::PathBuf)> {
+    fn unescape(s: &str) -> String {
+        s.replace("\\040", " ").replace("\\011", "\t").replace("\\012", "\n").replace("\\134", "\\")
+    }
+    mountinfo
+        .lines()
+        .filter_map(|line| {
+            let fields: Vec<_> = line.split_whitespace().collect();
+            let separator = fields.iter().position(|field| *field == "-")?;
+            if separator < 6 || fields.get(separator + 1)? != &fs_type {
+                return None;
+            }
+            if fs_type == "cgroup" && !fields.get(separator + 3)?.split(',').any(|option| option == "memory") {
+                return None;
+            }
+            Some((unescape(fields[3]).into(), unescape(fields[4]).into()))
+        })
+        .collect()
+}
+
+fn cgroup_memory(mut smallest: Option<u64>, root: &std::path::Path, group: &str, file: &str) -> Option<u64> {
+    let relative = std::path::Path::new(group.trim_start_matches('/'));
+    if relative.components().any(|c| !matches!(c, std::path::Component::Normal(_))) {
+        return smallest;
+    }
+    let mut dir = root.join(relative);
+    loop {
+        if let Ok(text) = std::fs::read_to_string(dir.join(file)) {
+            if let Ok(n) = text.trim().parse::<u64>() {
+                if n > 0 && n < (1 << 60) {
+                    smallest = Some(smallest.map_or(n, |old| old.min(n)));
+                }
+            }
+        }
+        if dir == root || !dir.pop() || !dir.starts_with(root) {
+            break;
+        }
+    }
+    smallest
+}
+
+/// Reserves network buffer capacity before admitting work. This is a
+/// conservative capacity reservation, not an RSS measurement. It covers
+/// both transports and application queues and survives configuration reload.
+#[derive(Debug)]
+pub struct MemoryBudget {
+    limit: u64,
+    used: AtomicU64,
+}
+
+#[derive(Debug)]
+pub struct MemoryPermit {
+    budget: Arc<MemoryBudget>,
+    bytes: u64,
+}
+
+impl MemoryBudget {
+    pub fn new(limit: u64) -> Arc<Self> {
+        Arc::new(Self { limit, used: AtomicU64::new(0) })
+    }
+    pub fn try_acquire(self: &Arc<Self>, bytes: u64) -> Option<MemoryPermit> {
+        let mut old = self.used.load(Ordering::Acquire);
+        loop {
+            let next = old.checked_add(bytes).filter(|next| *next <= self.limit)?;
+            match self.used.compare_exchange_weak(old, next, Ordering::AcqRel, Ordering::Acquire) {
+                Ok(_) => return Some(MemoryPermit { budget: self.clone(), bytes }),
+                Err(current) => old = current,
+            }
+        }
+    }
+}
+
+impl Drop for MemoryPermit {
+    fn drop(&mut self) {
+        self.budget.used.fetch_sub(self.bytes, Ordering::AcqRel);
+    }
+}
+
+/// Maximum transport capacity reserved per admitted connection. On small
+/// hosts scale the windows and stream count down together, keeping room for
+/// several clients. TLS, headers, send buffers and datagram queues are included.
+pub fn connection_memory(memory: Option<u64>) -> u64 {
+    (memory.unwrap_or(1 << 30) / 8).clamp(1 << 20, 8 << 20)
 }
 
 /// Memory planned per tunnel when sizing the default `max_tunnels`: read
 /// buffers, flow-control windows in use and kernel socket buffers.
-pub const MEMORY_PER_TUNNEL: u64 = 256 * 1024;
+pub const MEMORY_PER_TUNNEL: u64 = 16 * 1024 * 1024;
 
 /// The default `max_tunnels` for a machine with `memory` bytes: a quarter of
-/// the memory at [`MEMORY_PER_TUNNEL`] each, between 512 and 20 000.
+/// the memory at [`MEMORY_PER_TUNNEL`] each, between 1 and 20 000.
 pub fn default_max_tunnels(memory: Option<u64>) -> usize {
     match memory {
-        Some(m) => ((m / 4 / MEMORY_PER_TUNNEL) as usize).clamp(512, 20_000),
-        None => 4096,
+        Some(m) => ((m / 4 / MEMORY_PER_TUNNEL).min(20_000) as usize).max(1),
+        None => 32,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cgroup_ancestors_and_host_memory_all_constrain_capacity() {
+        let root = std::env::temp_dir().join(format!("relay-cgroup-{}", crate::auth::generate_password()));
+        std::fs::create_dir_all(root.join("parent/child")).unwrap();
+        std::fs::write(root.join("memory.max"), "max").unwrap();
+        std::fs::write(root.join("parent/memory.max"), "67108864").unwrap();
+        std::fs::write(root.join("parent/child/memory.max"), "max").unwrap();
+        assert_eq!(cgroup_memory(Some(16 << 30), &root, "/parent/child", "memory.max"), Some(64 << 20));
+        assert_eq!(cgroup_memory(Some(32 << 20), &root, "/parent/child", "memory.max"), Some(32 << 20));
+        std::fs::write(root.join("parent/child/memory.limit_in_bytes"), "33554432").unwrap();
+        std::fs::write(root.join("parent/memory.limit_in_bytes"), "9223372036854771712").unwrap();
+        assert_eq!(cgroup_memory(None, &root, "/parent/child", "memory.limit_in_bytes"), Some(32 << 20));
+        assert_eq!(cgroup_memory(None, &root, "/../../", "memory.max"), None);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn memory_controller_mounts_can_have_custom_paths_and_subtree_roots() {
+        let mounts = "29 23 0:26 /parent /custom\\040memory rw - cgroup cgroup rw,memory\n\
+                      30 23 0:27 / /cpu rw - cgroup cgroup rw,cpu\n\
+                      31 23 0:28 /container /unified rw - cgroup2 cgroup rw\n";
+        assert_eq!(memory_mounts(mounts, "cgroup"), vec![("/parent".into(), "/custom memory".into())]);
+        assert_eq!(memory_mounts(mounts, "cgroup2"), vec![("/container".into(), "/unified".into())]);
+        assert!(memory_mounts("malformed", "cgroup2").is_empty());
+    }
+
+    #[test]
+    fn network_memory_admission_is_shared_and_refunded() {
+        let memory = MemoryBudget::new(100);
+        let connections = Connections::with_memory(1000, 1000, memory.clone(), 40);
+        let first = connections.try_acquire("192.0.2.1".parse().unwrap()).unwrap();
+        let tunnel = memory.try_acquire(30).unwrap();
+        assert!(connections.try_acquire("192.0.2.2".parse().unwrap()).is_none());
+        assert_eq!(connections.open(), 1, "failed reservation must not count a connection");
+        assert!(memory.try_acquire(u64::MAX).is_none(), "overflow must not bypass the cap");
+        drop(tunnel);
+        let second = connections.try_acquire("192.0.2.2".parse().unwrap()).unwrap();
+        assert!(memory.try_acquire(21).is_none());
+        drop((first, second));
+        assert!(memory.try_acquire(100).is_some());
+    }
+
+    #[tokio::test]
+    async fn cancelling_all_keyed_waiters_removes_the_key() {
+        let limit = KeyedLimit::new(1);
+        let held = limit.acquire("alice").await;
+        let mut waiting = Box::pin(limit.acquire("alice"));
+        assert!(futures_poll(&mut waiting).is_none());
+        drop(held);
+        assert_eq!(limit.keys(), 1);
+        drop(waiting);
+        assert_eq!(limit.keys(), 0, "a cancelled last waiter must clean up its key");
+    }
 
     #[test]
     fn buckets_refill_up_to_the_burst() {
@@ -463,10 +647,11 @@ mod tests {
 
     #[test]
     fn default_tunnels_follow_memory() {
-        assert_eq!(default_max_tunnels(Some(1 << 30)), 1024);
-        assert_eq!(default_max_tunnels(Some(4 << 30)), 4096);
-        assert_eq!(default_max_tunnels(Some(256 << 20)), 512);
-        assert_eq!(default_max_tunnels(Some(1 << 40)), 20_000);
-        assert_eq!(default_max_tunnels(None), 4096);
+        assert_eq!(default_max_tunnels(Some(1 << 30)), 16);
+        assert_eq!(default_max_tunnels(Some(4 << 30)), 64);
+        assert_eq!(default_max_tunnels(Some(256 << 20)), 4);
+        assert_eq!(default_max_tunnels(Some(2 << 40)), 20_000);
+        assert_eq!(default_max_tunnels(None), 32);
+        assert_eq!(default_max_tunnels(Some(1 << 20)), 1, "no 512-tunnel floor on a tiny container");
     }
 }

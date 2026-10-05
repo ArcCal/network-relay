@@ -30,7 +30,7 @@ use tracing::{debug, info, warn};
 use crate::auth::{self, Authenticator, CacheTag, Denied, User};
 use crate::certs::{CertStore, Schedule};
 use crate::config::{Config, Web};
-use crate::limits::{Budget, Connections, KeyedLimit, TokenBucket, UserSlot, UserTunnels};
+use crate::limits::{Budget, Connections, KeyedLimit, MemoryBudget, MemoryPermit, TokenBucket, UserSlot, UserTunnels};
 use crate::policy::{Policy, Refusal, Target};
 use crate::proto::{UriTemplate, CONNECT_TCP_PROTOCOL, CONNECT_UDP_PROTOCOL};
 use crate::web::Website;
@@ -105,12 +105,14 @@ struct Inner {
     budgets: Mutex<HashMap<String, Arc<Budget>>>,
     /// Client connections, in total and per address. Fixed at start-up.
     connections: Arc<Connections>,
+    memory: Arc<MemoryBudget>,
+    connection_memory: u64,
     /// New QUIC handshakes from unvalidated addresses.
     handshakes: Mutex<TokenBucket>,
     /// Advertises HTTP/3 in responses over TCP, as websites that offer it do.
     alt_svc: HeaderValue,
     /// One-time profile links already downloaded (see `web`).
-    consumed: Arc<Mutex<std::collections::HashSet<String>>>,
+    consumed: Arc<Mutex<HashMap<String, std::time::SystemTime>>>,
     /// Set when the server is shutting down: connections send GOAWAY and
     /// close once their requests are done.
     shutdown: watch::Sender<bool>,
@@ -124,9 +126,11 @@ pub struct Relay {
 
 fn load_site(
     web: Option<&Web>,
-    consumed: &Arc<Mutex<std::collections::HashSet<String>>>,
+    consumed: &Arc<Mutex<HashMap<String, std::time::SystemTime>>>,
+    memory: &Arc<MemoryBudget>,
 ) -> Result<Option<Arc<Website>>> {
-    web.map(|w| Website::load_with(&w.root, &w.headers, consumed.clone()).map(Arc::new)).transpose()
+    web.map(|w| Website::load_with_memory(&w.root, &w.headers, consumed.clone(), Some(memory)).map(Arc::new))
+        .transpose()
 }
 
 impl Relay {
@@ -135,18 +139,28 @@ impl Relay {
         let alt_svc = HeaderValue::try_from(format!("h3=\":{}\"; ma=86400", config.listen.port())).expect("valid");
         let max_tunnels = config.relay.max_tunnels();
         let consumed = Arc::default();
+        let available_memory = crate::limits::total_memory();
+        let memory = MemoryBudget::new(available_memory.unwrap_or(1 << 30) / 2);
+        let connection_memory = crate::limits::connection_memory(available_memory);
         Ok(Self {
             inner: Arc::new(Inner {
                 settings: watch::Sender::new(Arc::new(Settings::new(config)?)),
                 auth: Arc::new(Authenticator::new(&config.users)?),
-                site: RwLock::new(load_site(config.web.as_ref(), &consumed)?),
+                site: RwLock::new(load_site(config.web.as_ref(), &consumed, &memory)?),
                 tunnels: Arc::new(Semaphore::new(max_tunnels)),
                 max_tunnels,
                 user_tunnels: Arc::default(),
                 dns_lookups: Arc::new(Semaphore::new(DNS_LOOKUPS)),
                 dns_lookups_per_user: KeyedLimit::new(DNS_LOOKUPS_PER_USER),
                 budgets: Mutex::default(),
-                connections: Connections::new(config.relay.max_connections, config.relay.max_connections_per_ip),
+                connections: Connections::with_memory(
+                    config.relay.max_connections,
+                    config.relay.max_connections_per_ip,
+                    memory.clone(),
+                    connection_memory,
+                ),
+                memory,
+                connection_memory,
                 handshakes: Mutex::new(TokenBucket::new(HANDSHAKE_RATE, HANDSHAKE_BURST)),
                 alt_svc,
                 consumed,
@@ -162,8 +176,10 @@ impl Relay {
     pub fn reload(&self, config: &Config) -> Result<()> {
         config.validate()?;
         let settings = Settings::new(config)?;
-        let site = load_site(config.web.as_ref(), &self.inner.consumed);
+        let site = load_site(config.web.as_ref(), &self.inner.consumed, &self.inner.memory);
         self.inner.auth.replace(&config.users)?;
+        let names: std::collections::HashSet<_> = config.users.iter().map(|user| user.name.as_str()).collect();
+        self.inner.budgets.lock().unwrap().retain(|name, _| names.contains(name.as_str()));
         self.inner.settings.send_replace(Arc::new(settings));
         match site {
             Ok(site) => *self.inner.site.write().unwrap() = site,
@@ -314,6 +330,9 @@ struct ConnInfo {
     active: AtomicUsize,
     idle_since: Mutex<tokio::time::Instant>,
     activity: Notify,
+    /// Upgraded HTTP/1 connections outlive hyper's connection future.
+    /// Keep admission charged until their request/tunnel state is gone.
+    connection_permit: Mutex<Option<crate::limits::ConnectionPermit>>,
 }
 
 /// Counts a request as open on its connection until dropped.
@@ -346,6 +365,7 @@ impl ConnInfo {
             active: AtomicUsize::new(0),
             idle_since: Mutex::new(tokio::time::Instant::now()),
             activity: Notify::new(),
+            connection_permit: Mutex::new(None),
         })
     }
 
@@ -486,6 +506,7 @@ struct TunnelCtx {
     budget: Option<Arc<Budget>>,
     _permit: OwnedSemaphorePermit,
     _user_slot: UserSlot,
+    _memory: MemoryPermit,
 }
 
 impl TunnelCtx {
@@ -681,6 +702,7 @@ impl Relay {
             .try_acquire(&a.user.name, settings.max_tunnels_per_user)
             .ok_or(Refusal::TooManyUserTunnels)?;
         let permit = self.inner.tunnels.clone().try_acquire_owned().map_err(|_| Refusal::TooManyTunnels)?;
+        let memory = self.inner.memory.try_acquire(crate::limits::MEMORY_PER_TUNNEL).ok_or(Refusal::TooManyTunnels)?;
         let connecting = async {
             // The user's share first, so that lookups waiting for it do not
             // hold places in the total.
@@ -730,6 +752,7 @@ impl Relay {
             budget: self.budget(&a.user.name, settings.budget),
             _permit: permit,
             _user_slot: user_slot,
+            _memory: memory,
         };
         Ok((opened, ctx))
     }
@@ -760,6 +783,10 @@ pub async fn run(config_path: PathBuf, config: Config) -> Result<()> {
     debug!(rcv, snd, "UDP socket buffers");
     let endpoint = quic_endpoint(certs.clone(), udp, config.tls.client_certificates)?;
     let tcp = TcpListener::bind(config.listen).await.with_context(|| format!("listening on TCP {}", config.listen))?;
+    // Accepted sockets inherit fixed buffer sizes, including queued clients
+    // that send data before the accept loop can admit them.
+    sys::limit_tcp_buffers(socket2::SockRef::from(&tcp), sys::CLIENT_TCP_BUFFER)
+        .context("bounding TCP listener buffers")?;
     let tcp_tls = tcp_tls_config(certs.clone(), config.tls.client_certificates)?;
     // Registered before the listeners start, so an early SIGHUP or SIGTERM is
     // handled rather than killing the process by default action.

@@ -43,6 +43,7 @@ pub const DEFAULT_BLOCKED: &[&str] = &[
     "::ffff:0:0/96",
     "64:ff9b:1::/48",
     "100::/64",
+    "100:0:0:1::/64",
     "2001:2::/48",
     "2001:10::/28",
     "2001:20::/28",
@@ -399,7 +400,7 @@ mod tests {
         assert_eq!(c.relay.blocked_ports, [25]);
         assert_eq!(c.relay.connect_timeout(), Duration::from_secs(10));
         assert_eq!(c.relay.udp_idle_timeout(), Duration::from_secs(300));
-        assert!(c.relay.max_tunnels.is_none() && (512..=20_000).contains(&c.relay.max_tunnels()));
+        assert!(c.relay.max_tunnels.is_none() && (1..=20_000).contains(&c.relay.max_tunnels()));
         assert_eq!(c.relay.max_tunnels_per_user, 512);
         assert_eq!((c.relay.max_bytes_per_second_per_user, c.relay.max_udp_packets_per_second_per_user), (0, 0));
         assert_eq!((c.relay.max_connections, c.relay.max_connections_per_ip), (16_384, 64));

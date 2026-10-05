@@ -170,6 +170,12 @@ fn check(opts: &ProfileOptions) -> Result<()> {
             .all(|c| matches!(c, '\t' | '\n' | '\r') || (c >= ' ' && c != '\u{fffe}' && c != '\u{ffff}'))),
         "the profile name contains a character XML cannot represent"
     );
+    ensure!(
+        opts.identity.as_ref().and_then(|identity| identity.password.as_deref()).is_none_or(|password| password
+            .chars()
+            .all(|c| matches!(c, '\t' | '\n' | '\r') || (c >= ' ' && c != '\u{fffe}' && c != '\u{ffff}'))),
+        "the identity password contains a character XML cannot represent"
+    );
     let template = UriTemplate::parse_path(&opts.udp_template)?;
     for var in ["target_host", "target_port"] {
         ensure!(template.has_variable(var), "the UDP template must contain {{{var}}}");
@@ -223,6 +229,8 @@ pub fn generate(opts: &ProfileOptions) -> Result<String> {
       <string>{name} identity</string>
       <key>PayloadCertificateFileName</key>
       <string>{user}.p12</string>
+      <key>KeyIsExtractable</key>
+      <false/>
 {password}      <key>PayloadContent</key>
       <data>{data}</data>
     </dict>
@@ -431,6 +439,13 @@ mod tests {
     }
 
     #[test]
+    fn identity_passwords_must_form_valid_xml() {
+        let mut o = ProfileOptions::new("relay.example.com", "iphone", "fixture");
+        o.identity = Some(IdentityPayload { p12: vec![1], password: Some("invalid\u{1}".into()) });
+        assert!(generate(&o).is_err());
+    }
+
+    #[test]
     fn precise_matching_and_device_controls_are_encoded() {
         let mut opts = ProfileOptions::new("relay.example.com", "alice", "fixture-password");
         opts.match_fqdns = vec!["API.Example.COM.".into()];
@@ -490,6 +505,7 @@ mod tests {
         let pkcs12 = &p[p.find("com.apple.security.pkcs12").unwrap()..];
         assert_eq!(uuid_of("PayloadCertificateUUID", &p), uuid_of("PayloadUUID", pkcs12));
         o.identity = Some(IdentityPayload { p12: vec![1], password: Some("p<w".into()) });
+        assert!(generate(&o).unwrap().contains("<key>KeyIsExtractable</key>\n      <false/>"));
         o.password = Some("also".into());
         let p = generate(&o).unwrap();
         assert!(p.contains("<string>p&lt;w</string>") && p.contains("AdditionalHTTPHeaderFields"));

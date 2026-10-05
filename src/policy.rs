@@ -205,7 +205,7 @@ const OWN_ADDRESSES_TTL: Duration = Duration::from_secs(10);
 /// or host firewall keeps from the internet (RFC 9298 §7).
 pub struct OwnAddresses {
     read: fn() -> std::io::Result<Vec<IpAddr>>,
-    cache: Mutex<Option<(Instant, Vec<IpAddr>)>>,
+    cache: Mutex<Option<(Instant, Option<Vec<IpAddr>>)>>,
 }
 
 impl std::fmt::Debug for OwnAddresses {
@@ -226,24 +226,25 @@ impl OwnAddresses {
     }
 
     /// The current list, read again at most every ten seconds so new
-    /// addresses are noticed. If they cannot be read, the last list is kept;
-    /// `None` when they could never be read.
+    /// addresses are noticed. Read failures are cached too and fail closed:
+    /// an old list could miss a newly added local interface.
     fn get(&self) -> Option<Vec<IpAddr>> {
         let mut cache = self.cache.lock().unwrap();
         if let Some((at, list)) = cache.as_ref() {
             if at.elapsed() < OWN_ADDRESSES_TTL {
-                return Some(list.clone());
+                return list.clone();
             }
         }
         match (self.read)() {
             Ok(list) => {
                 let list: Vec<IpAddr> = list.into_iter().map(|ip| ip.to_canonical()).collect();
-                *cache = Some((Instant::now(), list.clone()));
+                *cache = Some((Instant::now(), Some(list.clone())));
                 Some(list)
             }
             Err(e) => {
                 tracing::warn!("reading this machine's addresses: {e}");
-                cache.as_ref().map(|(_, list)| list.clone())
+                *cache = Some((Instant::now(), None));
+                None
             }
         }
     }
@@ -469,6 +470,21 @@ mod tests {
         // The real interfaces of this machine include loopback.
         let system = OwnAddresses::system().get().unwrap();
         assert!(system.iter().any(|ip| ip.is_loopback()), "{system:?}");
+    }
+
+    #[test]
+    fn a_failed_interface_refresh_does_not_trust_old_addresses_or_retry_every_request() {
+        static READS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        fn broken() -> std::io::Result<Vec<IpAddr>> {
+            READS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Err(std::io::Error::other("interface refresh failed"))
+        }
+        let own = OwnAddresses::with_reader(broken);
+        *own.cache.lock().unwrap() =
+            Some((Instant::now() - OWN_ADDRESSES_TTL, Some(vec!["203.0.113.5".parse().unwrap()])));
+        assert!(own.get().is_none());
+        assert!(own.get().is_none());
+        assert_eq!(READS.load(std::sync::atomic::Ordering::Relaxed), 1);
     }
 
     #[test]

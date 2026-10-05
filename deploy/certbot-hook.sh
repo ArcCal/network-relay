@@ -16,8 +16,13 @@ source=$(cat "$dir/source")
 if [ -n "${RENEWED_LINEAGE:-}" ] && [ "$RENEWED_LINEAGE" != "$source" ]; then
     exit 0
 fi
+trap 'rm -f "$dir/.fullchain.pem.new" "$dir/.privkey.pem.new"' EXIT HUP INT TERM
+# Stage both first. A missing/unreadable new key must not replace the old
+# certificate and leave the on-disk pair unusable on the next restart.
 for file in fullchain.pem privkey.pem; do
     install -m 640 -g "$group" "$source/$file" "$dir/.$file.new"
+done
+for file in fullchain.pem privkey.pem; do
     mv -f "$dir/.$file.new" "$dir/$file"
 done
 if systemctl is-active --quiet network-relay; then

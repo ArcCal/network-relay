@@ -28,8 +28,8 @@ type Builder = hyper::server::conn::http1::Builder;
 
 fn builder() -> Builder {
     let mut builder = Builder::new();
-    // The same bound on request headers as HTTP/2 and HTTP/3 have (32 KiB),
-    // with room for what is buffered around them.
+    // Bound the entire HTTP/1 read buffer, including headers and any bytes
+    // read ahead for the upgrade. HTTP/2 and HTTP/3 field sections use 32 KiB.
     builder.timer(TokioTimer::new()).header_read_timeout(HEADER_TIMEOUT).max_buf_size(64 * 1024);
     builder
 }
@@ -62,6 +62,10 @@ impl Relay {
                 drop(tcp);
                 continue;
             };
+            if let Err(e) = sys::limit_tcp_buffers(socket2::SockRef::from(&tcp), sys::CLIENT_TCP_BUFFER) {
+                warn!(%remote, "cannot bound client TCP buffers: {e}");
+                continue;
+            }
             if let Err(e) = sys::tune_client_tcp(socket2::SockRef::from(&tcp)) {
                 debug!(%remote, "could not set TCP options: {e}");
             }
@@ -76,6 +80,7 @@ impl Relay {
                 let h2 = tls.get_ref().1.alpn_protocol() == Some(tls::ALPN_H2);
                 let client_cert = tls::client_fingerprint(tls.get_ref().1.peer_certificates());
                 let info = ConnInfo::new(if h2 { "HTTP/2" } else { "HTTP/1.1" }, remote, client_cert);
+                *info.connection_permit.lock().unwrap() = Some(_permit);
                 if h2 {
                     if let Err(e) = relay.serve_h2(tls, info).await {
                         debug!(%remote, "HTTP/2 connection ended: {e}");
@@ -83,17 +88,27 @@ impl Relay {
                     return;
                 }
                 let shutting_down = relay.shutting_down();
+                let idle_timeout = relay.settings().idle_timeout;
+                let idle_info = info.clone();
                 let service = hyper::service::service_fn(move |req| {
                     let (relay, info) = (relay.clone(), info.clone());
-                    async move { Ok::<_, Infallible>(relay.handle_http(info, req).await) }
+                    async move {
+                        let _active = info.request_started();
+                        Ok::<_, Infallible>(relay.handle_http(info, req).await)
+                    }
                 });
                 let connection = builder.serve_connection(TokioIo::new(tls), service).with_upgrades();
-                tokio::pin!(connection, shutting_down);
+                let idle = idle_info.idle(idle_timeout);
+                tokio::pin!(connection, shutting_down, idle);
                 let result = tokio::select! {
                     result = &mut connection => result,
                     _ = &mut shutting_down => {
                         // Finishes a response under way, then closes; an
                         // upgraded tunnel has left the connection already.
+                        connection.as_mut().graceful_shutdown();
+                        connection.await
+                    }
+                    _ = &mut idle => {
                         connection.as_mut().graceful_shutdown();
                         connection.await
                     }
@@ -110,13 +125,14 @@ impl Relay {
         S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
     {
         let mut builder = h2::server::Builder::new();
+        let window = (self.inner.connection_memory / 4) as u32;
         builder
             .enable_connect_protocol()
-            .max_concurrent_streams(1024)
+            .max_concurrent_streams((self.inner.connection_memory / (256 * 1024)).max(1) as u32)
             .max_header_list_size(32 * 1024)
-            .initial_window_size(4 << 20)
-            .initial_connection_window_size(32 << 20)
-            .max_send_buffer_size(1 << 20);
+            .initial_window_size(window.min(1 << 20))
+            .initial_connection_window_size(window)
+            .max_send_buffer_size(64 * 1024);
         let mut conn = tokio::time::timeout(HEADER_TIMEOUT, builder.handshake::<_, Bytes>(io)).await??;
         let mut ping = conn.ping_pong().expect("one keepalive owner");
         let keepalive = async move {
@@ -343,7 +359,16 @@ impl Relay {
         let on_upgrade = hyper::upgrade::on(&mut req);
         let remote = info.remote;
         tokio::spawn(async move {
-            match on_upgrade.await {
+            let mut ctx = ctx;
+            let upgraded = tokio::select! {
+                biased;
+                _ = ctx.cancelled() => {
+                    opened.abort();
+                    return;
+                }
+                result = on_upgrade => result,
+            };
+            match upgraded {
                 Ok(io) => match opened {
                     Opened::Tcp(tcp) => {
                         pump::tcp_over_stream(TokioIo::new(io), tcp, ctx).await;

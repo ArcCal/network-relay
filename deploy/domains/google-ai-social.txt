@@ -1,0 +1,84 @@
+# Exact domain and all subdomains. No wildcard / IP / catch-all entries.
+# Sources, limitations and how to update: deploy/domains/README.md
+
+# Google: Search, Gemini, account sign-in, Gmail, Drive, Photos and Maps
+google.com
+google.com.hk
+google.com.tw
+google.co.jp
+google.co.uk
+googleapis.com
+gstatic.com
+googleusercontent.com
+googlemail.com
+gmail.com
+googledrive.com
+googlephotos.com
+googlemaps.com
+googleearth.com
+google.dev
+deepmind.com
+deepmind.google
+ai.google
+g.co
+goo.gl
+gemini.google
+notebooklm.google
+
+# YouTube and media/images
+youtube.com
+youtube-nocookie.com
+youtu.be
+yt.be
+ytimg.com
+googlevideo.com
+ggpht.com
+youtubei.googleapis.com
+
+# Anthropic / Claude, artifacts and MCP content
+anthropic.com
+claude.ai
+claude.com
+clau.de
+claudeusercontent.com
+claudemcpclient.com
+claudemcpcontent.com
+servd-anthropic-website.b-cdn.net
+
+# X / Twitter and Grok
+x.com
+twitter.com
+t.co
+twimg.com
+twvid.com
+tweetdeck.com
+twitteroauth.com
+twtrdns.net
+twttr.com
+twttr.net
+twitter.map.fastly.net
+grok.com
+x.ai
+grokipedia.com
+
+# OpenAI / ChatGPT: sign-in, APIs, uploads, downloads and voice
+openai.com
+chatgpt.com
+chat.com
+oaistatic.com
+oaiusercontent.com
+oaistatsig.com
+sora.com
+openai.com.cdn.cloudflare.net
+openaiapi-site.azureedge.net
+openaiassets.blob.core.windows.net
+openaicom-api-bdcpf8c6d2e9atf6.z01.azurefd.net
+openaicom.imgix.net
+openaicomproductionae4b.blob.core.windows.net
+production-openaicom-storage.azureedge.net
+chatgpt.livekit.cloud
+host.livekit.cloud
+turn.livekit.cloud
+
+# Shared login challenge used by these services; do not proxy all cloudflare.com
+challenges.cloudflare.com

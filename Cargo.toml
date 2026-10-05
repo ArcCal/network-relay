@@ -1,0 +1,63 @@
+[package]
+name = "network-relay"
+description = "Relay server for Apple's Network Relay: HTTP CONNECT for TCP and CONNECT-UDP (RFC 9298) over HTTP/3, HTTP/2 and HTTP/1.1"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/ArcCal/network-relay"
+
+[dependencies]
+anyhow = "1"
+argon2 = { version = "0.5", features = ["std"] }
+base64 = "0.22"
+bytes = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+clap = { version = "4", features = ["derive"] }
+http = "1"
+h2 = "0.4"
+# Extended CONNECT with `Protocol::CONNECT_UDP` and HTTP Datagrams are on h3
+# master but not in a released version yet, so pin a reviewed commit.
+h3 = { git = "https://github.com/hyperium/h3", rev = "43745ad87e95b0c035ac9c547aad467303213425" }
+h3-datagram = { git = "https://github.com/hyperium/h3", rev = "43745ad87e95b0c035ac9c547aad467303213425" }
+h3-quinn = { git = "https://github.com/hyperium/h3", rev = "43745ad87e95b0c035ac9c547aad467303213425", features = ["datagram"] }
+http-body-util = "0.1"
+hyper = { version = "1", features = ["client", "server", "http1", "http2"] }
+hyper-util = { version = "0.1", features = ["tokio", "server-auto", "http1", "http2"] }
+ipnet = { version = "2", features = ["serde"] }
+# Open file limit: every relayed TCP connection needs a file descriptor.
+# Terminal settings: passwords are typed without echo.
+nix = { version = "0.31", default-features = false, features = ["resource", "term"] }
+quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring", "log"] }
+ring = "0.17"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "logging"] }
+rustls-native-certs = "0.8"
+rustls-pki-types = { version = "1", features = ["std"] }
+serde = { version = "1", features = ["derive"] }
+socket2 = { version = "0.6", features = ["all"] }
+thiserror = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "signal", "sync", "io-util"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "logging"] }
+toml = "0.9"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+x509-parser = "0.18"
+
+[dev-dependencies]
+rcgen = "0.14"
+
+# Local frame-validation and idle-cancellation fixes; see vendor/*/PATCH.md.
+[patch."https://github.com/hyperium/h3"]
+h3 = { path = "vendor/h3" }
+h3-quinn = { path = "vendor/h3-quinn" }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+
+# Password hashing is deliberately expensive; unoptimized it takes seconds,
+# which slows down debug builds and tests.
+[profile.dev.package.argon2]
+opt-level = 3
+
+[profile.dev.package.blake2]
+opt-level = 3

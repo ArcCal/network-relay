@@ -1,0 +1,55 @@
+# network-relay configuration: /etc/network-relay/relay.toml
+#
+# After editing: sudo systemctl reload network-relay
+# (users, destination rules, timeouts, the website and the certificate are
+# reloaded; `listen` and `max_tunnels` need `sudo systemctl restart network-relay`).
+
+# UDP for HTTP/3 and TCP for HTTP/2 and HTTP/1.1, both on this port.
+listen = "[::]:443"
+
+# Log files in addition to the journal (one per hour, kept for 24 hours).
+# log_dir = "/var/log/network-relay"
+
+[tls]
+# Replace relay.example.com with your domain (the certificate from certbot).
+cert = "/etc/letsencrypt/live/relay.example.com/fullchain.pem"
+key = "/etc/letsencrypt/live/relay.example.com/privkey.pem"
+# The files are read again every day at 03:00, so renewed certificates
+# are picked up without a restart.
+
+# What visitors without a password see: an ordinary website.
+[web]
+root = "/var/www/relay"
+
+[relay]
+# Path of the CONNECT-UDP URI template (RFC 9298). The device profile must
+# use the same one; `network-relay profile` does by default.
+udp_template = "/.well-known/masque/udp/{target_host}/{target_port}/"
+
+# Destinations devices may not reach through the relay: this server itself,
+# private networks and other special ranges. Every address a domain
+# resolves to is checked.
+blocked_destinations = [
+    "0.0.0.0/8", "10.0.0.0/8", "100.64.0.0/10", "127.0.0.0/8", "169.254.0.0/16",
+    "172.16.0.0/12", "192.0.0.0/24", "192.0.2.0/24", "192.168.0.0/16", "198.18.0.0/15",
+    "198.51.100.0/24", "203.0.113.0/24", "224.0.0.0/4", "240.0.0.0/4",
+    "::/127", "::ffff:0:0/96", "64:ff9b:1::/48", "100::/64", "2001:db8::/32",
+    "fc00::/7", "fe80::/10", "ff00::/8",
+]
+# Port 25 (mail) is blocked so the relay cannot be used to send spam.
+blocked_ports = [25]
+
+connect_timeout_secs = 10
+udp_idle_timeout_secs = 300
+max_tunnels = 20000
+
+[debug]
+# Log every proxy request with its headers (passwords hidden). Handy to see
+# what a device sends; noisy, so turn it off again afterwards.
+log_requests = false
+
+# Users: one per device. Create with `network-relay passwd --name iphone`
+# and paste its [[user]] lines here.
+# [[user]]
+# name = "iphone"
+# password_hash = "$argon2id$v=19$..."

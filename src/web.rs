@@ -590,7 +590,7 @@ mod tests {
             let c = get(missing);
             assert_eq!((c.status, &c.body[..]), (StatusCode::OK, &b"<h1>home</h1>"[..]), "{missing}");
         }
-        for well_known in ["/.well-known/pvd", "/.well-known/", "/%2Ewell-known/masque/udp/1.2.3.4/53/"] {
+        for well_known in ["/.well-known/pvd", "/.well-known/", "/%2Ewell-known/masque/udp/192.0.2.4/53/"] {
             let c = get(well_known);
             assert_eq!((c.status, c.body.len()), (StatusCode::NOT_FOUND, 0), "{well_known}");
             assert_eq!(header(&c, HeaderName::from_static("content-security-policy")), Some("default-src 'self'"));

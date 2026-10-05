@@ -3,8 +3,8 @@ name = "h3"
 version = "0.0.8"
 rust-version = "1.74"
 authors = [
-    "Sean McArthur <sean@seanmonstar.com>",
-    "Jean-Christophe BEGUE <jc.begue@pm.me>",
+    "Sean McArthur",
+    "Jean-Christophe BEGUE",
 ]
 license = "MIT"
 edition = "2021"

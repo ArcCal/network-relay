@@ -2,25 +2,27 @@
 
 For a Debian 12 or 13, x86_64, systemd VPS (the script is still called `install-debian13.sh`). The source can be downloaded from GitHub as a ZIP, uploaded and extracted; the VPS does not need to log in to GitHub. Building still needs access to the Debian package mirrors, the official Rust download site, crates.io and the public dependency repositories.
 
-## You already have the mobileconfig delivered with this release
+## You already have a profile for your relay
 
-1. Point the A record of `relay.qolita.com` at the VPS's public IPv4 address. Set an AAAA record only if IPv6 works; in Cloudflare choose "DNS only".
+Replace `relay.example.com` with your own domain throughout these examples.
+
+1. Point the A record of `relay.example.com` at the VPS's public IPv4 address. Set an AAAA record only if IPv6 works; in Cloudflare choose "DNS only".
 2. In the cloud provider's security group, allow TCP 80, TCP 443 and UDP 443, and keep the SSH port.
-3. Extract the source ZIP, and upload the separately delivered `relay.qolita.com-iphone.mobileconfig` to `/root/` on the VPS. That file contains a random user name and password and is not in the Git repository.
+3. Extract the source ZIP, and upload your existing profile as `/root/iphone.mobileconfig` on the VPS. It contains your relay credentials; keep it private and do not commit it to Git.
 4. In the extracted source directory, run:
 
 ```bash
-sudo bash deploy/install-debian13.sh --profile /root/relay.qolita.com-iphone.mobileconfig
+sudo bash deploy/install-debian13.sh --profile /root/iphone.mobileconfig
 ```
 
 You can add `--email you@example.com` to receive mail about the certificate account; without it, an ACME account with no email is created. The automatic certificate step calls certbot with `--agree-tos`, which means accepting the Let's Encrypt terms of service. If you already have a certificate from a public CA, use `--cert /path/fullchain.pem --key /path/privkey.pem` instead: the paths are written into the configuration as given, without resolving symlinks, so Let's Encrypt `live/` paths keep working after renewal. Later upgrades do not need these two options again; the script keeps the certificate in the configuration and does not switch to certbot. Different paths are refused; to change the certificate, first edit `[tls]` in `/etc/network-relay/relay.toml`.
 
-After installation, install **the same** mobileconfig on the iPhone/iPad/Mac. Do not replace it with a separately generated file with a different password; the device and the server must use the same credentials. The server keeps no copy (only the password's hash), so delete `/root/relay.qolita.com-iphone.mobileconfig` once the device has it.
+After installation, install **the same** mobileconfig on the iPhone/iPad/Mac. Do not replace it with a separately generated file with a different password; the device and the server must use the same credentials. The server keeps no copy (only the password's hash), so delete `/root/iphone.mobileconfig` once the device has it.
 
 ## No pre-generated mobileconfig
 
 ```bash
-sudo bash deploy/install-debian13.sh --domain relay.qolita.com
+sudo bash deploy/install-debian13.sh --domain relay.example.com
 ```
 
 The script generates a new random password, creates the `iphone` user, and puts a matching profile on the relay's website behind a link that it prints. Open the link in Safari on the device within 15 minutes and install the profile; the link works once. Then delete the file the script names (under `/var/www/relay/.publish/`). The password is not printed and not kept anywhere else on the server, which stores only its hash.
@@ -79,7 +81,7 @@ Append the printed `[[user]]` lines to `/etc/network-relay/relay.toml` (for an e
 ```bash
 network-relay serve --check
 systemctl reload network-relay
-network-relay profile --host relay.qolita.com --user ipad --match-domain google.com --publish
+network-relay profile --host relay.example.com --user ipad --match-domain google.com --publish
 systemctl reload network-relay
 ```
 

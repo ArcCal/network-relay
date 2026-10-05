@@ -789,7 +789,7 @@ The following are implementation details you do not need for everyday use. For m
 "Network Relay" on Apple devices is a system feature introduced in iOS 17 and macOS 14. Once a profile is installed, the system no longer connects matching connections directly to the target, but instead:
 
 - **TCP**: sends an HTTP `CONNECT` request to the relay (`:authority` is the target's `host:port`); the relay connects to the target and answers 200, and from then on the data on the request stream is the data of that TCP connection.
-- **UDP** (including QUIC, i.e. HTTP/3 websites): sends a CONNECT-UDP request (RFC 9298) following the URI template `https://relay.qolita.com/.well-known/masque/udp/{target_host}/{target_port}/`, and UDP packets travel as HTTP datagrams (QUIC DATAGRAM frames on HTTP/3).
+- **UDP** (including QUIC, i.e. HTTP/3 websites): sends a CONNECT-UDP request (RFC 9298) following the URI template `https://relay.example.com/.well-known/masque/udp/{target_host}/{target_port}/`, and UDP packets travel as HTTP datagrams (QUIC DATAGRAM frames on HTTP/3).
 - Domain names are resolved by the **relay**: the device sends the host name, and the server looks up DNS and connects to the target, so the DNS query does not go over the local network either.
 - Every request carries the `Authorization: Basic ...` header from the profile, which the relay uses for authentication.
 

@@ -2100,7 +2100,13 @@ async fn malformed_http3_requests_are_message_errors() {
         // :protocol is only defined for CONNECT.
         &[(":method", "GET"), (":protocol", "connect-udp"), (":scheme", "https"), (":authority", "a"), (":path", "/")],
         // RFC 9114 §4.2: connection-specific fields.
-        &[(":method", "GET"), (":scheme", "https"), (":authority", "relay.test"), (":path", "/"), ("connection", "close")],
+        &[
+            (":method", "GET"),
+            (":scheme", "https"),
+            (":authority", "relay.test"),
+            (":path", "/"),
+            ("connection", "close"),
+        ],
         &[(":method", "GET"), (":scheme", "https"), (":authority", "relay.test"), (":path", "/"), ("te", "gzip")],
         &[
             (":method", "CONNECT"),

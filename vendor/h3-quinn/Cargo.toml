@@ -2,7 +2,7 @@
 name = "h3-quinn"
 version = "0.0.10"
 rust-version = "1.74"
-authors = ["Jean-Christophe BEGUE <jc.begue@pm.me>"]
+authors = ["Jean-Christophe BEGUE"]
 edition = "2021"
 documentation = "https://docs.rs/h3-quinn"
 repository = "https://github.com/hyperium/h3"

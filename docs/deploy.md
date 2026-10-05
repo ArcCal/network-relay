@@ -87,7 +87,7 @@ cd network-relay && cargo build --release
 Then (**quit proxy apps such as Clash or Stash first**, or you will be testing them):
 
 ```bash
-./target/release/network-relay check --server relay.qolita.com --user macbook
+./target/release/network-relay check --server relay.example.com --user macbook
 ```
 
 - The server runs only on Linux, but the `check` and `profile` commands also work on a Mac.
@@ -100,10 +100,10 @@ Then (**quit proxy apps such as Clash or Stash first**, or you will be testing t
 `certbot --standalone` needs TCP 80. When port 80 is taken or blocked, use DNS validation instead, which needs no ports:
 
 ```bash
-certbot certonly --manual --preferred-challenges dns -d relay.qolita.com
+certbot certonly --manual --preferred-challenges dns -d relay.example.com
 ```
 
-As prompted, add a TXT record for `_acme-challenge.relay.qolita.com` in the domain's DNS, wait a minute or two, then press Enter.
+As prompted, add a TXT record for `_acme-challenge.relay.example.com` in the domain's DNS, wait a minute or two, then press Enter.
 
 - Manual DNS validation **does not renew automatically**; you have to do it again within 90 days. If the domain is on Cloudflare, you can install `python3-certbot-dns-cloudflare` and let it complete the challenge with a Cloudflare API token, which does renew automatically.
 - The certificate files end up in the same place as with `--standalone`, so the configuration does not change.

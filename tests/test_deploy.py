@@ -527,7 +527,7 @@ GFWLIST = """[AutoProxy 0.2.9]
 ||Example.COM
 ||blocked.example/some/path
 |https://www.site.example/x
-|http://85.17.73.31/
+|http://192.0.2.31/
 .dotted.example
 bare.example
 /regex.*/

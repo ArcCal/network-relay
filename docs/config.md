@@ -187,7 +187,7 @@ Generates a profile (`.mobileconfig`) for iPhone, iPad and Mac.
 What the profile contains:
 
 - One `com.apple.relay.managed` payload (iOS 17 and macOS 14 or later; can be installed by hand, no supervision needed).
-- `HTTP3RelayURL` and `HTTP2RelayURL` are both URI templates, such as `https://relay.qolita.com/.well-known/masque/udp/{target_host}/{target_port}/`.
+- `HTTP3RelayURL` and `HTTP2RelayURL` are both URI templates, such as `https://relay.example.com/.well-known/masque/udp/{target_host}/{target_port}/`.
 - With a password, `AdditionalHTTPHeaderFields` holds `Authorization: Basic ...`, which the device sends with every request. **So the profile contains the password**; do not hand it to others. With a client certificate instead, it holds no secret except the encrypted PKCS#12.
 - Profiles are not signed. To sign one with your own certificate, so that the device shows who it is from: `openssl smime -sign -signer cert.pem -inkey key.pem -certfile chain.pem -nodetach -outform der -in relay.mobileconfig -out relay-signed.mobileconfig` (on a Mac, `security cms -S -N "certificate name" -i relay.mobileconfig -o relay-signed.mobileconfig`).
 - The identifier is the domain and the user name joined with a dot: a profile regenerated for the same domain and user replaces the old one when installed. This means a dot in the user name can "join up" with the domain: domain `relay.example` with user `com.alice` gives the same identifier as domain `relay.example.com` with user `alice`, and whichever is installed later replaces the other. When installing several relays on the same device, do not use dotted user names like this. (The way the identifier is built stays unchanged so that profiles already installed can still be replaced.)

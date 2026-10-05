@@ -62,6 +62,10 @@ impl Relay {
                 drop(tcp);
                 continue;
             };
+            if let Err(e) = sys::limit_tcp_buffers(socket2::SockRef::from(&tcp), sys::CLIENT_TCP_BUFFER) {
+                warn!(%remote, "cannot bound client TCP buffers: {e}");
+                continue;
+            }
             if let Err(e) = sys::tune_client_tcp(socket2::SockRef::from(&tcp)) {
                 debug!(%remote, "could not set TCP options: {e}");
             }

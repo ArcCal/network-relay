@@ -783,6 +783,10 @@ pub async fn run(config_path: PathBuf, config: Config) -> Result<()> {
     debug!(rcv, snd, "UDP socket buffers");
     let endpoint = quic_endpoint(certs.clone(), udp, config.tls.client_certificates)?;
     let tcp = TcpListener::bind(config.listen).await.with_context(|| format!("listening on TCP {}", config.listen))?;
+    // Accepted sockets inherit fixed buffer sizes, including queued clients
+    // that send data before the accept loop can admit them.
+    sys::limit_tcp_buffers(socket2::SockRef::from(&tcp), sys::CLIENT_TCP_BUFFER)
+        .context("bounding TCP listener buffers")?;
     let tcp_tls = tcp_tls_config(certs.clone(), config.tls.client_certificates)?;
     // Registered before the listeners start, so an early SIGHUP or SIGTERM is
     // handled rather than killing the process by default action.

@@ -8,6 +8,7 @@
 - `max_connections` now defaults to available memory at 512 KiB per connection (256 to 16384; 2048 at 1 GiB) instead of a fixed 16384. An explicit value is used as given.
 - **Slow readers**: a website or refusal response that makes no progress for 30 seconds because the client does not read it is abandoned (HTTP/2 `CANCEL`, HTTP/3 `H3_REQUEST_CANCELLED`, HTTP/1.1 closes the connection), so visitors cannot hold connections, buffers and slots open indefinitely. HTTP/2 website answers drop the unread request body before responding and send the page without copying it.
 - The listener on the IPv6 wildcard (`listen = "[::]:443"`, the default) now accepts IPv4 clients even where `net.ipv6.bindv6only = 1`, which previously made IPv4 devices fail silently, and falls back to IPv4 only on a host booted without IPv6 instead of failing to start.
+- HTTP/3 requests carrying connection-specific header fields (`Connection`, `Keep-Alive`, `Proxy-Connection`, `Transfer-Encoding`, `Upgrade`, or `TE` other than `trailers`) are malformed and reset with `H3_MESSAGE_ERROR` (RFC 9114 §4.2), as HTTP/2 already did (vendored h3 patch).
 - HTTP/3: datagrams that arrive before their stream is set up are held for at most one second (RFC 9297 §2.1); when the relay ends a UDP flow itself (idle timeout), it stops the device's sending with `H3_NO_ERROR` rather than the undefined code 0.
 
 ## 1.2.0 — 2026-10-05

@@ -88,7 +88,10 @@ impl AsyncWrite for Stream {
             Poll::Pending => {}
         }
         send.stream.reserve_capacity(bytes.len().min(64 * 1024));
-        if send.stream.capacity() == 0 {
+        // Capacity can shrink again after h2 reported an increase (the client
+        // may lower its window): wait for the next increase rather than
+        // waking at once, which would spin.
+        while send.stream.capacity() == 0 {
             match send.stream.poll_capacity(cx) {
                 Poll::Pending => return Poll::Pending,
                 Poll::Ready(Some(Err(e))) => return Poll::Ready(Err(io::Error::other(e))),
@@ -97,10 +100,6 @@ impl AsyncWrite for Stream {
             }
         }
         let n = bytes.len().min(send.stream.capacity());
-        if n == 0 {
-            cx.waker().wake_by_ref();
-            return Poll::Pending;
-        }
         send.stream.send_data(Bytes::copy_from_slice(&bytes[..n]), false).map_err(io::Error::other)?;
         Poll::Ready(Ok(n))
     }

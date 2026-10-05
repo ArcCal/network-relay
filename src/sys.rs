@@ -20,6 +20,48 @@ pub fn limit_tcp_buffers(sock: socket2::SockRef<'_>, bytes: usize) -> std::io::R
     Ok(())
 }
 
+/// Pending connections the kernel queues for the TCP listener.
+const LISTEN_BACKLOG: i32 = 1024;
+
+/// A UDP socket bound to `addr`; see [`bind_tcp`] for wildcard addresses.
+pub fn bind_udp(addr: std::net::SocketAddr) -> std::io::Result<std::net::UdpSocket> {
+    bind(addr, socket2::Type::DGRAM).map(Into::into)
+}
+
+/// A TCP listener bound to `addr`. The IPv6 wildcard (`[::]`) accepts IPv4
+/// clients as well whatever `net.ipv6.bindv6only` says, and on a host
+/// without IPv6 it falls back to the IPv4 wildcard, so the default
+/// configuration serves both families wherever it can.
+pub fn bind_tcp(addr: std::net::SocketAddr) -> std::io::Result<std::net::TcpListener> {
+    let listener: std::net::TcpListener = bind(addr, socket2::Type::STREAM)?.into();
+    listener.set_nonblocking(true)?;
+    Ok(listener)
+}
+
+fn bind(addr: std::net::SocketAddr, ty: socket2::Type) -> std::io::Result<socket2::Socket> {
+    let open = |addr: std::net::SocketAddr| -> std::io::Result<socket2::Socket> {
+        let socket = socket2::Socket::new(socket2::Domain::for_address(addr), ty, None)?;
+        if addr.is_ipv6() && addr.ip().is_unspecified() {
+            socket.set_only_v6(false)?;
+        }
+        if ty == socket2::Type::STREAM {
+            socket.set_reuse_address(true)?;
+        }
+        socket.bind(&addr.into())?;
+        if ty == socket2::Type::STREAM {
+            socket.listen(LISTEN_BACKLOG)?;
+        }
+        Ok(socket)
+    };
+    match open(addr) {
+        Err(e) if addr.is_ipv6() && addr.ip().is_unspecified() && e.raw_os_error() == Some(nix::libc::EAFNOSUPPORT) => {
+            tracing::warn!("IPv6 is not available on this host; listening on IPv4 only");
+            open(std::net::SocketAddr::new(std::net::Ipv4Addr::UNSPECIFIED.into(), addr.port()))
+        }
+        result => result,
+    }
+}
+
 /// Raises this process's soft limit on open files to `want`, or as far as the
 /// hard limit allows. Every relayed TCP connection and UDP flow needs a file
 /// descriptor; failing only costs capacity, so it is logged.
@@ -141,6 +183,28 @@ mod tests {
         let udp = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
         let (rcv, snd) = grow_buffers(socket2::SockRef::from(&udp), 1 << 20);
         assert!(rcv > 0 && snd > 0);
+    }
+
+    #[test]
+    fn wildcard_listeners_accept_both_address_families() {
+        let tcp = bind_tcp("[::]:0".parse().unwrap()).unwrap();
+        let port = tcp.local_addr().unwrap().port();
+        tcp.set_nonblocking(false).unwrap();
+        // IPv4 clients reach the IPv6 wildcard (or the IPv4 fallback).
+        let _client = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        let (_, from) = tcp.accept().unwrap();
+        assert_eq!(from.ip().to_canonical(), std::net::Ipv4Addr::LOCALHOST);
+        let udp = bind_udp("[::]:0".parse().unwrap()).unwrap();
+        let port = udp.local_addr().unwrap().port();
+        let sender = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        sender.send_to(b"ping", ("127.0.0.1", port)).unwrap();
+        udp.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        let mut buf = [0; 8];
+        let (n, from) = udp.recv_from(&mut buf).unwrap();
+        assert_eq!((&buf[..n], from.ip().to_canonical()), (&b"ping"[..], std::net::Ipv4Addr::LOCALHOST.into()));
+        // A specific address is bound as given.
+        let v4 = bind_tcp("127.0.0.1:0".parse().unwrap()).unwrap();
+        assert!(v4.local_addr().unwrap().is_ipv4());
     }
 
     #[test]

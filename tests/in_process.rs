@@ -55,6 +55,185 @@ async fn http1_upgraded_tunnel_holds_connection_admission_and_shutdown_drain() {
     task.abort();
 }
 
+fn connect_request(target: SocketAddr) -> Request<()> {
+    Request::builder()
+        .method(Method::CONNECT)
+        .uri(target.to_string())
+        .header("authorization", auth::basic_authorization(ALICE.0, ALICE.1))
+        .body(())
+        .unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn anonymous_connections_cannot_take_the_capacity_devices_need() {
+    // Version 1.2 reserved a connection's transport memory when it was
+    // accepted, before TLS: enough idle connections, from anyone, used up the
+    // whole budget, and devices could no longer connect at all.
+    let memory = network_relay::limits::total_memory().unwrap_or(1 << 30);
+    let enough = (memory / 2 / network_relay::limits::connection_memory(Some(memory))) as usize + 8;
+    let n = enough.min(3000);
+    let relay = TestRelay::start(&format!(
+        "blocked_destinations = []\nmax_connections = {}\nmax_connections_per_ip = {}",
+        n + 64,
+        n + 64
+    ))
+    .await;
+    let mut idle = Vec::with_capacity(n);
+    for _ in 0..n {
+        idle.push(tokio::net::TcpStream::connect(relay.addr).await.unwrap());
+    }
+    within("idle connections accepted", async {
+        while relay.relay.open_connections() < n {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await;
+    let (echo, task) = echo_server().await;
+    let (mut h2, _h2_driver) = raw_h2(&relay).await;
+    let (response, mut send) = h2.send_request(connect_request(echo), false).unwrap();
+    assert_eq!(within("HTTP/2 tunnel", response).await.unwrap().status(), StatusCode::OK);
+    send.send_reset(h2::Reason::CANCEL);
+    let (mut h3, _conn, _h3_driver) = raw_h3(&relay, true).await;
+    let mut stream = h3.send_request(connect_request(echo)).await.unwrap();
+    assert_eq!(within("HTTP/3 tunnel", stream.recv_response()).await.unwrap().status(), StatusCode::OK);
+    stream.stop_sending(h3::error::Code::H3_REQUEST_CANCELLED);
+    drop(idle);
+    task.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn one_connection_carries_hundreds_of_concurrent_tunnels() {
+    // A device carries all its relayed connections and flows on one HTTP/3
+    // (or HTTP/2) connection; version 1.2 allowed 32 at once.
+    let relay = TestRelay::start("blocked_destinations = []\nmax_tunnels = 2000\nmax_tunnels_per_user = 2000").await;
+    let (echo, task) = echo_server().await;
+    let (mut h3, _conn, _h3_driver) = raw_h3(&relay, true).await;
+    let mut streams = Vec::new();
+    for _ in 0..300 {
+        streams.push(within("HTTP/3 stream credit", h3.send_request(connect_request(echo))).await.unwrap());
+    }
+    for stream in &mut streams {
+        assert_eq!(within("HTTP/3 tunnel", stream.recv_response()).await.unwrap().status(), StatusCode::OK);
+    }
+    let (mut h2, _h2_driver) = raw_h2(&relay).await;
+    let mut tunnels = Vec::new();
+    for _ in 0..200 {
+        let (response, send) = h2.send_request(connect_request(echo), false).unwrap();
+        tunnels.push((response, send));
+    }
+    let mut sends = Vec::new();
+    for (response, send) in tunnels {
+        assert_eq!(within("HTTP/2 tunnel", response).await.unwrap().status(), StatusCode::OK);
+        sends.push(send);
+    }
+    assert_eq!(relay.relay.active_tunnels(), 500);
+    for mut stream in streams {
+        stream.stop_sending(h3::error::Code::H3_REQUEST_CANCELLED);
+    }
+    for mut send in sends {
+        send.send_reset(h2::Reason::CANCEL);
+    }
+    within("tunnels released", async {
+        while relay.relay.active_tunnels() != 0 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await;
+    task.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn website_responses_the_client_does_not_read_are_abandoned() {
+    let relay = TestRelay::start("").await;
+    relay.relay.set_send_stall(Duration::from_millis(300));
+    std::fs::write(relay.env.path("site/big.bin"), pattern(8 << 20)).unwrap();
+    relay.reload("", &relay.users);
+    let ca = relay.env.path("ca.pem");
+
+    // HTTP/2: no flow control credit for the response body.
+    {
+        let tls = network_relay::tls::client_config(Some(&ca), &[b"h2"]).unwrap();
+        let tcp = tokio::net::TcpStream::connect(relay.addr).await.unwrap();
+        let io = tokio_rustls::TlsConnector::from(std::sync::Arc::new(tls))
+            .connect("relay.test".try_into().unwrap(), tcp)
+            .await
+            .unwrap();
+        let (mut sender, connection) =
+            h2::client::Builder::new().initial_window_size(0).handshake::<_, Bytes>(io).await.unwrap();
+        let _driver = Driver(tokio::spawn(async move {
+            let _ = connection.await;
+        }));
+        let request = Request::builder().uri("https://relay.test/").body(()).unwrap();
+        let (response, _) = sender.send_request(request, true).unwrap();
+        let response = within("HTTP/2 website headers", response).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let error = within("HTTP/2 abandoned response", response.into_body().data()).await.unwrap().unwrap_err();
+        assert_eq!(error.reason(), Some(h2::Reason::CANCEL), "{error:?}");
+    }
+
+    // HTTP/3: little stream credit, and the client does not read.
+    {
+        let tls = network_relay::tls::client_config(Some(&ca), &[b"h3"]).unwrap();
+        let crypto = quinn::crypto::rustls::QuicClientConfig::try_from(tls).unwrap();
+        let mut config = quinn::ClientConfig::new(std::sync::Arc::new(crypto));
+        let mut transport = quinn::TransportConfig::default();
+        transport.stream_receive_window(4096u32.into());
+        config.transport_config(std::sync::Arc::new(transport));
+        let endpoint = quinn::Endpoint::client("127.0.0.1:0".parse().unwrap()).unwrap();
+        let conn = endpoint.connect_with(config, relay.addr, "relay.test").unwrap().await.unwrap();
+        let (mut driver, mut sender) =
+            h3::client::builder().build::<_, _, Bytes>(h3_quinn::Connection::new(conn.clone())).await.unwrap();
+        let _driver = Driver(tokio::spawn(async move {
+            std::future::poll_fn(|cx| driver.poll_close(cx)).await;
+        }));
+        let mut stream =
+            sender.send_request(Request::builder().uri("https://relay.test/big.bin").body(()).unwrap()).await.unwrap();
+        let _ = stream.finish().await;
+        assert_eq!(within("HTTP/3 website headers", stream.recv_response()).await.unwrap().status(), StatusCode::OK);
+        // Not reading lets the stream window run out; reading only later
+        // must find the response abandoned, not resumed.
+        tokio::time::sleep(Duration::from_millis(1000)).await;
+        let error = within("HTTP/3 abandoned response", async {
+            loop {
+                if let Err(e) = stream.recv_data().await {
+                    return e;
+                }
+            }
+        })
+        .await;
+        assert!(
+            matches!(error, h3::error::StreamError::RemoteTerminate { code } if code == h3::error::Code::H3_REQUEST_CANCELLED),
+            "{error:?}"
+        );
+        conn.close(0u32.into(), b"");
+    }
+    within("HTTP/2 and HTTP/3 connections closed", async {
+        while relay.relay.open_connections() != 0 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+
+    // HTTP/1.1: a large file the client never reads. Its receive buffer is
+    // small, so the relay's writes soon wait on it.
+    let tls = network_relay::tls::client_config(Some(&ca), &[b"http/1.1"]).unwrap();
+    let socket = tokio::net::TcpSocket::new_v4().unwrap();
+    socket.set_recv_buffer_size(4096).unwrap();
+    let tcp = socket.connect(relay.addr).await.unwrap();
+    let mut io = tokio_rustls::TlsConnector::from(std::sync::Arc::new(tls))
+        .connect("relay.test".try_into().unwrap(), tcp)
+        .await
+        .unwrap();
+    io.write_all(b"GET /big.bin HTTP/1.1\r\nHost: relay.test\r\n\r\n").await.unwrap();
+    within("HTTP/1.1 connection with an unread response closed", async {
+        while relay.relay.open_connections() != 0 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    drop(io);
+}
+
 async fn within<T>(what: &str, fut: impl std::future::Future<Output = T>) -> T {
     tokio::time::timeout(WAIT, fut).await.unwrap_or_else(|_| panic!("timed out waiting for {what}"))
 }
@@ -1920,6 +2099,18 @@ async fn malformed_http3_requests_are_message_errors() {
         &[(":method", "GET"), (":scheme", "https"), (":authority", "relay.test"), (":path", "/"), (":status", "200")],
         // :protocol is only defined for CONNECT.
         &[(":method", "GET"), (":protocol", "connect-udp"), (":scheme", "https"), (":authority", "a"), (":path", "/")],
+        // RFC 9114 §4.2: connection-specific fields.
+        &[(":method", "GET"), (":scheme", "https"), (":authority", "relay.test"), (":path", "/"), ("connection", "close")],
+        &[(":method", "GET"), (":scheme", "https"), (":authority", "relay.test"), (":path", "/"), ("te", "gzip")],
+        &[
+            (":method", "CONNECT"),
+            (":protocol", "connect-udp"),
+            (":scheme", "https"),
+            (":authority", "relay.test"),
+            (":path", udp_path),
+            ("upgrade", "connect-udp"),
+            ("authorization", &auth),
+        ],
     ];
     for fields in cases {
         assert_eq!(raw_h3_request(&conn, fields).await, Err(message_error), "{fields:?}");

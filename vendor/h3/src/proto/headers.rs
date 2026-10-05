@@ -133,6 +133,22 @@ impl Header {
             }
         }
 
+        //= https://www.rfc-editor.org/rfc/rfc9114#section-4.2
+        //# An endpoint MUST NOT generate an HTTP/3 field section containing
+        //# connection-specific fields; any message containing
+        //# connection-specific fields MUST be treated as malformed.
+        //# The only exception to this is the TE header field, which MAY be
+        //# present in an HTTP/3 request header; when it is, it MUST NOT contain
+        //# any value other than "trailers".
+        for name in ["connection", "keep-alive", "proxy-connection", "transfer-encoding", "upgrade"] {
+            if self.fields.contains_key(name) {
+                return Err(HeaderError::MalformedRequest(format!("connection-specific field {}", name)));
+            }
+        }
+        if self.fields.get_all("te").iter().any(|v| v.as_bytes() != b"trailers") {
+            return Err(HeaderError::MalformedRequest("TE other than trailers".into()));
+        }
+
         let mut uri = Uri::builder();
 
         if let Some(path) = self.pseudo.path {
@@ -943,5 +959,29 @@ mod tests {
         assert!(empty_path.map_or(true, |h| h.into_request_parts().is_err()));
         let status = request(&[(":method", "GET"), (":scheme", "https"), (":path", "/"), (":authority", "a"), (":status", "200")]).unwrap();
         assert_matches!(status.into_request_parts(), Err(HeaderError::MalformedRequest(_)));
+    }
+
+    #[test]
+    fn connection_specific_fields_are_malformed() {
+        //= https://www.rfc-editor.org/rfc/rfc9114#section-4.2
+        //= type=test
+        //# any message containing connection-specific fields MUST be treated
+        //# as malformed.
+        let base = [(":method", "GET"), (":scheme", "https"), (":path", "/"), (":authority", "a")];
+        for field in [
+            ("connection", "keep-alive"),
+            ("keep-alive", "timeout=5"),
+            ("proxy-connection", "keep-alive"),
+            ("transfer-encoding", "chunked"),
+            ("upgrade", "connect-udp"),
+            ("te", "gzip"),
+        ] {
+            let mut fields = base.to_vec();
+            fields.push(field);
+            assert_matches!(request(&fields).unwrap().into_request_parts(), Err(HeaderError::MalformedRequest(_)), "{:?}", field);
+        }
+        let mut fields = base.to_vec();
+        fields.push(("te", "trailers"));
+        assert!(request(&fields).unwrap().into_request_parts().is_ok(), "TE: trailers is allowed");
     }
 }

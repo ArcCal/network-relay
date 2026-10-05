@@ -6,6 +6,9 @@
 //! HTTP/1.1 and HTTP/2 send as DATAGRAM capsules on the stream (RFC 9297).
 //! [`Tunnel`] hides those differences from the flow logic.
 
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
+
 use bytes::{Buf, Bytes, BytesMut};
 use h3::error::Code;
 use h3::quic::StreamId;
@@ -20,8 +23,14 @@ use crate::proto::{varint, CapsuleDecoder};
 
 pub type DgramSender = DatagramSender<h3_quinn::datagram::SendDatagramHandler, Bytes>;
 
-/// Stream chunks buffered in each direction.
-const STREAM_QUEUE: usize = 16;
+/// Stream chunks read ahead from the peer, each at most [`STREAM_CHUNK`].
+const INBOUND_QUEUE: usize = 8;
+/// Capsules queued for the peer, and their total size: a burst of ordinary
+/// packets fits, while a few maximum-size UDP datagrams (64 KiB each) cannot
+/// make one flow hold much (`limits::MEMORY_PER_TUNNEL`). UDP drops what does
+/// not fit.
+const OUTBOUND_QUEUE: usize = 16;
+const OUTBOUND_BYTES: usize = 128 * 1024;
 /// Split transport buffers before queueing them: a DATA frame can be as
 /// large as an entire receive window, so a message-count limit alone is
 /// insufficient to bound memory.
@@ -125,11 +134,13 @@ impl QuicDatagrams {
 macro_rules! h3_pumps {
     ($send:ident, $recv:ident, $datagrams:ident) => {{
         let (mut send, mut recv) = ($send, $recv);
-        let (in_tx, in_rx) = mpsc::channel(STREAM_QUEUE);
-        let (out_tx, mut out_rx) = mpsc::channel::<Bytes>(STREAM_QUEUE);
+        let (in_tx, in_rx) = mpsc::channel(INBOUND_QUEUE);
+        let (out_tx, mut out_rx) = mpsc::channel::<Bytes>(OUTBOUND_QUEUE);
+        let queued = Arc::new(AtomicUsize::new(0));
+        let written = queued.clone();
         let (abort_tx, mut abort_rx) = tokio::sync::watch::channel(None::<Abort>);
         let mut read_abort = abort_rx.clone();
-        let reader = tokio::spawn(async move {
+        tokio::spawn(async move {
             let reading = async {
                 loop {
                     match recv.recv_data().await {
@@ -156,9 +167,16 @@ macro_rules! h3_pumps {
             };
             tokio::select! {
                 biased;
-                Ok(()) = read_abort.changed() => {
-                    if let Some(why) = *read_abort.borrow() {
-                        recv.stop_sending(why.h3_code());
+                // An abort carries its error code. A flow that ended on its
+                // own (the tunnel was dropped) stops the client's sending
+                // with H3_NO_ERROR; dropping the stream would use code 0.
+                changed = read_abort.changed() => {
+                    let code = match changed {
+                        Ok(()) => read_abort.borrow().map(Abort::h3_code),
+                        Err(_) => Some(Code::H3_NO_ERROR),
+                    };
+                    if let Some(code) = code {
+                        recv.stop_sending(code);
                     }
                 }
                 _ = reading => {}
@@ -168,9 +186,11 @@ macro_rules! h3_pumps {
             let aborted = {
                 let writing = async {
                     while let Some(b) = out_rx.recv().await {
+                        let len = b.len();
                         if send.send_data(b).await.is_err() {
                             return;
                         }
+                        written.fetch_sub(len, Ordering::Relaxed);
                     }
                     let _ = send.finish().await;
                 };
@@ -190,38 +210,32 @@ macro_rules! h3_pumps {
                 send.stop_stream(why.h3_code());
             }
         });
-        Self::new(in_rx, out_tx, $datagrams, reader, abort_tx)
+        Self::new(in_rx, out_tx, queued, $datagrams, abort_tx)
     }};
 }
 
 pub struct Tunnel {
     inbound: mpsc::Receiver<Result<Bytes, TunnelError>>,
     outbound: mpsc::Sender<Bytes>,
+    /// Bytes in `outbound` and in the writer, up to [`OUTBOUND_BYTES`].
+    queued: Arc<AtomicUsize>,
     decoder: CapsuleDecoder,
     datagrams: Datagrams,
-    reader: tokio::task::JoinHandle<()>,
+    /// Tells the reader and writer tasks how the tunnel ends: an abort, or,
+    /// when dropped, normally. The writer then drains what is queued and
+    /// finishes the stream; the reader stops reading.
     abort: tokio::sync::watch::Sender<Option<Abort>>,
-}
-
-impl Drop for Tunnel {
-    fn drop(&mut self) {
-        // The writer ends on its own once `outbound` is dropped, after
-        // finishing the stream gracefully.
-        if self.abort.borrow().is_none() {
-            self.reader.abort();
-        }
-    }
 }
 
 impl Tunnel {
     fn new(
         inbound: mpsc::Receiver<Result<Bytes, TunnelError>>,
         outbound: mpsc::Sender<Bytes>,
+        queued: Arc<AtomicUsize>,
         datagrams: Datagrams,
-        reader: tokio::task::JoinHandle<()>,
         abort: tokio::sync::watch::Sender<Option<Abort>>,
     ) -> Self {
-        Self { inbound, outbound, decoder: CapsuleDecoder::default(), datagrams, reader, abort }
+        Self { inbound, outbound, queued, decoder: CapsuleDecoder::default(), datagrams, abort }
     }
 
     /// Waits for the next datagram from the peer. Capsules other than
@@ -290,12 +304,25 @@ impl Tunnel {
     }
 
     fn send_datagram_capsule(&self, payload: Bytes) -> Result<Sent, TunnelError> {
+        if self.outbound.is_closed() {
+            return Err(TunnelError::Closed);
+        }
         let mut out = BytesMut::new();
         capsule::encode(types::DATAGRAM, &payload, &mut out);
+        let len = out.len();
+        if self.queued.fetch_add(len, Ordering::Relaxed) + len > OUTBOUND_BYTES {
+            self.queued.fetch_sub(len, Ordering::Relaxed);
+            return Ok(Sent::Dropped);
+        }
         match self.outbound.try_send(out.freeze()) {
             Ok(()) => Ok(Sent::Sent),
-            Err(mpsc::error::TrySendError::Full(_)) => Ok(Sent::Dropped),
-            Err(mpsc::error::TrySendError::Closed(_)) => Err(TunnelError::Closed),
+            Err(e) => {
+                self.queued.fetch_sub(len, Ordering::Relaxed);
+                match e {
+                    mpsc::error::TrySendError::Full(_) => Ok(Sent::Dropped),
+                    mpsc::error::TrySendError::Closed(_) => Err(TunnelError::Closed),
+                }
+            }
         }
     }
 
@@ -342,11 +369,13 @@ impl Tunnel {
         reset: Option<Box<dyn FnOnce(Abort) + Send>>,
     ) -> Self {
         let (mut rd, mut wr) = tokio::io::split(io);
-        let (in_tx, in_rx) = mpsc::channel(STREAM_QUEUE);
-        let (out_tx, mut out_rx) = mpsc::channel::<Bytes>(STREAM_QUEUE);
+        let (in_tx, in_rx) = mpsc::channel(INBOUND_QUEUE);
+        let (out_tx, mut out_rx) = mpsc::channel::<Bytes>(OUTBOUND_QUEUE);
+        let queued = Arc::new(AtomicUsize::new(0));
+        let written = queued.clone();
         let (abort_tx, mut abort_rx) = tokio::sync::watch::channel(None::<Abort>);
         let mut read_abort = abort_rx.clone();
-        let reader = tokio::spawn(async move {
+        tokio::spawn(async move {
             let reading = async {
                 loop {
                     let mut buf = BytesMut::with_capacity(STREAM_CHUNK);
@@ -367,7 +396,8 @@ impl Tunnel {
             };
             tokio::select! {
                 biased;
-                Ok(()) = read_abort.changed() => {}
+                // Aborted, or the tunnel was dropped.
+                _ = read_abort.changed() => {}
                 _ = reading => {}
             }
         });
@@ -378,6 +408,7 @@ impl Tunnel {
                         if wr.write_all(&b).await.is_err() {
                             return;
                         }
+                        written.fetch_sub(b.len(), Ordering::Relaxed);
                         // Flush once the queue is drained, so bursts are
                         // batched but nothing waits in a buffer.
                         if out_rx.is_empty() && wr.flush().await.is_err() {
@@ -400,7 +431,7 @@ impl Tunnel {
                 reset(why);
             }
         });
-        Self::new(in_rx, out_tx, Datagrams::Capsules, reader, abort_tx)
+        Self::new(in_rx, out_tx, queued, Datagrams::Capsules, abort_tx)
     }
 }
 
@@ -480,6 +511,94 @@ mod tests {
             let why = tokio::time::timeout(limit, rx).await.expect("blocked writer leaked").unwrap();
             assert_eq!(why, if abort { Abort::Malformed } else { Abort::Cancelled });
         }
+    }
+
+    #[tokio::test]
+    async fn dropping_a_tunnel_releases_its_stream() {
+        // A reader left behind, waiting for data that never comes, would keep
+        // the stream (and the client's request) open after the flow ended.
+        struct Marked(tokio::io::DuplexStream, #[allow(dead_code)] Arc<()>);
+        impl tokio::io::AsyncRead for Marked {
+            fn poll_read(
+                mut self: std::pin::Pin<&mut Self>,
+                cx: &mut std::task::Context<'_>,
+                buf: &mut tokio::io::ReadBuf<'_>,
+            ) -> std::task::Poll<std::io::Result<()>> {
+                std::pin::Pin::new(&mut self.0).poll_read(cx, buf)
+            }
+        }
+        impl tokio::io::AsyncWrite for Marked {
+            fn poll_write(
+                mut self: std::pin::Pin<&mut Self>,
+                cx: &mut std::task::Context<'_>,
+                data: &[u8],
+            ) -> std::task::Poll<std::io::Result<usize>> {
+                std::pin::Pin::new(&mut self.0).poll_write(cx, data)
+            }
+            fn poll_flush(
+                mut self: std::pin::Pin<&mut Self>,
+                cx: &mut std::task::Context<'_>,
+            ) -> std::task::Poll<std::io::Result<()>> {
+                std::pin::Pin::new(&mut self.0).poll_flush(cx)
+            }
+            fn poll_shutdown(
+                mut self: std::pin::Pin<&mut Self>,
+                cx: &mut std::task::Context<'_>,
+            ) -> std::task::Poll<std::io::Result<()>> {
+                std::pin::Pin::new(&mut self.0).poll_shutdown(cx)
+            }
+        }
+        let (io, _peer) = tokio::io::duplex(1024);
+        let marker = Arc::new(());
+        drop(Tunnel::stream(Marked(io, marker.clone())));
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while Arc::strong_count(&marker) > 1 {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("the tunnel's stream stayed open");
+    }
+
+    #[tokio::test]
+    async fn queued_capsules_are_bounded_in_bytes() {
+        // The peer never reads: everything stays queued.
+        let (io, _unread_peer) = tokio::io::duplex(1);
+        let mut tunnel = Tunnel::stream(io);
+        let big = datagram_of(60_000);
+        let sent = (0..10).filter(|_| tunnel.send_datagram(big.clone()).unwrap() == Sent::Sent).count();
+        assert_eq!(sent, OUTBOUND_BYTES / 60_000, "large datagrams beyond the byte limit are dropped");
+        assert!(tunnel.queued.load(Ordering::Relaxed) <= OUTBOUND_BYTES);
+        // Ordinary packets still fit in what is left, up to the count limit.
+        let small = datagram_of(100);
+        let fitting = (0..OUTBOUND_QUEUE * 2).filter(|_| tunnel.send_datagram(small.clone()).unwrap() == Sent::Sent);
+        assert!(fitting.count() >= OUTBOUND_QUEUE - sent);
+        assert!(tunnel.queued.load(Ordering::Relaxed) <= OUTBOUND_BYTES);
+    }
+
+    #[tokio::test]
+    async fn written_capsules_free_their_queue_space() {
+        let (io, mut peer) = tokio::io::duplex(1 << 20);
+        let mut tunnel = Tunnel::stream(io);
+        let big = datagram_of(60_000);
+        for _ in 0..20 {
+            // Each fits again once the writer has passed the previous ones on.
+            tokio::time::timeout(Duration::from_secs(2), async {
+                while tunnel.send_datagram(big.clone()).unwrap() != Sent::Sent {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect("queue space was never returned");
+            let mut buf = vec![0; 70_000];
+            let _ = peer.read(&mut buf).await.unwrap();
+        }
+    }
+
+    fn datagram_of(len: usize) -> Bytes {
+        let mut payload = vec![0u8; len + 1];
+        payload[0] = 0;
+        Bytes::from(payload)
     }
 
     #[tokio::test]

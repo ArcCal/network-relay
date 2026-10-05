@@ -12,7 +12,7 @@ The default location is `/etc/network-relay/relay.toml` (change it with `network
 
 | Key | Default | Description |
 |---|---|---|
-| `listen` | `"[::]:443"` | Address and port to listen on. HTTP/3 on UDP, HTTP/2 and HTTP/1.1 on TCP, on the same port. `[::]` accepts both IPv4 and IPv6. Needs a restart after a change |
+| `listen` | `"[::]:443"` | Address and port to listen on. HTTP/3 on UDP, HTTP/2 and HTTP/1.1 on TCP, on the same port. `[::]` accepts both IPv4 and IPv6 (whatever `net.ipv6.bindv6only` says; IPv4 only on a host without IPv6). Needs a restart after a change |
 | `log_dir` | not set | Directory where logs are also saved as files; must be a full path, such as `"/var/log/network-relay"`. One file per hour, kept for 24 hours. When not set, logs go only to the journal |
 
 ### `[tls]` (required)
@@ -39,13 +39,18 @@ The name on the certificate must be the domain the devices connect to. If readin
 - File symlinks may only point to public files inside the website; directory symlinks are not followed. Links pointing outside the directory or to hidden files are not published.
 - A field in `headers` with the same name overrides the default; `Content-Length`, `Transfer-Encoding`, `Connection`, `Upgrade`, `Keep-Alive`, `Proxy-Connection`, `TE` and `Trailer` cannot be set, because the protocol implementation manages them.
 - The directory is read into memory as a whole at startup and on reload (at most 1000 files, 64 MiB); after changing files, reload for them to take effect.
+- A response that makes no progress for 30 seconds because the client does not read it is abandoned (HTTP/2 and HTTP/3 reset the stream, HTTP/1.1 closes the connection), so visitors cannot hold connections open that way. Slow downloads that keep moving are not affected.
 - Without `[web]`, all such requests get 404.
 - `.mobileconfig` files are served with the profile content type (`application/x-apple-aspen-config`), so Safari offers to install them.
 - Profiles from `network-relay profile --publish` go to the hidden `.publish` directory inside `root`. Each is served at `/<its name>` once, and only within 15 minutes of being written; after that the address shows the website like any other, even across reloads. They carry credentials, so delete them afterwards (the next `--publish` also removes expired ones).
 
 ### `[relay]` (optional)
 
-Network and website buffer capacity is also admitted against one shared budget: half the smallest detected host or visible ancestor cgroup memory limit. Each TCP/QUIC client connection reserves up to 8 MiB; each tunnel reserves 16 MiB for transport, capsule queues and target socket buffers. The reservations are conservative capacity estimates, not process RSS measurements. All reservations are refunded on cancellation and closure. Raising `max_connections` or `max_tunnels` does not bypass this budget. At 1 GiB, the default tunnel limit is 16; at 4 GiB, 64. Website body allocations are also charged and retain their reservation through the last response reference, so slow clients cannot accumulate uncharged old snapshots across reloads. A reload keeps the current website if the replacement cannot fit. Password hashing and other process overhead need the remaining memory. TCP socket buffers are fixed before accepting clients or connecting to targets: 512 KiB per direction for clients and 1 MiB per direction for targets (Linux can account twice these sizes). A connection is refused if these bounds cannot be applied. These bounds can limit throughput on high-latency paths; measure capacity and throughput for your workload before deploying at scale.
+Tunnels, the connections that carry them and the website share one buffer budget: half the smallest detected host or visible ancestor cgroup memory limit. Each tunnel reserves 512 KiB, which covers the relay's own buffers for it (read buffers, queued response data, datagram and capsule queues, all bounded). An HTTP/2 or HTTP/3 connection reserves its flow-control windows and datagram buffers (8 MiB, less on hosts under 64 MiB) when it opens its first tunnel; an HTTP/1.1 connection reserves 256 KiB. Connections that have not opened a tunnel reserve nothing, so connections from anyone cannot use up what devices need; they are bounded by `max_connections`, `max_connections_per_ip` and their timeouts. The reservations are capacity estimates, not process RSS measurements, and are refunded on closure. A tunnel or connection that does not fit gets 503 (`connection_limit_reached`); raising `max_tunnels` does not bypass the budget. Website body allocations are also charged and retain their reservation through the last response reference, so slow clients cannot accumulate uncharged old snapshots across reloads. A reload keeps the current website if the replacement cannot fit. Password hashing and other process overhead need the remaining memory.
+
+Kernel socket buffers are not part of the budget: they are fixed per socket before accepting clients or connecting to targets (512 KiB per direction for clients, 1 MiB per direction for targets; Linux can account twice these sizes, and a connection is refused if these bounds cannot be applied), and Linux bounds them system-wide (`net.ipv4.tcp_mem`, `net.ipv4.udp_mem`). These bounds can limit throughput on high-latency paths; measure capacity and throughput for your workload before deploying at scale.
+
+One HTTP/3 connection may carry up to 100 requests at once until one of them authenticates, then 1024; one HTTP/2 connection 256. A device sends each relayed TCP connection and UDP flow as a request on one connection, so these are what one device can have open at once on it.
 
 | Key | Default | Description |
 |---|---|---|
@@ -55,11 +60,11 @@ Network and website buffer capacity is also admitted against one shared budget: 
 | `blocked_ports` | `[25]` | Ports devices may not reach, on both TCP and UDP. 25 is the mail port; blocking it keeps the server from being used to send spam |
 | `connect_timeout_secs` | `10` | Timeout for connecting to a target TCP service (1 to 120) |
 | `udp_idle_timeout_secs` | `300` | How long a UDP flow may go without data in either direction before it is closed (120 to 3600; RFC 4787 requires at least 2 minutes) |
-| `max_tunnels` | from memory | Limit on TCP connections and UDP flows relayed at the same time, across all users. When not set: a quarter of available host/container memory at 16 MiB per tunnel, between 1 and 20000 (32 if memory cannot be detected). New requests beyond it get 503. Needs a restart after a change |
+| `max_tunnels` | from memory | Limit on TCP connections and UDP flows relayed at the same time, across all users. When not set: a quarter of available host/container memory at 512 KiB per tunnel, between 1 and 20000 (512 at 1 GiB, 2048 at 4 GiB; memory that cannot be detected counts as 1 GiB). New requests beyond it get 503. Needs a restart after a change |
 | `max_tunnels_per_user` | `512` | The same limit for one user, so that one device, or stolen credentials, cannot take every slot. Beyond it: 503 with `connection_limit_reached` |
 | `max_bytes_per_second_per_user` | `0` (unlimited) | Payload bytes per second one user may relay, both directions and all tunnels together, after a burst of 128 KiB. TCP tunnels slow down; UDP packets over the budget are dropped |
 | `max_udp_packets_per_second_per_user` | `0` (unlimited) | UDP packets per second one user may relay, both directions together, after a burst of 1024 |
-| `max_connections` | `16384` | Client connections (TCP and QUIC) open at once. Connections beyond it are closed right away; QUIC ones are refused before their handshake. Needs a restart after a change |
+| `max_connections` | from memory | Client connections (TCP and QUIC) open at once. When not set: available host/container memory at 512 KiB per connection, between 256 and 16384 (2048 at 1 GiB). Connections beyond it are closed right away; QUIC ones are refused before their handshake. Needs a restart after a change |
 | `max_connections_per_ip` | `64` | The same limit per IPv4 address or IPv6 /64. Needs a restart after a change |
 | `idle_timeout_secs` | `300` | Close a client connection after this many seconds without an open request (30 to 3600). A connection that has not authenticated any request gets 30 seconds |
 

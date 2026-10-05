@@ -131,7 +131,7 @@ pub struct Relay {
     #[serde(default = "default_udp_idle_timeout")]
     pub udp_idle_timeout_secs: u64,
     /// Most TCP connections and UDP flows relayed at once, over all users.
-    /// Without it, sized from this machine's memory (512-20000).
+    /// Without it, sized from this machine's memory (1-20000).
     pub max_tunnels: Option<usize>,
     /// Most TCP connections and UDP flows relayed at once for one user.
     #[serde(default = "default_max_tunnels_per_user")]
@@ -144,9 +144,9 @@ pub struct Relay {
     /// 0 is unlimited.
     #[serde(default)]
     pub max_udp_packets_per_second_per_user: u64,
-    /// Most client connections (TCP and QUIC) open at once.
-    #[serde(default = "default_max_connections")]
-    pub max_connections: usize,
+    /// Most client connections (TCP and QUIC) open at once. Without it,
+    /// sized from this machine's memory (256-16384).
+    pub max_connections: Option<usize>,
     /// Most client connections open at once from one IPv4 address or IPv6
     /// /64.
     #[serde(default = "default_max_connections_per_ip")]
@@ -174,7 +174,7 @@ impl Default for Relay {
             max_tunnels_per_user: default_max_tunnels_per_user(),
             max_bytes_per_second_per_user: 0,
             max_udp_packets_per_second_per_user: 0,
-            max_connections: default_max_connections(),
+            max_connections: None,
             max_connections_per_ip: default_max_connections_per_ip(),
             idle_timeout_secs: default_idle_timeout(),
             block_own_addresses: true,
@@ -203,6 +203,11 @@ impl Relay {
     /// `max_tunnels`, or the default for this machine's memory.
     pub fn max_tunnels(&self) -> usize {
         self.max_tunnels.unwrap_or_else(|| crate::limits::default_max_tunnels(crate::limits::total_memory()))
+    }
+
+    /// `max_connections`, or the default for this machine's memory.
+    pub fn max_connections(&self) -> usize {
+        self.max_connections.unwrap_or_else(|| crate::limits::default_max_connections(crate::limits::total_memory()))
     }
 
     pub fn idle_timeout(&self) -> Duration {
@@ -287,10 +292,6 @@ fn default_max_tunnels_per_user() -> usize {
     512
 }
 
-fn default_max_connections() -> usize {
-    16_384
-}
-
 fn default_max_connections_per_ip() -> usize {
     64
 }
@@ -347,7 +348,7 @@ impl Config {
             "relay per-user traffic limits are outside the supported range"
         );
         ensure!(
-            r.max_connections >= 1 && r.max_connections_per_ip >= 1,
+            r.max_connections != Some(0) && r.max_connections_per_ip >= 1,
             "relay.max_connections and relay.max_connections_per_ip must be at least 1"
         );
         ensure!(
@@ -403,7 +404,8 @@ mod tests {
         assert!(c.relay.max_tunnels.is_none() && (1..=20_000).contains(&c.relay.max_tunnels()));
         assert_eq!(c.relay.max_tunnels_per_user, 512);
         assert_eq!((c.relay.max_bytes_per_second_per_user, c.relay.max_udp_packets_per_second_per_user), (0, 0));
-        assert_eq!((c.relay.max_connections, c.relay.max_connections_per_ip), (16_384, 64));
+        assert!(c.relay.max_connections.is_none() && (256..=16_384).contains(&c.relay.max_connections()));
+        assert_eq!(c.relay.max_connections_per_ip, 64);
         assert_eq!(c.relay.idle_timeout(), Duration::from_secs(300));
         assert!(c.relay.block_own_addresses && !c.tls.client_certificates);
     }
@@ -413,6 +415,8 @@ mod tests {
         assert_eq!(parse("[relay]\nmax_tunnels = 7").unwrap().relay.max_tunnels(), 7);
         assert!(parse("[relay]\nmax_tunnels_per_user = 0").is_err());
         assert!(parse("[relay]\nmax_connections_per_ip = 0").is_err());
+        assert!(parse("[relay]\nmax_connections = 0").is_err());
+        assert_eq!(parse("[relay]\nmax_connections = 100000").unwrap().relay.max_connections(), 100_000);
         assert!(parse("[relay]\nidle_timeout_secs = 5").is_err());
         assert!(
             parse("[relay]\nmax_bytes_per_second_per_user = 10000\nmax_udp_packets_per_second_per_user = 100").is_ok()

@@ -1,6 +1,6 @@
 //! HTTP/3 on QUIC.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::future::Future;
 use std::sync::{Arc, Mutex};
 
@@ -14,7 +14,9 @@ use quinn::{IdleTimeout, MtuDiscoveryConfig, TransportConfig, VarInt};
 use tokio::sync::{mpsc, oneshot};
 use tracing::debug;
 
-use super::{http_date, pump, ConnInfo, Incoming, Kind, Opened, Relay, HEADER_TIMEOUT};
+use super::{
+    http_date, pump, ConnInfo, Incoming, Kind, Opened, Relay, HEADER_TIMEOUT, MAX_STREAMS, MAX_STREAMS_UNAUTHENTICATED,
+};
 use crate::certs::CertStore;
 use crate::policy::Refusal;
 use crate::proto::CAPSULE_PROTOCOL_HEADER;
@@ -40,6 +42,12 @@ const FLOW_QUEUE: usize = 64;
 /// Datagrams held per connection for streams not yet set up.
 const EARLY_DATAGRAMS: usize = 64;
 const EARLY_DATAGRAM_BYTES: usize = 256 * 1024;
+/// How long they are held: RFC 9297 §2.1 asks for "on the order of a round
+/// trip" for streams not yet created.
+const EARLY_DATAGRAM_TTL: std::time::Duration = std::time::Duration::from_secs(1);
+/// Closed streams remembered per connection, so their late datagrams are
+/// dropped at once.
+const CLOSED_STREAMS: usize = 1024;
 
 /// Hands each datagram of a connection to the flow of its stream.
 #[derive(Default)]
@@ -49,10 +57,11 @@ struct Router {
     /// on long-lived connections; older late datagrams can only occupy the
     /// bounded early queue, since QUIC stream IDs are never reused.
     closed: VecDeque<StreamId>,
+    closed_set: HashSet<StreamId>,
     /// Clients may send datagrams right after the request, before the
     /// response (RFC 9298 §5); they can arrive before the relay has checked
-    /// the request. A few are held, oldest dropped first.
-    early: VecDeque<(StreamId, Bytes)>,
+    /// the request. A few are held briefly, oldest dropped first.
+    early: VecDeque<(StreamId, Bytes, std::time::Instant)>,
     early_bytes: usize,
 }
 
@@ -73,18 +82,22 @@ impl Router {
                     let _ = tx.send(());
                 }
             }
-            None if self.closed.contains(&stream_id) => {}
+            None if self.closed_set.contains(&stream_id) => {}
             Some(Flow::PendingUdp) | None => {
                 if payload.len() > EARLY_DATAGRAM_BYTES {
                     return;
                 }
-                while self.early.len() >= EARLY_DATAGRAMS || self.early_bytes + payload.len() > EARLY_DATAGRAM_BYTES {
-                    if let Some((_, dropped)) = self.early.pop_front() {
+                let now = std::time::Instant::now();
+                while self.early.front().is_some_and(|(_, _, at)| now.duration_since(*at) > EARLY_DATAGRAM_TTL)
+                    || self.early.len() >= EARLY_DATAGRAMS
+                    || self.early_bytes + payload.len() > EARLY_DATAGRAM_BYTES
+                {
+                    if let Some((_, dropped, _)) = self.early.pop_front() {
                         self.early_bytes -= dropped.len();
                     }
                 }
                 self.early_bytes += payload.len();
-                self.early.push_back((stream_id, payload));
+                self.early.push_back((stream_id, payload, now));
             }
         }
     }
@@ -97,13 +110,29 @@ impl Router {
         self.flows.insert(stream_id, flow);
         let early = std::mem::take(&mut self.early);
         self.early_bytes = 0;
-        for (id, payload) in early {
+        for (id, payload, at) in early {
             if id == stream_id {
                 self.deliver(id, payload);
             } else {
                 self.early_bytes += payload.len();
-                self.early.push_back((id, payload));
+                self.early.push_back((id, payload, at));
             }
+        }
+    }
+
+    /// Forgets a request's stream: its flow and held datagrams go, and later
+    /// datagrams for it are dropped (RFC 9297 §2.1).
+    fn close(&mut self, stream_id: StreamId) {
+        self.flows.remove(&stream_id);
+        self.early.retain(|(id, _, _)| *id != stream_id);
+        self.early_bytes = self.early.iter().map(|(_, payload, _)| payload.len()).sum();
+        if self.closed.len() == CLOSED_STREAMS {
+            if let Some(oldest) = self.closed.pop_front() {
+                self.closed_set.remove(&oldest);
+            }
+        }
+        if self.closed_set.insert(stream_id) {
+            self.closed.push_back(stream_id);
         }
     }
 }
@@ -112,9 +141,11 @@ impl Router {
 /// minus IPv6 and UDP headers).
 pub const MTU_UPPER_BOUND: u16 = 1452;
 
-/// QUIC transport settings. Every relayed TCP connection is a request
-/// stream, so a device needs many at once; stream and connection windows are
-/// sized for fast long-distance transfers.
+/// QUIC transport settings. Every relayed TCP connection and UDP flow is a
+/// request stream, so a device needs many at once: the limit starts at
+/// [`MAX_STREAMS_UNAUTHENTICATED`] and is raised to [`MAX_STREAMS`] once the
+/// connection authenticates. The connection's windows are sized from its
+/// memory reservation (`limits::connection_memory`).
 ///
 /// Packets start at QUIC's guaranteed 1200 bytes (RFC 9000 §14), so the
 /// handshake gets through on any path, including IPv6 minimum-MTU paths.
@@ -127,7 +158,7 @@ pub(super) fn transport_config() -> TransportConfig {
     let mut t = TransportConfig::default();
     let reserved = crate::limits::connection_memory(crate::limits::total_memory());
     let window = (reserved / 4) as u32;
-    t.max_concurrent_bidi_streams(VarInt::from_u32((reserved / (256 * 1024)).max(1) as u32));
+    t.max_concurrent_bidi_streams(VarInt::from_u32(MAX_STREAMS_UNAUTHENTICATED));
     t.stream_receive_window(VarInt::from_u32(window.min(1 << 20)));
     t.receive_window(VarInt::from_u32(window));
     t.send_window(u64::from(window));
@@ -229,6 +260,9 @@ impl Relay {
         .context("HTTP/3 setup")?;
         let info = ConnInfo::new("HTTP/3", remote, client_cert);
         *info.connection_permit.lock().unwrap() = Some(permit);
+        let raise = conn.clone();
+        *info.on_authenticated.lock().unwrap() =
+            Some(Box::new(move || raise.set_max_concurrent_bi_streams(VarInt::from_u32(MAX_STREAMS))));
         let idle_timeout = self.settings().idle_timeout;
 
         // Exactly one datagram reader per connection; it hands each datagram
@@ -375,7 +409,7 @@ impl Relay {
             tokio::select! {
                 biased;
                 _ = &mut peer_closed => {},
-                _ = send_cover(&mut stream, cover) => {}
+                _ = send_cover(&mut stream, cover, self.send_stall()) => {}
             }
             return;
         };
@@ -404,7 +438,7 @@ impl Relay {
         };
         let (opened, mut ctx) = match opened {
             Ok(o) => o,
-            Err(refusal) => return send_refusal(stream, &refusal).await,
+            Err(refusal) => return send_refusal(stream, &refusal, self.send_stall()).await,
         };
         ctx.peer_closed = peer_closed;
         let mut resp = Response::builder().status(StatusCode::OK).header(DATE, http_date());
@@ -461,14 +495,7 @@ struct RouteGuard {
 
 impl Drop for RouteGuard {
     fn drop(&mut self) {
-        let mut router = self.routes.lock().unwrap();
-        router.flows.remove(&self.stream_id);
-        router.early.retain(|(id, _)| *id != self.stream_id);
-        router.early_bytes = router.early.iter().map(|(_, payload)| payload.len()).sum();
-        if router.closed.len() == 1024 {
-            router.closed.pop_front();
-        }
-        router.closed.push_back(self.stream_id);
+        self.routes.lock().unwrap().close(self.stream_id);
     }
 }
 
@@ -508,7 +535,11 @@ fn abort_datagram(stream: &mut H3Stream) {
     stream.stop_sending(h3::error::Code::H3_DATAGRAM_ERROR);
 }
 
-async fn send_cover(stream: &mut H3Stream, cover: Cover) {
+/// Body bytes handed to the transport at a time, so that a response the
+/// client stops reading is noticed within one [`super::SEND_STALL`].
+const SEND_CHUNK: usize = 64 * 1024;
+
+async fn send_cover(stream: &mut H3Stream, cover: Cover, stall: std::time::Duration) {
     // The answer never depends on a request body: stop the client sending
     // one, with the code RFC 9114 §4.1.2 asks for (dropping the stream
     // unread would send code 0).
@@ -517,16 +548,10 @@ async fn send_cover(stream: &mut H3Stream, cover: Cover) {
     for (name, value) in cover.headers {
         resp = resp.header(name, value);
     }
-    if stream.send_response(resp.body(()).expect("valid")).await.is_err() {
-        return;
-    }
-    if !cover.body.is_empty() && stream.send_data(cover.body).await.is_err() {
-        return;
-    }
-    let _ = stream.finish().await;
+    send_response(stream, resp.body(()).expect("valid"), cover.body, stall).await;
 }
 
-async fn send_refusal(mut stream: H3Stream, refusal: &Refusal) {
+async fn send_refusal(mut stream: H3Stream, refusal: &Refusal, stall: std::time::Duration) {
     stream.stop_sending(h3::error::Code::H3_NO_ERROR);
     let resp = Response::builder()
         .status(refusal.status())
@@ -534,15 +559,35 @@ async fn send_refusal(mut stream: H3Stream, refusal: &Refusal) {
         .header("proxy-status", refusal.proxy_status())
         .body(())
         .expect("valid");
-    if stream.send_response(resp).await.is_ok() {
-        let _ = stream.finish().await;
+    send_response(&mut stream, resp, Bytes::new(), stall).await;
+}
+
+/// Sends a complete response. A client that leaves it unread (no flow
+/// control credit) for `stall` gets the stream reset with
+/// H3_REQUEST_CANCELLED instead of holding it open.
+async fn send_response(stream: &mut H3Stream, resp: Response<()>, mut body: Bytes, stall: std::time::Duration) {
+    let sent = async {
+        tokio::time::timeout(stall, stream.send_response(resp)).await.ok()?.ok()?;
+        while !body.is_empty() {
+            let chunk = body.split_to(body.len().min(SEND_CHUNK));
+            tokio::time::timeout(stall, stream.send_data(chunk)).await.ok()?.ok()?;
+        }
+        tokio::time::timeout(stall, stream.finish()).await.ok()?.ok()
+    }
+    .await;
+    if sent.is_none() {
+        stream.stop_stream(h3::error::Code::H3_REQUEST_CANCELLED);
     }
 }
 
 async fn dispatch_datagrams(mut reader: DgramReader, routes: Routes) {
     while let Ok(datagram) = reader.read_datagram().await {
         let stream_id = datagram.stream_id();
-        routes.lock().unwrap().deliver(stream_id, datagram.into_payload());
+        // The payload is a slice of the buffer Quinn received the packet in,
+        // which can hold a whole batch of packets: copy it, so a queued
+        // datagram holds only its own bytes.
+        let payload = Bytes::copy_from_slice(&datagram.into_payload());
+        routes.lock().unwrap().deliver(stream_id, payload);
     }
 }
 
@@ -580,6 +625,36 @@ mod tests {
         let (tx, _rx) = mpsc::channel(8);
         r.add(id(12), tx);
         assert_eq!(r.early_bytes, 0, "registering the flow refunds early capacity");
+    }
+
+    #[test]
+    fn early_datagrams_are_held_only_briefly() {
+        let mut r = Router::default();
+        let Some(long_ago) = std::time::Instant::now().checked_sub(EARLY_DATAGRAM_TTL * 2) else { return };
+        r.early.push_back((id(4), Bytes::from_static(b"stale"), long_ago));
+        r.early_bytes = 5;
+        r.deliver(id(8), Bytes::from_static(b"fresh"));
+        assert_eq!(r.early.len(), 1, "a datagram older than the hold time is dropped");
+        assert_eq!(r.early_bytes, 5);
+        let (tx, mut rx) = mpsc::channel(8);
+        r.add(id(4), tx);
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn closed_streams_drop_late_datagrams_and_stay_bounded() {
+        let mut r = Router::default();
+        r.deliver(id(0), Bytes::from_static(b"held"));
+        r.close(id(0));
+        assert!(r.early.is_empty() && r.early_bytes == 0);
+        r.deliver(id(0), Bytes::from_static(b"late"));
+        assert!(r.early.is_empty(), "late datagrams for a closed stream are dropped");
+        for n in 1..=(CLOSED_STREAMS as u64 + 10) {
+            r.close(id(n * 4));
+        }
+        assert_eq!(r.closed.len(), CLOSED_STREAMS);
+        assert_eq!(r.closed_set.len(), CLOSED_STREAMS);
+        assert!(!r.closed_set.contains(&id(0)), "the oldest are forgotten");
     }
 
     #[test]

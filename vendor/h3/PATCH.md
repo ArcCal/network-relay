@@ -17,7 +17,10 @@ Original source and MIT license retained. Changes are confined to:
   in a request, a classic CONNECT with `:scheme` or `:path` or without
   `:authority`, an extended CONNECT without `:scheme`, `:path` or
   `:authority`, `:protocol` without CONNECT, other requests without `:scheme`
-  or `:path`, and an empty `:path`. A `:protocol` token the library does not
+  or `:path`, an empty `:path`, and connection-specific fields
+  (`Connection`, `Keep-Alive`, `Proxy-Connection`, `Transfer-Encoding`,
+  `Upgrade`, `TE` other than `trailers`; RFC 9114 section 4.2, as h2 checks
+  for HTTP/2). A `:protocol` token the library does not
   know (`connect-tcp`, say) is passed to the server as `ext::OtherProtocol`
   instead of failing the request, so the application can answer it (501).
   Upstream accepted most of these malformed forms.

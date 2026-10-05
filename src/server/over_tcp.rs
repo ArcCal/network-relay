@@ -1,7 +1,11 @@
 //! HTTP/2 and HTTP/1.1 over TLS on TCP.
 
 use std::convert::Infallible;
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::task::{Context, Poll};
 use std::time::Duration;
 
 use anyhow::Result;
@@ -10,10 +14,11 @@ use http::header::{ALT_SVC, CONNECTION, DATE, HOST, UPGRADE};
 use http::{Method, Request, Response, StatusCode};
 use http_body_util::Full;
 use hyper_util::rt::{TokioIo, TokioTimer};
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::TcpListener;
 use tracing::{debug, warn};
 
-use super::{http_date, pump, ConnInfo, Incoming, Kind, Opened, Relay, HEADER_TIMEOUT};
+use super::{http_date, pump, ConnInfo, Incoming, Kind, Opened, Relay, HEADER_TIMEOUT, MAX_STREAMS_HTTP2};
 use crate::certs::CertStore;
 use crate::proto::{CAPSULE_PROTOCOL_HEADER, CONNECT_UDP_PROTOCOL};
 use crate::tunnel::Tunnel;
@@ -32,6 +37,95 @@ fn builder() -> Builder {
     // read ahead for the upgrade. HTTP/2 and HTTP/3 field sections use 32 KiB.
     builder.timer(TokioTimer::new()).header_read_timeout(HEADER_TIMEOUT).max_buf_size(64 * 1024);
     builder
+}
+
+/// An HTTP/1.1 connection's TLS stream. A write that makes no progress for
+/// `stall`, because the client does not read, fails, which ends the
+/// connection: HTTP/1.1 has no other way to give up on a response. Once the
+/// connection carries a tunnel, writes wait as long as TCP allows.
+struct StallGuard<S> {
+    io: S,
+    conn: Arc<ConnInfo>,
+    stall: Duration,
+    stalled: Option<Pin<Box<tokio::time::Sleep>>>,
+}
+
+impl<S> StallGuard<S> {
+    /// Called when a write is pending: whether it has waited too long.
+    fn poll_stalled(&mut self, cx: &mut Context<'_>) -> Poll<std::io::Error> {
+        if self.conn.tunnel.load(Ordering::Relaxed) {
+            self.stalled = None;
+            return Poll::Pending;
+        }
+        let stall = self.stall;
+        let timer = self.stalled.get_or_insert_with(|| Box::pin(tokio::time::sleep(stall)));
+        std::task::ready!(timer.as_mut().poll(cx));
+        Poll::Ready(std::io::Error::new(std::io::ErrorKind::TimedOut, "the client stopped reading"))
+    }
+
+    fn progress<T>(&mut self, cx: &mut Context<'_>, polled: Poll<std::io::Result<T>>) -> Poll<std::io::Result<T>> {
+        match polled {
+            Poll::Ready(result) => {
+                self.stalled = None;
+                Poll::Ready(result)
+            }
+            Poll::Pending => self.poll_stalled(cx).map(Err),
+        }
+    }
+}
+
+impl<S: AsyncRead + Unpin> AsyncRead for StallGuard<S> {
+    fn poll_read(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut ReadBuf<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.io).poll_read(cx, buf)
+    }
+}
+
+impl<S: AsyncWrite + Unpin> AsyncWrite for StallGuard<S> {
+    fn poll_write(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<std::io::Result<usize>> {
+        let polled = Pin::new(&mut self.io).poll_write(cx, buf);
+        self.progress(cx, polled)
+    }
+
+    fn poll_write_vectored(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        bufs: &[std::io::IoSlice<'_>],
+    ) -> Poll<std::io::Result<usize>> {
+        let polled = Pin::new(&mut self.io).poll_write_vectored(cx, bufs);
+        self.progress(cx, polled)
+    }
+
+    fn is_write_vectored(&self) -> bool {
+        self.io.is_write_vectored()
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        let polled = Pin::new(&mut self.io).poll_flush(cx);
+        self.progress(cx, polled)
+    }
+
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        let polled = Pin::new(&mut self.io).poll_shutdown(cx);
+        self.progress(cx, polled)
+    }
+}
+
+/// Sends a response body as slices of the website's own buffers, as the
+/// client's flow control allows. A client that grants no credit, or stops
+/// reading, for `stall` gets an error instead of holding the stream.
+async fn send_body(send: &mut h2::SendStream<Bytes>, mut body: Bytes, stall: Duration) -> Result<(), ()> {
+    while !body.is_empty() {
+        send.reserve_capacity(body.len());
+        let granted = match tokio::time::timeout(stall, std::future::poll_fn(|cx| send.poll_capacity(cx))).await {
+            Ok(Some(Ok(granted))) => granted,
+            _ => return Err(()),
+        };
+        if granted > 0 {
+            let chunk = body.split_to(granted.min(body.len()));
+            send.send_data(chunk, body.is_empty()).map_err(|_| ())?;
+        }
+    }
+    Ok(())
 }
 
 impl Relay {
@@ -90,6 +184,7 @@ impl Relay {
                 let shutting_down = relay.shutting_down();
                 let idle_timeout = relay.settings().idle_timeout;
                 let idle_info = info.clone();
+                let io = StallGuard { io: tls, conn: info.clone(), stall: relay.send_stall(), stalled: None };
                 let service = hyper::service::service_fn(move |req| {
                     let (relay, info) = (relay.clone(), info.clone());
                     async move {
@@ -97,7 +192,7 @@ impl Relay {
                         Ok::<_, Infallible>(relay.handle_http(info, req).await)
                     }
                 });
-                let connection = builder.serve_connection(TokioIo::new(tls), service).with_upgrades();
+                let connection = builder.serve_connection(TokioIo::new(io), service).with_upgrades();
                 let idle = idle_info.idle(idle_timeout);
                 tokio::pin!(connection, shutting_down, idle);
                 let result = tokio::select! {
@@ -128,7 +223,7 @@ impl Relay {
         let window = (self.inner.connection_memory / 4) as u32;
         builder
             .enable_connect_protocol()
-            .max_concurrent_streams((self.inner.connection_memory / (256 * 1024)).max(1) as u32)
+            .max_concurrent_streams(MAX_STREAMS_HTTP2)
             .max_header_list_size(32 * 1024)
             .initial_window_size(window.min(1 << 20))
             .initial_connection_window_size(window)
@@ -216,6 +311,11 @@ impl Relay {
         };
         let Some(authorized) = authorized else {
             let cover = web::cover(self.site().as_deref(), req.method(), req.uri().path(), is_connect);
+            // The answer never depends on a request body: drop it now, which
+            // frees what the client sent and its flow control credit (h2
+            // resets the rest with NO_ERROR once the response is complete,
+            // RFC 9113 §8.1).
+            drop(req);
             let mut resp = Response::builder()
                 .status(cover.status)
                 .header(DATE, http_date())
@@ -223,12 +323,9 @@ impl Relay {
             for (name, value) in cover.headers {
                 resp = resp.header(name, value);
             }
-            let send = response.send_response(resp.body(())?, cover.body.is_empty())?;
-            if !cover.body.is_empty() {
-                let (mut stream, _) = super::h2_stream::Stream::new(req.into_body(), send);
-                use tokio::io::AsyncWriteExt;
-                stream.write_all(&cover.body).await?;
-                stream.shutdown().await?;
+            let mut send = response.send_response(resp.body(())?, cover.body.is_empty())?;
+            if !cover.body.is_empty() && send_body(&mut send, cover.body, self.send_stall()).await.is_err() {
+                send.send_reset(h2::Reason::CANCEL);
             }
             return Ok(());
         };
@@ -358,6 +455,7 @@ impl Relay {
         };
         let on_upgrade = hyper::upgrade::on(&mut req);
         let remote = info.remote;
+        info.tunnel.store(true, Ordering::Relaxed);
         tokio::spawn(async move {
             let mut ctx = ctx;
             let upgraded = tokio::select! {

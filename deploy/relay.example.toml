@@ -55,14 +55,17 @@ udp_idle_timeout_secs = 300
 # Limits. A device with stolen credentials, or a flood of connections, can
 # use only a share of the server.
 # Most TCP connections and UDP flows at once, over all users. Without it,
-# a quarter of available host/container memory at 16 MiB per tunnel (1-20000).
+# a quarter of available host/container memory at 512 KiB per tunnel
+# (1-20000; 512 at 1 GiB).
 # max_tunnels = 4096
 max_tunnels_per_user = 512
 # Per-user traffic, both directions together; 0 is unlimited.
 max_bytes_per_second_per_user = 0
 max_udp_packets_per_second_per_user = 0
 # Client connections (TCP and QUIC), overall and per IPv4 address or IPv6 /64.
-max_connections = 16384
+# Without max_connections, available memory at 512 KiB per connection
+# (256-16384; 2048 at 1 GiB).
+# max_connections = 16384
 max_connections_per_ip = 64
 # Close a connection after this long without a request (unauthenticated
 # connections: 30 seconds).

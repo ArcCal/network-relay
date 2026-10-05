@@ -127,8 +127,10 @@ pub struct Relay {
 fn load_site(
     web: Option<&Web>,
     consumed: &Arc<Mutex<HashMap<String, std::time::SystemTime>>>,
+    memory: &Arc<MemoryBudget>,
 ) -> Result<Option<Arc<Website>>> {
-    web.map(|w| Website::load_with(&w.root, &w.headers, consumed.clone()).map(Arc::new)).transpose()
+    web.map(|w| Website::load_with_memory(&w.root, &w.headers, consumed.clone(), Some(memory)).map(Arc::new))
+        .transpose()
 }
 
 impl Relay {
@@ -144,7 +146,7 @@ impl Relay {
             inner: Arc::new(Inner {
                 settings: watch::Sender::new(Arc::new(Settings::new(config)?)),
                 auth: Arc::new(Authenticator::new(&config.users)?),
-                site: RwLock::new(load_site(config.web.as_ref(), &consumed)?),
+                site: RwLock::new(load_site(config.web.as_ref(), &consumed, &memory)?),
                 tunnels: Arc::new(Semaphore::new(max_tunnels)),
                 max_tunnels,
                 user_tunnels: Arc::default(),
@@ -174,7 +176,7 @@ impl Relay {
     pub fn reload(&self, config: &Config) -> Result<()> {
         config.validate()?;
         let settings = Settings::new(config)?;
-        let site = load_site(config.web.as_ref(), &self.inner.consumed);
+        let site = load_site(config.web.as_ref(), &self.inner.consumed, &self.inner.memory);
         self.inner.auth.replace(&config.users)?;
         let names: std::collections::HashSet<_> = config.users.iter().map(|user| user.name.as_str()).collect();
         self.inner.budgets.lock().unwrap().retain(|name, _| names.contains(name.as_str()));

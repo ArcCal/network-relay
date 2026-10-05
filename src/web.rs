@@ -55,6 +55,26 @@ struct StaticFile {
     last_modified: HeaderValue,
 }
 
+/// Cloned response bodies can outlive their Website snapshot. Charge the
+/// allocation until the last Bytes reference is gone, including slow peers.
+struct ReservedFile {
+    body: Vec<u8>,
+    _memory: crate::limits::MemoryPermit,
+}
+
+impl AsRef<[u8]> for ReservedFile {
+    fn as_ref(&self) -> &[u8] {
+        &self.body
+    }
+}
+
+fn file_bytes(body: Vec<u8>, memory: Option<crate::limits::MemoryPermit>) -> Bytes {
+    match memory {
+        Some(memory) => Bytes::from_owner(ReservedFile { body, _memory: memory }),
+        None => body.into(),
+    }
+}
+
 /// A static website held in memory.
 pub struct Website {
     files: HashMap<String, StaticFile>,
@@ -88,10 +108,19 @@ impl Website {
         extra_headers: &BTreeMap<String, String>,
         consumed: Arc<Mutex<HashMap<String, SystemTime>>>,
     ) -> Result<Self> {
+        Self::load_with_memory(root, extra_headers, consumed, None)
+    }
+
+    pub(crate) fn load_with_memory(
+        root: &Path,
+        extra_headers: &BTreeMap<String, String>,
+        consumed: Arc<Mutex<HashMap<String, SystemTime>>>,
+        memory: Option<&Arc<crate::limits::MemoryBudget>>,
+    ) -> Result<Self> {
         let root = root.canonicalize().with_context(|| format!("resolving website {}", root.display()))?;
         let mut files = HashMap::new();
         let mut total = 0u64;
-        read_dir(&root, &root, &mut files, &mut total)
+        read_dir(&root, &root, &mut files, &mut total, memory)
             .with_context(|| format!("reading website {}", root.display()))?;
         ensure!(files.contains_key("index.html"), "website {} has no index.html", root.display());
         let mut headers = vec![
@@ -121,7 +150,7 @@ impl Website {
         let one_time = {
             let mut already_served = consumed.lock().unwrap();
             already_served.retain(|_, expires| *expires > SystemTime::now());
-            read_published(&root, &already_served)
+            read_published(&root, &already_served, memory)
         };
         Ok(Self { files, headers, one_time: Mutex::new(one_time), consumed })
     }
@@ -265,7 +294,13 @@ fn percent_decode(s: &str) -> Option<String> {
     String::from_utf8(out).ok()
 }
 
-fn read_dir(root: &Path, dir: &Path, files: &mut HashMap<String, StaticFile>, total: &mut u64) -> Result<()> {
+fn read_dir(
+    root: &Path,
+    dir: &Path,
+    files: &mut HashMap<String, StaticFile>,
+    total: &mut u64,
+    memory: Option<&Arc<crate::limits::MemoryBudget>>,
+) -> Result<()> {
     for entry in std::fs::read_dir(dir).with_context(|| format!("listing {}", dir.display()))? {
         let entry = entry?;
         let Some(name) = entry.file_name().to_str().map(str::to_string) else { continue };
@@ -284,7 +319,7 @@ fn read_dir(root: &Path, dir: &Path, files: &mut HashMap<String, StaticFile>, to
         if meta.is_dir() {
             // Following directory symlinks could loop.
             if !entry.file_type()?.is_symlink() {
-                read_dir(root, &path, files, total)?;
+                read_dir(root, &path, files, total, memory)?;
             }
             continue;
         }
@@ -311,11 +346,17 @@ fn read_dir(root: &Path, dir: &Path, files: &mut HashMap<String, StaticFile>, to
         if !opened_file(&file).is_some_and(|opened| public_under(root, &opened)) {
             continue;
         }
-        ensure!(file.metadata()?.is_file(), "{} is no longer a regular file", path.display());
-        let mut body = Vec::new();
-        file.take(MAX_TOTAL_BYTES - *total + 1)
-            .read_to_end(&mut body)
-            .with_context(|| format!("reading {}", path.display()))?;
+        let opened_meta = file.metadata()?;
+        ensure!(opened_meta.is_file(), "{} is no longer a regular file", path.display());
+        let len = opened_meta.len();
+        ensure!(len <= MAX_TOTAL_BYTES - *total, "website exceeds its size limit");
+        let reserved = memory
+            .map(|budget| budget.try_acquire(len + 1 + 4096))
+            .map(|permit| permit.context("website buffer capacity budget exceeded"))
+            .transpose()?;
+        let mut body = Vec::with_capacity((len + 1) as usize);
+        file.take(len + 1).read_to_end(&mut body).with_context(|| format!("reading {}", path.display()))?;
+        ensure!(body.len() as u64 <= len, "{} grew while loading", path.display());
         *total += body.len() as u64;
         ensure!(*total <= MAX_TOTAL_BYTES, "more than {} MiB of files", MAX_TOTAL_BYTES >> 20);
         let rel = path.strip_prefix(root).expect("under root");
@@ -324,7 +365,7 @@ fn read_dir(root: &Path, dir: &Path, files: &mut HashMap<String, StaticFile>, to
         let last_modified = HeaderValue::try_from(modified.format("%a, %d %b %Y %H:%M:%S GMT").to_string())
             .expect("date is a valid header value");
         let (content_type, cache_control) = file_type(&key);
-        files.insert(key, StaticFile { body: body.into(), content_type, cache_control, last_modified });
+        files.insert(key, StaticFile { body: file_bytes(body, reserved), content_type, cache_control, last_modified });
     }
     Ok(())
 }
@@ -332,7 +373,11 @@ fn read_dir(root: &Path, dir: &Path, files: &mut HashMap<String, StaticFile>, to
 /// Reads the published profiles that are still valid and not downloaded
 /// yet. Only regular files directly in `.publish` count; anything odd is
 /// skipped rather than failing the website.
-fn read_published(root: &Path, consumed: &HashMap<String, SystemTime>) -> HashMap<String, (StaticFile, SystemTime)> {
+fn read_published(
+    root: &Path,
+    consumed: &HashMap<String, SystemTime>,
+    memory: Option<&Arc<crate::limits::MemoryBudget>>,
+) -> HashMap<String, (StaticFile, SystemTime)> {
     let mut out = HashMap::new();
     let mut total = 0;
     let Ok(entries) = std::fs::read_dir(root.join(PUBLISH_DIR)) else { return out };
@@ -360,12 +405,23 @@ fn read_published(root: &Path, consumed: &HashMap<String, SystemTime>) -> HashMa
         if !opened_file(&file).is_some_and(|p| p.parent() == Some(root.join(PUBLISH_DIR).as_path())) {
             continue;
         }
-        if !file.metadata().is_ok_and(|meta| meta.is_file()) {
+        let Ok(opened_meta) = file.metadata() else { continue };
+        if !opened_meta.is_file() || opened_meta.len() > MAX_PUBLISHED_BYTES {
             continue;
         }
-        let mut body = Vec::new();
-        if file.take(MAX_PUBLISHED_BYTES + 1).read_to_end(&mut body).is_err() || body.len() as u64 > MAX_PUBLISHED_BYTES
-        {
+        let len = opened_meta.len();
+        let reserved = match memory {
+            None => None,
+            Some(budget) => match budget.try_acquire(len + 1 + 4096) {
+                Some(permit) => Some(permit),
+                None => {
+                    tracing::warn!("published profile buffer capacity budget exceeded");
+                    break;
+                }
+            },
+        };
+        let mut body = Vec::with_capacity((len + 1) as usize);
+        if file.take(len + 1).read_to_end(&mut body).is_err() || body.len() as u64 > len {
             continue;
         }
         total += body.len() as u64;
@@ -379,7 +435,10 @@ fn read_published(root: &Path, consumed: &HashMap<String, SystemTime>) -> HashMa
                 .to_string(),
         )
         .expect("date is a valid header value");
-        out.insert(name, (StaticFile { body: body.into(), content_type, cache_control, last_modified }, expires));
+        out.insert(
+            name,
+            (StaticFile { body: file_bytes(body, reserved), content_type, cache_control, last_modified }, expires),
+        );
     }
     out
 }
@@ -435,18 +494,40 @@ mod tests {
     use super::*;
 
     #[test]
+    fn slow_response_bodies_keep_their_memory_charge_after_the_snapshot_is_dropped() {
+        let site = Site::new("snapshot-memory");
+        let bytes = ["index.html", "icon.png", "docs/index.html"]
+            .iter()
+            .map(|name| std::fs::metadata(site.0.join(name)).unwrap().len() + 1 + 4096)
+            .sum();
+        let budget = crate::limits::MemoryBudget::new(bytes);
+        let snapshot = Website::load_with_memory(&site.0, &BTreeMap::new(), Arc::default(), Some(&budget)).unwrap();
+        let body = snapshot.index().body.clone();
+        drop(snapshot);
+        assert!(
+            Website::load_with_memory(&site.0, &BTreeMap::new(), Arc::default(), Some(&budget)).is_err(),
+            "a slow reader released the allocation's charge too early"
+        );
+        let another_reference = body.clone();
+        drop(body);
+        assert!(budget.try_acquire(bytes).is_none());
+        drop(another_reference);
+        assert!(Website::load_with_memory(&site.0, &BTreeMap::new(), Arc::default(), Some(&budget)).is_ok());
+    }
+
+    #[test]
     fn published_profiles_are_bounded_and_parent_symlinks_are_not_read() {
         let site = Site::new("publish-bound");
         let outside = Site::new("publish-outside");
         std::fs::write(outside.0.join("secret.mobileconfig"), b"outside secret").unwrap();
         std::os::unix::fs::symlink(&outside.0, site.0.join(PUBLISH_DIR)).unwrap();
-        assert!(read_published(&site.0, &HashMap::new()).is_empty());
+        assert!(read_published(&site.0, &HashMap::new(), None).is_empty());
         std::fs::remove_file(site.0.join(PUBLISH_DIR)).unwrap();
         std::fs::create_dir(site.0.join(PUBLISH_DIR)).unwrap();
         for i in 0..MAX_FILES + 1 {
             std::fs::write(site.0.join(PUBLISH_DIR).join(format!("{i}.mobileconfig")), b"profile").unwrap();
         }
-        assert_eq!(read_published(&site.0, &HashMap::new()).len(), MAX_FILES);
+        assert_eq!(read_published(&site.0, &HashMap::new(), None).len(), MAX_FILES);
     }
 
     #[test]

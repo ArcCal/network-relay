@@ -63,10 +63,11 @@ const DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 /// have been idle for minutes, so a device needs many; each tunnel reserves
 /// its own memory, and `max_tunnels_per_user` bounds them per user.
 const MAX_STREAMS: u32 = 1024;
-/// The same before the connection has authenticated: enough for a device's
-/// first burst of requests and for a browser, while bounding what an
-/// anonymous client can make the relay hold per connection.
-const MAX_STREAMS_UNAUTHENTICATED: u32 = 64;
+/// The same before the connection has authenticated: the 100 RFC 9114 §6.1
+/// asks servers to permit at least, enough for a device's first burst of
+/// requests and for a browser, while bounding what an anonymous client can
+/// make the relay hold per connection.
+const MAX_STREAMS_UNAUTHENTICATED: u32 = 100;
 /// HTTP/2 fixes the limit in its first SETTINGS, before any request has
 /// authenticated: a compromise between the two above.
 const MAX_STREAMS_HTTP2: u32 = 256;
@@ -837,8 +838,7 @@ pub async fn run(config_path: PathBuf, config: Config) -> Result<()> {
     );
     let certs = CertStore::open(&config.tls.cert, &config.tls.key)?;
     let relay = Relay::new(&config)?;
-    let udp =
-        std::net::UdpSocket::bind(config.listen).with_context(|| format!("listening on UDP {}", config.listen))?;
+    let udp = sys::bind_udp(config.listen).with_context(|| format!("listening on UDP {}", config.listen))?;
     let (rcv, snd) = sys::grow_buffers(socket2::SockRef::from(&udp), 8 << 20);
     if rcv < 4 << 20 {
         info!(
@@ -848,7 +848,9 @@ pub async fn run(config_path: PathBuf, config: Config) -> Result<()> {
     }
     debug!(rcv, snd, "UDP socket buffers");
     let endpoint = quic_endpoint(certs.clone(), udp, config.tls.client_certificates)?;
-    let tcp = TcpListener::bind(config.listen).await.with_context(|| format!("listening on TCP {}", config.listen))?;
+    let tcp = TcpListener::from_std(
+        sys::bind_tcp(config.listen).with_context(|| format!("listening on TCP {}", config.listen))?,
+    )?;
     // Accepted sockets inherit fixed buffer sizes, including queued clients
     // that send data before the accept loop can admit them.
     sys::limit_tcp_buffers(socket2::SockRef::from(&tcp), sys::CLIENT_TCP_BUFFER)

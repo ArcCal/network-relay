@@ -12,7 +12,7 @@ The default location is `/etc/network-relay/relay.toml` (change it with `network
 
 | Key | Default | Description |
 |---|---|---|
-| `listen` | `"[::]:443"` | Address and port to listen on. HTTP/3 on UDP, HTTP/2 and HTTP/1.1 on TCP, on the same port. `[::]` accepts both IPv4 and IPv6. Needs a restart after a change |
+| `listen` | `"[::]:443"` | Address and port to listen on. HTTP/3 on UDP, HTTP/2 and HTTP/1.1 on TCP, on the same port. `[::]` accepts both IPv4 and IPv6 (whatever `net.ipv6.bindv6only` says; IPv4 only on a host without IPv6). Needs a restart after a change |
 | `log_dir` | not set | Directory where logs are also saved as files; must be a full path, such as `"/var/log/network-relay"`. One file per hour, kept for 24 hours. When not set, logs go only to the journal |
 
 ### `[tls]` (required)
@@ -50,7 +50,7 @@ Tunnels, the connections that carry them and the website share one buffer budget
 
 Kernel socket buffers are not part of the budget: they are fixed per socket before accepting clients or connecting to targets (512 KiB per direction for clients, 1 MiB per direction for targets; Linux can account twice these sizes, and a connection is refused if these bounds cannot be applied), and Linux bounds them system-wide (`net.ipv4.tcp_mem`, `net.ipv4.udp_mem`). These bounds can limit throughput on high-latency paths; measure capacity and throughput for your workload before deploying at scale.
 
-One HTTP/3 connection may carry up to 64 requests at once until one of them authenticates, then 1024; one HTTP/2 connection 256. A device sends each relayed TCP connection and UDP flow as a request on one connection, so these are what one device can have open at once on it.
+One HTTP/3 connection may carry up to 100 requests at once until one of them authenticates, then 1024; one HTTP/2 connection 256. A device sends each relayed TCP connection and UDP flow as a request on one connection, so these are what one device can have open at once on it.
 
 | Key | Default | Description |
 |---|---|---|

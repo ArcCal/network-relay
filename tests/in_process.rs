@@ -179,6 +179,26 @@ async fn concurrent_transport_churn_preserves_payloads_and_refunds_all_slots() {
     use std::sync::Arc;
     let relay = Arc::new(TestRelay::start("blocked_destinations = []\nmax_tunnels = 1024").await);
     let (echo, echo_task) = echo_server().await;
+    // Exercise an established user's traffic, rather than racing the
+    // separate 30-attempt authentication burst limit with 32 new sessions.
+    {
+        let (mut sender, _driver) = raw_h2(&relay).await;
+        let req = Request::builder()
+            .method(Method::CONNECT)
+            .uri(echo.to_string())
+            .header("authorization", auth::basic_authorization(ALICE.0, ALICE.1))
+            .body(())
+            .unwrap();
+        let (response, mut send) = sender.send_request(req, false).unwrap();
+        assert_eq!(response.await.unwrap().status(), StatusCode::OK);
+        send.send_reset(h2::Reason::CANCEL);
+    }
+    within("warm connection cleanup", async {
+        while relay.relay.active_tunnels() != 0 || relay.relay.open_connections() != 0 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await;
     for use_h3 in [false, true] {
         let barrier = Arc::new(tokio::sync::Barrier::new(33));
         let mut clients = tokio::task::JoinSet::new();

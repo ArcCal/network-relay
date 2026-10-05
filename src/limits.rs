@@ -122,12 +122,17 @@ impl PerIp {
 }
 
 /// Concurrent connections, in total and per client address.
+///
+/// Admission is by count only. A connection reserves its transport memory
+/// from the [`MemoryBudget`] when it first opens a tunnel, not when it is
+/// accepted: anyone can open connections, so a reservation taken before
+/// authentication would let idle (or, for QUIC, spoofed) connections use up
+/// the capacity that devices need.
 #[derive(Debug)]
 pub struct Connections {
     max_total: usize,
     max_per_client: usize,
     state: Mutex<(usize, HashMap<ClientKey, usize>)>,
-    memory: Option<(Arc<MemoryBudget>, u64)>,
 }
 
 /// Held for as long as a connection is open.
@@ -135,7 +140,6 @@ pub struct Connections {
 pub struct ConnectionPermit {
     limits: Arc<Connections>,
     key: ClientKey,
-    _memory: Option<MemoryPermit>,
 }
 
 impl Drop for ConnectionPermit {
@@ -153,11 +157,7 @@ impl Drop for ConnectionPermit {
 
 impl Connections {
     pub fn new(max_total: usize, max_per_client: usize) -> Arc<Self> {
-        Arc::new(Self { max_total, max_per_client, state: Mutex::default(), memory: None })
-    }
-
-    pub fn with_memory(max_total: usize, max_per_client: usize, memory: Arc<MemoryBudget>, bytes: u64) -> Arc<Self> {
-        Arc::new(Self { max_total, max_per_client, state: Mutex::default(), memory: Some((memory, bytes)) })
+        Arc::new(Self { max_total, max_per_client, state: Mutex::default() })
     }
 
     /// A permit for a new connection from `ip`, or `None` when the total or
@@ -168,13 +168,9 @@ impl Connections {
         if state.0 >= self.max_total || state.1.get(&key).copied().unwrap_or(0) >= self.max_per_client {
             return None;
         }
-        let memory = match &self.memory {
-            Some((budget, bytes)) => Some(budget.try_acquire(*bytes)?),
-            None => None,
-        };
         state.0 += 1;
         *state.1.entry(key).or_insert(0) += 1;
-        Some(ConnectionPermit { limits: self.clone(), key, _memory: memory })
+        Some(ConnectionPermit { limits: self.clone(), key })
     }
 
     /// Connections open now.
@@ -452,24 +448,48 @@ impl Drop for MemoryPermit {
     }
 }
 
-/// Maximum transport capacity reserved per admitted connection. On small
-/// hosts scale the windows and stream count down together, keeping room for
-/// several clients. TLS, headers, send buffers and datagram queues are included.
+/// Memory assumed when it cannot be detected.
+pub const ASSUMED_MEMORY: u64 = 1 << 30;
+
+/// Transport capacity of an HTTP/2 or HTTP/3 connection: its flow-control
+/// windows (a quarter each for receiving and sending), datagram buffers,
+/// TLS and stream state. The windows are sized from it, so on small hosts
+/// they shrink with it. The connection reserves it from the shared budget
+/// when it opens its first tunnel (see [`Connections`]).
 pub fn connection_memory(memory: Option<u64>) -> u64 {
-    (memory.unwrap_or(1 << 30) / 8).clamp(1 << 20, 8 << 20)
+    (memory.unwrap_or(ASSUMED_MEMORY) / 8).clamp(1 << 20, 8 << 20)
 }
 
-/// Memory planned per tunnel when sizing the default `max_tunnels`: read
-/// buffers, flow-control windows in use and kernel socket buffers.
-pub const MEMORY_PER_TUNNEL: u64 = 16 * 1024 * 1024;
+/// The same for an HTTP/1.1 connection, which carries a single tunnel and
+/// has no flow-control windows: its TLS and read buffers.
+pub const HTTP1_CONNECTION_MEMORY: u64 = 256 * 1024;
+
+/// Memory a tunnel reserves: the relay's own buffers for it, each bounded.
+/// A TCP tunnel has a 64 KiB read buffer per direction, and over HTTP/2 up
+/// to 64 KiB of queued response data. A UDP flow has its HTTP/3 datagram
+/// queue (64 datagrams, each within one QUIC packet), the capsule stream
+/// queues (8 × 16 KiB in, 128 KiB out) and one capsule being decoded
+/// (64 KiB). Data the client sends is bounded by the connection's windows,
+/// reserved with the connection. Kernel socket buffers are fixed per socket
+/// (see `sys`) and bounded system-wide by the kernel (`net.ipv4.tcp_mem`,
+/// `net.ipv4.udp_mem`), so they are not part of this.
+pub const MEMORY_PER_TUNNEL: u64 = 512 * 1024;
 
 /// The default `max_tunnels` for a machine with `memory` bytes: a quarter of
 /// the memory at [`MEMORY_PER_TUNNEL`] each, between 1 and 20 000.
 pub fn default_max_tunnels(memory: Option<u64>) -> usize {
-    match memory {
-        Some(m) => ((m / 4 / MEMORY_PER_TUNNEL).min(20_000) as usize).max(1),
-        None => 32,
-    }
+    ((memory.unwrap_or(ASSUMED_MEMORY) / 4 / MEMORY_PER_TUNNEL).min(20_000) as usize).max(1)
+}
+
+/// Memory planned per client connection when sizing the default
+/// `max_connections`: what a connection holds before it authenticates
+/// (QUIC and TLS state, header buffers), with room to spare.
+pub const MEMORY_PER_CONNECTION: u64 = 512 * 1024;
+
+/// The default `max_connections` for a machine with `memory` bytes: the
+/// memory at [`MEMORY_PER_CONNECTION`] each, between 256 and 16 384.
+pub fn default_max_connections(memory: Option<u64>) -> usize {
+    (memory.unwrap_or(ASSUMED_MEMORY) / MEMORY_PER_CONNECTION).clamp(256, 16_384) as usize
 }
 
 #[cfg(test)]
@@ -503,19 +523,28 @@ mod tests {
     }
 
     #[test]
-    fn network_memory_admission_is_shared_and_refunded() {
+    fn memory_reservations_are_capped_and_refunded() {
         let memory = MemoryBudget::new(100);
-        let connections = Connections::with_memory(1000, 1000, memory.clone(), 40);
-        let first = connections.try_acquire("192.0.2.1".parse().unwrap()).unwrap();
-        let tunnel = memory.try_acquire(30).unwrap();
-        assert!(connections.try_acquire("192.0.2.2".parse().unwrap()).is_none());
-        assert_eq!(connections.open(), 1, "failed reservation must not count a connection");
+        let first = memory.try_acquire(40).unwrap();
+        let second = memory.try_acquire(30).unwrap();
+        assert!(memory.try_acquire(31).is_none());
         assert!(memory.try_acquire(u64::MAX).is_none(), "overflow must not bypass the cap");
-        drop(tunnel);
-        let second = connections.try_acquire("192.0.2.2".parse().unwrap()).unwrap();
-        assert!(memory.try_acquire(21).is_none());
-        drop((first, second));
+        drop(first);
+        let third = memory.try_acquire(70).unwrap();
+        drop((second, third));
         assert!(memory.try_acquire(100).is_some());
+    }
+
+    #[test]
+    fn accepting_connections_reserves_no_memory() {
+        // Anyone can open connections: admitting them must not use up what
+        // authenticated tunnels need.
+        let connections = Connections::new(10_000, 10_000);
+        let permits: Vec<_> =
+            (0..5000).map(|i| connections.try_acquire(std::net::Ipv4Addr::from(i as u32).into()).unwrap()).collect();
+        assert_eq!(connections.open(), 5000);
+        drop(permits);
+        assert_eq!(connections.open(), 0);
     }
 
     #[tokio::test]
@@ -647,11 +676,24 @@ mod tests {
 
     #[test]
     fn default_tunnels_follow_memory() {
-        assert_eq!(default_max_tunnels(Some(1 << 30)), 16);
-        assert_eq!(default_max_tunnels(Some(4 << 30)), 64);
-        assert_eq!(default_max_tunnels(Some(256 << 20)), 4);
+        assert_eq!(default_max_tunnels(Some(1 << 30)), 512, "a 1 GiB VPS carries a few devices' traffic");
+        assert_eq!(default_max_tunnels(Some(4 << 30)), 2048);
+        assert_eq!(default_max_tunnels(Some(256 << 20)), 128);
         assert_eq!(default_max_tunnels(Some(2 << 40)), 20_000);
-        assert_eq!(default_max_tunnels(None), 32);
-        assert_eq!(default_max_tunnels(Some(1 << 20)), 1, "no 512-tunnel floor on a tiny container");
+        assert_eq!(default_max_tunnels(None), default_max_tunnels(Some(ASSUMED_MEMORY)));
+        assert_eq!(default_max_tunnels(Some(1 << 20)), 1, "no floor on a tiny container");
+        // The default fits in the budget the relay reserves tunnels from
+        // (half the memory), next to connections and the website.
+        for memory in [64 << 20, 1 << 30, 16 << 30] {
+            assert!(default_max_tunnels(Some(memory)) as u64 * MEMORY_PER_TUNNEL <= memory / 4);
+        }
+    }
+
+    #[test]
+    fn default_connections_follow_memory() {
+        assert_eq!(default_max_connections(Some(1 << 30)), 2048);
+        assert_eq!(default_max_connections(Some(64 << 20)), 256);
+        assert_eq!(default_max_connections(Some(64 << 30)), 16_384);
+        assert_eq!(default_max_connections(None), default_max_connections(Some(ASSUMED_MEMORY)));
     }
 }

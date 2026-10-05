@@ -57,6 +57,24 @@ const DNS_LOOKUPS_PER_USER: usize = 32;
 /// On SIGTERM, how long connections get to finish their requests after
 /// GOAWAY before they are closed. Short, because a restart waits for it.
 const DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
+/// Request streams open at once on one HTTP/3 connection once it has
+/// authenticated. Apple devices carry every relayed TCP connection and UDP
+/// flow of the device on one connection, and UDP flows stay open until they
+/// have been idle for minutes, so a device needs many; each tunnel reserves
+/// its own memory, and `max_tunnels_per_user` bounds them per user.
+const MAX_STREAMS: u32 = 1024;
+/// The same before the connection has authenticated: enough for a device's
+/// first burst of requests and for a browser, while bounding what an
+/// anonymous client can make the relay hold per connection.
+const MAX_STREAMS_UNAUTHENTICATED: u32 = 64;
+/// HTTP/2 fixes the limit in its first SETTINGS, before any request has
+/// authenticated: a compromise between the two above.
+const MAX_STREAMS_HTTP2: u32 = 256;
+/// How long the website's (or a refusal's) response may make no progress
+/// because the client does not read it before it is abandoned, so a client
+/// cannot hold a response, its buffers and its connection for ever.
+/// Tunnels are not limited this way: their peers may pause as TCP allows.
+const SEND_STALL: Duration = Duration::from_secs(30);
 
 /// Settings that a reload (SIGHUP) replaces.
 struct Settings {
@@ -105,7 +123,11 @@ struct Inner {
     budgets: Mutex<HashMap<String, Arc<Budget>>>,
     /// Client connections, in total and per address. Fixed at start-up.
     connections: Arc<Connections>,
+    /// Buffer capacity shared by tunnels, the connections that carry them
+    /// and the website.
     memory: Arc<MemoryBudget>,
+    /// What an HTTP/2 or HTTP/3 connection reserves of `memory` once it
+    /// carries a tunnel; its flow-control windows are sized from it.
     connection_memory: u64,
     /// New QUIC handshakes from unvalidated addresses.
     handshakes: Mutex<TokenBucket>,
@@ -116,6 +138,8 @@ struct Inner {
     /// Set when the server is shutting down: connections send GOAWAY and
     /// close once their requests are done.
     shutdown: watch::Sender<bool>,
+    /// [`SEND_STALL`], in milliseconds; tests shorten it.
+    send_stall_ms: AtomicU64,
 }
 
 /// The relay, independent of sockets so tests can run it in-process.
@@ -140,7 +164,7 @@ impl Relay {
         let max_tunnels = config.relay.max_tunnels();
         let consumed = Arc::default();
         let available_memory = crate::limits::total_memory();
-        let memory = MemoryBudget::new(available_memory.unwrap_or(1 << 30) / 2);
+        let memory = MemoryBudget::new(available_memory.unwrap_or(crate::limits::ASSUMED_MEMORY) / 2);
         let connection_memory = crate::limits::connection_memory(available_memory);
         Ok(Self {
             inner: Arc::new(Inner {
@@ -153,18 +177,14 @@ impl Relay {
                 dns_lookups: Arc::new(Semaphore::new(DNS_LOOKUPS)),
                 dns_lookups_per_user: KeyedLimit::new(DNS_LOOKUPS_PER_USER),
                 budgets: Mutex::default(),
-                connections: Connections::with_memory(
-                    config.relay.max_connections,
-                    config.relay.max_connections_per_ip,
-                    memory.clone(),
-                    connection_memory,
-                ),
+                connections: Connections::new(config.relay.max_connections(), config.relay.max_connections_per_ip),
                 memory,
                 connection_memory,
                 handshakes: Mutex::new(TokenBucket::new(HANDSHAKE_RATE, HANDSHAKE_BURST)),
                 alt_svc,
                 consumed,
                 shutdown: watch::Sender::new(false),
+                send_stall_ms: AtomicU64::new(SEND_STALL.as_millis() as u64),
             }),
         })
     }
@@ -186,6 +206,17 @@ impl Relay {
             Err(e) => warn!("keeping the current website: {e:#}"),
         }
         Ok(())
+    }
+
+    /// How long a website response may wait for the client to read it.
+    fn send_stall(&self) -> Duration {
+        Duration::from_millis(self.inner.send_stall_ms.load(Ordering::Relaxed))
+    }
+
+    /// Shortens [`SEND_STALL`], for tests.
+    #[doc(hidden)]
+    pub fn set_send_stall(&self, stall: Duration) {
+        self.inner.send_stall_ms.store(stall.as_millis() as u64, Ordering::Relaxed);
     }
 
     /// Relayed TCP connections and UDP flows open right now.
@@ -333,6 +364,15 @@ struct ConnInfo {
     /// Upgraded HTTP/1 connections outlive hyper's connection future.
     /// Keep admission charged until their request/tunnel state is gone.
     connection_permit: Mutex<Option<crate::limits::ConnectionPermit>>,
+    /// The connection's transport memory, reserved when it opens its first
+    /// tunnel and kept until it closes.
+    reserved: Mutex<Option<MemoryPermit>>,
+    /// Run once, when the connection first authenticates (HTTP/3 raises its
+    /// stream limit then).
+    on_authenticated: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+    /// An HTTP/1.1 connection that has become a tunnel: its writes may wait
+    /// on the client as long as TCP allows (see `over_tcp::StallGuard`).
+    tunnel: AtomicBool,
 }
 
 /// Counts a request as open on its connection until dropped.
@@ -366,12 +406,30 @@ impl ConnInfo {
             idle_since: Mutex::new(tokio::time::Instant::now()),
             activity: Notify::new(),
             connection_permit: Mutex::new(None),
+            reserved: Mutex::new(None),
+            on_authenticated: Mutex::new(None),
+            tunnel: AtomicBool::new(false),
         })
+    }
+
+    /// Reserves the connection's transport memory, unless it already has:
+    /// only connections that carry tunnels do. Before that, a connection is
+    /// bounded by the connection limits and timeouts alone, so anonymous
+    /// connections cannot take what devices need.
+    fn reserve(&self, memory: &Arc<MemoryBudget>, bytes: u64) -> bool {
+        let mut reserved = self.reserved.lock().unwrap();
+        if reserved.is_none() {
+            *reserved = memory.try_acquire(bytes);
+        }
+        reserved.is_some()
     }
 
     fn authenticated(&self, user: &str) {
         if self.user.set(user.to_string()).is_ok() {
             info!(user, remote = %self.remote, transport = self.transport, "client connected");
+            if let Some(hook) = self.on_authenticated.lock().unwrap().take() {
+                hook();
+            }
         }
     }
 
@@ -702,6 +760,14 @@ impl Relay {
             .try_acquire(&a.user.name, settings.max_tunnels_per_user)
             .ok_or(Refusal::TooManyUserTunnels)?;
         let permit = self.inner.tunnels.clone().try_acquire_owned().map_err(|_| Refusal::TooManyTunnels)?;
+        let transport_memory = if conn.transport == "HTTP/1.1" {
+            crate::limits::HTTP1_CONNECTION_MEMORY
+        } else {
+            self.inner.connection_memory
+        };
+        if !conn.reserve(&self.inner.memory, transport_memory) {
+            return Err(Refusal::TooManyTunnels);
+        }
         let memory = self.inner.memory.try_acquire(crate::limits::MEMORY_PER_TUNNEL).ok_or(Refusal::TooManyTunnels)?;
         let connecting = async {
             // The user's share first, so that lookups waiting for it do not
@@ -766,7 +832,7 @@ fn http_date() -> HeaderValue {
 /// `config_path`, which SIGHUP reads again.
 pub async fn run(config_path: PathBuf, config: Config) -> Result<()> {
     sys::raise_open_file_limit(
-        config.relay.max_tunnels().saturating_mul(2).saturating_add(config.relay.max_connections).saturating_add(1024)
+        config.relay.max_tunnels().saturating_mul(2).saturating_add(config.relay.max_connections()).saturating_add(1024)
             as _,
     );
     let certs = CertStore::open(&config.tls.cert, &config.tls.key)?;
@@ -803,6 +869,7 @@ pub async fn run(config_path: PathBuf, config: Config) -> Result<()> {
         udp_template = %config.relay.udp_template,
         open_files = sys::open_file_limit().unwrap_or(0),
         max_tunnels = relay.inner.max_tunnels,
+        max_connections = config.relay.max_connections(),
         "network-relay {} ready (HTTP/3 on UDP, HTTP/2 and HTTP/1.1 on TCP)",
         env!("CARGO_PKG_VERSION")
     );

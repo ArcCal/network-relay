@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **Anonymous connections can no longer lock devices out.** Version 1.2 reserved 8 MiB of the shared buffer budget for every TCP or QUIC connection as it was accepted, before TLS: on a 1 GiB server, 64 idle connections from a single address (the default `max_connections_per_ip`), or a trickle of spoofed QUIC handshakes, used up the budget, and every device was refused. A connection now reserves its windows only when it opens its first tunnel, i.e. once it has authenticated; until then it is bounded by the connection limits and timeouts.
+- **Usable capacity on small servers.** A tunnel reserves 512 KiB, which covers the relay's own buffers for it; kernel socket buffers are fixed per socket and bounded system-wide by Linux, and are no longer counted as 16 MiB per tunnel. The default `max_tunnels` is 512 at 1 GiB (was 16) and 2048 at 4 GiB (was 64). The capsule queue towards the device is now also bounded in bytes (128 KiB), and HTTP/3 datagram payloads are copied out of QUIC's receive buffers, so these bounds hold.
+- **More concurrent tunnels per connection.** Devices carry every relayed TCP connection and UDP flow on one connection, and version 1.2 allowed only 32 streams on it, so further connections stalled until another ended. HTTP/3 now allows 64 until the connection authenticates, then 1024; HTTP/2 allows 256.
+- `max_connections` now defaults to available memory at 512 KiB per connection (256 to 16384; 2048 at 1 GiB) instead of a fixed 16384. An explicit value is used as given.
+- **Slow readers**: a website or refusal response that makes no progress for 30 seconds because the client does not read it is abandoned (HTTP/2 `CANCEL`, HTTP/3 `H3_REQUEST_CANCELLED`, HTTP/1.1 closes the connection), so visitors cannot hold connections, buffers and slots open indefinitely. HTTP/2 website answers drop the unread request body before responding and send the page without copying it.
+- HTTP/3: datagrams that arrive before their stream is set up are held for at most one second (RFC 9297 §2.1); when the relay ends a UDP flow itself (idle timeout), it stops the device's sending with `H3_NO_ERROR` rather than the undefined code 0.
+
 ## 1.2.0 — 2026-10-05
 
 - Rust relay audit: expiry changes on reload invalidate authenticated snapshots and cached credentials; HTTP/1.1 upgrades retain connection admission and shutdown tracking; UDP stream read failures trigger error cleanup instead of normal FIN; cancelled keyed waiters refund their map entries. HTTP/1.1 now enforces the connection idle deadline, and HTTP/3 setup has a handshake/setup deadline.

@@ -316,14 +316,16 @@ impl Kind {
     }
 
     /// The kind of an HTTP/2 or HTTP/3 request: CONNECT, with or without
-    /// `:protocol` (RFC 8441, RFC 9220).
+    /// `:protocol` (RFC 8441, RFC 9220). `:protocol` is an upgrade token,
+    /// matched without regard to case (RFC 9110 §7.8).
     fn of_connect(is_connect: bool, protocol: Option<&str>, scheme: Option<&str>) -> Option<Self> {
         match (is_connect, protocol) {
             (false, _) => None,
             (true, None) => Some(Kind::Tcp),
             // RFC 9298 §3.4: the scheme of a UDP proxying request is https.
-            (true, Some(CONNECT_UDP_PROTOCOL)) if scheme == Some("https") => Some(Kind::Udp),
-            (true, Some(CONNECT_UDP_PROTOCOL)) => Some(Kind::Malformed),
+            (true, Some(p)) if p.eq_ignore_ascii_case(CONNECT_UDP_PROTOCOL) => {
+                Some(if scheme == Some("https") { Kind::Udp } else { Kind::Malformed })
+            }
             (true, Some(_)) => Some(Kind::Unsupported),
         }
     }
@@ -997,6 +999,19 @@ mod tests {
         drop(request);
         let elapsed = waiting.await.unwrap();
         assert_eq!(elapsed.as_secs(), 1300);
+    }
+
+    #[test]
+    fn requests_are_classified_by_method_protocol_and_scheme() {
+        let https = Some("https");
+        assert_eq!(Kind::of_connect(false, None, https), None);
+        assert_eq!(Kind::of_connect(true, None, None), Some(Kind::Tcp));
+        assert_eq!(Kind::of_connect(true, Some("connect-udp"), https), Some(Kind::Udp));
+        // Upgrade tokens are case-insensitive (RFC 9110 §7.8).
+        assert_eq!(Kind::of_connect(true, Some("CONNECT-UDP"), https), Some(Kind::Udp));
+        assert_eq!(Kind::of_connect(true, Some("Connect-Udp"), Some("http")), Some(Kind::Malformed));
+        assert_eq!(Kind::of_connect(true, Some("connect-ip"), https), Some(Kind::Unsupported));
+        assert_eq!(Kind::of_connect(true, Some("connect-udpx"), https), Some(Kind::Unsupported));
     }
 
     #[test]

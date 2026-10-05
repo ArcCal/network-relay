@@ -603,7 +603,6 @@ dependencies = [
  "h3",
  "h3-datagram",
  "quinn",
- "tokio-util",
 ]
 
 [[package]]

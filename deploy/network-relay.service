@@ -1,0 +1,48 @@
+[Unit]
+Description=Network relay for Apple devices (HTTP CONNECT and CONNECT-UDP)
+Documentation=https://github.com/ArcCal/network-relay
+After=network-online.target
+Wants=network-online.target
+# Keep retrying, for example while the network is still coming up at boot.
+StartLimitIntervalSec=0
+
+[Service]
+ExecStart=/usr/local/bin/network-relay serve --config /etc/network-relay/relay.toml
+# Reloads users, destination rules, timeouts, the website and the TLS
+# certificate; removed users are disconnected at once.
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=5
+# Runs as its own user, which reads the configuration and the TLS key
+# through group network-relay (certbot's own copies are root's alone; see
+# deploy/certbot-hook.sh). Of root's privileges it keeps just the one to use
+# port 443; everything else below is locked down.
+User=network-relay
+Group=network-relay
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+SystemCallArchitectures=native
+# /var/log/network-relay, for log_dir.
+LogsDirectory=network-relay
+# Every relayed connection needs a file descriptor.
+LimitNOFILE=1048576
+
+[Install]
+WantedBy=multi-user.target

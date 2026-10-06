@@ -3,10 +3,13 @@
 
 import argparse
 import base64
-from dataclasses import dataclass, field
+import copy
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 import fcntl
 import hmac
+import getpass
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -17,6 +20,7 @@ import re
 import secrets
 import shutil
 import socket
+import ssl
 import subprocess
 import sys
 import tempfile
@@ -48,7 +52,11 @@ UDP_TEMPLATE = '/.well-known/masque/udp/{target_host}/{target_port}/'
 # dpkg lock instead of failing.
 APT = ['apt-get', '-o', 'DPkg::Lock::Timeout=1800']
 SUPPORTED_DEBIAN = ('12', '13')
-PROFILE_NAME = 'Google / AI / X — everything else direct'
+PROFILE_NAME = 'Selected domains — everything else direct'
+MAX_PROFILE_BYTES = 16 << 20
+PROFILE_SPEC = importlib.util.spec_from_file_location('relay_profile_rules', Path(__file__).with_name('global-profile.py'))
+RULES = importlib.util.module_from_spec(PROFILE_SPEC)
+PROFILE_SPEC.loader.exec_module(RULES)
 
 
 @dataclass(frozen=True)
@@ -108,9 +116,9 @@ def load_domains(path):
 
 def read_profile(path):
     with Path(path).open('rb') as stream:
-        raw = stream.read((1 << 20) + 1)
-    if len(raw) > 1 << 20:
-        raise ValueError('The profile is larger than 1 MiB.')
+        raw = stream.read(MAX_PROFILE_BYTES + 1)
+    if len(raw) > MAX_PROFILE_BYTES:
+        raise ValueError('The profile is larger than 16 MiB.')
     profile = plistlib.loads(raw)
     payloads = profile.get('PayloadContent', [])
     if len(payloads) != 1 or payloads[0].get('PayloadType') != 'com.apple.relay.managed':
@@ -141,6 +149,8 @@ def read_profile(path):
     if not isinstance(domains, list) or not domains:
         raise ValueError('The profile must have a non-empty MatchDomains, or it would relay all traffic.')
     for domain in domains:
+        if '.' not in domain and RULES.LABEL.fullmatch(domain.lower()) and not domain.isdigit():
+            continue  # Explicit top-level suffixes from a domain payload are valid matches.
         domain_name(domain)
     identity = validate_identity(Identity(domain_name(url.hostname or ''),
                                           443 if url.port is None else url.port, user, password))
@@ -219,6 +229,50 @@ def retarget_tls(config_data, old, new):
     if (Path(tls['cert']), Path(tls['key'])) != tuple(new):
         raise ValueError(f'Could not update [tls] in {CONFIG}.')
     return text.encode()
+
+
+def reset_user_hash(config_data, user, password_hash):
+    """Change only the named user's hash, preserving other users and hand edits."""
+    original = tomllib.loads(config_data.decode())
+    users = [entry for entry in original.get('user', []) if entry.get('name') == user]
+    if len(users) != 1:
+        raise ValueError(f'Expected exactly one configured user named {user!r}; refusing password reset.')
+    lines = config_data.decode().splitlines(keepends=True)
+    starts = []
+    for index, line in enumerate(lines):
+        if not line.lstrip().startswith('['):
+            continue
+        try:
+            is_user = tomllib.loads(line) == {'user': [{}]}
+        except tomllib.TOMLDecodeError:
+            is_user = False
+        starts.append((index, is_user))
+    changed = False
+    for offset, (start, is_user) in enumerate(starts):
+        if not is_user:
+            continue
+        end = starts[offset + 1][0] if offset + 1 < len(starts) else len(lines)
+        block = lines[start:end]
+        if tomllib.loads(''.join(block))['user'][0].get('name') != user:
+            continue
+        replacement = f'password_hash = {json.dumps(password_hash)}\n'
+        for index, line in enumerate(block):
+            if re.match(r'''^\s*(password_hash|"password_hash"|'password_hash')\s*=''', line):
+                block[index] = replacement
+                break
+        else:
+            if block and not block[-1].endswith('\n'):
+                block[-1] += '\n'
+            block.append(replacement)
+        lines[start:end] = block
+        changed = True
+        break
+    result = ''.join(lines).encode()
+    expected = copy.deepcopy(original)
+    next(entry for entry in expected['user'] if entry.get('name') == user)['password_hash'] = password_hash
+    if not changed or tomllib.loads(result.decode()) != expected:
+        raise ValueError('Could not safely update the user password hash; no installed file was changed.')
+    return result
 
 
 def atomic_write(path, data, mode=0o600, group=None, owner=None):
@@ -379,6 +433,80 @@ def install(args):
         return _install(staged)
 
 
+def profile_domains(args, identity):
+    domains = load_domains(args.domains or REPO / 'deploy/domains/google-ai-social.txt')
+    for label, disabled, path, url, parse in (
+        ('gfwlist', args.no_gfwlist, args.gfwlist_file, args.gfwlist_url,
+         lambda text: RULES.extract_gfwlist(text)[0]),
+        ('proxy.txt', args.no_proxy_list, args.proxy_list_file, args.proxy_list_url, RULES.extract_proxy_domains),
+    ):
+        if disabled:
+            continue
+        print(f'Loading {label}: {path or url}', flush=True)
+        if path:
+            with path.open('rb') as stream:
+                raw = RULES.read_bounded(stream)
+        else:
+            try:
+                with RULES.urllib.request.urlopen(url, timeout=60) as stream:
+                    raw = RULES.read_bounded(stream)
+            except OSError as error:
+                raise ValueError(f'Could not download {label}: {error}. No partial profile will be generated; '
+                                 'retry or supply a downloaded list file.') from error
+        text = RULES.decode_gfwlist(raw) if label == 'gfwlist' else raw.decode('utf-8')
+        extracted = parse(text)
+        if not extracted:
+            raise ValueError(f'{label} contains no convertible domains; refusing a partial profile.')
+        domains += extracted
+        print(f'{label}: {len(extracted)} extracted domains.', flush=True)
+        if label == 'gfwlist':
+            for name, count in RULES.extract_gfwlist(text)[1].items():
+                print(f'  {name}: {count}', flush=True)
+    suffixes = (REPO / 'deploy/domains/public-suffix-icann.dat').read_text()
+    domains = [d for d in RULES.root_domains(domains, suffixes) if d != identity.domain]
+    if not domains:
+        raise ValueError('No matched domains remain; refusing an all-traffic profile.')
+    print(f'Combined routing list: {len(domains)} unique root domains; the relay domain is excluded.', flush=True)
+    return domains
+
+
+def refresh_credentials(identity):
+    # A previous one-time delivery file may still exist. Reuse its secret without
+    # printing it; otherwise ask locally, never reset the existing account.
+    paths = list((SITE / '.publish').glob('*.mobileconfig'))
+    private_profile = ETC / f'profile-{identity.user}.mobileconfig'
+    if private_profile.is_file():
+        paths.append(private_profile)
+    for path in sorted(paths, key=lambda p: p.stat().st_mtime, reverse=True):
+        try:
+            candidate = read_profile(path)[0]
+        except (ValueError, OSError, plistlib.InvalidFileException):
+            continue
+        if (candidate.domain, candidate.port, candidate.user) == (identity.domain, identity.port, identity.user):
+            print('Reusing credentials from the previous device profile.', flush=True)
+            return candidate
+    if not sys.stdin.isatty():
+        raise ValueError('Profile refresh needs the existing password. Run interactively or pass '
+                         '--profile /path/original.mobileconfig --refresh-profile.')
+    return validate_identity(replace(identity, password=getpass.getpass('Existing relay password (unchanged): ')))
+
+
+def verify_refresh_credentials(identity):
+    # A local, verified-TLS CONNECT tests authentication without external targets.
+    context = ssl.create_default_context()
+    context.set_alpn_protocols(['http/1.1'])
+    basic = base64.b64encode(f'{identity.user}:{identity.password}'.encode()).decode()
+    with socket.create_connection(('127.0.0.1', identity.port), timeout=10) as connection:
+        with context.wrap_socket(connection, server_hostname=identity.domain) as tls:
+            tls.sendall(('CONNECT 127.0.0.1:25 HTTP/1.1\r\nHost: 127.0.0.1:25\r\n'
+                         f'Authorization: Basic {basic}\r\n\r\n').encode())
+            with tls.makefile('rb') as stream:
+                status = stream.readline(1024).split()
+    if len(status) < 2 or status[1] not in (b'200', b'403', b'502', b'504'):
+        raise ValueError('The existing relay did not authenticate the supplied profile password; '
+                         'no account or profile was changed. Ensure it is running and use its current password.')
+
+
 def _install(args):
     existing = CONFIG.exists()
     if STATE.exists():
@@ -397,7 +525,7 @@ def _install(args):
         if ((args.user is not None and args.user != identity.user)
                 or (args.port is not None and args.port != identity.port)):
             raise ValueError('--user/--port do not match the profile.')
-        if args.domains:
+        if args.domains and not args.refresh_profile:
             raise ValueError('--profile already carries its domain rules; --domains cannot be used with it.')
     elif existing:
         identity = installed
@@ -414,7 +542,13 @@ def _install(args):
                                               args.user or 'iphone', secrets.token_urlsafe(24)))
     # A new account gets a profile for its devices; an upgrade leaves both alone.
     new_account = not existing
-    domains = load_domains(args.domains or REPO / 'deploy/domains/google-ai-social.txt') if new_account else None
+    generate_profile = (new_account and args.profile is None) or args.refresh_profile or args.reset_password
+    if args.reset_password:
+        identity = replace(identity, password=secrets.token_urlsafe(24))
+    elif existing and generate_profile:
+        if identity.password is None:
+            identity = refresh_credentials(identity)
+        verify_refresh_credentials(identity)
     if existing and (installed.domain, installed.port, installed.user) != (
             identity.domain, identity.port, identity.user):
         raise ValueError('The existing installation has a different domain, port or user name; '
@@ -441,6 +575,7 @@ def _install(args):
     if args.binary is None:
         packages += ['build-essential', 'pkg-config', 'git']
     run(APT + ['install', '-y', '--no-install-recommends'] + packages, env=env)
+    domains = profile_domains(args, identity) if generate_profile else None
     ensure_service_user()
     if not automated_cert:
         require_readable((cert, key))
@@ -485,11 +620,7 @@ def _install(args):
     os.chown(publish, uid, gid)
     with tempfile.TemporaryDirectory(prefix='.install-', dir=ETC) as directory:
         staging = Path(directory)
-        if existing:
-            config_data = CONFIG.read_bytes()
-            if migrate_from:
-                config_data = retarget_tls(config_data, migrate_from, (cert, key))
-        else:
+        if not existing or args.reset_password:
             # A generated password is a long random secret, which a fast
             # hash protects as well as a slow one does a chosen password,
             # and which then costs the server almost nothing to check.
@@ -498,6 +629,13 @@ def _install(args):
                 command.append('--fast-hash')
             result = run(command, input=identity.password + '\n', capture=True)
             password_hash = tomllib.loads(result.stdout)['user'][0]['password_hash']
+        if existing:
+            config_data = CONFIG.read_bytes()
+            if args.reset_password:
+                config_data = reset_user_hash(config_data, identity.user, password_hash)
+            if migrate_from:
+                config_data = retarget_tls(config_data, migrate_from, (cert, key))
+        else:
             config_data = render_config(identity, password_hash, cert, key, SITE)
         candidate = staging / 'relay.toml'
         validation_data = config_data
@@ -509,24 +647,35 @@ def _install(args):
         atomic_write(candidate, validation_data)
         run([binary, 'serve', '--config', candidate, '--check'])
         profile = None
-        if new_account and args.profile is None:
+        if generate_profile:
             # Generate before committing the account. A generation failure must
             # not leave a running account whose only password dies with us.
             command = [binary, 'profile', '--host', identity.domain, '--port', str(identity.port),
-                       '--user', identity.user, '--name', PROFILE_NAME]
-            for domain in domains:
-                command.extend(['--match-domain', domain])
+                       '--user', identity.user, '--name', PROFILE_NAME,
+                       '--exclude-domain', identity.domain, '--ui-toggle-enabled', 'true',
+                       '--match-domain', 'example.invalid']
             staged_profile = staging / 'device.mobileconfig'
             run(command + ['--out', staged_profile], input=identity.password + '\n', capture=True)
+            data = RULES.profile_with_domains(staged_profile.read_bytes(), domains)
+            if len(data) > MAX_PROFILE_BYTES:
+                raise ValueError('The complete profile exceeds 16 MiB; no account or profile was changed.')
             profile_path = args.profile_out or publish / f'{secrets.token_urlsafe(18)}.mobileconfig'
-            profile = (Path(os.path.abspath(profile_path)), staged_profile.read_bytes(),
-                       None if args.profile_out else uid, None if args.profile_out else gid)
+            file_delivery = bool(args.profile_out) or len(data) > 1 << 20
+            if file_delivery and not args.profile_out:
+                profile_path = ETC / f'profile-{identity.user}.mobileconfig'
+                print('The complete profile exceeds the website publishing limit; delivering a private '
+                      'file instead, without dropping domains.', flush=True)
+            profile = (Path(os.path.abspath(profile_path)), data,
+                       None if file_delivery else uid, None if file_delivery else gid)
         apply_install(binary, config_data, render_state(identity), identity, automated_cert=automated_cert,
                       profile=profile, certificates=certificates)
 
     print('\nInstallation complete.', flush=True)
-    if new_account and args.profile is None:
-        hand_over_profile(identity, profile[0], bool(args.profile_out))
+    if args.reset_password and existing:
+        print('The installer account now has a new random password. Other accounts are unchanged. '
+              'Install the new device profile; previous profiles for this account no longer authenticate.', flush=True)
+    if generate_profile:
+        hand_over_profile(identity, profile[0], profile[2] is None)
     elif existing:
         print('The account and its devices are unchanged. To set up another device, see '
               '"Another device" in docs/deploy-debian13.md.', flush=True)
@@ -662,7 +811,20 @@ def main():
     parser.add_argument('--user', help='user name for a new installation, default iphone')
     parser.add_argument('--port', type=int, help='listening port, default 443')
     parser.add_argument('--domains', type=Path,
-                        help='domain list for a newly generated profile, default the Google/AI/X preset')
+                        help='base domain list, default Google/AI/X; merged with gfwlist and proxy.txt')
+    parser.add_argument('--refresh-profile', action='store_true',
+                        help='generate an updated device profile for an existing account, keeping its password')
+    parser.add_argument('--reset-password', action='store_true',
+                        help='replace this installation account password with a random one and generate a new profile; '
+                             'other users are preserved')
+    gfw = parser.add_mutually_exclusive_group()
+    gfw.add_argument('--gfwlist-file', type=Path, help='use a downloaded gfwlist instead of fetching it')
+    gfw.add_argument('--no-gfwlist', action='store_true', help='explicitly omit gfwlist')
+    parser.add_argument('--gfwlist-url', default=RULES.GFWLIST_URL)
+    proxy = parser.add_mutually_exclusive_group()
+    proxy.add_argument('--proxy-list-file', type=Path, help='use a downloaded Loyalsoldier domain payload')
+    proxy.add_argument('--no-proxy-list', action='store_true', help='explicitly omit proxy.txt')
+    parser.add_argument('--proxy-list-url', default=RULES.PROXY_LIST_URL)
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument('--binary', type=Path,
                       help='prebuilt Linux x86_64 program, default /tmp/network-relay; never falls back to compilation')
@@ -677,6 +839,8 @@ def main():
                         help='for a new installation, write the device profile (with its password) to this file '
                              'instead of publishing it once on the website')
     args = parser.parse_args()
+    if args.reset_password and args.profile:
+        parser.error('--reset-password generates new credentials and cannot be combined with --profile.')
     if bool(args.cert) != bool(args.key) or not 1 <= args.jobs <= 128:
         parser.error('--cert and --key must be given together, and --jobs must be between 1 and 128.')
     try:

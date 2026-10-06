@@ -11,6 +11,7 @@ import plistlib
 import subprocess
 import sys
 import tempfile
+import time
 import tomllib
 import unittest
 from unittest import mock
@@ -25,6 +26,7 @@ global_profile = importlib.util.module_from_spec(GLOBAL_SPEC)
 sys.modules[GLOBAL_SPEC.name] = global_profile
 GLOBAL_SPEC.loader.exec_module(global_profile)
 BINARY = Path(os.environ.get('RELAY_BINARY', ROOT / 'target/debug/network-relay')).resolve()
+ORIGINAL_GETADDRINFO = deploy.socket.getaddrinfo
 PASSWORD = 'test-password-not-real-123'
 
 
@@ -105,13 +107,18 @@ class DeploymentTests(unittest.TestCase):
     def args(self, **changes):
         values = dict(profile=None, domain='relay.example.com', email=None, user=None, port=None,
                       domains=None, binary=BINARY, jobs=1, cert=self.root / 'cert.pem', key=self.root / 'key.pem',
-                      profile_out=None)
+                      profile_out=None, refresh_profile=False, reset_password=False,
+                      no_gfwlist=True, gfwlist_file=None, gfwlist_url=global_profile.GFWLIST_URL,
+                      no_proxy_list=True, proxy_list_file=None, proxy_list_url=global_profile.PROXY_LIST_URL)
         values.update(changes)
         return argparse.Namespace(**values)
 
     def certificates(self):
         subprocess.run(['openssl', 'req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '1',
                         '-subj', '/CN=relay.example.com', '-addext', 'subjectAltName=DNS:relay.example.com',
+                        '-addext', 'basicConstraints=critical,CA:TRUE',
+                        '-addext', 'keyUsage=critical,digitalSignature,keyCertSign,cRLSign',
+                        '-addext', 'subjectKeyIdentifier=hash', '-addext', 'authorityKeyIdentifier=keyid:always',
                         '-keyout', str(self.root / 'key.pem'), '-out', str(self.root / 'cert.pem')],
                        check=True, capture_output=True)
 
@@ -123,7 +130,7 @@ class DeploymentTests(unittest.TestCase):
         self.assertEqual(plistlib.loads(raw)['PayloadContent'][0]['MatchDomains'], ['google.com'])
 
     def test_global_or_bad_profiles_are_rejected(self):
-        for domains in ([], ['*'], [''], ['com'], ['-bad.example']):
+        for domains in ([], ['*'], [''], ['*.com'], ['-bad.example']):
             with self.subTest(domains=domains), self.assertRaises(ValueError):
                 deploy.read_profile(self.profile_file(fixture_profile(MatchDomains=domains)))
         for url in ('http://relay.example.com', 'https://user@relay.example.com',
@@ -210,6 +217,8 @@ class DeploymentTests(unittest.TestCase):
                   mock.patch.object(deploy, 'install', return_value=0) as install):
                 self.assertEqual(deploy.main(), 0)
                 self.assertEqual(install.call_args.args[0].binary, expected)
+                self.assertFalse(install.call_args.args[0].no_gfwlist)
+                self.assertFalse(install.call_args.args[0].no_proxy_list)
 
     def test_missing_archive_and_wrong_architecture_fail_before_system_changes(self):
         upload = self.root / 'upload'
@@ -231,7 +240,7 @@ class DeploymentTests(unittest.TestCase):
         upload.chmod(0o600)
         bundle = self.root / 'bundle'
         for relative in ('deploy/network-relay.service', 'deploy/certbot-hook.sh',
-                         'deploy/domains/google-ai-social.txt'):
+                         'deploy/domains/google-ai-social.txt', 'deploy/domains/public-suffix-icann.dat'):
             target = bundle / relative
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes((ROOT / relative).read_bytes())
@@ -306,8 +315,9 @@ class DeploymentTests(unittest.TestCase):
         user = tomllib.loads(deploy.CONFIG.read_text())['user'][0]
         self.assertEqual(user['name'], identity.user)
         self.assertTrue(user['password_hash'].startswith('$pbkdf2-sha256$'), 'a generated secret needs no Argon2')
-        self.assertEqual(plistlib.loads(raw)['PayloadContent'][0]['MatchDomains'],
-                         deploy.load_domains(ROOT / 'deploy/domains/google-ai-social.txt'))
+        expected = global_profile.root_domains(deploy.load_domains(ROOT / 'deploy/domains/google-ai-social.txt'),
+                         (ROOT / 'deploy/domains/public-suffix-icann.dat').read_text())
+        self.assertEqual(plistlib.loads(raw)['PayloadContent'][0]['MatchDomains'], expected)
 
     @unittest.skipUnless(BINARY.exists(), 'run cargo build first')
     def test_profile_out_writes_a_private_file_instead_of_publishing(self):
@@ -318,6 +328,165 @@ class DeploymentTests(unittest.TestCase):
         self.assertEqual(out.stat().st_mode & 0o777, 0o600)
         self.assertEqual(list((deploy.SITE / '.publish').glob('*.mobileconfig')), [], 'nothing published')
         self.assertEqual(deploy.read_profile(out)[0].user, 'iphone')
+
+    @unittest.skipUnless(BINARY.exists(), 'set RELAY_BINARY')
+    def test_combined_root_profile_and_refresh_keep_existing_credentials(self):
+        self.certificates()
+        gfw, proxy = self.root / 'gfw.txt', self.root / 'proxy.txt'
+        gfw.write_text('[AutoProxy 0.2.9]\n||deep.google.com\n||login.blocked.co.uk\n')
+        proxy.write_text("payload:\n  - '+.cdn.blocked.co.uk'\n  - 'api.proxy-only.org'\n")
+        options = dict(no_gfwlist=False, no_proxy_list=False, gfwlist_file=gfw, proxy_list_file=proxy)
+        with mock.patch.object(deploy, 'run', side_effect=self.fake_run), redirect_stdout(io.StringIO()):
+            self.assertEqual(deploy.install(self.args(**options)), 0)
+            old_profile = next((deploy.SITE / '.publish').glob('*.mobileconfig'))
+            identity = deploy.read_profile(old_profile)[0]
+            before = deploy.CONFIG.read_bytes()
+            proxy.write_text("payload:\n  - '+.cdn.blocked.co.uk'\n  - 'api.proxy-only.org'\n  - '+.new.updated.org'\n")
+            start = len(self.calls)
+            out = self.root / 'updated.mobileconfig'
+            with mock.patch.object(deploy, 'verify_refresh_credentials') as verify:
+                self.assertEqual(deploy.install(self.args(refresh_profile=True, profile_out=out, **options)), 0)
+                self.assertEqual(verify.call_args.args[0].password, identity.password)
+        payload = plistlib.loads(out.read_bytes())['PayloadContent'][0]
+        self.assertIn('google.com', payload['MatchDomains'])
+        self.assertIn('blocked.co.uk', payload['MatchDomains'])
+        self.assertIn('proxy-only.org', payload['MatchDomains'])
+        self.assertIn('updated.org', payload['MatchDomains'])
+        self.assertNotIn('co.uk', payload['MatchDomains'])
+        self.assertEqual(payload['MatchDomains'], sorted(set(payload['MatchDomains'])))
+        self.assertEqual(payload['ExcludedDomains'], ['relay.example.com'])
+        self.assertTrue(payload['UIToggleEnabled'])
+        self.assertEqual(deploy.read_profile(out)[0].password, identity.password)
+        self.assertEqual(deploy.CONFIG.read_bytes(), before)
+        self.assertFalse(any(len(c) > 1 and c[1] == 'passwd' for c in self.calls[start:]))
+        generated = [c for c in self.calls if len(c) > 1 and c[1] == 'profile']
+        self.assertTrue(all(c.count('--match-domain') == 1 for c in generated), 'no ARG_MAX-sized command')
+
+    @unittest.skipUnless(BINARY.exists(), 'set RELAY_BINARY')
+    def test_password_reset_needs_no_old_password_and_preserves_other_accounts_and_settings(self):
+        self.certificates()
+        with mock.patch.object(deploy, 'run', side_effect=self.fake_run), redirect_stdout(io.StringIO()):
+            self.assertEqual(deploy.install(self.args()), 0)
+            old_profile = next((deploy.SITE / '.publish').glob('*.mobileconfig'))
+            old_identity = deploy.read_profile(old_profile)[0]
+            config = tomllib.loads(deploy.CONFIG.read_text())
+            spare = {'name': 'spare', 'password_hash': config['user'][0]['password_hash']}
+            deploy.CONFIG.write_text(deploy.CONFIG.read_text() + '\n[debug]\nlog_requests = true\n\n'
+                                     + '[[user]]\nname = "spare"\npassword_hash = '
+                                     + deploy.json.dumps(spare['password_hash']) + '\n')
+            before = tomllib.loads(deploy.CONFIG.read_text())
+            old_profile.unlink()  # No previous cleartext credential is available.
+            out = self.root / 'reset.mobileconfig'
+            with (mock.patch.object(deploy, 'refresh_credentials') as recover,
+                  mock.patch.object(deploy, 'verify_refresh_credentials') as authenticate,
+                  mock.patch.object(deploy.getpass, 'getpass') as prompt):
+                self.assertEqual(deploy.install(self.args(reset_password=True, profile_out=out)), 0)
+                recover.assert_not_called()
+                authenticate.assert_not_called()
+                prompt.assert_not_called()
+        identity = deploy.read_profile(out)[0]
+        self.assertNotEqual(identity.password, old_identity.password)
+        self.assertGreaterEqual(len(identity.password), 24)
+        after = tomllib.loads(deploy.CONFIG.read_text())
+        self.assertNotEqual(after['user'][0]['password_hash'], before['user'][0]['password_hash'])
+        before['user'][0]['password_hash'] = after['user'][0]['password_hash']
+        self.assertEqual(after, before, 'only the target password hash changes')
+        self.assertEqual(after['user'][1], spare)
+
+    def test_reset_user_hash_handles_quotes_and_refuses_ambiguous_users(self):
+        source = b"[[ user ]] # account\n'name' = 'iphone'\n'password_hash' = 'old'\n\n[[user]]\nname='other'\npassword_hash='keep'\n"
+        updated = tomllib.loads(deploy.reset_user_hash(source, 'iphone', 'new').decode())
+        self.assertEqual(updated['user'][0]['password_hash'], 'new')
+        self.assertEqual(updated['user'][1]['password_hash'], 'keep')
+        with self.assertRaises(ValueError):
+            deploy.reset_user_hash(source, 'absent', 'new')
+
+    @unittest.skipUnless(BINARY.exists(), 'set RELAY_BINARY')
+    def test_failed_password_reset_rolls_back_old_hash_and_device_profile(self):
+        self.certificates()
+        with mock.patch.object(deploy, 'run', side_effect=self.fake_run), redirect_stdout(io.StringIO()):
+            self.assertEqual(deploy.install(self.args()), 0)
+            before = deploy.CONFIG.read_bytes()
+            old_profile = next((deploy.SITE / '.publish').glob('*.mobileconfig'))
+            profile_data = old_profile.read_bytes()
+            self.fail_restart = True
+            out = self.root / 'failed-reset.mobileconfig'
+            with self.assertRaises(subprocess.CalledProcessError):
+                deploy.install(self.args(reset_password=True, profile_out=out))
+        self.assertEqual(deploy.CONFIG.read_bytes(), before)
+        self.assertEqual(old_profile.read_bytes(), profile_data)
+        self.assertFalse(out.exists())
+
+    @unittest.skipUnless(BINARY.exists(), 'set RELAY_BINARY')
+    def test_failed_download_and_malformed_proxy_do_not_install_partial_profile(self):
+        self.certificates()
+        bad = self.root / 'bad-proxy.txt'
+        bad.write_text("payload:\n  - 'not/a/domain'\n")
+        for options in (dict(no_proxy_list=False, proxy_list_file=bad), dict(no_gfwlist=False)):
+            with (self.subTest(options=options),
+                  mock.patch.object(deploy, 'run', side_effect=self.fake_run),
+                  mock.patch.object(deploy.RULES.urllib.request, 'urlopen', side_effect=OSError('offline')),
+                  redirect_stdout(io.StringIO()), self.assertRaises(ValueError)):
+                deploy.install(self.args(cert=None, key=None, **options))
+            self.assertFalse(deploy.CONFIG.exists())
+            self.assertFalse(any(c[0] == 'certbot' for c in self.calls))
+            self.assertFalse(any(c[:2] == ['systemctl', 'restart'] for c in self.calls))
+
+    @unittest.skipUnless(BINARY.exists(), 'set RELAY_BINARY')
+    def test_large_profile_is_delivered_as_file_without_dropping_domains(self):
+        self.certificates()
+        domains = [f'domain-{i:05d}-example.com' for i in range(40000)]
+        with (mock.patch.object(deploy, 'run', side_effect=self.fake_run),
+              mock.patch.object(deploy, 'profile_domains', return_value=domains), redirect_stdout(io.StringIO())):
+            self.assertEqual(deploy.install(self.args()), 0)
+        out = deploy.ETC / 'profile-iphone.mobileconfig'
+        self.assertGreater(out.stat().st_size, 1 << 20)
+        self.assertEqual(out.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(plistlib.loads(out.read_bytes())['PayloadContent'][0]['MatchDomains'], domains)
+        self.assertEqual(deploy.read_profile(out)[0].user, 'iphone')
+        self.assertEqual(list((deploy.SITE / '.publish').glob('*.mobileconfig')), [])
+
+    @unittest.skipUnless(BINARY.exists(), 'set RELAY_BINARY')
+    def test_profile_refresh_authenticates_locally_with_real_tls(self):
+        deploy.socket.getaddrinfo.side_effect = ORIGINAL_GETADDRINFO
+        self.certificates()
+        with deploy.socket.socket() as reserved:
+            reserved.bind(('127.0.0.1', 0))
+            port = reserved.getsockname()[1]
+        identity = deploy.Identity('relay.example.com', port, 'iphone', PASSWORD)
+        password_hash = tomllib.loads(subprocess.run(
+            [str(BINARY), 'passwd', '--name', 'iphone', '--stdin', '--fast-hash'],
+            input=PASSWORD + '\n', text=True, capture_output=True, check=True).stdout)['user'][0]['password_hash']
+        config = self.root / 'test-server.toml'
+        config.write_bytes(deploy.render_config(identity, password_hash, self.root / 'cert.pem', self.root / 'key.pem',
+                                               deploy.SITE)
+                           .replace(b'listen = "[::]:', b'listen = "127.0.0.1:'))
+        # The website is optional; create it for this otherwise real configuration.
+        deploy.SITE.mkdir()
+        (deploy.SITE / 'index.html').write_text('test relay')
+        log_path = self.root / 'test-server.log'
+        log = log_path.open('w')
+        self.addCleanup(log.close)
+        process = subprocess.Popen([str(BINARY), 'serve', '--config', str(config)], stdout=log, stderr=log)
+        try:
+            deadline = time.monotonic() + 10
+            while True:
+                try:
+                    with deploy.socket.create_connection(('127.0.0.1', port), timeout=.2):
+                        break
+                except OSError:
+                    if time.monotonic() > deadline or process.poll() is not None:
+                        self.fail('test relay did not start: ' + log_path.read_text())
+                    time.sleep(.05)
+            context = deploy.ssl.create_default_context(cafile=str(self.root / 'cert.pem'))
+            context.verify_flags |= deploy.ssl.VERIFY_X509_STRICT
+            with mock.patch.object(deploy.ssl, 'create_default_context', return_value=context):
+                deploy.verify_refresh_credentials(identity)
+                with self.assertRaises(ValueError):
+                    deploy.verify_refresh_credentials(deploy.replace(identity, password='wrong-password-123'))
+        finally:
+            process.terminate()
+            process.wait(timeout=10)
 
     @unittest.skipUnless(BINARY.exists(), 'run cargo build first')
     def test_installations_from_before_the_state_file_upgrade_from_their_profile(self):
@@ -602,6 +771,16 @@ keyword-only
 
 
 class GlobalProfileTests(unittest.TestCase):
+    def test_proxy_payload_and_registered_roots(self):
+        domains = global_profile.extract_proxy_domains(
+            "payload:\n  - '+.cdn.google.com'\n  - 'api.google.com'\n  - '+.google.com'\n  - '+.adult'\n")
+        suffixes = (ROOT / 'deploy/domains/public-suffix-icann.dat').read_text()
+        roots = global_profile.root_domains(domains + ['api.example.co.uk', 'www.city.kawasaki.jp',
+                                         'openaiassets.blob.core.windows.net', 'foo.github.io'], suffixes)
+        self.assertEqual(roots, ['adult', 'city.kawasaki.jp', 'example.co.uk', 'github.io', 'google.com', 'windows.net'])
+        with self.assertRaises(ValueError):
+            global_profile.extract_proxy_domains("payload:\n  - 'DOMAIN-KEYWORD,google'\n")
+
     def test_domain_downloads_have_a_byte_limit(self):
         with mock.patch.object(global_profile, 'MAX_LIST_BYTES', 64):
             self.assertEqual(global_profile.read_bounded(io.BytesIO(b'x' * 64)), b'x' * 64)

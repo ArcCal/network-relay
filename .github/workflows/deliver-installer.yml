@@ -6,7 +6,7 @@ permissions:
   contents: write
 jobs:
   upload:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     steps:
       - name: Attach the tested standalone installer to release 1.4
         env:

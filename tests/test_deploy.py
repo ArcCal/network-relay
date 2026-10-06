@@ -157,12 +157,13 @@ class DeploymentTests(unittest.TestCase):
         path.write_text('Google.COM. # service\ngoogle.com\nclaude.ai\n')
         self.assertEqual(deploy.load_domains(path), ['google.com', 'claude.ai'])
 
-    def test_preset_has_service_domains_without_catch_all_cdn(self):
+    def test_preset_has_services_and_selected_greatfire_domains(self):
         domains = deploy.load_domains(ROOT / 'deploy/domains/google-ai-social.txt')
         for required in ('google.com', 'googleapis.com', 'claude.ai', 'claudeusercontent.com',
-                         'x.com', 'twimg.com', 'chatgpt.com', 'grok.com', 'googlevideo.com'):
+                         'x.com', 'twimg.com', 'chatgpt.com', 'grok.com', 'googlevideo.com',
+                         'appspot.com', 'wsj.com', 'scmpchinese.com', 'gamer.com.tw'):
             self.assertIn(required, domains)
-        for broad in ('cloudflare.com', 'amazonaws.com', 'azure.com', 'livekit.cloud', 'appspot.com'):
+        for broad in ('cloudflare.com', 'amazonaws.com', 'azure.com', 'livekit.cloud'):
             self.assertNotIn(broad, domains)
 
     def test_config_escapes_paths_and_does_not_store_plain_password(self):

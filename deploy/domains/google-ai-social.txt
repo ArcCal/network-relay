@@ -82,3 +82,41 @@ turn.livekit.cloud
 
 # Shared login challenge used by these services; do not proxy all cloudflare.com
 challenges.cloudflare.com
+
+# GreatFire most blocked sites (user-selected, 2026-10-06)
+wsj.com
+scmpchinese.com
+wikipedia.org
+blogspot.com
+nytimes.com
+hec.su
+facebook.com
+tumblr.com
+is.gd
+x.co
+tinyurl.com
+pixnet.net
+greatfire.org
+biz.tm
+ddns.ms
+blogspot.tw
+shop.tm
+fastly.net
+scmp.com
+bbc.co.uk
+fandom.com
+imgur.com
+appspot.com
+udn.com
+wordpress.com
+yahoo.com
+wixsite.com
+bit.ly
+vimeo.com
+flnet.org
+etowns.org
+nownews.com
+baifu.cn
+wikimedia.org
+fc2.com
+gamer.com.tw

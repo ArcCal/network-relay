@@ -1,4 +1,4 @@
-# Google, AI and X domain preset
+# Google, AI, X and selected GreatFire domains
 
 `google-ai-social.txt` is a base list for Apple's `MatchDomains`. The automatic installer combines it with gfwlist, widens all names to registered roots using `public-suffix-icann.dat`, then deduplicates. Each resulting root and its subdomains matches. Private hosting suffixes are ignored, so the final scope deliberately includes entire shared hosting/CDN domains. The `adult` suffix and its domains are removed. Each profile stays below 524288 bytes; oversized lists are refused, never split. The relay's own hostname is excluded. Keep the match list non-empty; Apple treats an empty list as matching all traffic.
 
@@ -30,3 +30,5 @@ python3 deploy/global-profile.py --host relay.example.com --user iphone --binary
 - The profile contains the password in recoverable form. It is ignored by `.gitignore`; do not commit it or pass it around.
 
 This separate tool uses the listed service domains and gfwlist. The automatic installer applies root-domain normalization and excludes `.adult`; it does not include Loyalsoldier proxy.txt. `public-suffix-icann.dat` is the ICANN section of the official Public Suffix List, fetched 2026-10-06, version `2026-10-01_23-02-52_UTC`, commit `6cd82aff889e3d64e5e03bc5c1f43da1934a960a`; its MPL-2.0 notice is retained. It is bundled to avoid another deployment-time download.
+
+On 2026-10-06, the 40 domains supplied by the user from GreatFire’s “Most blocked sites (all time)” list were merged into this preset. The counts describe GreatFire tests, not subdomains that need separate rules. The installer normalizes and deduplicates these names with gfwlist; shared hosting roots intentionally include every tenant.

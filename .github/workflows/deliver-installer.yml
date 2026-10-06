@@ -1,0 +1,29 @@
+name: deliver prebuilt VPS installer
+on:
+  push:
+    branches: [codex/prebuilt-vps-installer]
+permissions:
+  contents: write
+jobs:
+  upload:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.13'
+      - name: Test with the published binary and attach updated installer
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          release_dir=$(mktemp -d)
+          trap 'rm -rf "$release_dir"' EXIT
+          gh release download 1.4 --dir "$release_dir" --pattern 'network-relay-1.4.0-linux-x86_64.tar.gz*' --repo "$GITHUB_REPOSITORY"
+          (cd "$release_dir" && sha256sum -c network-relay-1.4.0-linux-x86_64.tar.gz.sha256)
+          tar -xzf "$release_dir/network-relay-1.4.0-linux-x86_64.tar.gz" -C "$release_dir"
+          export RELAY_BINARY="$release_dir/network-relay-1.4.0-linux-x86_64/network-relay"
+          python3 -m unittest discover -s tests -p test_deploy.py -v
+          python3 deploy/package-installer.py
+          bash -n dist/network-relay-install.sh
+          bash dist/network-relay-install.sh --help
+          gh release upload 1.4 dist/network-relay-install.sh dist/network-relay-install.sh.sha256 --repo "$GITHUB_REPOSITORY" --clobber

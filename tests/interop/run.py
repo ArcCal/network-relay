@@ -29,11 +29,15 @@ def relay(binary, host='127.0.0.1'):
             subprocess.run(['openssl', *args], cwd=d, check=True, capture_output=True, timeout=15)
         openssl('req', '-x509', '-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:P-256',
                 '-nodes', '-keyout', 'ca.key', '-out', 'ca.pem', '-days', '1', '-subj', '/CN=Interop CA',
-                '-addext', 'basicConstraints=critical,CA:TRUE')
+                '-addext', 'basicConstraints=critical,CA:TRUE',
+                '-addext', 'keyUsage=critical,keyCertSign,cRLSign',
+                '-addext', 'subjectKeyIdentifier=hash')
         openssl('req', '-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:P-256', '-nodes',
                 '-keyout', 'key.pem', '-out', 'cert.csr', '-subj', '/CN=relay.test')
         (d / 'extensions').write_text('subjectAltName=DNS:relay.test,IP:127.0.0.1,IP:::1\n'
-                                     'extendedKeyUsage=serverAuth\nbasicConstraints=CA:FALSE\n')
+                                     'extendedKeyUsage=serverAuth\nbasicConstraints=CA:FALSE\n'
+                                     'keyUsage=critical,digitalSignature\n'
+                                     'subjectKeyIdentifier=hash\nauthorityKeyIdentifier=keyid,issuer\n')
         openssl('x509', '-req', '-in', 'cert.csr', '-CA', 'ca.pem', '-CAkey', 'ca.key',
                 '-CAcreateserial', '-out', 'cert.pem', '-days', '1', '-extfile', 'extensions')
         password = secrets.token_urlsafe(24)
@@ -58,6 +62,7 @@ def relay(binary, host='127.0.0.1'):
             proc = subprocess.Popen([str(binary), 'serve', '--config', str(config)], stdout=log, stderr=log)
             try:
                 trust = ssl.create_default_context(cafile=str(d / 'ca.pem'))
+                trust.verify_flags |= ssl.VERIFY_X509_STRICT
                 deadline = time.monotonic() + 10
                 while True:
                     if proc.poll() is not None:

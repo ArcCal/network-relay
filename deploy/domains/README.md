@@ -1,6 +1,6 @@
 # Google, AI and X domain preset
 
-`google-ai-social.txt` is a base list for Apple's `MatchDomains`. The automatic installer combines it with gfwlist and Loyalsoldier's `proxy.txt`, widens all names to registered roots using `public-suffix-icann.dat`, then deduplicates. Each resulting root and its subdomains matches. Private hosting suffixes are ignored, so the final scope deliberately includes entire shared hosting/CDN domains. Explicit TLD rules in proxy.txt also retain their suffix scope. The relay's own hostname is excluded. Keep the match list non-empty; Apple treats an empty list as matching all traffic.
+`google-ai-social.txt` is a base list for Apple's `MatchDomains`. The automatic installer combines it with gfwlist, widens all names to registered roots using `public-suffix-icann.dat`, then deduplicates. Each resulting root and its subdomains matches. Private hosting suffixes are ignored, so the final scope deliberately includes entire shared hosting/CDN domains. The `adult` suffix and its domains are removed. Each profile stays below 524288 bytes; oversized lists are refused, never split. The relay's own hostname is excluded. Keep the match list non-empty; Apple treats an empty list as matching all traffic.
 
 It covers Google/Gemini sign-in and common resources, Gmail, Drive, Photos, Maps and YouTube; Claude, including artifacts/MCP content; X/Twitter/Grok; and OpenAI/ChatGPT/Sora with the common voice endpoints. Including ChatGPT is a choice made for this general AI preset; services you do not need can be removed as a group.
 
@@ -12,7 +12,7 @@ Domains change, and this is not a complete per-app list obtained by capturing ea
 
 This is **domain-based routing**, not app-based routing: other apps that use the same Google APIs, shared verification codes or CDNs also match. Targeting only one app without affecting others needs a separate device-management configuration. This preset also does not override routing rules that other VPNs or proxies on the device already have.
 
-After editing, regenerate the profile and install it; an existing device profile is not updated automatically. During installation `--domains your-list.txt` changes the base list; downloaded gfwlist and proxy.txt are still merged unless explicitly disabled. The standalone script refreshes routing profiles on rerun while preserving credentials. See [the deployment guide](../../docs/deploy-debian13.md).
+After editing, regenerate the profile and install it; an existing device profile is not updated automatically. During installation `--domains your-list.txt` changes the base list; downloaded gfwlist is still merged unless explicitly disabled. The standalone script refreshes routing profiles on rerun while preserving credentials. See [the deployment guide](../../docs/deploy-debian13.md).
 
 ## Global services + gfwlist profile
 
@@ -29,4 +29,4 @@ python3 deploy/global-profile.py --host relay.example.com --user iphone --binary
 - After updating the service lists or the gfwlist, run the script again and reinstall; a new profile for the same domain and user replaces the old one.
 - The profile contains the password in recoverable form. It is ignored by `.gitignore`; do not commit it or pass it around.
 
-This separate tool uses the listed service domains and gfwlist. The automatic installer additionally includes Loyalsoldier proxy.txt and applies root-domain normalization. `public-suffix-icann.dat` is the ICANN section of the official Public Suffix List, fetched 2026-10-06, version `2026-10-01_23-02-52_UTC`, commit `6cd82aff889e3d64e5e03bc5c1f43da1934a960a`; its MPL-2.0 notice is retained. It is bundled to avoid another deployment-time download.
+This separate tool uses the listed service domains and gfwlist. The automatic installer applies root-domain normalization and excludes `.adult`; it does not include Loyalsoldier proxy.txt. `public-suffix-icann.dat` is the ICANN section of the official Public Suffix List, fetched 2026-10-06, version `2026-10-01_23-02-52_UTC`, commit `6cd82aff889e3d64e5e03bc5c1f43da1934a960a`; its MPL-2.0 notice is retained. It is bundled to avoid another deployment-time download.

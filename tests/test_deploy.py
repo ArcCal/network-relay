@@ -218,7 +218,7 @@ class DeploymentTests(unittest.TestCase):
                 self.assertEqual(deploy.main(), 0)
                 self.assertEqual(install.call_args.args[0].binary, expected)
                 self.assertFalse(install.call_args.args[0].no_gfwlist)
-                self.assertFalse(install.call_args.args[0].no_proxy_list)
+                self.assertFalse(hasattr(install.call_args.args[0], 'proxy_list_url'))
 
     def test_missing_archive_and_wrong_architecture_fail_before_system_changes(self):
         upload = self.root / 'upload'
@@ -332,16 +332,17 @@ class DeploymentTests(unittest.TestCase):
     @unittest.skipUnless(BINARY.exists(), 'set RELAY_BINARY')
     def test_combined_root_profile_and_refresh_keep_existing_credentials(self):
         self.certificates()
-        gfw, proxy = self.root / 'gfw.txt', self.root / 'proxy.txt'
-        gfw.write_text('[AutoProxy 0.2.9]\n||deep.google.com\n||login.blocked.co.uk\n')
-        proxy.write_text("payload:\n  - '+.cdn.blocked.co.uk'\n  - 'api.proxy-only.org'\n")
-        options = dict(no_gfwlist=False, no_proxy_list=False, gfwlist_file=gfw, proxy_list_file=proxy)
+        gfw = self.root / 'gfw.txt'
+        gfw.write_text('[AutoProxy 0.2.9]\n||deep.google.com\n||login.blocked.co.uk\n||api.list-only.org\n||site.adult\n')
+        options = dict(no_gfwlist=False, gfwlist_file=gfw)
         with mock.patch.object(deploy, 'run', side_effect=self.fake_run), redirect_stdout(io.StringIO()):
             self.assertEqual(deploy.install(self.args(**options)), 0)
             old_profile = next((deploy.SITE / '.publish').glob('*.mobileconfig'))
+            initial_domains = plistlib.loads(old_profile.read_bytes())['PayloadContent'][0]['MatchDomains']
+            self.assertFalse(any(d == 'adult' or d.endswith('.adult') for d in initial_domains))
             identity = deploy.read_profile(old_profile)[0]
             before = deploy.CONFIG.read_bytes()
-            proxy.write_text("payload:\n  - '+.cdn.blocked.co.uk'\n  - 'api.proxy-only.org'\n  - '+.new.updated.org'\n")
+            gfw.write_text(gfw.read_text() + '||new.updated.org\n')
             start = len(self.calls)
             out = self.root / 'updated.mobileconfig'
             with mock.patch.object(deploy, 'verify_refresh_credentials') as verify:
@@ -350,7 +351,7 @@ class DeploymentTests(unittest.TestCase):
         payload = plistlib.loads(out.read_bytes())['PayloadContent'][0]
         self.assertIn('google.com', payload['MatchDomains'])
         self.assertIn('blocked.co.uk', payload['MatchDomains'])
-        self.assertIn('proxy-only.org', payload['MatchDomains'])
+        self.assertIn('list-only.org', payload['MatchDomains'])
         self.assertIn('updated.org', payload['MatchDomains'])
         self.assertNotIn('co.uk', payload['MatchDomains'])
         self.assertEqual(payload['MatchDomains'], sorted(set(payload['MatchDomains'])))
@@ -418,11 +419,11 @@ class DeploymentTests(unittest.TestCase):
         self.assertFalse(out.exists())
 
     @unittest.skipUnless(BINARY.exists(), 'set RELAY_BINARY')
-    def test_failed_download_and_malformed_proxy_do_not_install_partial_profile(self):
+    def test_failed_download_and_empty_gfwlist_do_not_install_partial_profile(self):
         self.certificates()
-        bad = self.root / 'bad-proxy.txt'
-        bad.write_text("payload:\n  - 'not/a/domain'\n")
-        for options in (dict(no_proxy_list=False, proxy_list_file=bad), dict(no_gfwlist=False)):
+        bad = self.root / 'empty-gfw.txt'
+        bad.write_text('[AutoProxy 0.2.9]\n! no domains\n')
+        for options in (dict(no_gfwlist=False, gfwlist_file=bad), dict(no_gfwlist=False)):
             with (self.subTest(options=options),
                   mock.patch.object(deploy, 'run', side_effect=self.fake_run),
                   mock.patch.object(deploy.RULES.urllib.request, 'urlopen', side_effect=OSError('offline')),
@@ -433,18 +434,36 @@ class DeploymentTests(unittest.TestCase):
             self.assertFalse(any(c[:2] == ['systemctl', 'restart'] for c in self.calls))
 
     @unittest.skipUnless(BINARY.exists(), 'set RELAY_BINARY')
-    def test_large_profile_is_delivered_as_file_without_dropping_domains(self):
+    def test_oversized_single_profile_is_refused_without_installing_account(self):
         self.certificates()
         domains = [f'domain-{i:05d}-example.com' for i in range(40000)]
         with (mock.patch.object(deploy, 'run', side_effect=self.fake_run),
               mock.patch.object(deploy, 'profile_domains', return_value=domains), redirect_stdout(io.StringIO())):
-            self.assertEqual(deploy.install(self.args()), 0)
-        out = deploy.ETC / 'profile-iphone.mobileconfig'
-        self.assertGreater(out.stat().st_size, 1 << 20)
-        self.assertEqual(out.stat().st_mode & 0o777, 0o600)
-        self.assertEqual(plistlib.loads(out.read_bytes())['PayloadContent'][0]['MatchDomains'], domains)
-        self.assertEqual(deploy.read_profile(out)[0].user, 'iphone')
+            with self.assertRaisesRegex(ValueError, '524288-byte limit'):
+                deploy.install(self.args())
+        self.assertFalse(deploy.CONFIG.exists())
+        self.assertFalse(deploy.STATE.exists())
+        self.assertFalse(any(c[:2] == ['systemctl', 'restart'] for c in self.calls))
         self.assertEqual(list((deploy.SITE / '.publish').glob('*.mobileconfig')), [])
+
+    @unittest.skipUnless(BINARY.exists(), 'set RELAY_BINARY')
+    def test_oversized_reset_keeps_existing_hash_and_profile(self):
+        self.certificates()
+        with mock.patch.object(deploy, 'run', side_effect=self.fake_run), redirect_stdout(io.StringIO()):
+            self.assertEqual(deploy.install(self.args()), 0)
+            before = deploy.CONFIG.read_bytes()
+            old_profile = next((deploy.SITE / '.publish').glob('*.mobileconfig'))
+            old_data = old_profile.read_bytes()
+            out = self.root / 'oversized-reset.mobileconfig'
+            start = len(self.calls)
+            with (mock.patch.object(deploy.RULES, 'profile_with_domains',
+                                    return_value=b'x' * deploy.MAX_DEVICE_PROFILE_BYTES),
+                  self.assertRaisesRegex(ValueError, '524288-byte limit')):
+                deploy.install(self.args(reset_password=True, profile_out=out))
+        self.assertEqual(deploy.CONFIG.read_bytes(), before)
+        self.assertEqual(old_profile.read_bytes(), old_data)
+        self.assertFalse(out.exists())
+        self.assertFalse(any(c[:2] == ['systemctl', 'restart'] for c in self.calls[start:]))
 
     @unittest.skipUnless(BINARY.exists(), 'set RELAY_BINARY')
     def test_profile_refresh_authenticates_locally_with_real_tls(self):
@@ -810,6 +829,8 @@ class GlobalProfileTests(unittest.TestCase):
         self.assertEqual(stats['regular expressions dropped'], 1)
         self.assertEqual(stats['path-limited rules widened to their domain'], 2)
         self.assertEqual(global_profile.collapse(domains), [d for d in domains if d != 'sub.example.com'])
+        self.assertEqual(global_profile.collapse(['com', 'google.com', 'mail.google.com', 'example.org']),
+                         ['com', 'example.org'])
 
     def test_both_gfwlist_encodings_are_read(self):
         plain = GFWLIST.encode()

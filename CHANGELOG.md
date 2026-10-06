@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.3.0 — 2026-10-06
 
 - **HTTP/3 cancellation codes**: when the relay ends a request or tunnel early, the client now gets the intended HTTP/3 error code in both directions (RFC 9114 §4.1.1). The STOP_SENDING half used to lose its code whenever a read was pending, which is nearly always for a tunnel, and clients saw code 0, which HTTP/3 does not define, instead of `H3_REQUEST_CANCELLED`, `H3_CONNECT_ERROR`, `H3_DATAGRAM_ERROR` and so on (vendored h3-quinn fix). A request the client cancels while it is being authorized or connected is now cancelled with `H3_REQUEST_CANCELLED` rather than dropped, and a request whose headers exceed 32 KiB gets its 431 with STOP_SENDING `H3_NO_ERROR` (RFC 9114 §4.1).
 - **HTTP/3 requests whose headers do not arrive within 10 seconds are rejected** with `H3_REQUEST_REJECTED`, so the client may retry them; the stream used to end with a FIN and no response, which reads as a truncated response (vendored h3 `resolve_request_before`).

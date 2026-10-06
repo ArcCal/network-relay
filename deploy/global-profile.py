@@ -18,11 +18,13 @@ import re
 import shutil
 import subprocess
 import sys
+import plistlib
 import urllib.request
 
 REPO = Path(__file__).resolve().parent.parent
 DOMAINS = REPO / 'deploy/domains'
 GFWLIST_URL = 'https://raw.githubusercontent.com/gfwlist/gfwlist/refs/heads/master/list.txt'
+PROXY_LIST_URL = 'https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/proxy.txt'
 LABEL = re.compile(r'^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$')
 MAX_LIST_BYTES = 16 << 20
 
@@ -108,6 +110,77 @@ def collapse(domains):
 def build_domains(services, gfwlist_text):
     gfw, stats = extract_gfwlist(gfwlist_text) if gfwlist_text is not None else ([], {})
     return collapse(set(services) | set(gfw)), stats
+
+
+def extract_proxy_domains(text):
+    """Read the domain payload format published by Loyalsoldier, without a YAML dependency."""
+    domains = set()
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith('#') or line == 'payload:':
+            continue
+        if not line.startswith('- '):
+            raise ValueError('Unexpected proxy.txt format: expected a domain payload list.')
+        value = line[2:].strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+        if value.startswith('+.'):
+            value = value[2:]
+        host = clean_host(value)
+        if host is None and LABEL.fullmatch(value.lower()) and not value.isdigit():
+            host = value.lower()  # Explicit TLD rules such as '+.adult' retain their scope.
+        if host is None:
+            raise ValueError(f'Cannot convert proxy.txt rule to an Apple domain: {value!r}')
+        domains.add(host)
+    if not domains:
+        raise ValueError('The proxy.txt domain payload is empty.')
+    return sorted(domains)
+
+
+def profile_with_domains(raw, domains):
+    """Keep the binary's profile format, replacing a small seed list with the full list.
+
+    This avoids ARG_MAX and the binary's verbose per-domain description. Compact
+    XML also keeps large lists within the 1.4 website's one-MiB publishing limit.
+    """
+    if not domains:
+        raise ValueError('An empty Apple match list would relay all traffic.')
+    profile = plistlib.loads(raw)
+    payload = profile['PayloadContent'][0]
+    payload['MatchDomains'] = domains
+    description = f'Relays {len(domains)} selected domains and their subdomains; other traffic is unchanged.'
+    profile['PayloadDescription'] = description
+    payload['PayloadDescription'] = description
+    return re.sub(rb'>\s+<', b'><', plistlib.dumps(profile, sort_keys=False))
+
+
+def root_domains(domains, suffix_text):
+    """Registered roots using ICANN suffixes, deliberately ignoring private tenant suffixes."""
+    exact, wildcard, exceptions = set(), set(), set()
+    for line in suffix_text.splitlines():
+        rule = line.strip()
+        if not rule or rule.startswith('//'):
+            continue
+        target = exceptions if rule.startswith('!') else wildcard if rule.startswith('*.') else exact
+        rule = rule.removeprefix('!').removeprefix('*.')
+        target.add(rule.encode('idna').decode('ascii').lower())
+    if not exact:
+        raise ValueError('The bundled public suffix table is empty.')
+    roots = set()
+    for domain in domains:
+        labels = domain.split('.')
+        suffix_length = 1  # The PSL default rule is '*'.
+        for index in range(len(labels)):
+            suffix = '.'.join(labels[index:])
+            if suffix in exceptions:
+                suffix_length = len(labels) - index - 1
+                break
+            if suffix in exact or (index + 1 < len(labels) and '.'.join(labels[index + 1:]) in wildcard):
+                suffix_length = max(suffix_length, len(labels) - index)
+        # If a source explicitly lists a public suffix, preserve its stated scope;
+        # never derive co.uk from an ordinary host under example.co.uk.
+        roots.add('.'.join(labels[-min(len(labels), suffix_length + 1):]))
+    return sorted(roots)
 
 
 def find_binary(given):

@@ -43,6 +43,15 @@ def fixture_profile(**changes):
     return {'PayloadContent': [payload], 'PayloadType': 'Configuration'}
 
 
+def service_rule_fixtures(directory):
+    for name in global_profile.SERVICE_RULE_NAMES:
+        (directory / f'{name}.yaml').write_text(
+            f"payload:\n  - 'DOMAIN,api.{name.lower()}-rules.example'\n"
+            f"  - DOMAIN-SUFFIX,{name.lower()}-rules.example\n"
+            "  - DOMAIN,mail.google.com\n  - DOMAIN-KEYWORD,keyword-only\n"
+            "  - IP-CIDR,192.0.2.0/24,no-resolve\n")
+
+
 class DeploymentTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix='relay-deploy-test-')
@@ -109,7 +118,7 @@ class DeploymentTests(unittest.TestCase):
                       domains=None, binary=BINARY, jobs=1, cert=self.root / 'cert.pem', key=self.root / 'key.pem',
                       profile_out=None, refresh_profile=False, reset_password=False,
                       no_gfwlist=True, gfwlist_file=None, gfwlist_url=global_profile.GFWLIST_URL,
-                      no_proxy_list=True, proxy_list_file=None, proxy_list_url=global_profile.PROXY_LIST_URL)
+                      no_service_rules=True, rules_dir=None)
         values.update(changes)
         return argparse.Namespace(**values)
 
@@ -219,7 +228,7 @@ class DeploymentTests(unittest.TestCase):
                 self.assertEqual(deploy.main(), 0)
                 self.assertEqual(install.call_args.args[0].binary, expected)
                 self.assertFalse(install.call_args.args[0].no_gfwlist)
-                self.assertFalse(hasattr(install.call_args.args[0], 'proxy_list_url'))
+                self.assertFalse(install.call_args.args[0].no_service_rules)
 
     def test_missing_archive_and_wrong_architecture_fail_before_system_changes(self):
         upload = self.root / 'upload'
@@ -259,13 +268,18 @@ class DeploymentTests(unittest.TestCase):
     @unittest.skipUnless(BINARY.exists(), 'run cargo build first or set RELAY_BINARY')
     def test_explicit_source_build_installs_build_tools(self):
         self.certificates()
+        service_rule_fixtures(self.root)
         with (mock.patch.object(deploy, 'run', side_effect=self.fake_run),
               mock.patch.object(deploy, 'build_binary', return_value=BINARY) as build,
               redirect_stdout(io.StringIO())):
-            self.assertEqual(deploy.install(self.args(binary=None)), 0)
+            self.assertEqual(deploy.install(self.args(binary=None, no_service_rules=False, rules_dir=self.root)), 0)
         self.assertIsNone(build.call_args.args[0].binary)
         apt = [c for c in self.calls if c[0] == 'apt-get']
         self.assertTrue(any(all(p in c for p in ('build-essential', 'pkg-config', 'git')) for c in apt))
+        profile = next((deploy.SITE / '.publish').glob('*.mobileconfig'))
+        domains = plistlib.loads(profile.read_bytes())['PayloadContent'][0]['MatchDomains']
+        for name in global_profile.SERVICE_RULE_NAMES:
+            self.assertIn(f'{name.lower()}-rules.example', domains)
 
     @unittest.skipUnless(BINARY.exists(), 'run cargo build first')
     def test_install_and_repeat_with_real_binary_keep_credentials_and_configuration(self):
@@ -465,6 +479,36 @@ class DeploymentTests(unittest.TestCase):
         self.assertEqual(old_profile.read_bytes(), old_data)
         self.assertFalse(out.exists())
         self.assertFalse(any(c[:2] == ['systemctl', 'restart'] for c in self.calls[start:]))
+
+    @unittest.skipUnless(BINARY.exists(), 'set RELAY_BINARY')
+    def test_eighteen_service_lists_generate_only_deduplicated_roots(self):
+        self.certificates()
+        service_rule_fixtures(self.root)
+        out = self.root / 'services.mobileconfig'
+        with mock.patch.object(deploy, 'run', side_effect=self.fake_run), redirect_stdout(io.StringIO()):
+            self.assertEqual(deploy.install(self.args(no_service_rules=False, rules_dir=self.root,
+                                                      profile_out=out)), 0)
+        domains = plistlib.loads(out.read_bytes())['PayloadContent'][0]['MatchDomains']
+        for name in global_profile.SERVICE_RULE_NAMES:
+            self.assertIn(f'{name.lower()}-rules.example', domains)
+        self.assertIn('google.com', domains)
+        self.assertNotIn('mail.google.com', domains)
+        self.assertNotIn('keyword-only', domains)
+        self.assertNotIn('192.0.2.0/24', domains)
+        self.assertEqual(domains, sorted(set(domains)))
+        self.assertFalse(any('*' in d or ',' in d for d in domains))
+        self.assertLess(out.stat().st_size, 524288)
+
+    @unittest.skipUnless(BINARY.exists(), 'set RELAY_BINARY')
+    def test_missing_service_list_aborts_before_certificate_or_account_changes(self):
+        self.certificates()
+        service_rule_fixtures(self.root)
+        (self.root / 'Jsdelivr.yaml').unlink()
+        with (mock.patch.object(deploy, 'run', side_effect=self.fake_run), redirect_stdout(io.StringIO()),
+              self.assertRaisesRegex(ValueError, 'Jsdelivr')):
+            deploy.install(self.args(no_service_rules=False, rules_dir=self.root, cert=None, key=None))
+        self.assertFalse(deploy.CONFIG.exists())
+        self.assertFalse(any(c[0] == 'certbot' or c[1:2] == ['passwd'] for c in self.calls))
 
     @unittest.skipUnless(BINARY.exists(), 'set RELAY_BINARY')
     def test_profile_refresh_authenticates_locally_with_real_tls(self):
@@ -791,6 +835,74 @@ keyword-only
 
 
 class GlobalProfileTests(unittest.TestCase):
+    def test_every_run_requests_all_current_service_urls_without_cached_results(self):
+        revision = [1]
+        requested = []
+        def download(request, timeout):
+            requested.append(request.full_url)
+            self.assertEqual(timeout, 60)
+            self.assertEqual(request.get_header('Cache-control'), 'no-cache')
+            name = next(name for name, url in global_profile.SERVICE_RULE_URLS.items() if url == request.full_url)
+            return io.BytesIO(f'payload:\n - DOMAIN,api.{name.lower()}-{revision[0]}.example\n'.encode())
+        with (mock.patch.object(global_profile.urllib.request, 'urlopen', side_effect=download),
+              redirect_stdout(io.StringIO())):
+            first = global_profile.load_service_rules()
+            revision[0] = 2
+            second = global_profile.load_service_rules()
+        self.assertEqual(len(first), 18)
+        self.assertEqual(len(second), 18)
+        self.assertTrue(set(first).isdisjoint(second))
+        for url in global_profile.SERVICE_RULE_URLS.values():
+            self.assertEqual(requested.count(url), 2)
+
+    def test_classical_clash_rules_only_extract_domains(self):
+        domains, stats = global_profile.extract_clash_domains(
+            "# header\npayload:\n  - 'DOMAIN,mail.google.com'\n"
+            "  - DOMAIN-SUFFIX,google.com # comment\n  - DOMAIN-KEYWORD,google\n"
+            "  - IP-CIDR,192.0.2.0/24,no-resolve\n  - IP-CIDR6,2001:db8::/32\n"
+            "  - IP-ASN,64500\n  - PROCESS-NAME,browser\n")
+        self.assertEqual(domains, ['google.com', 'mail.google.com'])
+        self.assertEqual(stats, {'DOMAIN-KEYWORD': 1, 'IP-CIDR': 1, 'IP-CIDR6': 1,
+                                'IP-ASN': 1, 'PROCESS-NAME': 1})
+        for text in ('not yaml', 'payload:\n - DOMAIN,*.google.com',
+                     'payload:\n - DOMAIN,192.0.2.1', 'payload:\n - DOMAIN-KEYWORD,google',
+                     'payload:\n - DOMAIN,google.com\n - UNRECOGNIZED,anything'):
+            with self.subTest(text=text), self.assertRaises(ValueError):
+                global_profile.extract_clash_domains(text)
+
+    @unittest.skipUnless(BINARY.exists(), 'set RELAY_BINARY')
+    def test_global_generator_uses_eighteen_lists_roots_and_preserves_output_on_size_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            directory = Path(directory)
+            service_rule_fixtures(directory)
+            services, out = directory / 'services.txt', directory / 'all.mobileconfig'
+            services.write_text('login.api.example.co.uk\nfoo.adult\n')
+            args = ['--host', 'relay.example.com', '--user', 'iphone', '--password', PASSWORD,
+                    '--binary', str(BINARY), '--no-gfwlist', '--services', str(services),
+                    '--rules-dir', str(directory), '--out', str(out)]
+            with redirect_stdout(io.StringIO()):
+                global_profile.main(args)
+            old = out.read_bytes()
+            payload = plistlib.loads(old)['PayloadContent'][0]
+            domains = payload['MatchDomains']
+            self.assertIn('example.co.uk', domains)
+            self.assertNotIn('login.api.example.co.uk', domains)
+            self.assertNotIn('foo.adult', domains)
+            for name in global_profile.SERVICE_RULE_NAMES:
+                self.assertIn(f'{name.lower()}-rules.example', domains)
+            self.assertEqual(domains, sorted(set(domains)))
+            self.assertEqual(payload['ExcludedDomains'], ['relay.example.com'])
+            self.assertEqual(out.stat().st_mode & 0o777, 0o600)
+            with (redirect_stdout(io.StringIO()),
+                  mock.patch.object(global_profile, 'profile_with_domains', return_value=b'x' * 524288),
+                  self.assertRaisesRegex(ValueError, '524288-byte limit')):
+                global_profile.main(args)
+            self.assertEqual(out.read_bytes(), old)
+            (directory / 'Google.yaml').write_text('payload:\n - UNRECOGNIZED,foo\n')
+            with redirect_stdout(io.StringIO()), self.assertRaisesRegex(ValueError, 'Google'):
+                global_profile.main(args)
+            self.assertEqual(out.read_bytes(), old)
+
     def test_proxy_payload_and_registered_roots(self):
         domains = global_profile.extract_proxy_domains(
             "payload:\n  - '+.cdn.google.com'\n  - 'api.google.com'\n  - '+.google.com'\n  - '+.adult'\n")
@@ -817,7 +929,7 @@ class GlobalProfileTests(unittest.TestCase):
                 with mock.patch.object(global_profile.subprocess, 'run') as generate:
                     with self.assertRaises(ValueError):
                         global_profile.main(['--host', 'relay.example.com', '--user', 'iphone',
-                            '--password', PASSWORD, '--binary', str(BINARY), '--no-gfwlist', '--services', str(services),
+                            '--password', PASSWORD, '--binary', str(BINARY), '--no-gfwlist', '--no-service-rules', '--services', str(services),
                             '--out', str(out)])
                     generate.assert_not_called()
                 self.assertEqual(out.read_bytes(), b'previous profile')
@@ -855,7 +967,7 @@ class GlobalProfileTests(unittest.TestCase):
             gfw.write_text(GFWLIST)
             with redirect_stdout(io.StringIO()):
                 global_profile.main(['--host', 'Relay.Example.com.', '--user', 'iphone', '--password', PASSWORD,
-                                     '--gfwlist-file', str(gfw), '--binary', str(BINARY), '--out', str(out),
+                                     '--no-service-rules', '--gfwlist-file', str(gfw), '--binary', str(BINARY), '--out', str(out),
                                      '--services', str(ROOT / 'deploy/domains/global-services.txt')])
             self.assertEqual(out.stat().st_mode & 0o777, 0o600)
             payload = plistlib.loads(out.read_bytes())['PayloadContent'][0]

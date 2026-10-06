@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Builds a .mobileconfig that sends named services and the gfwlist through the relay.
+"""Builds one root-domain mobileconfig from service lists, gfwlist and eighteen Clash lists.
 
-Uses only the standard library and the `network-relay profile` command, so the
-profile has exactly the format that command writes. The gfwlist is downloaded
-when this runs; it is not part of the repository. Only host names can be
+Uses the standard library and the prebuilt `network-relay profile` command.
+The gfwlist and eighteen blackmatrix7 service lists are downloaded when this runs.
+The output contains deduplicated registered roots and stays below 524288 bytes. Only host names can be
 expressed in Apple's MatchDomains, so regular expressions, IP addresses and
 exception rules in the list are dropped, and a rule limited to a URL path
 relays its whole domain.
@@ -11,14 +11,17 @@ relays its whole domain.
 
 import argparse
 import base64
+from concurrent.futures import ThreadPoolExecutor
 import getpass
 import ipaddress
+import os
 from pathlib import Path
 import re
 import shutil
 import subprocess
 import sys
 import plistlib
+import tempfile
 import urllib.request
 
 REPO = Path(__file__).resolve().parent.parent
@@ -27,6 +30,13 @@ GFWLIST_URL = 'https://raw.githubusercontent.com/gfwlist/gfwlist/refs/heads/mast
 PROXY_LIST_URL = 'https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/proxy.txt'
 LABEL = re.compile(r'^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$')
 MAX_LIST_BYTES = 16 << 20
+MAX_DEVICE_PROFILE_BYTES = 524288
+SERVICE_RULE_NAMES = ('Cloudflare', 'Gemini', 'OpenAI', 'Anthropic', 'Google', 'GitHub', 'Twitter', 'Jsdelivr', 'Pandora', 'Spotify', 'Reddit', 'Discord', 'iCloudPrivateRelay', 'Claude', 'AppleNews', 'AppleProxy', 'TikTok', 'TigerFintech')
+SERVICE_RULE_URLS = {
+    name: f'https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/{name}/{name}.yaml'
+    for name in SERVICE_RULE_NAMES
+}
+SERVICE_RULE_URLS['Spotify'] = 'https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/Spotify/Spotify.yaml'
 
 
 def read_bounded(stream):
@@ -137,11 +147,76 @@ def extract_proxy_domains(text):
     return sorted(domains)
 
 
+def extract_clash_domains(text):
+    """Read classical Clash payloads; domain rules only, with reported omissions."""
+    domains, stats = set(), {}
+    payload = False
+    unsupported = {'DOMAIN-KEYWORD', 'DOMAIN-REGEX', 'DOMAIN-WILDCARD',
+                   'IP-CIDR', 'IP-CIDR6', 'IP-ASN', 'PROCESS-NAME', 'PROCESS-PATH'}
+    for line in text.splitlines():
+        line = line.split('#', 1)[0].strip()
+        if not line:
+            continue
+        if line == 'payload:' and not payload:
+            payload = True
+            continue
+        if not payload or not line.startswith('- '):
+            raise ValueError('Unexpected Clash YAML format: expected a classical payload list.')
+        value = line[2:].strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+        fields = [field.strip() for field in value.split(',')]
+        kind = fields[0]
+        if kind in ('DOMAIN', 'DOMAIN-SUFFIX'):
+            host = clean_host(fields[1]) if len(fields) == 2 else None
+            if host is None:
+                raise ValueError(f'Invalid Clash domain rule: {value!r}')
+            domains.add(host)
+        elif kind in unsupported and len(fields) >= 2:
+            stats[kind] = stats.get(kind, 0) + 1
+        else:
+            raise ValueError(f'Unrecognized Clash rule: {value!r}')
+    if not domains:
+        raise ValueError('The Clash payload contains no convertible domains.')
+    return sorted(domains), stats
+
+
+def load_service_rules(directory=None):
+    """Load all eighteen sources, refusing an incomplete set on any failure."""
+    def load(name):
+        source = Path(directory) / f'{name}.yaml' if directory is not None else SERVICE_RULE_URLS[name]
+        print(f'Loading {name}: {source}', flush=True)
+        try:
+            request = urllib.request.Request(source, headers={'Cache-Control': 'no-cache', 'Pragma': 'no-cache'}) \
+                if isinstance(source, str) else None
+            with (source.open('rb') if isinstance(source, Path)
+                  else urllib.request.urlopen(request, timeout=60)) as stream:
+                return extract_clash_domains(read_bounded(stream).decode('utf-8'))
+        except (OSError, ValueError) as error:
+            raise ValueError(f'Could not load {name}: {error}. No partial profile will be generated.') from error
+    domains = []
+    with ThreadPoolExecutor(max_workers=min(4, len(SERVICE_RULE_NAMES))) as pool:
+        results = list(pool.map(load, SERVICE_RULE_NAMES))
+    for name, (extracted, stats) in zip(SERVICE_RULE_NAMES, results):
+        domains.extend(extracted)
+        print(f'{name}: {len(extracted)} domain rules.', flush=True)
+        for kind, count in stats.items():
+            print(f'  {kind}: {count} rules omitted (not representable by MatchDomains).', flush=True)
+    return domains
+
+
+def add_service_rule_arguments(parser):
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument('--rules-dir', type=Path,
+                      help='directory containing all eighteen service YAML files, instead of downloading them')
+    mode.add_argument('--no-service-rules', action='store_true', help='explicitly omit the eighteen service lists')
+
+
 def profile_with_domains(raw, domains):
     """Keep the binary's profile format, replacing a small seed list with the full list.
 
     This avoids ARG_MAX and the binary's verbose per-domain description. Compact
-    XML also keeps large lists within the 1.4 website's one-MiB publishing limit.
+    XML keeps the single device profile small; callers enforce the iPhone limit.
     """
     if not domains:
         raise ValueError('An empty Apple match list would relay all traffic.')
@@ -183,6 +258,12 @@ def root_domains(domains, suffix_text):
     return sorted(roots)
 
 
+def normalized_domains(domains, relay_host):
+    suffixes = (DOMAINS / 'public-suffix-icann.dat').read_text()
+    return collapse([d for d in root_domains([d for d in domains if d != relay_host], suffixes)
+                     if d != relay_host and d != 'adult' and not d.endswith('.adult')])
+
+
 def find_binary(given):
     candidates = [given] if given else [REPO / 'target/release/network-relay', shutil.which('network-relay')]
     for candidate in candidates:
@@ -207,6 +288,7 @@ def main(argv=None):
     gfw.add_argument('--gfwlist-file', type=Path, help='use an already downloaded gfwlist instead of downloading it')
     gfw.add_argument('--no-gfwlist', action='store_true', help='use only the service lists, without the gfwlist')
     parser.add_argument('--gfwlist-url', default=GFWLIST_URL)
+    add_service_rule_arguments(parser)
     parser.add_argument('--ui-toggle-enabled', choices=['true', 'false'], default='true',
                         help='whether the relay can be turned off in Settings (iOS/macOS 26+), default true: '
                         'with false, an unreachable relay breaks every listed domain until the profile is removed')
@@ -226,23 +308,37 @@ def main(argv=None):
         with urllib.request.urlopen(args.gfwlist_url, timeout=60) as response:
             gfwlist_text = decode_gfwlist(read_bounded(response))
     domains, stats = build_domains(services, gfwlist_text)
+    if gfwlist_text is not None and not extract_gfwlist(gfwlist_text)[0]:
+        raise ValueError('gfwlist contains no convertible domains; refusing a partial profile.')
+    if not args.no_service_rules:
+        domains += load_service_rules(args.rules_dir)
     host = args.host.lower().removesuffix('.')
-    domains = [d for d in domains if d != host]
+    domains = normalized_domains(domains, host)
     if not domains:
         raise ValueError('No matched domains remain; an empty Apple match list would relay all traffic.')
 
     password = args.password or getpass.getpass('Password: ')
     out = args.out or Path(f'{host}-{args.user}.mobileconfig')
     command = [str(find_binary(args.binary)), 'profile', '--host', host, '--user', args.user, '--port', str(args.port),
-               '--ui-toggle-enabled', args.ui_toggle_enabled, '--exclude-domain', host, '--out', str(out)]
+               '--ui-toggle-enabled', args.ui_toggle_enabled, '--exclude-domain', host,
+               '--match-domain', 'example.invalid']
     if args.name:
         command += ['--name', args.name]
     if args.allow_dns_failover:
         command += ['--allow-dns-failover', args.allow_dns_failover]
-    for domain in domains:
-        command += ['--match-domain', domain]
     # The password goes through standard input, not the process list.
-    subprocess.run(command, input=password + '\n', text=True, check=True, stdout=subprocess.DEVNULL)
+    if out.is_symlink() or (out.exists() and not out.is_file()):
+        raise ValueError('Refusing to overwrite a non-regular profile file.')
+    with tempfile.TemporaryDirectory(prefix='.relay-profile-', dir=out.parent) as directory:
+        candidate = Path(directory) / 'device.mobileconfig'
+        subprocess.run(command + ['--out', str(candidate)], input=password + '\n', text=True,
+                       check=True, stdout=subprocess.DEVNULL)
+        data = profile_with_domains(candidate.read_bytes(), domains)
+        if len(data) >= MAX_DEVICE_PROFILE_BYTES:
+            raise ValueError(f'The single profile is {len(data)} bytes, exceeding the iPhone 524288-byte limit.')
+        candidate.write_bytes(data)
+        candidate.chmod(0o600)
+        os.replace(candidate, out)
     print(f'Wrote {out} (contains the password, mode 600; delete it after installing): '
           f'{len(domains)} matched domains, {host} excluded.')
     for name, number in stats.items():

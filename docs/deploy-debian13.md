@@ -16,9 +16,9 @@ sudo bash /tmp/network-relay-install.sh --domain relay.example.com --email you@e
 
 The script installs Python if needed, then runtime tools, obtains the certificate, sets up renewal, creates the service account and configuration, generates a matching device profile, enables the systemd service and checks startup. The email is optional. Prepare DNS and the cloud firewall as described below; the script cannot change the domain registrar or cloud provider's security group.
 
-The default generated routing list combines `google-ai-social.txt` and [gfwlist](https://raw.githubusercontent.com/gfwlist/gfwlist/refs/heads/master/list.txt). gfwlist is fetched when a profile is generated. All extracted names are widened to registered root domains using the bundled ICANN public suffix snapshot, sorted and deduplicated; for example `accounts.google.com` becomes `google.com` and `api.example.co.uk` becomes `example.co.uk`. Private hosting suffixes are deliberately ignored: a tenant under `github.io` matches the whole `github.io` domain, and shared CDN domains may match unrelated services. The `adult` suffix and every domain ending in `.adult` are removed. Loyalsoldier proxy.txt is not included. The relay's own hostname and subdomains are always excluded. Other domains do not match this Relay configuration.
+The default generated routing list combines `google-ai-social.txt` and [gfwlist](https://raw.githubusercontent.com/gfwlist/gfwlist/refs/heads/master/list.txt), plus blackmatrix7 Cloudflare, Gemini, OpenAI, Anthropic, Google, GitHub, Twitter, Jsdelivr, Pandora, Spotify, Reddit, Discord, iCloudPrivateRelay, Claude, AppleNews, AppleProxy, TikTok and TigerFintech lists. All nineteen remote sources are fetched when a profile is generated. All extracted names are widened to registered root domains using the bundled ICANN public suffix snapshot, sorted and deduplicated; for example `accounts.google.com` becomes `google.com` and `api.example.co.uk` becomes `example.co.uk`. Private hosting suffixes are deliberately ignored: a tenant under `github.io` matches the whole `github.io` domain, and shared CDN domains may match unrelated services. The `adult` suffix and every domain ending in `.adult` are removed. Loyalsoldier proxy.txt is not included. The relay's own hostname and subdomains are always excluded. Other domains do not match this Relay configuration.
 
-gfwlist regular expressions, IP/unsupported patterns and `@@` exceptions are reported but cannot be represented by this domain conversion; path-specific rules widen to the whole domain. A failed download, empty source aborts rather than silently issuing an incomplete profile. For a VPS unable to fetch GitHub, pass downloaded files with `--gfwlist-file /path/list.txt`. `--no-gfwlist` explicitly omits gfwlist.
+gfwlist regular expressions, IP/unsupported patterns and `@@` exceptions are reported but cannot be represented by this domain conversion; path-specific rules widen to the whole domain. Clash `DOMAIN` and `DOMAIN-SUFFIX` rules become roots; IP/CIDR, ASN, keyword, regex and process rules are discarded and counted. A failed download, empty source or unrecognized Clash rule aborts rather than silently issuing an incomplete profile. For a VPS unable to fetch GitHub, pass downloaded files with `--gfwlist-file /path/list.txt`. `--no-gfwlist` explicitly omits gfwlist. For offline service rules, `--rules-dir /path/to/rules` requires all eighteen files named Cloudflare.yaml, Gemini.yaml, OpenAI.yaml, Anthropic.yaml, Google.yaml, GitHub.yaml, Twitter.yaml, Jsdelivr.yaml, Pandora.yaml, Spotify.yaml, Reddit.yaml, Discord.yaml, iCloudPrivateRelay.yaml, Claude.yaml, AppleNews.yaml, AppleProxy.yaml, TikTok.yaml and TigerFintech.yaml. `--no-service-rules` explicitly omits the eighteen lists. The same options and root normalization apply to `deploy/global-profile.py`.
 
 For an existing installation, the standalone script automatically regenerates a profile with the current lists, preserving the account and its password. It first looks for the previous delivery profile on the VPS; if it is gone, it prompts for the existing password locally. Alternatively pass `--profile /path/original.mobileconfig`. The running relay authenticates the password over verified local TLS before anything is changed. Install the newly generated profile on the device; an installed profile does not update automatically. The extracted installer requires `--refresh-profile` for this operation; without it, an ordinary upgrade leaves profiles alone.
 
@@ -29,6 +29,18 @@ sudo bash /tmp/network-relay-install.sh --reset-password
 ```
 
 The installer generates a new random password, stores only its hash, preserves other users and hand-edited settings, and hands over the new profile without printing the password. Old profiles for this account no longer authenticate. Install the new profile on every device using this account. The reset is part of the normal installation transaction: a failed service startup restores the previous hash and files. `--reset-password` cannot be combined with `--profile`.
+
+## Source-compiling installer
+
+`network-relay-install-from-source.sh` is the other standalone download. It bundles the complete Rust source, Cargo.lock and the patched vendor crates; no prebuilt `/tmp/network-relay` is needed. With DNS pointing at the VPS and TCP 80 plus TCP/UDP 443 open, run:
+
+```bash
+sudo bash /tmp/network-relay-install-from-source.sh --domain relay.example.com
+```
+
+It installs the compiler and build dependencies, compiles the locked sources with one job by default, obtains or renews the certificate, installs the systemd service and generates the same cleaned root-domain mobileconfig. It recompiles on rerun and refreshes the profile; `--jobs` controls compilation parallelism. Existing accounts reuse their password unless `--reset-password` is supplied. Source compilation requires more RAM and CPU than the prebuilt installer.
+
+Both standalone scripts request the eighteen service URLs and gfwlist anew on each normal run, clean the responses and generate one profile; they do not fall back to a previous downloaded list. The CDN can cache upstream content; the requests ask it to revalidate. Explicit offline or omission options are the only way to change this behavior. With an extracted complete source ZIP, `sudo bash deploy/install-from-source.sh --domain relay.example.com` selects the same source-compiling path.
 
 ## You already have a profile for your relay
 
@@ -57,7 +69,7 @@ The script generates a new random password, creates the `iphone` user, and puts 
 
 To get the profile as a file instead, add `--profile-out /root/iphone.mobileconfig`, copy it to the device, and delete it.
 
-By default a newly generated profile matches the combined root-domain list described above, using a non-empty `MatchDomains`. `--domains your-list.txt` replaces the Google/AI/X base list, while gfwlist is still included unless explicitly disabled. An imported file keeps its own rules in the extracted installer's normal mode; with `--refresh-profile` (always enabled by the standalone script), its credentials are reused to generate the combined routing profile.
+By default a newly generated profile matches the combined root-domain list described above, using a non-empty `MatchDomains`. `--domains your-list.txt` replaces the Google/AI/X base list, while gfwlist and the eighteen service lists are still included unless explicitly disabled. An imported file keeps its own rules in the extracted installer's normal mode; with `--refresh-profile` (always enabled by the standalone script), its credentials are reused to generate the combined routing profile.
 
 ## What the script does
 
@@ -85,7 +97,7 @@ sudo bash deploy/install-debian13.sh
 
 It reads the installation's domain, port and user name from `/etc/network-relay/install.json` and installs the uploaded binary. A binary-only upgrade needs neither the profile nor the password. To regenerate the routing profile as well, add `--refresh-profile`; the password is reused from the old delivery file or prompted for. It refuses to overwrite an account with a different domain, port or user name. Upload again after a reboot if `/tmp` was cleared.
 
-To reproduce the standalone download file without compiling anything, run `python3 deploy/package-installer.py` from the repository; it writes `dist/network-relay-install.sh` and its SHA-256 file.
+To reproduce the standalone download file without compiling anything, run `python3 deploy/package-installer.py` from the repository; it writes `dist/network-relay-install.sh` and its SHA-256 file. Add `--source` to package `dist/network-relay-install-from-source.sh` and its SHA-256 file. Packaging does not compile Rust.
 
 Installations made by earlier versions of the script have no `install.json`; the script reads their identity from `/etc/network-relay/device.mobileconfig` instead, writes `install.json`, and reminds you that the old file holds the password. Delete it once your devices have the profile.
 

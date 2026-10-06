@@ -116,7 +116,9 @@ All of these happened in real deployments.
 
 If you have the self-contained deployment script, upload it as `/tmp/network-relay-install.sh` alongside `/tmp/network-relay`, prepare DNS/firewall in step 1, and run `sudo bash /tmp/network-relay-install.sh --domain relay.example.com`. It bundles the deployment files; no source ZIP is needed. See the [deployment guide](docs/deploy-debian13.md) for upgrades and options. The steps below use the same installer from a source ZIP.
 
-Generated profiles combine the Google/AI/X preset, gfwlist. All extracted domains are widened to registered roots and deduplicated, including shared CDN roots; unmatched domains do not use this Relay. The standalone script also refreshes the device profile on rerun. If the old password is unknown, run `sudo bash /tmp/network-relay-install.sh --reset-password` to generate new credentials and a matching profile, preserving other accounts.
+For a complete source-compiling standalone installer, use `network-relay-install-from-source.sh --domain relay.example.com`. It includes Cargo.lock, Rust source and the patched vendor crates, then installs the toolchain, compiles and obtains the certificate. It does not need `/tmp/network-relay`. Both standalone installers fetch the eighteen service URLs and gfwlist on every normal run, clean the lists and regenerate the profile. See [the two installation modes](docs/deploy-debian13.md).
+
+Generated profiles combine the Google/AI/X/GreatFire preset, gfwlist and eighteen blackmatrix7 service lists. All extracted domains are widened to registered roots and deduplicated, including shared CDN roots; unmatched domains do not use this Relay. The standalone script also refreshes the device profile on rerun. If the old password is unknown, run `sudo bash /tmp/network-relay-install.sh --reset-password` to generate new credentials and a matching profile, preserving other accounts.
 
 ### Step 1: Prepare the domain and firewall (on your computer, in a browser)
 
@@ -225,7 +227,7 @@ All checks passed.
 - The password is 32 random characters. It is **not printed** and **not kept** on the server (the server has only its hash): it exists only in the profile behind that link. Open the link on the device within 15 minutes; it works once. Then delete the file it names (`rm /var/www/relay/.publish/...`).
 - To get the profile as a file instead (to AirDrop it from a Mac, say), add `--profile-out /root/iphone.mobileconfig`; delete that file once the device has it.
 - If the link expired before you used it, make a new password and profile as in [Changing the password](#changing-the-password).
-- The generated profile matches the deduplicated root domains from `deploy/domains/google-ai-social.txt`, gfwlist; other domains do not use this Relay configuration. The relay's own hostname is excluded. For the conversion details and intentionally broad shared CDN scope, see [the deployment guide](docs/deploy-debian13.md).
+- The generated profile matches the deduplicated root domains from `deploy/domains/google-ai-social.txt`, gfwlist and the eighteen blackmatrix7 service lists; other domains do not use this Relay configuration. The relay's own hostname is excluded. For the conversion details and intentionally broad shared CDN scope, see [the deployment guide](docs/deploy-debian13.md).
 - Passing the self-check on the machine **does not mean** the relay is reachable from the internet (the cloud firewall filters incoming traffic). The device is the final test.
 
 **Running it again is safe**: upload the new binary as `/tmp/network-relay` and run it again on the same machine. It keeps the password, the user and any configuration you edited by hand, and updates the program. It reads the domain, port and user name from `/etc/network-relay/install.json`, which holds no secret. (Earlier versions kept the whole profile, password included, in `/etc/network-relay/device.mobileconfig`; an upgrade still reads it, and tells you to delete it.)
@@ -587,11 +589,14 @@ For all options, see [docs/config.md](docs/config.md#network-relay-profile).
 
 ## A profile for named services plus gfwlist
 
-`deploy/global-profile.py` combines the following three parts into one profile:
+`deploy/global-profile.py` combines the following sources into one profile:
 
 - `deploy/domains/google-ai-social.txt`: Google, Gemini, YouTube, Claude, ChatGPT, X and others;
 - `deploy/domains/global-services.txt`: Meta AI, Instagram, Spotify, Pandora, The New York Times, Wikipedia, YouTube Music and others;
-- the domains in the [gfwlist](https://github.com/gfwlist/gfwlist) (downloaded when it runs, not stored in the repository).
+- the domains in the [gfwlist](https://github.com/gfwlist/gfwlist);
+- blackmatrix7 Cloudflare, Gemini, OpenAI, Anthropic, Google, GitHub, Twitter, Jsdelivr, Pandora, Spotify, Reddit, Discord, iCloudPrivateRelay, Claude, AppleNews, AppleProxy, TikTok and TigerFintech classical Clash lists.
+
+The remote lists are downloaded when a profile is generated. Both generators widen all domain entries to registered roots, deduplicate them and omit `.adult`. IP, ASN, keyword and process rules are dropped; no wildcard strings are stored in `MatchDomains`. A profile must fit below 524288 bytes as one XML file. Failed downloads or oversized output abort without replacing the profile. `--rules-dir /path/to/rules` uses eighteen downloaded YAML files; `--no-service-rules` explicitly omits those eighteen lists.
 
 Run it **in the source directory on the server** and enter the user's password when prompted. The one-step install does not keep its password on the server, so for this profile make a new user first (or use one whose password you have):
 
@@ -611,7 +616,7 @@ When it finishes, it prints how many domains are matched and how many gfwlist ru
 
 - The default is `--ui-toggle-enabled true`: the relay can be turned off in Settings, so that a blocked or unreachable relay does not take every listed domain down with it. `--ui-toggle-enabled false` prevents that; read [Common pitfalls](#on-the-device) first.
 - Regular expressions, IP addresses and exception rules in the gfwlist cannot be expressed in Apple's profile and are dropped; a rule aimed at a particular URL path sends its whole domain through the relay.
-- This is a snapshot. When the gfwlist is updated, run it again and reinstall.
+- This is a snapshot. When any remote list changes, run it again and reinstall.
 - The country your relay server is in decides where your traffic exits: for US-only services (Pandora and others), the server must be in the US.
 - For details, see [deploy/domains/README.md](deploy/domains/README.md).
 

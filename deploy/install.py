@@ -462,9 +462,9 @@ def profile_domains(args, identity):
         if label == 'gfwlist':
             for name, count in RULES.extract_gfwlist(text)[1].items():
                 print(f'  {name}: {count}', flush=True)
-    suffixes = (REPO / 'deploy/domains/public-suffix-icann.dat').read_text()
-    domains = RULES.collapse([d for d in RULES.root_domains(domains, suffixes)
-                             if d != identity.domain and d != 'adult' and not d.endswith('.adult')])
+    if not args.no_service_rules:
+        domains += RULES.load_service_rules(args.rules_dir)
+    domains = RULES.normalized_domains(domains, identity.domain)
     if not domains:
         raise ValueError('No matched domains remain; refusing an all-traffic profile.')
     print(f'Combined routing list: {len(domains)} unique root domains; the relay domain is excluded.', flush=True)
@@ -809,7 +809,7 @@ def main():
     parser.add_argument('--user', help='user name for a new installation, default iphone')
     parser.add_argument('--port', type=int, help='listening port, default 443')
     parser.add_argument('--domains', type=Path,
-                        help='base domain list, default Google/AI/X; merged with gfwlist, normalized to roots')
+                        help='base domain list, merged with gfwlist and eighteen service lists, normalized to roots')
     parser.add_argument('--refresh-profile', action='store_true',
                         help='generate an updated device profile for an existing account, keeping its password')
     parser.add_argument('--reset-password', action='store_true',
@@ -819,6 +819,7 @@ def main():
     gfw.add_argument('--gfwlist-file', type=Path, help='use a downloaded gfwlist instead of fetching it')
     gfw.add_argument('--no-gfwlist', action='store_true', help='explicitly omit gfwlist')
     parser.add_argument('--gfwlist-url', default=RULES.GFWLIST_URL)
+    RULES.add_service_rule_arguments(parser)
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument('--binary', type=Path,
                       help='prebuilt Linux x86_64 program, default /tmp/network-relay; never falls back to compilation')

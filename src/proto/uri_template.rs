@@ -329,7 +329,14 @@ fn match_path(parts: &[Part], path: &str, out: &mut HashMap<String, String>) -> 
                     let captured = &path[..end];
                     if !captured.is_empty() {
                         let values: Vec<_> = captured.split(',').collect();
-                        if values.iter().any(|v| !v.bytes().all(|b| b.is_ascii_alphanumeric() || b"-._~%".contains(&b)))
+                        // What expansion produces (unreserved characters and
+                        // percent escapes), and ':', which RFC 9298 §2 has
+                        // clients encode in IPv6 addresses but a path may
+                        // carry as is (RFC 3986 §3.3): a client that leaves
+                        // it unencoded still means the same target.
+                        if values
+                            .iter()
+                            .any(|v| !v.bytes().all(|b| b.is_ascii_alphanumeric() || b"-._~%:".contains(&b)))
                         {
                             continue;
                         }
@@ -492,6 +499,22 @@ mod tests {
         assert!(d.matches("/.well-known/masque/udp/192.0.2.6/443/extra").is_none());
         assert!(d.matches("/.well-known/masque/udp/192.0.2.6/443").is_none());
         assert!(d.matches("/.well-known/masque/udp/%ff/443/").is_none(), "not UTF-8");
+    }
+
+    #[test]
+    fn unencoded_ipv6_colons_are_tolerated() {
+        // RFC 9298 §2 has clients percent-encode the colons, but ':' is a
+        // valid path character and means the same address.
+        let d = t(DEFAULT);
+        assert_eq!(vars(&d.matches("/.well-known/masque/udp/2001:db8::42/53/").unwrap()), ("2001:db8::42", "53"));
+        let q = t("https://p.example/udp?h={target_host}&p={target_port}");
+        assert_eq!(vars(&q.matches("/udp?h=2001:db8::1&p=443").unwrap()), ("2001:db8::1", "443"));
+        // A ':' separator in the template still splits host and port right.
+        let colon = UriTemplate::parse_path("/udp/{target_host}:{target_port}/").unwrap();
+        assert_eq!(vars(&colon.matches("/udp/2001:db8::1:443/").unwrap()), ("2001:db8::1", "443"));
+        assert_eq!(vars(&colon.matches("/udp/example.com:443/").unwrap()), ("example.com", "443"));
+        // Other reserved characters are still not part of a value.
+        assert!(d.matches("/.well-known/masque/udp/a@b/53/").is_none());
     }
 
     #[test]

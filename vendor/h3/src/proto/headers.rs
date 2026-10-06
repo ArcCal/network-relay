@@ -145,7 +145,9 @@ impl Header {
                 return Err(HeaderError::MalformedRequest(format!("connection-specific field {}", name)));
             }
         }
-        if self.fields.get_all("te").iter().any(|v| v.as_bytes() != b"trailers") {
+        // "trailers" is a literal of the TE grammar (RFC 9110 section 10.1.4),
+        // and ABNF literals match without regard to case (RFC 5234 section 2.3).
+        if self.fields.get_all("te").iter().any(|v| !v.as_bytes().eq_ignore_ascii_case(b"trailers")) {
             return Err(HeaderError::MalformedRequest("TE other than trailers".into()));
         }
 
@@ -980,8 +982,10 @@ mod tests {
             fields.push(field);
             assert_matches!(request(&fields).unwrap().into_request_parts(), Err(HeaderError::MalformedRequest(_)), "{:?}", field);
         }
-        let mut fields = base.to_vec();
-        fields.push(("te", "trailers"));
-        assert!(request(&fields).unwrap().into_request_parts().is_ok(), "TE: trailers is allowed");
+        for te in ["trailers", "Trailers"] {
+            let mut fields = base.to_vec();
+            fields.push(("te", te));
+            assert!(request(&fields).unwrap().into_request_parts().is_ok(), "TE: {} is allowed", te);
+        }
     }
 }

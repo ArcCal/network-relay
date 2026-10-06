@@ -72,7 +72,7 @@ All of these happened in real deployments.
 |---|---|---|
 | **A freshly created VPS is running automatic updates** | Older versions of the script report `Could not get lock /var/lib/dpkg/lock-frontend ... (unattended-upgr)` | Newer versions of the script wait for it, up to 30 minutes, which looks like a hang; **do not press Ctrl+C**. **Never delete the lock file or kill that process**; it will break the system's package management |
 | Using `fuser` to check the lock | A minimal Debian install has no `fuser`, so the check always says "not in use" | No need to check yourself; the script waits |
-| **Not enough memory** | `Killed` or `signal: 9, SIGKILL` while compiling, or the whole machine freezes | Compiling needs about 2 GiB of memory. On a 1 GiB machine add swap first; see [adding swap](#less-than-2-gib-of-memory-add-swap-first) |
+| **Not enough memory for compilation** | `Killed` or `signal: 9, SIGKILL` while compiling, or the whole machine freezes | Use the prebuilt binary; only source compilation needs about 2 GiB of memory or [swap](#less-than-2-gib-of-memory-add-swap-first) |
 | Not enough disk | `No space left on device` | Keep at least 3 GiB free |
 | **Downloaded an old version of the source** | Missing new features (such as `deploy/global-profile.py`), or old bugs still there | On the GitHub repository page, make sure the branch is `main`, then Code → Download ZIP |
 | The downloaded ZIP's name contains `(1)` | `unzip network-relay-main(1).zip` gives a syntax error | Quote the file name: `unzip 'network-relay-main(1).zip'` |
@@ -112,7 +112,9 @@ All of these happened in real deployments.
 ## Option 1: one-step install on Debian 12/13 (recommended)
 
 **For**: a Debian 12 or 13, x86_64, systemd VPS (the Debian images from Vultr, AWS Lightsail, Google Cloud, DigitalOcean and others all qualify). If you are not sure of the version, run `cat /etc/os-release` on the server and look at `VERSION_ID`.
-**What the script does**: install dependencies → build from source as pinned by `Cargo.lock` → obtain a Let's Encrypt certificate and set up automatic renewal → generate a random password and user → write the configuration and install the systemd service → start it and run a self-check on the machine → write the device profile. On failure it automatically restores the files from before the installation.
+**What the script does**: install runtime dependencies → install your prebuilt `/tmp/network-relay` → obtain a Let's Encrypt certificate and set up automatic renewal → generate a random password and user → write the configuration and install the systemd service → start it and run a self-check on the machine → hand over the device profile. On startup failure it restores the previous installation files. No VPS compilation is needed; source builds require explicit `--build-from-source`.
+
+If you have the self-contained deployment script, upload it as `/tmp/network-relay-install.sh` alongside `/tmp/network-relay`, prepare DNS/firewall in step 1, and run `sudo bash /tmp/network-relay-install.sh --domain relay.example.com`. It bundles the deployment files; no source ZIP is needed. See the [deployment guide](docs/deploy-debian13.md) for upgrades and options. The steps below use the same installer from a source ZIP.
 
 ### Step 1: Prepare the domain and firewall (on your computer, in a browser)
 
@@ -136,6 +138,7 @@ All of these happened in real deployments.
    scp -i ~/.ssh/your-key ~/Downloads/network-relay-main.zip root@203.0.113.10:/root/
    ```
    On clouds where you log in as an ordinary user (such as `admin` on Lightsail or `ubuntu` on Ubuntu), replace `root@` with that user and the path with `/home/admin/` or similar.
+3. Download the Linux **x86_64** archive from [Releases](https://github.com/ArcCal/network-relay/releases), verify its SHA-256 file and extract it on your computer. Upload its `network-relay` executable as `/tmp/network-relay` on the VPS. Upload the extracted executable, not the `.tar.gz` archive. The source ZIP is used only for its deployment files in the default mode.
 
 ### Step 3: Log in to the server
 
@@ -199,8 +202,9 @@ bash deploy/install-debian13.sh --domain relay.example.com
 
 - The default user name is `iphone`; for another one, add `--user NAME`.
 - To receive certificate expiry reminders by email, add `--email you@example.com`.
-- On machines with 4 GiB of memory or more, add `--jobs 2` to compile a bit faster.
-- The whole process takes **5 to 20 minutes**, mostly compiling. If a new machine is running automatic updates, the script waits for them first. **Do not press Ctrl+C in the meantime.**
+- The default mode uses `/tmp/network-relay` and does not compile or install build tools. Use `--binary PATH` to select another prebuilt executable.
+- If you intentionally want to compile the complete source ZIP, add `--build-from-source`; `--jobs 2` controls compilation only.
+- Installation time depends on package downloads, certificate issuance and the network self-check. If a new machine is running automatic updates, the script waits for them first.
 
 **On success, the end of the output looks like:**
 
@@ -222,9 +226,11 @@ All checks passed.
 - The generated profile relays only Google / Gemini / YouTube / Claude / ChatGPT / X and similar services by default (the list is in `deploy/domains/google-ai-social.txt`); other websites connect directly. For a wider scope, see [A profile for named services plus gfwlist](#a-profile-for-named-services-plus-gfwlist).
 - Passing the self-check on the machine **does not mean** the relay is reachable from the internet (the cloud firewall filters incoming traffic). The device is the final test.
 
-**Running it again is safe**: running it again on the same machine (to update to newer source, for example) keeps the password, the user and any configuration you edited by hand, and only updates the program. It reads the domain, port and user name from `/etc/network-relay/install.json`, which holds no secret. (Earlier versions kept the whole profile, password included, in `/etc/network-relay/device.mobileconfig`; an upgrade still reads it, and tells you to delete it.)
+**Running it again is safe**: upload the new binary as `/tmp/network-relay` and run it again on the same machine. It keeps the password, the user and any configuration you edited by hand, and updates the program. It reads the domain, port and user name from `/etc/network-relay/install.json`, which holds no secret. (Earlier versions kept the whole profile, password included, in `/etc/network-relay/device.mobileconfig`; an upgrade still reads it, and tells you to delete it.)
 
 ### Less than 2 GiB of memory: add swap first
+
+This is for explicit source compilation (`--build-from-source`). Installing the prebuilt binary does not require compilation or this swap setup.
 
 ```bash
 free -h
@@ -702,7 +708,7 @@ Same as [installing on the device](#installing-the-profile-on-iphone-ipad-and-ma
 | Changed the configuration | `network-relay serve --check` → `systemctl reload network-relay`. `listen`, `log_dir`, `[tls]` and the connection limits `max_tunnels`, `max_connections` and `max_connections_per_ip` need `systemctl restart network-relay` |
 | Let an account expire | Add `expires = 2027-01-31T00:00:00Z` to its `[[user]]` section → reload. From then on it is refused, and its open tunnels close |
 | Limit what one device may use | `max_tunnels_per_user`, `max_bytes_per_second_per_user` and `max_udp_packets_per_second_per_user` under `[relay]`; see [docs/config.md](docs/config.md) |
-| Upgrade the program (one-step install) | Download the new source ZIP, extract it, enter the directory, and run `bash deploy/install-debian13.sh` again (no options needed; it keeps the original domain, user and password, and does not touch the devices' profiles) |
+| Upgrade the program (one-step install) | Upload the new x86_64 binary as `/tmp/network-relay`, then run `bash deploy/install-debian13.sh` or the self-contained `bash /tmp/network-relay-install.sh` again (no options needed; it keeps the original domain, user and password, and does not touch the devices' profiles) |
 | Upgrade the program (manual install) | Get the new `network-relay` file → `install -m 755 network-relay /usr/local/bin/` → `systemctl restart network-relay` |
 | Certificates | certbot renews automatically, and the relay rereads them every day at 3 a.m.; with the renewal hook installed, it rereads them immediately |
 | Check the service is running | `systemctl is-active network-relay` should print `active` |

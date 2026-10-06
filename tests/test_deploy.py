@@ -24,7 +24,7 @@ GLOBAL_SPEC = importlib.util.spec_from_file_location('relay_global_profile', ROO
 global_profile = importlib.util.module_from_spec(GLOBAL_SPEC)
 sys.modules[GLOBAL_SPEC.name] = global_profile
 GLOBAL_SPEC.loader.exec_module(global_profile)
-BINARY = ROOT / 'target/debug/network-relay'
+BINARY = Path(os.environ.get('RELAY_BINARY', ROOT / 'target/debug/network-relay')).resolve()
 PASSWORD = 'test-password-not-real-123'
 
 
@@ -76,7 +76,9 @@ class DeploymentTests(unittest.TestCase):
     def fake_run(self, args, **kwargs):
         command = [str(a) for a in args]
         self.calls.append(command)
-        if Path(command[0]) == BINARY and command[1] in ('passwd', 'profile', 'serve', '--version'):
+        binary = Path(command[0])
+        candidate = binary.name == 'network-relay' and binary.parent.name.startswith('.network-relay-install-')
+        if (binary == BINARY or candidate) and command[1] in ('passwd', 'profile', 'serve', '--version'):
             return deploy_run(args, **kwargs)
         output, status = '', 0
         if command[:2] == ['id', '-u'] and self.missing_user:
@@ -197,6 +199,64 @@ class DeploymentTests(unittest.TestCase):
                 deploy.port_available(443, 123)
             deploy.port_available(443, 99)
 
+    def test_cli_defaults_to_uploaded_binary_and_source_build_is_explicit(self):
+        for options, expected in (([], Path('/tmp/network-relay')),
+                                  (['--binary', '/root/relay'], Path('/root/relay')),
+                                  (['--build-from-source'], None)):
+            with (self.subTest(options=options),
+                  mock.patch.object(sys, 'argv', ['install.py', *options]),
+                  mock.patch('builtins.open', mock.mock_open()),
+                  mock.patch.object(deploy.fcntl, 'flock'),
+                  mock.patch.object(deploy, 'install', return_value=0) as install):
+                self.assertEqual(deploy.main(), 0)
+                self.assertEqual(install.call_args.args[0].binary, expected)
+
+    def test_missing_archive_and_wrong_architecture_fail_before_system_changes(self):
+        upload = self.root / 'upload'
+        for data in (None, b'not an executable', b'\x7fELF\x02\x01' + bytes(12) + b'\xb7\x00'):
+            with self.subTest(data=data):
+                if data is not None:
+                    upload.write_bytes(data)
+                with mock.patch.object(deploy, 'run') as commands, self.assertRaises(ValueError):
+                    deploy.install(self.args(binary=upload))
+                commands.assert_not_called()
+                self.assertFalse(deploy.CONFIG.exists())
+                self.assertEqual(list(deploy.BINARY.parent.glob('.network-relay-install-*')), [])
+
+    @unittest.skipUnless(BINARY.exists(), 'run cargo build first or set RELAY_BINARY')
+    def test_uploaded_binary_without_execute_permission_is_installed_from_private_snapshot(self):
+        self.certificates()
+        upload = self.root / 'upload'
+        upload.write_bytes(BINARY.read_bytes())
+        upload.chmod(0o600)
+        bundle = self.root / 'bundle'
+        for relative in ('deploy/network-relay.service', 'deploy/certbot-hook.sh',
+                         'deploy/domains/google-ai-social.txt'):
+            target = bundle / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes((ROOT / relative).read_bytes())
+        self.assertFalse((bundle / 'Cargo.toml').exists(), 'no Rust source or manifest in deployment bundle')
+        with (mock.patch.object(deploy, 'REPO', bundle),
+              mock.patch.object(deploy, 'run', side_effect=self.fake_run), redirect_stdout(io.StringIO())):
+            self.assertEqual(deploy.install(self.args(binary=upload)), 0)
+        self.assertEqual(deploy.BINARY.read_bytes(), upload.read_bytes())
+        self.assertEqual(upload.stat().st_mode & 0o777, 0o600, 'uploaded file is left untouched')
+        self.assertEqual(deploy.BINARY.stat().st_mode & 0o777, 0o755)
+        self.assertFalse(any(c[0] == str(upload) for c in self.calls), '/tmp is never executed')
+        self.assertTrue(any('.network-relay-install-' in c[0] and c[1] == 'profile' for c in self.calls))
+        self.assertEqual(list(deploy.BINARY.parent.glob('.network-relay-install-*')), [])
+
+    @unittest.skipUnless(BINARY.exists(), 'run cargo build first or set RELAY_BINARY')
+    def test_explicit_source_build_installs_build_tools(self):
+        self.certificates()
+        with (mock.patch.object(deploy, 'run', side_effect=self.fake_run),
+              mock.patch.object(deploy, 'build_binary', return_value=BINARY) as build,
+              redirect_stdout(io.StringIO())):
+            self.assertEqual(deploy.install(self.args(binary=None)), 0)
+        self.assertIsNone(build.call_args.args[0].binary)
+        apt = [c for c in self.calls if c[0] == 'apt-get']
+        self.assertTrue(any(all(p in c for p in ('build-essential', 'pkg-config', 'git')) for c in apt))
+
     @unittest.skipUnless(BINARY.exists(), 'run cargo build first')
     def test_install_and_repeat_with_real_binary_keep_credentials_and_configuration(self):
         self.certificates()
@@ -220,6 +280,8 @@ class DeploymentTests(unittest.TestCase):
         apt = [c for c in self.calls if c[0] == 'apt-get']
         self.assertTrue(apt and all('DPkg::Lock::Timeout=1800' in c for c in apt), 'apt waits for the dpkg lock')
         self.assertTrue(any('procps' in c for c in apt), 'sysctl and kill come from procps')
+        self.assertFalse(any(p in c for c in apt for p in ('build-essential', 'pkg-config', 'git')))
+        self.assertFalse(any('cargo' in Path(c[0]).name or 'rustup' in Path(c[0]).name for c in self.calls))
         health = [c for c in self.calls if c[0] == 'curl']
         # The website is optional: any HTTP answer, even 404 without [web], is a healthy relay.
         self.assertTrue(health and all('--fail' not in c for c in health))

@@ -1,6 +1,6 @@
 # Deployment notes
 
-For an automatic install on Debian 12/13 x64 from the downloaded source, including certificates and a domain-based profile, see the [automatic deployment guide](deploy-debian13.md).
+For an automatic install on Debian 12/13 x64 using an uploaded prebuilt binary, including certificates and a domain-based profile, see the [automatic deployment guide](deploy-debian13.md). Source compilation is optional and requires `--build-from-source`.
 
 The README's [one-step install](../README.md#option-1-one-step-install-on-debian-1213-recommended) and [manual install](../README.md#option-2-manual-install) are the complete deployment steps. This page covers a few alternatives mentioned there.
 

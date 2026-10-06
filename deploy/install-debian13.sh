@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run from an extracted source ZIP; no GitHub login is needed on the VPS.
+# Run from the deployment bundle or source ZIP; defaults to /tmp/network-relay.
 set -Eeuo pipefail
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 if [[ ${1:-} == --help || ${1:-} == -h ]]; then

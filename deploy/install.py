@@ -353,6 +353,33 @@ def certificate_paths(args, identity, existing_config):
 
 def install(args):
     preflight()
+    if args.binary is None:
+        return _install(args)
+    if not args.binary.is_file():
+        raise ValueError(f'Prebuilt program not found: {args.binary}. Upload the extracted Linux x86_64 '
+                         'network-relay binary there, or use --binary /path/network-relay. '
+                         'Source compilation requires explicit --build-from-source.')
+    source = args.binary.resolve(strict=True)
+    if args.profile_out and args.profile_out.resolve() == source:
+        raise ValueError('The device profile must not overwrite the source binary.')
+    # Uploads may lose executable permissions, and /tmp may be mounted noexec.
+    # Use a private snapshot on the installation filesystem for every CLI step.
+    BINARY.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix='.network-relay-install-', dir=BINARY.parent) as directory:
+        binary = Path(directory) / 'network-relay'
+        shutil.copyfile(source, binary)
+        with binary.open('rb') as stream:
+            header = stream.read(20)
+        if (len(header) != 20 or header[:6] != b'\x7fELF\x02\x01'
+                or int.from_bytes(header[18:20], 'little') != 62):
+            raise ValueError('Expected an extracted Linux x86_64 ELF binary, not an archive or ARM build.')
+        binary.chmod(0o700)
+        staged = argparse.Namespace(**vars(args))
+        staged.binary = binary
+        return _install(staged)
+
+
+def _install(args):
     existing = CONFIG.exists()
     if STATE.exists():
         installed = read_state(STATE)
@@ -410,8 +437,10 @@ def install(args):
     env['DEBIAN_FRONTEND'] = 'noninteractive'
     print('Waiting for any automatic system updates to finish first (up to 30 minutes).', flush=True)
     run(APT + ['update'], env=env)
-    run(APT + ['install', '-y', '--no-install-recommends', 'build-essential', 'pkg-config',
-         'git', 'curl', 'ca-certificates', 'certbot', 'iproute2', 'procps'], env=env)
+    packages = ['curl', 'ca-certificates', 'certbot', 'iproute2', 'procps']
+    if args.binary is None:
+        packages += ['build-essential', 'pkg-config', 'git']
+    run(APT + ['install', '-y', '--no-install-recommends'] + packages, env=env)
     ensure_service_user()
     if not automated_cert:
         require_readable((cert, key))
@@ -634,8 +663,12 @@ def main():
     parser.add_argument('--port', type=int, help='listening port, default 443')
     parser.add_argument('--domains', type=Path,
                         help='domain list for a newly generated profile, default the Google/AI/X preset')
-    parser.add_argument('--binary', type=Path,
-                        help='install this prebuilt program instead of building the downloaded source')
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument('--binary', type=Path,
+                      help='prebuilt Linux x86_64 program, default /tmp/network-relay; never falls back to compilation')
+    mode.add_argument('--build-from-source', action='store_const', dest='binary', const=None,
+                      help='explicitly compile the downloaded source instead of installing a prebuilt program')
+    parser.set_defaults(binary=Path('/tmp/network-relay'))
     parser.add_argument('--jobs', type=int, default=1, help='parallel build jobs, default 1 to reduce memory use')
     parser.add_argument('--cert', type=Path,
                         help='use an existing certificate instead of obtaining one from Let’s Encrypt')

@@ -1,7 +1,7 @@
 [package]
 name = "network-relay"
 description = "Relay server for Apple's Network Relay: HTTP CONNECT for TCP and CONNECT-UDP (RFC 9298) over HTTP/3, HTTP/2 and HTTP/1.1"
-version = "1.3.0"
+version = "1.4.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/ArcCal/network-relay"

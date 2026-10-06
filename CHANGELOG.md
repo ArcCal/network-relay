@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.4.0 — 2026-10-06
+
+- **HTTP/3 early datagrams keep their original age.** Registering a stream now drops packets older than the existing one-second TTL and preserves arrival timestamps while request parsing or authentication is pending. Previously, delayed registration could deliver expired packets or refresh their age. Regression tests reproduce the failure without a new timer or cache.
+- The existing quic-go/masque-go interoperability client now checks exact TCP payloads and half-close, writer errors, two simultaneous UDP flows and zero-length/1/60/1200/1300-byte datagrams, with bounded deadlines and cleanup. A standard-library fixture starts a temporary relay with a trusted test CA and local targets, and checks curl H1/H2 CONNECT, both authorization headers, negative responses and TLS rejection.
+- CI runs independent Go/curl interoperability and the current vendored HTTP/3 suite. **Linux arm64/x86_64 packages are built only for a published release or a manual workflow run**; PRs and pushes retain lint and tests.
+- Updated the DDM design description and recorded this round's protocol/source review, H2O reference comparisons, IPv6 loopback tests and baseline/fixed 60-second load measurements in `docs/review-2026-10-06.md`. H2O reference limitations and failed original-tool close checks remain documented. **Apple system-client acceptance, impaired-network tests and long WAN soak remain unverified.**
+
 ## 1.3.0 — 2026-10-06
 
 - **HTTP/3 cancellation codes**: when the relay ends a request or tunnel early, the client now gets the intended HTTP/3 error code in both directions (RFC 9114 §4.1.1). The STOP_SENDING half used to lose its code whenever a read was pending, which is nearly always for a tunnel, and clients saw code 0, which HTTP/3 does not define, instead of `H3_REQUEST_CANCELLED`, `H3_CONNECT_ERROR`, `H3_DATAGRAM_ERROR` and so on (vendored h3-quinn fix). A request the client cancels while it is being authorized or connected is now cancelled with `H3_REQUEST_CANCELLED` rather than dropped, and a request whose headers exceed 32 KiB gets its 431 with STOP_SENDING `H3_NO_ERROR` (RFC 9114 §4.1).

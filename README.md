@@ -337,7 +337,7 @@ Pick one of two sources:
 network-relay --version
 ```
 
-**You should see** `network-relay 1.3.0` (or a newer version). **Stay in this directory**; the `deploy/` files in it are needed later.
+**You should see** `network-relay 1.4.0` (or a newer version). **Stay in this directory**; the `deploy/` files in it are needed later.
 
 ### Step 6: Put up a decoy website
 
@@ -467,7 +467,7 @@ journalctl -u network-relay -n 20 --no-pager -o cat
 
 ```
 INFO TLS certificate: relay.example.com, valid until ...
-INFO network-relay 1.3.0 ready (HTTP/3 on UDP, HTTP/2 and HTTP/1.1 on TCP) ...
+INFO network-relay 1.4.0 ready (HTTP/3 on UDP, HTTP/2 and HTTP/1.1 on TCP) ...
 ```
 
 - From now on it starts at boot and restarts automatically after a crash.
@@ -852,6 +852,6 @@ cargo test
 
 - **Unit tests**: URI templates, capsule and datagram formats, target parsing and blocklists, authentication and caching, profile format, the website, logging and more.
 - **In-process integration tests** (`tests/in_process.rs`): a real relay and client in one process, over real TLS, QUIC and TCP on the loopback interface, relaying to local TCP and UDP services. They cover TCP and UDP on all three HTTP versions, bulk data and half-close, seeing the website with a wrong password, blocklists and port restrictions, Proxy-Status when the target is unreachable, dropping connections after a user is deleted, the connection limits overall, per user and per address, per-user byte rates, idle connections, client certificates, the server's own addresses, QUIC path MTU growth, and early datagrams.
-- **Interoperability tests** (manual): curl with CONNECT over HTTP/1.1 and HTTP/2; quic-go's [masque-go](https://github.com/quic-go/masque-go) client sending and receiving 1200- and 1300-byte datagrams with CONNECT-UDP over HTTP/3; `network-relay check` querying 1.1.1.1 over the real internet. For the steps, see [docs/design.md](docs/design.md#7-interoperability-tests); `tests/interop/masque-go` repeats the HTTP/3 checks against a running relay.
+- **Independent interoperability tests**: after `cargo build --locked`, run `python3 tests/interop/run.py` with Go 1.26.x, OpenSSL and curl on PATH. It starts a temporary trusted-TLS relay and local targets, runs the existing quic-go/masque-go H3 client and applicable curl H1/H2 checks, then cleans up. CI runs the same fixture; H2 checks explicitly report NOT APPLICABLE when curl lacks proxy-side H2 support. For external-server checks and the project's own `network-relay check`, see [docs/design.md](docs/design.md#7-interoperability-tests).
 
-GitHub Actions runs the format check, clippy and all tests on every push to `main`, and runs them again on arm64 (qemu); when a release is published, the x86_64 and arm64 packages are attached automatically.
+GitHub Actions runs format, clippy, deployment, independent interoperability and vendored HTTP/3 tests on PRs and pushes to `main`. Published releases and manual workflow runs additionally test and build Linux x86_64 and arm64 packages (arm64 under qemu); published releases receive the packages automatically.

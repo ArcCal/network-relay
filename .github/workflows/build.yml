@@ -1,5 +1,5 @@
-# Tests every push to main, and builds the program for Linux on arm64 and
-# x86_64. For a published GitHub Release, the builds are attached to it.
+# Tests pull requests and pushes to main. Release and manual runs build
+# Linux arm64 and x86_64 packages; published Releases receive the packages.
 #
 # Built on Ubuntu 22.04, so the program runs on Ubuntu 22.04, Debian 12 and
 # later. arm64 is cross-compiled, and its tests run under qemu.
@@ -57,9 +57,29 @@ jobs:
           python-version: '3.13'
       - run: bash -n deploy/install-debian13.sh
       - run: python3 -m unittest discover -s tests -p 'test_deploy.py' -v
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: '1.26.8'
+          cache-dependency-path: tests/interop/masque-go/go.sum
+      - name: Independent quic-go, masque-go and curl interoperability
+        timeout-minutes: 5
+        run: |
+          cargo build --locked
+          test -z "$(gofmt -l tests/interop/masque-go/main.go)"
+          (cd tests/interop/masque-go && go vet ./...)
+          python3 tests/interop/run.py
+      - name: Vendored HTTP/3 tests (including current h3-quinn source)
+        timeout-minutes: 5
+        run: |
+          suite=$(mktemp -d)
+          trap 'rm -rf "$suite"' EXIT
+          cp -R vendor/h3 vendor/h3-quinn "$suite/"
+          cargo test --manifest-path "$suite/h3/Cargo.toml" --all-features \
+            --config "patch.\"https://github.com/hyperium/h3\".h3.path=\"$suite/h3\""
 
   build:
     name: build ${{ matrix.arch }}
+    if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-22.04
     strategy:
       fail-fast: false

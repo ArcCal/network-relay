@@ -78,6 +78,43 @@ where
         req.resolve().await
     }
 
+    /// Like [`Self::resolve_request`], but gives up when `deadline` completes
+    /// before the request's HEADERS frame has arrived. The request was not
+    /// processed, so both directions of its stream are then cancelled with
+    /// H3_REQUEST_REJECTED and the client may retry it; dropping the
+    /// resolver instead would end the stream with a FIN and no response.
+    #[cfg_attr(feature = "tracing", instrument(skip_all, level = "trace"))]
+    #[allow(clippy::type_complexity)]
+    pub async fn resolve_request_before<F>(
+        mut self,
+        deadline: F,
+    ) -> Result<(Request<()>, RequestStream<C::BidiStream, B>), StreamError>
+    where
+        F: std::future::Future<Output = ()>,
+    {
+        let mut deadline = std::pin::pin!(deadline);
+        let frame = std::future::poll_fn(|cx| match self.frame_stream.poll_next(cx) {
+            std::task::Poll::Ready(frame) => std::task::Poll::Ready(Some(frame)),
+            std::task::Poll::Pending => deadline.as_mut().poll(cx).map(|()| None),
+        })
+        .await;
+        let Some(frame) = frame else {
+            //= https://www.rfc-editor.org/rfc/rfc9114#section-4.1.1
+            //# When the server cancels a request without performing any
+            //# application processing, the request is considered "rejected".
+            //# The server SHOULD abort its response stream with the error code
+            //# H3_REQUEST_REJECTED.
+            self.frame_stream.stop_sending(Code::H3_REQUEST_REJECTED);
+            self.frame_stream.reset(Code::H3_REQUEST_REJECTED.value());
+            return Err(StreamError::StreamError {
+                code: Code::H3_REQUEST_REJECTED,
+                reason: "request headers did not arrive in time".to_string(),
+            });
+        };
+        let req = self.accept_with_frame(frame)?;
+        req.resolve().await
+    }
+
     /// Accepts a http request where the first frame has already been read and decoded.
     ///
     /// This is needed as a bidirectional stream may be read as part of incoming webtransport
@@ -200,6 +237,13 @@ where
         let fields = match self.decoded {
             Ok(v) => v.fields,
             Err(cancel_size) => {
+                //= https://www.rfc-editor.org/rfc/rfc9114#section-4.1
+                //# When the server does not need to receive the remainder of
+                //# the request, it MAY abort reading the request stream, send a
+                //# complete response, and cleanly close the sending part of the
+                //# stream.  The error code H3_NO_ERROR SHOULD be used when
+                //# requesting that the client stop sending on the request stream.
+                self.request_stream.stop_sending(Code::H3_NO_ERROR);
                 // Send and await the error response
                 self.request_stream
                     .send_response(
@@ -209,6 +253,7 @@ where
                             .expect("header too big response"),
                     )
                     .await?;
+                self.request_stream.finish().await?;
 
                 return Err(StreamError::HeaderTooBig {
                     actual_size: cancel_size,

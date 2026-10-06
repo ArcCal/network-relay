@@ -2495,3 +2495,261 @@ fn published_profiles_belong_to_the_publish_directory_owner() {
     let meta = std::fs::metadata(&published[0]).unwrap();
     assert_eq!((meta.uid(), meta.gid(), meta.mode() & 0o777), (uid, gid, 0o600));
 }
+
+/// The relay's HTTP/3 control stream preamble (stream type, SETTINGS): a
+/// client granting exactly this much credit, and reading nothing, leaves no
+/// room for GOAWAY.
+const CONTROL_PREAMBLE: u32 = 31;
+
+#[tokio::test]
+async fn http3_goaway_without_control_stream_credit_still_closes_the_connection() {
+    // RFC 9114 §5.2: GOAWAY goes on the control stream, which is flow
+    // controlled. A client that never grants credit for it must not keep a
+    // connection open after the server asked it to leave.
+    let relay = TestRelay::start("").await;
+    let tls = network_relay::tls::client_config(Some(&relay.env.path("ca.pem")), &[b"h3"]).unwrap();
+    let crypto = quinn::crypto::rustls::QuicClientConfig::try_from(tls).unwrap();
+    let mut config = quinn::ClientConfig::new(std::sync::Arc::new(crypto));
+    let mut transport = quinn::TransportConfig::default();
+    transport.stream_receive_window(CONTROL_PREAMBLE.into());
+    transport.keep_alive_interval(Some(Duration::from_millis(200)));
+    config.transport_config(std::sync::Arc::new(transport));
+    let endpoint = quinn::Endpoint::client("127.0.0.1:0".parse().unwrap()).unwrap();
+    let conn = endpoint.connect_with(config, relay.addr, "relay.test").unwrap().await.unwrap();
+    // The server's SETTINGS fit, so its HTTP/3 setup completes.
+    let mut control = within("control stream", conn.accept_uni()).await.unwrap();
+    let mut preamble = vec![0; CONTROL_PREAMBLE as usize];
+    within("SETTINGS", control.read_exact(&mut preamble)).await.unwrap();
+    relay.relay.begin_shutdown();
+    assert!(relay.relay.drain(WAIT).await, "a GOAWAY the client grants no credit for held the connection open");
+    let closed = within("connection close", conn.closed()).await;
+    assert!(
+        matches!(closed, quinn::ConnectionError::ApplicationClosed(ref c)
+            if c.error_code.into_inner() == h3::error::Code::H3_NO_ERROR.value()),
+        "{closed:?}"
+    );
+}
+
+#[tokio::test]
+async fn http3_request_whose_headers_never_arrive_is_rejected() {
+    // RFC 9114 §4.1.1: a request the server cancels without processing it
+    // is rejected with H3_REQUEST_REJECTED in both directions, so the client
+    // may retry it; a bare FIN would read as a truncated response.
+    let relay = TestRelay::start("").await;
+    let (_sender, conn, _driver) = raw_h3(&relay, true).await;
+    let (mut send, mut recv) = conn.open_bi().await.unwrap();
+    // A HEADERS frame announcing 16 bytes, of which none follow.
+    send.write_all(&[0x01, 0x10]).await.unwrap();
+    let rejected = h3::error::Code::H3_REQUEST_REJECTED.value();
+    let mut buf = [0u8; 16];
+    match within("server gives up on the headers", recv.read(&mut buf)).await {
+        Err(quinn::ReadError::Reset(code)) => assert_eq!(code.into_inner(), rejected),
+        other => panic!("expected a reset with H3_REQUEST_REJECTED, got {other:?}"),
+    }
+    let stopped = within("STOP_SENDING", send.stopped()).await.unwrap();
+    assert_eq!(stopped.map(|code| code.into_inner()), Some(rejected));
+    assert_eq!(relay.relay.active_tunnels(), 0);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn connect_udp_protocol_token_is_matched_without_case() {
+    // RFC 9110 §7.8: upgrade tokens, and so :protocol (RFC 8441 §4), are
+    // compared without regard to case.
+    let relay = TestRelay::start("").await;
+    let (udp, _u) = udp_echo().await;
+    let auth_header = auth::basic_authorization(ALICE.0, ALICE.1);
+    let path = format!("/.well-known/masque/udp/127.0.0.1/{}/", udp.port());
+    let (_sender, conn, _driver) = raw_h3(&relay, true).await;
+    let fields = [
+        (":method", "CONNECT"),
+        (":protocol", "CONNECT-UDP"),
+        (":scheme", "https"),
+        (":authority", "relay.test"),
+        (":path", path.as_str()),
+        ("capsule-protocol", "?1"),
+        ("authorization", auth_header.as_str()),
+    ];
+    // The stream stays open: a FIN would end the flow (RFC 9298 §3).
+    let (_send, _recv) = raw_h3_open(&conn, &fields).await;
+    wait_for_tunnels(&relay, 1).await;
+    let (mut h2, _driver2) = raw_h2(&relay).await;
+    let req = Request::builder()
+        .method(Method::CONNECT)
+        .uri(format!("https://relay.test{path}"))
+        .header("authorization", &auth_header)
+        .header("capsule-protocol", "?1")
+        .extension(h2::ext::Protocol::from("Connect-UDP"))
+        .body(())
+        .unwrap();
+    let (response, _send) = h2.send_request(req, false).unwrap();
+    let response = within("HTTP/2 answer", response).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()["capsule-protocol"], "?1");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn connect_udp_targets_with_unencoded_ipv6_colons_are_understood() {
+    // RFC 9298 §2 has clients encode the colons, but a client that does not
+    // still names an IPv6 target: it must reach the destination rules (here
+    // blocked loopback), not get the website.
+    let relay = TestRelay::start("blocked_destinations = [\"::1/128\"]").await;
+    let (mut h2, _driver) = raw_h2(&relay).await;
+    for path in ["/.well-known/masque/udp/::1/53/", "/.well-known/masque/udp/%3A%3A1/53/"] {
+        let req = Request::builder()
+            .method(Method::CONNECT)
+            .uri(format!("https://relay.test{path}"))
+            .header("authorization", auth::basic_authorization(ALICE.0, ALICE.1))
+            .header("capsule-protocol", "?1")
+            .extension(h2::ext::Protocol::from(network_relay::proto::CONNECT_UDP_PROTOCOL))
+            .body(())
+            .unwrap();
+        let (response, _send) = h2.send_request(req, false).unwrap();
+        let response = within("HTTP/2 answer", response).await.unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY, "{path}");
+        assert_eq!(response.headers()["proxy-status"], "network-relay; error=destination_ip_prohibited", "{path}");
+    }
+}
+
+/// Opens a request stream on `conn` with `fields`, and returns it once the
+/// response's first frame (HEADERS) has begun to arrive. The send side stays
+/// open, as a tunnel's does.
+async fn raw_h3_open(conn: &quinn::Connection, fields: &[(&str, &str)]) -> (quinn::SendStream, quinn::RecvStream) {
+    let (mut send, mut recv) = conn.open_bi().await.unwrap();
+    let block = qpack_literal(fields);
+    let mut frame = bytes::BytesMut::new();
+    network_relay::proto::varint::encode(1, &mut frame);
+    network_relay::proto::varint::encode(block.len() as u64, &mut frame);
+    frame.extend_from_slice(&block);
+    send.write_all(&frame).await.unwrap();
+    let mut first = [0u8; 1];
+    within("response HEADERS", recv.read_exact(&mut first)).await.unwrap();
+    assert_eq!(first[0], 1, "a HEADERS frame");
+    (send, recv)
+}
+
+async fn wait_for_tunnels(relay: &TestRelay, n: usize) {
+    within("tunnel count", async {
+        while relay.relay.active_tunnels() != n {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+}
+
+/// The STOP_SENDING code the relay sent for the client's side of `send`.
+async fn stop_sending_code(send: &mut quinn::SendStream) -> Option<u64> {
+    within("STOP_SENDING", send.stopped()).await.unwrap().map(|code| code.into_inner())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn http3_aborted_tunnels_stop_the_client_with_the_abort_code() {
+    // RFC 9114 §4.1.1: cancelling a request resets its sending part and
+    // aborts reading its receiving part, both with the reason. The receiving
+    // part used to lose the code whenever a read was pending, which is nearly
+    // always for a tunnel, and the client got STOP_SENDING with code 0, which
+    // HTTP/3 does not define.
+    let relay = TestRelay::start("").await;
+    let (echo, _e) = echo_server().await;
+    let (udp, _u) = udp_echo().await;
+    let (_sender, conn, _driver) = raw_h3(&relay, true).await;
+    let auth_header = auth::basic_authorization(ALICE.0, ALICE.1);
+    let target = echo.to_string();
+    let tcp = [(":method", "CONNECT"), (":authority", target.as_str()), ("authorization", auth_header.as_str())];
+    let path = format!("/.well-known/masque/udp/127.0.0.1/{}/", udp.port());
+    let udp_flow = [
+        (":method", "CONNECT"),
+        (":protocol", "connect-udp"),
+        (":scheme", "https"),
+        (":authority", "relay.test"),
+        (":path", path.as_str()),
+        ("capsule-protocol", "?1"),
+        ("authorization", auth_header.as_str()),
+    ];
+
+    // A datagram on a TCP tunnel: H3_DATAGRAM_ERROR (RFC 9297 §2).
+    let (mut send, _recv) = raw_h3_open(&conn, &tcp).await;
+    wait_for_tunnels(&relay, 1).await;
+    let mut datagram = bytes::BytesMut::new();
+    // The quarter stream ID (RFC 9297 §2.1) is the stream's index.
+    network_relay::proto::varint::encode(send.id().index(), &mut datagram);
+    datagram.extend_from_slice(b"\0stray");
+    conn.send_datagram(datagram.freeze()).unwrap();
+    assert_eq!(stop_sending_code(&mut send).await, Some(h3::error::Code::H3_DATAGRAM_ERROR.value()));
+    wait_for_tunnels(&relay, 0).await;
+
+    // Revocation: H3_REQUEST_CANCELLED, for a TCP tunnel and a UDP flow.
+    let (mut tcp_send, _tcp_recv) = raw_h3_open(&conn, &tcp).await;
+    let (mut udp_send, _udp_recv) = raw_h3_open(&conn, &udp_flow).await;
+    wait_for_tunnels(&relay, 2).await;
+    relay.reload("", &[]);
+    let cancelled = h3::error::Code::H3_REQUEST_CANCELLED.value();
+    assert_eq!(stop_sending_code(&mut tcp_send).await, Some(cancelled), "TCP tunnel");
+    assert_eq!(stop_sending_code(&mut udp_send).await, Some(cancelled), "UDP flow");
+}
+
+/// A TCP destination that never completes a connection: its accept queue
+/// is full, so Linux drops further SYNs and connecting stalls.
+async fn stalled_destination() -> (SocketAddr, socket2::Socket, Vec<tokio::net::TcpStream>) {
+    let listener = socket2::Socket::new(socket2::Domain::IPV4, socket2::Type::STREAM, None).unwrap();
+    listener.bind(&"127.0.0.1:0".parse::<SocketAddr>().unwrap().into()).unwrap();
+    listener.listen(0).unwrap();
+    let addr = listener.local_addr().unwrap().as_socket().unwrap();
+    let mut queued = Vec::new();
+    for _ in 0..4 {
+        match tokio::time::timeout(Duration::from_millis(200), tokio::net::TcpStream::connect(addr)).await {
+            Ok(Ok(stream)) => queued.push(stream),
+            _ => break,
+        }
+    }
+    (addr, listener, queued)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn http3_request_the_client_cancels_while_connecting_is_cancelled_both_ways() {
+    // RFC 9114 §4.1.1. The relay used to drop the stream, which stopped the
+    // client's sending with code 0 instead of H3_REQUEST_CANCELLED.
+    let (target, _listener, _queued) = stalled_destination().await;
+    let relay = TestRelay::start("blocked_destinations = []\nconnect_timeout_secs = 60").await;
+    let (_sender, conn, _driver) = raw_h3(&relay, true).await;
+    let (mut send, mut recv) = conn.open_bi().await.unwrap();
+    let auth_header = auth::basic_authorization(ALICE.0, ALICE.1);
+    let authority = target.to_string();
+    let block = qpack_literal(&[
+        (":method", "CONNECT"),
+        (":authority", authority.as_str()),
+        ("authorization", auth_header.as_str()),
+    ]);
+    let mut frame = bytes::BytesMut::new();
+    network_relay::proto::varint::encode(1, &mut frame);
+    network_relay::proto::varint::encode(block.len() as u64, &mut frame);
+    frame.extend_from_slice(&block);
+    send.write_all(&frame).await.unwrap();
+    let mut first = [0u8; 1];
+    let waited = tokio::time::timeout(Duration::from_millis(500), recv.read_exact(&mut first)).await;
+    assert!(waited.is_err(), "the destination was supposed to stall the connect");
+    let cancelled = h3::error::Code::H3_REQUEST_CANCELLED.value();
+    recv.stop(cancelled.try_into().unwrap()).unwrap();
+    assert_eq!(stop_sending_code(&mut send).await, Some(cancelled));
+    assert_eq!(relay.relay.active_tunnels(), 0);
+}
+
+#[tokio::test]
+async fn http3_request_headers_over_the_limit_get_431_and_no_error_stop() {
+    // RFC 9114 §4.2.2 lets a server limit field sections; the 431 answer does
+    // not need the rest of the request, so the client is asked to stop
+    // sending with H3_NO_ERROR (§4.1), not the undefined code 0.
+    let relay = TestRelay::start("").await;
+    let (_sender, conn, _driver) = raw_h3(&relay, true).await;
+    let big = "x".repeat(40 * 1024);
+    let fields = [
+        (":method", "GET"),
+        (":scheme", "https"),
+        (":authority", "relay.test"),
+        (":path", "/"),
+        ("x-padding", big.as_str()),
+    ];
+    let (mut send, mut recv) = raw_h3_open(&conn, &fields).await;
+    let rest = within("431 response and FIN", recv.read_to_end(64 * 1024)).await.unwrap();
+    assert!(!rest.is_empty(), "the HEADERS frame of the 431 response");
+    assert_eq!(stop_sending_code(&mut send).await, Some(h3::error::Code::H3_NO_ERROR.value()));
+}

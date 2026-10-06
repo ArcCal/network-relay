@@ -28,6 +28,17 @@ Original source and MIT license retained. Changes are confined to:
   stream it will not process, and streams with that ID or higher are
   rejected (RFC 9114 section 5.2). Upstream sent the last accepted ID, the
   HTTP/2 meaning, so a client could retry a request that was processed.
+- `server/request.rs`: `RequestResolver::resolve_request_before(deadline)`
+  rejects a request whose HEADERS frame has not arrived by `deadline`,
+  cancelling both directions of its stream with H3_REQUEST_REJECTED (RFC 9114
+  section 4.1.1), so the client may retry it. Dropping the resolver, the only
+  way upstream to give up, ends the stream with a FIN and no response.
+- `proto/headers.rs`: `TE: trailers` is matched without regard to case, as
+  ABNF literals are (RFC 5234 section 2.3).
+- `server/request.rs`: the 431 answer to a request whose field section is
+  over the limit stops the client's sending with H3_NO_ERROR and finishes the
+  response (RFC 9114 section 4.1); upstream dropped the stream, which stopped
+  it with code 0.
 
 The relay integration tests cover trailers without FIN, empty DATA, ordinary
 half-close, bulk transfers and the malformed requests above; `proto::headers`

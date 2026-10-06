@@ -37,6 +37,11 @@ pub(super) const H3_NO_ERROR: u32 = 0x100;
 const DRAIN_ACK_MIN: std::time::Duration = std::time::Duration::from_millis(100);
 const DRAIN_ACK_MAX: std::time::Duration = std::time::Duration::from_secs(1);
 
+/// How long sending GOAWAY may take. The control stream is flow controlled
+/// like any other, so a client that grants it no more credit would otherwise
+/// keep a connection it was asked to leave, and its slot, for ever.
+const GOAWAY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
+
 /// Datagrams queued per UDP flow before new ones are dropped.
 const FLOW_QUEUE: usize = 64;
 /// Datagrams held per connection for streams not yet set up.
@@ -286,14 +291,20 @@ impl Relay {
                         let active = info.request_started();
                         tokio::spawn(async move {
                             let _active = active;
-                            let (req, stream) = match tokio::time::timeout(HEADER_TIMEOUT, resolver.resolve_request()).await {
+                            // Headers late: h3 rejects the request with
+                            // H3_REQUEST_REJECTED (RFC 9114 §4.1.1). The outer
+                            // bound covers a 431 response the client never
+                            // takes.
+                            let resolving = resolver.resolve_request_before(tokio::time::sleep(HEADER_TIMEOUT));
+                            let (req, stream) = match tokio::time::timeout(2 * HEADER_TIMEOUT, resolving).await {
                                 Ok(Ok(r)) => r,
-                                // Malformed (RFC 9114 §4.1.2): h3 has reset
-                                // the stream with H3_MESSAGE_ERROR.
+                                // h3 has reset the stream: H3_MESSAGE_ERROR
+                                // for a malformed request (RFC 9114 §4.1.2),
+                                // H3_REQUEST_REJECTED for late headers.
                                 Ok(Err(e)) if relay.settings().log_requests => {
-                                    return tracing::info!(remote = %info.remote, "malformed HTTP/3 request: {e}")
+                                    return tracing::info!(remote = %info.remote, "unusable HTTP/3 request: {e}")
                                 }
-                                Ok(Err(e)) => return debug!(remote = %info.remote, "malformed HTTP/3 request: {e}"),
+                                Ok(Err(e)) => return debug!(remote = %info.remote, "unusable HTTP/3 request: {e}"),
                                 Err(_) => return,
                             };
                             let notification = stopped.take(stream.id()).expect("accepted stream notification");
@@ -311,7 +322,7 @@ impl Relay {
                 // if it never authenticated), with GOAWAY first.
                 _ = info.idle(idle_timeout), if !draining => {
                     debug!(%remote, "closing idle HTTP/3 connection");
-                    let _ = h3_conn.shutdown(0).await;
+                    send_goaway(&mut h3_conn).await;
                     conn.close(VarInt::from_u32(H3_NO_ERROR), b"");
                     break Ok(());
                 }
@@ -320,7 +331,7 @@ impl Relay {
                 // §5.2); the open ones go on until done or the process exits.
                 _ = &mut shutting_down, if !draining => {
                     debug!(%remote, "server shutting down: GOAWAY");
-                    let _ = h3_conn.shutdown(0).await;
+                    send_goaway(&mut h3_conn).await;
                     draining = true;
                 }
                 _ = info.drained(), if draining => {
@@ -389,7 +400,7 @@ impl Relay {
         let authorized = loop {
             tokio::select! {
                 biased;
-                _ = &mut peer_closed => return,
+                _ = &mut peer_closed => return cancel(&mut stream),
                 Ok(()) = &mut bad_datagram => {
                     // A CONNECT's request stream stays open for its tunnel;
                     // reading it here would take the tunnel's first bytes.
@@ -429,7 +440,7 @@ impl Relay {
         });
         let opened = tokio::select! {
             biased;
-            _ = &mut peer_closed => return,
+            _ = &mut peer_closed => return cancel(&mut stream),
             Ok(()) = &mut bad_datagram => {
                 abort_datagram(&mut stream);
                 return;
@@ -448,8 +459,7 @@ impl Relay {
         let sent = tokio::select! {
             biased;
             _ = ctx.cancelled() => {
-                stream.stop_stream(h3::error::Code::H3_REQUEST_CANCELLED);
-                stream.stop_sending(h3::error::Code::H3_REQUEST_CANCELLED);
+                cancel(&mut stream);
                 false
             },
             Ok(()) = &mut bad_datagram => {
@@ -469,11 +479,7 @@ impl Relay {
                 let (reply_tx, reply_rx) = oneshot::channel();
                 let sender = tokio::select! {
                     biased;
-                    _ = ctx.cancelled() => {
-                        stream.stop_stream(h3::error::Code::H3_REQUEST_CANCELLED);
-                        stream.stop_sending(h3::error::Code::H3_REQUEST_CANCELLED);
-                        return;
-                    },
+                    _ = ctx.cancelled() => return cancel(&mut stream),
                     sender = async {
                         sender_tx.send((stream_id, reply_tx)).await.ok()?;
                         reply_rx.await.ok()
@@ -484,6 +490,15 @@ impl Relay {
                 pump::udp(Tunnel::h3_server(stream, datagrams), sock, ctx).await;
             }
         }
+    }
+}
+
+/// Sends GOAWAY with the first request stream that will not be processed
+/// (RFC 9114 §5.2), giving up after [`GOAWAY_TIMEOUT`]: requests at or past
+/// it are rejected either way, and the connection is closed regardless.
+async fn send_goaway(h3_conn: &mut H3Connection) {
+    if tokio::time::timeout(GOAWAY_TIMEOUT, h3_conn.shutdown(0)).await.is_err() {
+        debug!("GOAWAY could not be sent: the client grants no credit on the control stream");
     }
 }
 
@@ -522,6 +537,15 @@ async fn receive_side_closed(stream: &mut H3Stream) -> bool {
             drained = 0;
         }
     }
+}
+
+/// Cancels a request in both directions with H3_REQUEST_CANCELLED (RFC 9114
+/// §4.1.1): the client gave up on it (STOP_SENDING), its connection is gone,
+/// or its user was revoked. Merely dropping the stream would stop the
+/// client's sending with code 0, which HTTP/3 does not define.
+fn cancel(stream: &mut H3Stream) {
+    stream.stop_stream(h3::error::Code::H3_REQUEST_CANCELLED);
+    stream.stop_sending(h3::error::Code::H3_REQUEST_CANCELLED);
 }
 
 /// A receiver that never yields a value, to disarm a datagram notification

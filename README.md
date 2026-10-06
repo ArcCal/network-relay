@@ -337,7 +337,7 @@ Pick one of two sources:
 network-relay --version
 ```
 
-**You should see** `network-relay 1.2.0` (or a newer version). **Stay in this directory**; the `deploy/` files in it are needed later.
+**You should see** `network-relay 1.3.0` (or a newer version). **Stay in this directory**; the `deploy/` files in it are needed later.
 
 ### Step 6: Put up a decoy website
 
@@ -467,7 +467,7 @@ journalctl -u network-relay -n 20 --no-pager -o cat
 
 ```
 INFO TLS certificate: relay.example.com, valid until ...
-INFO network-relay 1.2.0 ready (HTTP/3 on UDP, HTTP/2 and HTTP/1.1 on TCP) ...
+INFO network-relay 1.3.0 ready (HTTP/3 on UDP, HTTP/2 and HTTP/1.1 on TCP) ...
 ```
 
 - From now on it starts at boot and restarts automatically after a crash.

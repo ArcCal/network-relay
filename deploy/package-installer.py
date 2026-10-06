@@ -34,7 +34,7 @@ def package(out):
     payload = '\n'.join(textwrap.wrap(base64.b64encode(compressed).decode(), 76))
     script = '''#!/usr/bin/env bash
 # Debian 12/13 x86_64: upload /tmp/network-relay, then sudo bash this script.
-# Includes deployment files and ICANN suffixes; downloads gfwlist and proxy.txt.
+# Includes deployment files and ICANN suffixes; downloads gfwlist only.
 set -Eeuo pipefail
 if [[ ${1:-} != --help && ${1:-} != -h && $EUID != 0 ]]; then
     echo '请使用 sudo bash /tmp/network-relay-install.sh 运行。' >&2

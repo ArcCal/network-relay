@@ -116,7 +116,7 @@ All of these happened in real deployments.
 
 If you have the self-contained deployment script, upload it as `/tmp/network-relay-install.sh` alongside `/tmp/network-relay`, prepare DNS/firewall in step 1, and run `sudo bash /tmp/network-relay-install.sh --domain relay.example.com`. It bundles the deployment files; no source ZIP is needed. See the [deployment guide](docs/deploy-debian13.md) for upgrades and options. The steps below use the same installer from a source ZIP.
 
-Generated profiles combine the Google/AI/X preset, gfwlist and Loyalsoldier `proxy.txt`. All extracted domains are widened to registered roots and deduplicated, including shared CDN roots; unmatched domains do not use this Relay. The standalone script also refreshes the device profile on rerun. If the old password is unknown, run `sudo bash /tmp/network-relay-install.sh --reset-password` to generate new credentials and a matching profile, preserving other accounts.
+Generated profiles combine the Google/AI/X preset, gfwlist. All extracted domains are widened to registered roots and deduplicated, including shared CDN roots; unmatched domains do not use this Relay. The standalone script also refreshes the device profile on rerun. If the old password is unknown, run `sudo bash /tmp/network-relay-install.sh --reset-password` to generate new credentials and a matching profile, preserving other accounts.
 
 ### Step 1: Prepare the domain and firewall (on your computer, in a browser)
 
@@ -225,7 +225,7 @@ All checks passed.
 - The password is 32 random characters. It is **not printed** and **not kept** on the server (the server has only its hash): it exists only in the profile behind that link. Open the link on the device within 15 minutes; it works once. Then delete the file it names (`rm /var/www/relay/.publish/...`).
 - To get the profile as a file instead (to AirDrop it from a Mac, say), add `--profile-out /root/iphone.mobileconfig`; delete that file once the device has it.
 - If the link expired before you used it, make a new password and profile as in [Changing the password](#changing-the-password).
-- The generated profile matches the deduplicated root domains from `deploy/domains/google-ai-social.txt`, gfwlist and Loyalsoldier `proxy.txt`; other domains do not use this Relay configuration. The relay's own hostname is excluded. For the conversion details and intentionally broad shared CDN scope, see [the deployment guide](docs/deploy-debian13.md).
+- The generated profile matches the deduplicated root domains from `deploy/domains/google-ai-social.txt`, gfwlist; other domains do not use this Relay configuration. The relay's own hostname is excluded. For the conversion details and intentionally broad shared CDN scope, see [the deployment guide](docs/deploy-debian13.md).
 - Passing the self-check on the machine **does not mean** the relay is reachable from the internet (the cloud firewall filters incoming traffic). The device is the final test.
 
 **Running it again is safe**: upload the new binary as `/tmp/network-relay` and run it again on the same machine. It keeps the password, the user and any configuration you edited by hand, and updates the program. It reads the domain, port and user name from `/etc/network-relay/install.json`, which holds no secret. (Earlier versions kept the whole profile, password included, in `/etc/network-relay/device.mobileconfig`; an upgrade still reads it, and tells you to delete it.)

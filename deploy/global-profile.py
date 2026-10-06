@@ -104,7 +104,7 @@ def extract_gfwlist(text):
 def collapse(domains):
     """Drops names whose parent domain is also listed; a parent matches its subdomains."""
     wanted = set(domains)
-    return sorted(d for d in wanted if not any('.'.join(d.split('.')[i:]) in wanted for i in range(1, d.count('.'))))
+    return sorted(d for d in wanted if not any('.'.join(d.split('.')[i:]) in wanted for i in range(1, d.count('.') + 1)))
 
 
 def build_domains(services, gfwlist_text):

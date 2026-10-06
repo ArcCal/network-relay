@@ -54,6 +54,7 @@ APT = ['apt-get', '-o', 'DPkg::Lock::Timeout=1800']
 SUPPORTED_DEBIAN = ('12', '13')
 PROFILE_NAME = 'Selected domains — everything else direct'
 MAX_PROFILE_BYTES = 16 << 20
+MAX_DEVICE_PROFILE_BYTES = 524288
 PROFILE_SPEC = importlib.util.spec_from_file_location('relay_profile_rules', Path(__file__).with_name('global-profile.py'))
 RULES = importlib.util.module_from_spec(PROFILE_SPEC)
 PROFILE_SPEC.loader.exec_module(RULES)
@@ -438,7 +439,6 @@ def profile_domains(args, identity):
     for label, disabled, path, url, parse in (
         ('gfwlist', args.no_gfwlist, args.gfwlist_file, args.gfwlist_url,
          lambda text: RULES.extract_gfwlist(text)[0]),
-        ('proxy.txt', args.no_proxy_list, args.proxy_list_file, args.proxy_list_url, RULES.extract_proxy_domains),
     ):
         if disabled:
             continue
@@ -463,7 +463,8 @@ def profile_domains(args, identity):
             for name, count in RULES.extract_gfwlist(text)[1].items():
                 print(f'  {name}: {count}', flush=True)
     suffixes = (REPO / 'deploy/domains/public-suffix-icann.dat').read_text()
-    domains = [d for d in RULES.root_domains(domains, suffixes) if d != identity.domain]
+    domains = RULES.collapse([d for d in RULES.root_domains(domains, suffixes)
+                             if d != identity.domain and d != 'adult' and not d.endswith('.adult')])
     if not domains:
         raise ValueError('No matched domains remain; refusing an all-traffic profile.')
     print(f'Combined routing list: {len(domains)} unique root domains; the relay domain is excluded.', flush=True)
@@ -657,14 +658,11 @@ def _install(args):
             staged_profile = staging / 'device.mobileconfig'
             run(command + ['--out', staged_profile], input=identity.password + '\n', capture=True)
             data = RULES.profile_with_domains(staged_profile.read_bytes(), domains)
-            if len(data) > MAX_PROFILE_BYTES:
-                raise ValueError('The complete profile exceeds 16 MiB; no account or profile was changed.')
+            if len(data) >= MAX_DEVICE_PROFILE_BYTES:
+                raise ValueError(f'The single device profile is {len(data)} bytes, exceeding the iPhone '
+                                 '524288-byte limit. No account or profile was changed.')
             profile_path = args.profile_out or publish / f'{secrets.token_urlsafe(18)}.mobileconfig'
-            file_delivery = bool(args.profile_out) or len(data) > 1 << 20
-            if file_delivery and not args.profile_out:
-                profile_path = ETC / f'profile-{identity.user}.mobileconfig'
-                print('The complete profile exceeds the website publishing limit; delivering a private '
-                      'file instead, without dropping domains.', flush=True)
+            file_delivery = bool(args.profile_out)
             profile = (Path(os.path.abspath(profile_path)), data,
                        None if file_delivery else uid, None if file_delivery else gid)
         apply_install(binary, config_data, render_state(identity), identity, automated_cert=automated_cert,
@@ -811,7 +809,7 @@ def main():
     parser.add_argument('--user', help='user name for a new installation, default iphone')
     parser.add_argument('--port', type=int, help='listening port, default 443')
     parser.add_argument('--domains', type=Path,
-                        help='base domain list, default Google/AI/X; merged with gfwlist and proxy.txt')
+                        help='base domain list, default Google/AI/X; merged with gfwlist, normalized to roots')
     parser.add_argument('--refresh-profile', action='store_true',
                         help='generate an updated device profile for an existing account, keeping its password')
     parser.add_argument('--reset-password', action='store_true',
@@ -821,10 +819,6 @@ def main():
     gfw.add_argument('--gfwlist-file', type=Path, help='use a downloaded gfwlist instead of fetching it')
     gfw.add_argument('--no-gfwlist', action='store_true', help='explicitly omit gfwlist')
     parser.add_argument('--gfwlist-url', default=RULES.GFWLIST_URL)
-    proxy = parser.add_mutually_exclusive_group()
-    proxy.add_argument('--proxy-list-file', type=Path, help='use a downloaded Loyalsoldier domain payload')
-    proxy.add_argument('--no-proxy-list', action='store_true', help='explicitly omit proxy.txt')
-    parser.add_argument('--proxy-list-url', default=RULES.PROXY_LIST_URL)
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument('--binary', type=Path,
                       help='prebuilt Linux x86_64 program, default /tmp/network-relay; never falls back to compilation')

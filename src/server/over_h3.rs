@@ -112,11 +112,17 @@ impl Router {
     }
 
     fn register(&mut self, stream_id: StreamId, flow: Flow) {
+        let pending = matches!(flow, Flow::PendingUdp);
         self.flows.insert(stream_id, flow);
         let early = std::mem::take(&mut self.early);
         self.early_bytes = 0;
         for (id, payload, at) in early {
-            if id == stream_id {
+            if at.elapsed() > EARLY_DATAGRAM_TTL {
+                continue;
+            }
+            // Resolving a request is not a new arrival: pending UDP packets
+            // keep their original age until authentication finishes.
+            if id == stream_id && !pending {
                 self.deliver(id, payload);
             } else {
                 self.early_bytes += payload.len();
@@ -653,6 +659,22 @@ mod tests {
 
     #[test]
     fn early_datagrams_are_held_only_briefly() {
+        // No later datagram arrives to trigger deliver's pruning. Resolving
+        // headers/authentication must not deliver or rejuvenate old packets.
+        for pending in [false, true] {
+            let mut r = Router::default();
+            r.deliver(id(4), Bytes::from_static(b"stale"));
+            let at = std::time::Instant::now() - EARLY_DATAGRAM_TTL * 2;
+            r.early.front_mut().unwrap().2 = at;
+            if pending {
+                r.register(id(4), Flow::PendingUdp);
+            }
+            let (tx, mut rx) = mpsc::channel(8);
+            r.add(id(4), tx);
+            assert!(rx.try_recv().is_err(), "registration delivered an expired datagram");
+            assert!(r.early.is_empty());
+            assert_eq!(r.early_bytes, 0);
+        }
         let mut r = Router::default();
         let Some(long_ago) = std::time::Instant::now().checked_sub(EARLY_DATAGRAM_TTL * 2) else { return };
         r.early.push_back((id(4), Bytes::from_static(b"stale"), long_ago));
@@ -684,12 +706,16 @@ mod tests {
     #[test]
     fn requests_can_finish_authentication_out_of_order() {
         let mut r = Router::default();
+        r.deliver(id(0), Bytes::from_static(b"early"));
+        let arrived = r.early.front().unwrap().2;
         r.register(id(0), Flow::PendingUdp);
+        assert_eq!(r.early.front().unwrap().2, arrived, "registration must not renew the hold time");
         let (tx4, _rx4) = mpsc::channel(8);
         r.add(id(4), tx4);
         r.deliver(id(0), Bytes::from_static(b"pending"));
         let (tx0, mut rx0) = mpsc::channel(8);
         r.add(id(0), tx0);
+        assert_eq!(rx0.try_recv().unwrap(), "early");
         assert_eq!(rx0.try_recv().unwrap(), "pending");
         let (tx, mut rx) = oneshot::channel();
         r.deliver(id(8), Bytes::from_static(b"illegal"));

@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.5.0 — 2026-10-07
+
+- Two self-contained Debian 12/13 x86_64 installers are included in the repository and release: `network-relay-install.sh` installs an uploaded `/tmp/network-relay` binary without compiling; `network-relay-install-from-source.sh` bundles the locked Rust source and vendor patches, compiles it, obtains certificates and installs the service.
+- Both installers fetch gfwlist and 18 blackmatrix7 service lists on every normal run. The preset includes the user-selected GreatFire domains. Explicit domain rules are widened to registered roots using the bundled ICANN public suffix list, sorted and deduplicated; IP/CIDR, ASN, keyword, regex and process rules are omitted. The relay hostname and `.adult` are excluded. The large Loyalsoldier proxy.txt/cn-blocked-domain lists are not included.
+- A single compact XML mobileconfig must stay below the iPhone 524288-byte limit. Oversized output, failed downloads and malformed sources abort before replacing the account or profile; domains are never silently dropped or split across profiles. The standalone global-profile generator uses the same root conversion and size protection.
+- `--reset-password` creates fresh random credentials and a matching profile without requiring the old password, preserving other accounts and hand-edited settings. Profiles and password changes participate in rollback if service startup fails. Ordinary profile refresh authenticates and reuses the existing password.
+- Release attachments now include both standalone installers and SHA-256 files alongside Linux x86_64/arm64 binaries. Binary package builds remain limited to published releases or manual workflow runs.
+
 ## 1.4.0 — 2026-10-06
 
 - **HTTP/3 early datagrams keep their original age.** Registering a stream now drops packets older than the existing one-second TTL and preserves arrival timestamps while request parsing or authentication is pending. Previously, delayed registration could deliver expired packets or refresh their age. Regression tests reproduce the failure without a new timer or cache.

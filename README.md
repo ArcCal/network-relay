@@ -347,7 +347,7 @@ Pick one of two sources:
 network-relay --version
 ```
 
-**You should see** `network-relay 1.4.0` (or a newer version). **Stay in this directory**; the `deploy/` files in it are needed later.
+**You should see** `network-relay 1.5.0` (or a newer version). **Stay in this directory**; the `deploy/` files in it are needed later.
 
 ### Step 6: Put up a decoy website
 
@@ -477,7 +477,7 @@ journalctl -u network-relay -n 20 --no-pager -o cat
 
 ```
 INFO TLS certificate: relay.example.com, valid until ...
-INFO network-relay 1.4.0 ready (HTTP/3 on UDP, HTTP/2 and HTTP/1.1 on TCP) ...
+INFO network-relay 1.5.0 ready (HTTP/3 on UDP, HTTP/2 and HTTP/1.1 on TCP) ...
 ```
 
 - From now on it starts at boot and restarts automatically after a crash.
@@ -869,4 +869,4 @@ cargo test
 
 GitHub Actions runs format, clippy, deployment, independent interoperability and vendored HTTP/3 tests on PRs and pushes to `main`. Published releases and manual workflow runs additionally test and build Linux x86_64 and arm64 packages (arm64 under qemu); published releases receive the packages automatically.
 
-The two standalone installers and their `.sha256` files are checked into the repository root and match the Release 1.4 attachments. To refresh them after deployment-file changes, run `python3 deploy/package-installer.py --out network-relay-install.sh` and `python3 deploy/package-installer.py --source --out network-relay-install-from-source.sh`, then verify the checksums and commit all four files.
+The two standalone installers and their `.sha256` files are checked into the repository root and match the Release 1.5 attachments. To refresh them after deployment-file changes, run `python3 deploy/package-installer.py --out network-relay-install.sh` and `python3 deploy/package-installer.py --source --out network-relay-install-from-source.sh`, then verify the checksums and commit all four files.

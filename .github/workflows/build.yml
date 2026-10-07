@@ -136,10 +136,27 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.13'
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           path: dist
           merge-multiple: true
+      - name: Verify and package standalone installers
+        run: |
+          python3 deploy/package-installer.py --out dist/network-relay-install.sh
+          python3 deploy/package-installer.py --source --out dist/network-relay-install-from-source.sh
+          cmp network-relay-install.sh dist/network-relay-install.sh
+          cmp network-relay-install-from-source.sh dist/network-relay-install-from-source.sh
+          bash -n dist/network-relay-install.sh
+          bash -n dist/network-relay-install-from-source.sh
+          bash dist/network-relay-install.sh --help
+          bash dist/network-relay-install-from-source.sh --help
+          (cd dist && sha256sum -c network-relay-install.sh.sha256 -c network-relay-install-from-source.sh.sha256)
       - name: Upload
         env:
           GH_TOKEN: ${{ github.token }}

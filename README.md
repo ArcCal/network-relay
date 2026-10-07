@@ -2,6 +2,8 @@
 
 A server for the **built-in "Network Relay"** feature of iPhone, iPad and Mac.
 
+**Latest release: [1.5](https://github.com/ArcCal/network-relay/releases/tag/1.5)** (program version `1.5.0`). Linux x86_64 and arm64 binaries, both standalone installers and their SHA-256 files are available under **Assets**. The automatic installers support **Debian 12/13 x86_64**; use the manual installation for arm64.
+
 - **No app to install on the device**: install a profile (`.mobileconfig`) and the system itself forwards traffic through your server.
 - Traffic can be selected or excluded by **domain and subdomains** or by **exact host name**, or **all traffic** can go through the relay. Exact matching needs iOS 18.4 / macOS 15.4 or later.
 - The protocols are the standard ones Apple specifies: HTTP CONNECT for TCP and CONNECT-UDP (RFC 9298) for UDP, over HTTP/3 (QUIC), HTTP/2 and HTTP/1.1.
@@ -24,7 +26,9 @@ This project and [masque-vpn](https://github.com/ArcCal/masque-vpn) are two inde
 - [Day-to-day operations](#day-to-day-operations)
 - [Troubleshooting](#troubleshooting)
 - [Glossary](#glossary)
-- [Technical notes](#technical-notes)
+- [How it works](#how-it-works)
+- [Tests](#tests)
+- [Changelog](CHANGELOG.md)
 
 ---
 
@@ -112,13 +116,17 @@ All of these happened in real deployments.
 ## Option 1: one-step install on Debian 12/13 (recommended)
 
 **For**: a Debian 12 or 13, x86_64, systemd VPS (the Debian images from Vultr, AWS Lightsail, Google Cloud, DigitalOcean and others all qualify). If you are not sure of the version, run `cat /etc/os-release` on the server and look at `VERSION_ID`.
-**What the script does**: install runtime dependencies → install your prebuilt `/tmp/network-relay` → obtain a Let's Encrypt certificate and set up automatic renewal → generate a random password and user → write the configuration and install the systemd service → start it and run a self-check on the machine → hand over the device profile. On startup failure it restores the previous installation files. No VPS compilation is needed; source builds require explicit `--build-from-source`.
 
-Download the self-contained [prebuilt-binary installer](network-relay-install.sh), then upload it as `/tmp/network-relay-install.sh` alongside `/tmp/network-relay`, prepare DNS/firewall in step 1, and run `sudo bash /tmp/network-relay-install.sh --domain relay.example.com`. It bundles the deployment files; no source ZIP is needed. See the [deployment guide](docs/deploy-debian13.md) for upgrades and options. The steps below use the same installer from a source ZIP.
+Choose one installation mode. **Neither requires a source ZIP.**
 
-For a complete source-compiling standalone installer, download [network-relay-install-from-source.sh](network-relay-install-from-source.sh) and run `sudo bash network-relay-install-from-source.sh --domain relay.example.com`. It includes Cargo.lock, Rust source and the patched vendor crates, then installs the toolchain, compiles and obtains the certificate. It does not need `/tmp/network-relay`. Both standalone installers fetch the eighteen service URLs and gfwlist on every normal run, clean the lists and regenerate the profile. See [the two installation modes](docs/deploy-debian13.md).
+| Mode | Download from [Release 1.5](https://github.com/ArcCal/network-relay/releases/tag/1.5) | What you upload to the VPS |
+|---|---|---|
+| **Prebuilt binary — recommended for a small VPS** | [x86_64 archive](https://github.com/ArcCal/network-relay/releases/download/1.5/network-relay-1.5.0-linux-x86_64.tar.gz) and [network-relay-install.sh](https://github.com/ArcCal/network-relay/releases/download/1.5/network-relay-install.sh), plus their `.sha256` files | The extracted executable as `/tmp/network-relay`, and the script as `/tmp/network-relay-install.sh`. No compilation or Rust toolchain on the VPS. |
+| **Compile from source on the VPS** | [network-relay-install-from-source.sh](https://github.com/ArcCal/network-relay/releases/download/1.5/network-relay-install-from-source.sh) and its `.sha256` file | `/tmp/network-relay-install-from-source.sh`. It bundles Cargo.lock, Rust source and patched vendor crates, and installs the build tools. No uploaded binary needed. |
 
-Generated profiles combine the Google/AI/X/GreatFire preset, gfwlist and eighteen blackmatrix7 service lists. All extracted domains are widened to registered roots and deduplicated, including shared CDN roots; unmatched domains do not use this Relay. The standalone script also refreshes the device profile on rerun. If the old password is unknown, run `sudo bash /tmp/network-relay-install.sh --reset-password` to generate new credentials and a matching profile, preserving other accounts.
+Both scripts install dependencies, obtain a Let's Encrypt certificate and configure renewal, create the account and configuration, install and start the systemd service, generate a device profile and run the relay self-check. Both fetch gfwlist and the eighteen service lists on every normal run and regenerate one cleaned routing profile. DNS and the cloud firewall need to be prepared first. See [routing rules](#default-root-domain-routing) and the [deployment guide](docs/deploy-debian13.md) for details.
+
+The scripts and checksums are also checked into the repository: [prebuilt installer](network-relay-install.sh), [source installer](network-relay-install-from-source.sh).
 
 ### Step 1: Prepare the domain and firewall (on your computer, in a browser)
 
@@ -134,15 +142,49 @@ Generated profiles combine the Google/AI/X/GreatFire preset, gfwlist and eightee
 
    If the server has IPv6, add the same rules to the IPv6 firewall.
 
-### Step 2: Download the source and upload it
+### Step 2: Download, verify and upload
 
-1. Log in to GitHub in your browser (the repository is private and cannot be seen without logging in), open the repository page, make sure the branch at the top left is **`main`**, and click **Code → Download ZIP**.
-2. Upload it from the Mac's Terminal (use the file name you actually downloaded):
-   ```bash
-   scp -i ~/.ssh/your-key ~/Downloads/network-relay-main.zip root@203.0.113.10:/root/
-   ```
-   On clouds where you log in as an ordinary user (such as `admin` on Lightsail or `ubuntu` on Ubuntu), replace `root@` with that user and the path with `/home/admin/` or similar.
-3. Download the Linux **x86_64** archive from [Releases](https://github.com/ArcCal/network-relay/releases), verify its SHA-256 file and extract it on your computer. Upload its `network-relay` executable as `/tmp/network-relay` on the VPS. Upload the extracted executable, not the `.tar.gz` archive. The source ZIP is used only for its deployment files in the default mode.
+Log in to GitHub with an account that has repository access, open [Release 1.5](https://github.com/ArcCal/network-relay/releases/tag/1.5), expand **Assets**, and download the files for your chosen mode. For this private repository, unauthenticated `curl`/`wget` download links can fail; downloading in your signed-in browser works.
+
+In the **Mac's Terminal**, enter the download directory:
+
+```bash
+cd ~/Downloads
+```
+
+**Prebuilt mode:** download the x86_64 archive, the prebuilt installer and both corresponding `.sha256` files, then verify them:
+
+```bash
+shasum -a 256 -c network-relay-1.5.0-linux-x86_64.tar.gz.sha256
+```
+
+```bash
+shasum -a 256 -c network-relay-install.sh.sha256
+```
+
+Each must print `OK`. Extract the archive:
+
+```bash
+tar -xzf network-relay-1.5.0-linux-x86_64.tar.gz
+```
+
+Upload the **executable**, not the archive, together with the script:
+
+```bash
+scp -i ~/.ssh/your-key network-relay-1.5.0-linux-x86_64/network-relay network-relay-install.sh root@203.0.113.10:/tmp/
+```
+
+**Source mode:** download the source installer and its checksum, verify it and upload it:
+
+```bash
+shasum -a 256 -c network-relay-install-from-source.sh.sha256
+```
+
+```bash
+scp -i ~/.ssh/your-key network-relay-install-from-source.sh root@203.0.113.10:/tmp/
+```
+
+If you log in as `admin`, `ubuntu` or another ordinary user, replace `root@` with that user. The upload destination remains `/tmp/`.
 
 ### Step 3: Log in to the server
 
@@ -170,45 +212,29 @@ curl -4 -s https://ifconfig.me; echo
 
 The two IPs must be the same. If not, go back and fix DNS, wait a few minutes and try again; **do not continue**.
 
-### Step 5: Extract the source and enter its directory
+### Step 5: Run your chosen installer
+
+Run **one** of these commands on the VPS as root.
+
+**Prebuilt mode:**
 
 ```bash
-cd /root
+bash /tmp/network-relay-install.sh --domain relay.example.com
 ```
 
-```bash
-apt-get -o DPkg::Lock::Timeout=1800 install -y unzip
-```
-
-If the new machine is running automatic updates, this waits for them to finish first (up to 30 minutes). It looks like a hang; do not press Ctrl+C.
+**Source mode:**
 
 ```bash
-unzip 'network-relay-main.zip'
-```
-
-If the file name contains `(1)` or similar, still put the whole name in single quotes.
-
-```bash
-cd network-relay-main
-```
-
-```bash
-ls
-```
-
-You should see `Cargo.toml  deploy  docs  src ...`.
-
-### Step 6: Run the installer
-
-```bash
-bash deploy/install-debian13.sh --domain relay.example.com
+bash /tmp/network-relay-install-from-source.sh --domain relay.example.com
 ```
 
 - The default user name is `iphone`; for another one, add `--user NAME`.
 - To receive certificate expiry reminders by email, add `--email you@example.com`.
-- The default mode uses `/tmp/network-relay` and does not compile or install build tools. Use `--binary PATH` to select another prebuilt executable.
-- If you intentionally want to compile the complete source ZIP, add `--build-from-source`; `--jobs 2` controls compilation only.
+- The prebuilt installer uses `/tmp/network-relay` and does not compile or install build tools. Use `--binary PATH` to select another prebuilt executable.
+- The source installer compiles with one job by default to reduce memory use; `--jobs 2` increases compilation parallelism. See [swap setup](#less-than-2-gib-of-memory-add-swap-first) if needed.
 - Installation time depends on package downloads, certificate issuance and the network self-check. If a new machine is running automatic updates, the script waits for them first.
+
+### Step 6: Install the generated profile
 
 **On success, the end of the output looks like:**
 
@@ -230,7 +256,23 @@ All checks passed.
 - The generated profile matches the deduplicated root domains from `deploy/domains/google-ai-social.txt`, gfwlist and the eighteen blackmatrix7 service lists; other domains do not use this Relay configuration. The relay's own hostname is excluded. For the conversion details and intentionally broad shared CDN scope, see [the deployment guide](docs/deploy-debian13.md).
 - Passing the self-check on the machine **does not mean** the relay is reachable from the internet (the cloud firewall filters incoming traffic). The device is the final test.
 
-**Running it again is safe**: upload the new binary as `/tmp/network-relay` and run it again on the same machine. It keeps the password, the user and any configuration you edited by hand, and updates the program. It reads the domain, port and user name from `/etc/network-relay/install.json`, which holds no secret. (Earlier versions kept the whole profile, password included, in `/etc/network-relay/device.mobileconfig`; an upgrade still reads it, and tells you to delete it.)
+### Re-run, upgrade or refresh the routing lists
+
+For the prebuilt installer, upload the new executable as `/tmp/network-relay` before running it again. After a reboot, upload it again if `/tmp` was cleared. For the source installer, download the new release's script before upgrading; each run compiles its bundled source.
+
+```bash
+bash /tmp/network-relay-install.sh
+```
+
+Or, for source mode:
+
+```bash
+bash /tmp/network-relay-install-from-source.sh
+```
+
+Both read the original domain, port and user from `/etc/network-relay/install.json`, preserve other accounts and hand-edited configuration, fetch the remote lists again and generate a new profile. **Install the new profile on the device to apply updated routing.** They reuse the password from an existing delivery profile, or prompt for it if that file was deleted. If you do not know the password, use [the automatic password reset](#automatic-reset-with-either-installer).
+
+If you have the extracted deployment files and want only a binary upgrade without regenerating a profile or needing its password, run `bash deploy/install-debian13.sh` from that directory. Add `--refresh-profile` to also regenerate the routing profile. Earlier installations without `install.json` can be migrated from `/etc/network-relay/device.mobileconfig`; the installer then tells you to delete that file containing the password.
 
 ### Less than 2 GiB of memory: add swap first
 
@@ -550,6 +592,8 @@ Disconnect **Stash, Clash, Shadowrocket, Surge** and similar on the device first
 
 **Mac (macOS 14 or later):**
 
+The installers' `.mobileconfig` can be installed on Mac as well as iPhone/iPad, with the same root-domain routing. A published download link works only once: to install on several devices, use `--profile-out` and transfer the file, or create a separate account and profile per device. The Settings on/off toggle requires iOS/iPadOS/macOS 26 or later; older supported systems ignore that option.
+
 1. Double-click the profile.
 2. Open **System Settings → General → Device Management** (called "Profiles" in older versions; you can also search for "Profiles" in the System Settings search field), double-click the profile you just added, click **Install**, and enter the Mac login password.
 
@@ -589,6 +633,35 @@ For all options, see [docs/config.md](docs/config.md#network-relay-profile).
 
 ## A profile for named services plus gfwlist
 
+### Default root-domain routing
+
+Both standalone installers generate this routing profile automatically; you do not need to run a separate generator. Their default inputs are:
+
+- [google-ai-social.txt](deploy/domains/google-ai-social.txt), including the selected GreatFire domains;
+- [gfwlist](https://github.com/gfwlist/gfwlist);
+- the eighteen blackmatrix7 lists: **Cloudflare, Gemini, OpenAI, Anthropic, Google, GitHub, Twitter, Jsdelivr, Pandora, Spotify, Reddit, Discord, iCloudPrivateRelay, Claude, AppleNews, AppleProxy, TikTok and TigerFintech**. [Source URLs](deploy/domains/README.md#blackmatrix7-service-rule-sources) are documented with the preset.
+
+Each normal run requests the remote lists again and cleans the responses; it does not reuse a stale download after a failure. Requests ask for cache revalidation, but the CDN can still cache upstream content. Local-input and omission options are documented in the [deployment guide](docs/deploy-debian13.md).
+
+| Input / setting | Generated routing |
+|---|---|
+| `accounts.google.com`, `google.com`, `*.google.com` | One `google.com` entry. It matches the root and all levels of subdomains, including `a.b.c.google.com`. |
+| `api.example.co.uk` | `example.co.uk`, using the bundled ICANN public suffix list. It does not become `co.uk`. |
+| Shared hosting/CDN names | Widened to their registered root too. Private tenant boundaries are ignored, so unrelated services under the same root can also match. |
+| Clash `DOMAIN` and `DOMAIN-SUFFIX` | Converted to roots, sorted and deduplicated. |
+| IP/CIDR, ASN, keyword, regex and process rules | Discarded; only domain names enter `MatchDomains`. |
+| `adult` or a domain ending in `.adult` | Removed. This is a suffix filter, not a complete adult-site categorization. |
+| The relay's own hostname and its subdomains | Excluded to prevent relaying the connection back through itself. Other selected domains under that root still match. |
+| Domains outside the resulting list | Do not use this Relay configuration. |
+
+Loyalsoldier `proxy.txt` and `cn-blocked-domain/domains.txt` are **not included**. gfwlist path rules widen to the whole domain; its regular expressions, IP/unsupported patterns and `@@` exceptions cannot be represented by this root-domain conversion and are reported instead.
+
+The XML stores roots such as `google.com`, with **no `*.` strings in `MatchDomains`**. iPhone's profile details can display these suffix matches as `*.google.com`; that display alone does not mean the script wrote wildcard entries. `google.com` already matches every subdomain, so separate wildcard or subdomain entries are unnecessary.
+
+The output is **one compact XML `.mobileconfig`, strictly below 524288 bytes (512 KiB)**, including credentials and metadata. A failed download, empty or malformed rule source, or oversized profile aborts generation before replacing the account/profile. The scripts never split the profile or silently remove domains to fit the limit. The printed root count and profile size can change as the source lists change.
+
+### Generate a profile separately
+
 `deploy/global-profile.py` combines the following sources into one profile:
 
 - `deploy/domains/google-ai-social.txt`: Google, Gemini, YouTube, Claude, ChatGPT, X and others;
@@ -625,6 +698,24 @@ When it finishes, it prints how many domains are matched and how many gfwlist ru
 ## Changing the password
 
 The server and the profile **must be changed together**, or the device cannot connect.
+
+### Automatic reset with either installer
+
+For an installation managed by these scripts, no old password is needed. In prebuilt mode, ensure the uploaded binary is still at `/tmp/network-relay`, then run as root:
+
+```bash
+bash /tmp/network-relay-install.sh --reset-password
+```
+
+For source mode:
+
+```bash
+bash /tmp/network-relay-install-from-source.sh --reset-password
+```
+
+The script creates fresh random credentials and a matching profile with the latest routing lists. It updates only the selected account, preserving other users and configuration. **Install the new profile on every device using that account; old profiles can no longer authenticate.** Add `--profile-out /root/iphone.mobileconfig` to receive a file instead of a one-time link. If service startup fails, the installation files and profile are rolled back.
+
+The following steps are for manually managed installations or a password you choose to handle yourself.
 
 ### Step 1: On the server
 
@@ -715,7 +806,9 @@ Same as [installing on the device](#installing-the-profile-on-iphone-ipad-and-ma
 | Changed the configuration | `network-relay serve --check` → `systemctl reload network-relay`. `listen`, `log_dir`, `[tls]` and the connection limits `max_tunnels`, `max_connections` and `max_connections_per_ip` need `systemctl restart network-relay` |
 | Let an account expire | Add `expires = 2027-01-31T00:00:00Z` to its `[[user]]` section → reload. From then on it is refused, and its open tunnels close |
 | Limit what one device may use | `max_tunnels_per_user`, `max_bytes_per_second_per_user` and `max_udp_packets_per_second_per_user` under `[relay]`; see [docs/config.md](docs/config.md) |
-| Upgrade the program (one-step install) | Upload the new x86_64 binary as `/tmp/network-relay`, then run `bash deploy/install-debian13.sh` or the self-contained `bash /tmp/network-relay-install.sh` again (no options needed; it keeps the original domain, user and password, and does not touch the devices' profiles) |
+| Upgrade or refresh (standalone prebuilt installer) | Upload the new x86_64 binary as `/tmp/network-relay`, run `bash /tmp/network-relay-install.sh`, and install the regenerated profile. Reuses or prompts for the existing password; use `--reset-password` if it is unknown. |
+| Upgrade or refresh (standalone source installer) | Download the new source installer, run `bash /tmp/network-relay-install-from-source.sh`, and install the regenerated profile. Compiles the bundled version on each run. |
+| Upgrade only the binary (extracted installer) | Upload `/tmp/network-relay`, then run `bash deploy/install-debian13.sh` from the extracted directory. Leaves the device profile unchanged and needs no password. |
 | Upgrade the program (manual install) | Get the new `network-relay` file → `install -m 755 network-relay /usr/local/bin/` → `systemctl restart network-relay` |
 | Certificates | certbot renews automatically, and the relay rereads them every day at 3 a.m.; with the renewal hook installed, it rereads them immediately |
 | Check the service is running | `systemctl is-active network-relay` should print `active` |

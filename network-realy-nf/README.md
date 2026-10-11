@@ -10,8 +10,10 @@ required to build it.
 
 **Development status:** the protocol core is implemented. Production socket,
 TLS and QUIC operations are supplied by Apple Network.framework. Linux core
-checks are available; the macOS application and native server interoperability
-have not been built or run in this environment. HTTP/3 remains experimental.
+checks are available; the user has reported a Mac build/launch and successful
+SOCKS TCP and UDP forwarding with Rust network-relay. The current outer transport
+was not captured alongside those probes. The complete native matrix remains
+incomplete, and HTTP/3 remains experimental.
 See [implementation status](docs/STATUS.md) before treating this as a release.
 “Perfect compatibility” is an acceptance goal, not a result we have established.
 
@@ -20,6 +22,7 @@ See [implementation status](docs/STATUS.md) before treating this as a release.
 - [Completed, suspected, confirmed and missing work](docs/STATUS.md)
 - [QUIC investigation and repair handover](docs/QUIC-RESEARCH.md)
 - [Validation procedure and evidence](docs/VALIDATION.md)
+- [User-reported Mac build and TCP/UDP results](docs/evidence/native-mac-20261011.md)
 - [Fresh Mac build, log levels and TCP/UDP observation](docs/BUILD-AND-OBSERVE.md)
 - [Source provenance](SOURCE-PROVENANCE.json)
 
@@ -47,8 +50,9 @@ open 'dist/Network Realy NF.app'
 The script runs Rust tests, Swift model tests and native boundary smoke checks,
 builds the static core and GUI, creates the icon, and applies an ad-hoc signature.
 It produces `dist/NetworkRealyNF-0.1.0-macos-arm64.zip` and its SHA-256 file.
-It does not notarize the app. These build instructions still require a first Mac
-execution; no downloadable or verified Mac binary is included in this revision.
+It does not notarize the app. The user has built and launched source revision
+`666b795c881b44eeaade9891edfae04ffcbd34a6`; its complete build/test transcript and
+signature results have not been supplied. No release binary is included here.
 
 Enter the relay domain, optional server IP, username and password. Use HTTP/2
 for initial testing. The default CONNECT-UDP endpoint is

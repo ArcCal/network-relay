@@ -53,7 +53,23 @@ live fixtures. Only `test-interop.py` starts those fixtures and invokes
 test as ignored does not verify server interoperability. Keep disposable test
 credentials and CA keys out of version control.
 
-## Required Mac gates
+## User-reported Mac results
+
+[Mac evidence](evidence/native-mac-20261011.md) records an application launch for
+source `666b795c881b44eeaade9891edfae04ffcbd34a6`, earlier HTTP/2 authentication
+rejections correlated with server logs, and subsequent successful external SOCKS
+TCP and UDP probes following account troubleshooting on Rust network-relay.
+Google returned `HTTP/2 200`; the UDP helper reported eight DNS answers in a
+160-byte response. These ran on the user's Mac, unlike the Linux emulator matrix.
+
+The successful probes lack the corresponding app run/source identity and `Relay
+ready` transport line. curl's status line identifies the destination response
+protocol; it cannot establish the outer relay protocol. Thus native forwarding
+has a reported positive result, while a fully attributed forced HTTP/2 row,
+caddy-network-relay, HTTP/3 and the complete native acceptance matrix remain
+pending. No full Mac build/test/smoke/signature artifact was supplied.
+
+## Remaining Mac gates
 
 The step-by-step commands, level meanings and capture procedure are in
 [BUILD-AND-OBSERVE.md](BUILD-AND-OBSERVE.md). Its UDP probe is an external SOCKS

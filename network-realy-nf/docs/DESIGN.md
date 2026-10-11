@@ -102,4 +102,6 @@ The copied UI includes server CRUD, active selection, transport changes,
 application/proxy settings, scoped TOML import/export, masked passwords, in-memory
 logs, menu controls, connect on launch and deletion of this app's stored settings.
 The active-server restart and blank-new-server selection fixes are retained.
-Mac compilation, presentation and native execution still need verification.
+The user has reported a Mac build/launch and SOCKS TCP/UDP forwarding success.
+The individual UI behaviors and complete native acceptance matrix still need
+verification; [the evidence](evidence/native-mac-20261011.md) records the limits.

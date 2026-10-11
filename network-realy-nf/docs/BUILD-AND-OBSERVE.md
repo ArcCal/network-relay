@@ -120,7 +120,7 @@ the most detailed to the least detailed:
 | Menu entry | Visible severities | Typical use |
 | --- | --- | --- |
 | Everything | TRACE, DEBUG, INFO, WARN, ERROR | One short failure capture; native resource I/O kinds and byte counts |
-| Detailed | DEBUG, INFO, WARN, ERROR | SOCKS connections, relay host/IP, certificate name, ALPN, QUIC SID and parent |
+| Detailed | DEBUG, INFO, WARN, ERROR | SOCKS connections, relay host/IP, certificate name, ALPN, QUIC SID and parent, group-owned SID (`groupSID=`) |
 | Normal | INFO, WARN, ERROR | Launch, connection/readiness, disconnect and retry records |
 | Warnings and Errors | WARN, ERROR | Failures and warnings |
 | Errors Only | ERROR | Fatal/error records; a retry warning can be hidden at this level |

@@ -194,7 +194,9 @@ final class NativeClient {
     private func fail(_ id: UInt64, message: String, flags: UInt64 = 4) {
         guard handle != nil else { return }
         input(104, id, flags: flags, data: Data(message.utf8))
-        log("DEBUG", "Resource \(id) failed: \(message)")
+        // A QUIC group failure ends every stream; keep it at default levels
+        // so the first failing native object is identifiable.
+        log(groups[id] == nil ? "DEBUG" : "WARN", "Resource \(id) failed: \(message)")
         close(id)
     }
 
@@ -343,6 +345,9 @@ final class NativeClient {
               negotiated.negotiatedALPN == "h3" else {
             fail(id, message: "Native QUIC did not negotiate h3"); return
         }
+        // The group object owns a bidirectional stream without exposing I/O
+        // on it; record its identifier to correlate with peer stream events.
+        log("DEBUG", "Native QUIC group ready resource=\(id) groupSID=\(negotiated.streamIdentifier)")
         // CONNECT-UDP permits DATAGRAM Capsules without QUIC DATAGRAMs.
         // Do not extract a datagram connection before the first request:
         // that path is implicated in Masque NF's unresolved native H3 issue.

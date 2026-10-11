@@ -37,6 +37,17 @@ link failure was caused by a full cloud filesystem; removing generated increment
 build cache restored the build. Neither incident established an application or
 Network.framework defect. Final evidence supersedes these setup attempts.
 
+### Idle group-owned stream 0 diagnostic (2026-10-11)
+
+Linux, Quinn emulator, real server binaries; **not Network.framework**. The
+new ignored test `Core/tests/idle_stream_zero.rs` ran with the unchanged
+`real_server_matrix` against network-relay `4f40c1f` and caddy-network-relay
+`ef24537`. Both passed. Each server reset the idle stream 0 about ten seconds
+after readiness, and the stream-4 CONNECT-UDP session kept echoing at 13 s.
+`cargo test --locked`: 37 unit, 5 and 21 integration tests passed. The Swift
+logging change was not compiled, because no Swift toolchain is available.
+Details: [evidence](evidence/idle-group-stream-zero-20261011.md).
+
 ## Repeat portable validation
 
 ```bash

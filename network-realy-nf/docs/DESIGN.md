@@ -20,6 +20,8 @@ implementation and evidence are tracked separately in [STATUS.md](STATUS.md).
    here must not change Masque NF or either relay server's production code.
 7. Document defects and missing work accurately. Native QUIC repair has a limited
    time budget; HTTP/2 is the initial operational path when HTTP/3 is unreliable.
+   A shared use of Network.framework is not proof that different client failures
+   have the same cause or that the framework has an unavoidable defect.
 
 ## Network ownership
 
@@ -95,6 +97,61 @@ bring-up. These two changes are design choices, not a controlled proof of the
 old fault's cause or a claim that native HTTP/3 is repaired. Actual stream IDs
 are logged and range-checked. Complete local stream direction/initiator checks
 and modern NetworkConnection<QUIC> evaluation are deferred.
+
+## Native QUIC evidence and repair method
+
+The latest supplied Relay log runs the older binary from source
+`666b795c881b44eeaade9891edfae04ffcbd34a6`, built at
+2026-10-11T09:37:18Z. In run `16A52488`, authenticated HTTP/3 readiness at
+12:02:49.394733Z is followed by POSIX 22 (EINVAL) at 12:02:59.397293Z, an
+interval of 10.002560 seconds. The next attempt sends request HEADERS on actual
+SID 4 and ends while waiting for a response. This attachment contains one
+complete admitted/failure cycle; it does not establish the outcome of that next
+attempt. [Sanitized trace and provenance](evidence/native-http3-20261011-1202.md).
+
+This is separate from the older HTTP/2 readiness-probe closures near 300 seconds.
+The current source renews that idle probe and repairs opposite-pump error wakeups,
+but those portable repairs have not been retested on the user's Mac. An older
+binary's failure cannot show whether the later repairs work, and those repairs
+are not claimed to fix the native HTTP/3 EINVAL.
+
+New Masque NF observations also differ by profile: `caddy-masuqe` has six HTTP/3
+tunnel establishments and forwarded-byte evidence, while `masque-vpn` has twelve
+initial HTTP/3-response timeouts and no recorded HTTP/3 tunnel establishment.
+Those attempts exchange QUIC control/QPACK bytes and select Capsules; the natural
+timeouts occur 10.190977 to 10.230700 seconds after Capsule selection. No EINVAL
+is recorded for the failing Masque profile. Profile labels alone do not establish
+the actual server implementation, revision or endpoint. Local flow resets and
+ENETDOWN events in that sample also
+prevent a claim of complete Caddy stability or compatibility. Masque NF uses
+CONNECT-IP; this application uses CONNECT/CONNECT-UDP. Neither failure is a
+substitute for diagnosing the other. See the
+[separate Masque evidence](https://github.com/ArcCal/masque-vpn/blob/main/masque-nf/docs/evidence/native-http3-20261011-1205.md).
+
+Every proposed cause, workaround and research suggestion in this design and
+[QUIC-RESEARCH.md](QUIC-RESEARCH.md) is a non-binding investigation reference.
+The repairer, including Claude, must inspect the actual client and server code,
+verify the applicable Apple API contracts and availability, examine relevant
+open-source implementations, and independently identify the cause and choose
+the smallest necessary repair. Do not copy a suggested stream-ownership, options,
+timeout or backend change merely because it appears in a report. Unproven
+hypotheses must remain labeled as such.
+
+Use a fixed endpoint, settings and build identity for a bounded reproduction;
+change one relevant variable at a time and correlate real stream IDs, request
+phases, reset/close codes and the first native error callback with server traces.
+Separate stream-level closure from group failure and clean idle expiry. Read
+other clients and server production code as comparison material; repair work in
+this directory must preserve the Network.framework production boundary and keep
+those other implementations unchanged. [The handoff](CLAUDE-HANDOFF.md) and
+[SPEC.md](SPEC.md) define review and acceptance requirements. Changes must target
+QUIC/HTTP/3 defects or another defect established by clear evidence. Before each
+change, evaluate its necessity, supporting evidence, affected behavior and
+regression risks; verify that focused change before proceeding to another.
+Speculative cleanup, unrelated refactoring, dependency upgrades and redesign are
+outside this repair. If native evidence is unavailable or a minimal repair cannot
+be established, record the limitation
+instead of declaring the fault fixed or rewriting the transport.
 
 ## Isolation and UI
 

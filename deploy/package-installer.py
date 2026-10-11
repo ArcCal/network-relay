@@ -42,14 +42,14 @@ def package(out, source=False):
 # Includes deployment files and ICANN suffixes; downloads gfwlist and eighteen service lists.
 set -Eeuo pipefail
 if [[ ${1:-} != --help && ${1:-} != -h && $EUID != 0 ]]; then
-    echo '请使用 sudo bash /tmp/network-relay-install.sh 运行。' >&2
+    echo 'Run this script with sudo bash /tmp/network-relay-install.sh.' >&2
     exit 1
 fi
 '''
     if not source:
         script += '''for option in "$@"; do
     if [[ $option == --build-from-source ]]; then
-        echo '此脚本仅安装预编译二进制；源码编译请使用完整源码中的安装器。' >&2
+        echo 'This script installs prebuilt binaries only; use the installer in the full source tree to compile from source.' >&2
         exit 1
     fi
 done

@@ -1,0 +1,8 @@
+uri_template = "https://vpn.example.com:8443/.well-known/masque/udp/{target_host}/{target_port}/"
+username = "macbook"
+password = "Zx9-kPq_4"
+transport = "h2"
+mode = "socks"
+
+[socks]
+listen = ["127.0.0.1:1080"]

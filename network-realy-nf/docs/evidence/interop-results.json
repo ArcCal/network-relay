@@ -1,0 +1,33 @@
+{
+  "scope": "production protocol core over test-only rustls/Quinn native bridge emulator",
+  "executed_at_utc": "2026-10-11T10:35:50.716356+00:00",
+  "client_core_source": {
+    "sha256": "6689a9a0552ba5508f0eba3ff35cea4a5467a6609e8742cddaf1bb03935b86ea",
+    "rust_files": 11,
+    "method": "sorted relative path + NUL + file SHA-256 bytes"
+  },
+  "client_h3_source": {
+    "sha256": "c57291d7bfe4173a8c6a2c896ed6ceada7a53695c9cd0941a8055ce115062c93",
+    "rust_files": 51,
+    "method": "sorted relative path + NUL + file SHA-256 bytes"
+  },
+  "client_manifest_sha256": "925cd96e691a23af005dcb446ccaebfb51a341c86fa5ecc79b4d85e07530e82d",
+  "client_lockfile_sha256": "9dde1639a405e827572b5d0036b79032a8a214bfb95703b38d7f467cedfc2015",
+  "native_network_framework": "NOT RUN",
+  "servers": [
+    {
+      "kind": "network-relay",
+      "binary_sha256": "9ba3cac963214df06e3678007078c1c41a2b8b9c167635bb6f843835d7a50123",
+      "outcome": "PASS",
+      "test": "real_server_matrix",
+      "output": "\nrunning 1 test\nUDP test transport=http/1.1 size=0\nUDP test transport=http/1.1 size=1\nUDP test transport=http/1.1 size=1200\nUDP test transport=http/1.1 size=32768\nUDP test transport=http/1.1 size=65000\nnetwork-relay http/1.1: TCP remote DNS + 2 MiB half-close, UDP Capsules (0..65000 bytes), wrong password, certificate-name rejection, SOCKS CONNECT/UDP, source pinning, fragment drop and resource cleanup passed\nUDP test transport=h2 size=0\nUDP test transport=h2 size=1\nUDP test transport=h2 size=1200\nUDP test transport=h2 size=32768\nUDP test transport=h2 size=65000\nnetwork-relay h2: TCP remote DNS + 2 MiB half-close, UDP Capsules (0..65000 bytes), wrong password, certificate-name rejection, SOCKS CONNECT/UDP, source pinning, fragment drop and resource cleanup passed\nUDP test transport=h3 size=0\nUDP test transport=h3 size=1\nUDP test transport=h3 size=1200\nUDP test transport=h3 size=32768\nUDP test transport=h3 size=65000\nnetwork-relay h3: TCP remote DNS + 2 MiB half-close, UDP Capsules (0..65000 bytes), wrong password, certificate-name rejection, SOCKS CONNECT/UDP, source pinning, fragment drop and resource cleanup passed\ntest real_server_matrix ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.42s\n\n"
+    },
+    {
+      "kind": "caddy-network-relay",
+      "binary_sha256": "84de4ef6172716a19996fdfb39f7bfc3a662d7db0d9178016186a32eaebd6904",
+      "outcome": "PASS",
+      "test": "real_server_matrix",
+      "output": "\nrunning 1 test\nUDP test transport=http/1.1 size=0\nUDP test transport=http/1.1 size=1\nUDP test transport=http/1.1 size=1200\nUDP test transport=http/1.1 size=32768\nUDP test transport=http/1.1 size=65000\ncaddy-network-relay http/1.1: TCP remote DNS + 2 MiB half-close, UDP Capsules (0..65000 bytes), wrong password, certificate-name rejection, SOCKS CONNECT/UDP, source pinning, fragment drop and resource cleanup passed\nUDP test transport=h2 size=0\nUDP test transport=h2 size=1\nUDP test transport=h2 size=1200\nUDP test transport=h2 size=32768\nUDP test transport=h2 size=65000\ncaddy-network-relay h2: TCP remote DNS + 2 MiB half-close, UDP Capsules (0..65000 bytes), wrong password, certificate-name rejection, SOCKS CONNECT/UDP, source pinning, fragment drop and resource cleanup passed\nUDP test transport=h3 size=0\nUDP test transport=h3 size=1\nUDP test transport=h3 size=1200\nUDP test transport=h3 size=32768\nUDP test transport=h3 size=65000\ncaddy-network-relay h3: TCP remote DNS + 2 MiB half-close, UDP Capsules (0..65000 bytes), wrong password, certificate-name rejection, SOCKS CONNECT/UDP, source pinning, fragment drop and resource cleanup passed\ntest real_server_matrix ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.17s\n\n"
+    }
+  ]
+}

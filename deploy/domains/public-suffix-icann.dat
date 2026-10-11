@@ -817,9 +817,9 @@ gov.cn
 mil.cn
 net.cn
 org.cn
-公司.cn
-網絡.cn
-网络.cn
+xn--55qx5d.cn
+xn--od0alg.cn
+xn--io0a7i.cn
 // cn geographic names
 ah.cn
 bj.cn
@@ -1306,21 +1306,21 @@ gov.hk
 idv.hk
 net.hk
 org.hk
-个人.hk
-個人.hk
-公司.hk
-政府.hk
-敎育.hk
-教育.hk
-箇人.hk
-組織.hk
-組织.hk
-網絡.hk
-網络.hk
-组織.hk
-组织.hk
-网絡.hk
-网络.hk
+xn--ciqpn.hk
+xn--gmqw5a.hk
+xn--55qx5d.hk
+xn--mxtq1m.hk
+xn--lcvr32d.hk
+xn--wcvs22d.hk
+xn--gmq050i.hk
+xn--uc0atv.hk
+xn--uc0ay4a.hk
+xn--od0alg.hk
+xn--zf0avx.hk
+xn--mk0axi.hk
+xn--tn0ag.hk
+xn--od0aq3b.hk
+xn--io0a7i.hk
 
 // hm : https://www.iana.org/domains/root/db/hm.html
 hm
@@ -2065,53 +2065,53 @@ wakayama.jp
 yamagata.jp
 yamaguchi.jp
 yamanashi.jp
-三重.jp
-京都.jp
-佐賀.jp
-兵庫.jp
-北海道.jp
-千葉.jp
-和歌山.jp
-埼玉.jp
-大分.jp
-大阪.jp
-奈良.jp
-宮城.jp
-宮崎.jp
-富山.jp
-山口.jp
-山形.jp
-山梨.jp
-岐阜.jp
-岡山.jp
-岩手.jp
-島根.jp
-広島.jp
-徳島.jp
-愛媛.jp
-愛知.jp
-新潟.jp
-東京.jp
-栃木.jp
-沖縄.jp
-滋賀.jp
-熊本.jp
-石川.jp
-神奈川.jp
-福井.jp
-福岡.jp
-福島.jp
-秋田.jp
-群馬.jp
-茨城.jp
-長崎.jp
-長野.jp
-青森.jp
-静岡.jp
-香川.jp
-高知.jp
-鳥取.jp
-鹿児島.jp
+xn--ehqz56n.jp
+xn--1lqs03n.jp
+xn--qqqt11m.jp
+xn--f6qx53a.jp
+xn--djrs72d6uy.jp
+xn--mkru45i.jp
+xn--0trq7p7nn.jp
+xn--5js045d.jp
+xn--kbrq7o.jp
+xn--pssu33l.jp
+xn--ntsq17g.jp
+xn--uisz3g.jp
+xn--6btw5a.jp
+xn--1ctwo.jp
+xn--6orx2r.jp
+xn--rht61e.jp
+xn--rht27z.jp
+xn--nit225k.jp
+xn--rht3d.jp
+xn--djty4k.jp
+xn--klty5x.jp
+xn--kltx9a.jp
+xn--kltp7d.jp
+xn--c3s14m.jp
+xn--vgu402c.jp
+xn--efvn9s.jp
+xn--1lqs71d.jp
+xn--4pvxs.jp
+xn--uuwu58a.jp
+xn--zbx025d.jp
+xn--8pvr4u.jp
+xn--5rtp49c.jp
+xn--ntso0iqx3a.jp
+xn--elqq16h.jp
+xn--4it168d.jp
+xn--klt787d.jp
+xn--rny31h.jp
+xn--7t0a264c.jp
+xn--uist22h.jp
+xn--8ltr62k.jp
+xn--2m4a15e.jp
+xn--32vp30h.jp
+xn--4it797k.jp
+xn--5rtq34k.jp
+xn--k7yn95e.jp
+xn--tor131o.jp
+xn--d5qv7z876c.jp
 // jp geographic type names
 // http://jprs.jp/doc/rule/saisoku-1.html
 // 2024-11-22: JPRS confirmed that jp geographic type names no longer accept new registrations.
@@ -6506,12 +6506,12 @@ yt
 // xn--fiqs8s ("Zhongguo/China", Chinese, Simplified) : CN
 // CNNIC
 // https://www.cnnic.cn/11/192/index.html
-中国
+xn--fiqs8s
 
 // xn--fiqz9s ("Zhongguo/China", Chinese, Traditional) : CN
 // CNNIC
 // https://www.cnnic.com.cn/AU/MediaC/Announcement/201609/t20160905_54470.htm
-中國
+xn--fiqz9s
 
 // xn--lgbbat1ad8j ("Algeria/Al Jazair", Arabic) : DZ
 الجزائر
@@ -6542,13 +6542,13 @@ yt
 // https://www.hkirc.hk
 // Submitted by registry <hk.tech@hkirc.hk>
 // https://www.hkirc.hk/content.jsp?id=30#!/34
-香港
-個人.香港
-公司.香港
-政府.香港
-教育.香港
-組織.香港
-網絡.香港
+xn--j6w193g
+xn--gmqw5a.xn--j6w193g
+xn--55qx5d.xn--j6w193g
+xn--mxtq1m.xn--j6w193g
+xn--wcvs22d.xn--j6w193g
+xn--uc0atv.xn--j6w193g
+xn--od0alg.xn--j6w193g
 
 // xn--2scrj9c ("Bharat", Kannada) : IN
 // India
@@ -6654,10 +6654,10 @@ yt
 
 // xn--mix891f ("Macao", Chinese, Traditional) : MO
 // MONIC / HNET Asia (Registry Operator for .mo)
-澳門
+xn--mix891f
 
 // xn--mix082f ("Macao", Chinese, Simplified) : MO
-澳门
+xn--mix082f
 
 // xn--mgbx4cd0ab ("Malaysia", Malay) : MY
 مليسيا
@@ -6713,7 +6713,7 @@ yt
 سودان
 
 // xn--yfro4i67o Singapore ("Singapore", Chinese) : SG
-新加坡
+xn--yfro4i67o
 
 // xn--clchc0ea0b2g2a9gcd ("Singapore", Tamil) : SG
 சிங்கப்பூர்
@@ -6740,14 +6740,14 @@ yt
 
 // xn--kpry57d ("Taiwan", Chinese, Traditional) : TW
 // https://twnic.tw/dnservice_catag.php
-台灣
+xn--kpry57d
 
 // xn--kprw13d ("Taiwan", Chinese, Simplified) : TW
 // http://www.twnic.net/english/dn/dn_07a.htm
-台湾
+xn--kprw13d
 
 // xn--nnx388a ("Taiwan", Chinese, variant) : TW
-臺灣
+xn--nnx388a
 
 // xn--j1amh ("ukr", Cyrillic) : UA
 укр
@@ -10824,23 +10824,23 @@ xin
 
 // xn--1qqw23a : Guangzhou YU Wei Information Technology Co., Ltd.
 // https://www.iana.org/domains/root/db/xn--1qqw23a.html
-佛山
+xn--1qqw23a
 
 // xn--30rr7y : Excellent First Limited
 // https://www.iana.org/domains/root/db/xn--30rr7y.html
-慈善
+xn--30rr7y
 
 // xn--3bst00m : Eagle Horizon Limited
 // https://www.iana.org/domains/root/db/xn--3bst00m.html
-集团
+xn--3bst00m
 
 // xn--3ds443g : Beijing TLD Registry Technology Limited
 // https://www.iana.org/domains/root/db/xn--3ds443g.html
-在线
+xn--3ds443g
 
 // xn--3pxu8k : VeriSign Sarl
 // https://www.iana.org/domains/root/db/xn--3pxu8k.html
-点看
+xn--3pxu8k
 
 // xn--42c2d9a : VeriSign Sarl
 // https://www.iana.org/domains/root/db/xn--42c2d9a.html
@@ -10848,7 +10848,7 @@ xin
 
 // xn--45q11c : Zodiac Gemini Ltd
 // https://www.iana.org/domains/root/db/xn--45q11c.html
-八卦
+xn--45q11c
 
 // xn--4gbrim : Helium TLDs Ltd
 // https://www.iana.org/domains/root/db/xn--4gbrim.html
@@ -10856,27 +10856,27 @@ xin
 
 // xn--55qw42g : China Organizational Name Administration Center
 // https://www.iana.org/domains/root/db/xn--55qw42g.html
-公益
+xn--55qw42g
 
 // xn--55qx5d : China Internet Network Information Center (CNNIC)
 // https://www.iana.org/domains/root/db/xn--55qx5d.html
-公司
+xn--55qx5d
 
 // xn--5su34j936bgsg : Shangri‐La International Hotel Management Limited
 // https://www.iana.org/domains/root/db/xn--5su34j936bgsg.html
-香格里拉
+xn--5su34j936bgsg
 
 // xn--5tzm5g : Jolly Host, LLC
 // https://www.iana.org/domains/root/db/xn--5tzm5g.html
-网站
+xn--5tzm5g
 
 // xn--6frz82g : Identity Digital Domains Limited
 // https://www.iana.org/domains/root/db/xn--6frz82g.html
-移动
+xn--6frz82g
 
 // xn--6qq986b3xl : Tycoon Treasure Limited
 // https://www.iana.org/domains/root/db/xn--6qq986b3xl.html
-我爱你
+xn--6qq986b3xl
 
 // xn--80adxhks : Foundation for Assistance for Internet Technologies and Infrastructure Development (FAITID)
 // https://www.iana.org/domains/root/db/xn--80adxhks.html
@@ -10896,7 +10896,7 @@ xin
 
 // xn--8y0a063a : China United Network Communications Corporation Limited
 // https://www.iana.org/domains/root/db/xn--8y0a063a.html
-联通
+xn--8y0a063a
 
 // xn--9dbq2a : VeriSign Sarl
 // https://www.iana.org/domains/root/db/xn--9dbq2a.html
@@ -10904,15 +10904,15 @@ xin
 
 // xn--9et52u : RISE VICTORY LIMITED
 // https://www.iana.org/domains/root/db/xn--9et52u.html
-时尚
+xn--9et52u
 
 // xn--9krt00a : Sina Corporation
 // https://www.iana.org/domains/root/db/xn--9krt00a.html
-微博
+xn--9krt00a
 
 // xn--b4w605ferd : Temasek Holdings (Private) Limited
 // https://www.iana.org/domains/root/db/xn--b4w605ferd.html
-淡马锡
+xn--b4w605ferd
 
 // xn--bck1b9a5dre4c : Amazon Registry Services, Inc.
 // https://www.iana.org/domains/root/db/xn--bck1b9a5dre4c.html
@@ -10940,15 +10940,15 @@ xin
 
 // xn--czr694b : Internet DotTrademark Organisation Limited
 // https://www.iana.org/domains/root/db/xn--czr694b.html
-商标
+xn--czr694b
 
 // xn--czrs0t : Binky Moon, LLC
 // https://www.iana.org/domains/root/db/xn--czrs0t.html
-商店
+xn--czrs0t
 
 // xn--czru2d : Zodiac Aquarius Limited
 // https://www.iana.org/domains/root/db/xn--czru2d.html
-商城
+xn--czru2d
 
 // xn--d1acj3b : The Foundation for Network Initiatives “The Smart Internet”
 // https://www.iana.org/domains/root/db/xn--d1acj3b.html
@@ -10960,11 +10960,11 @@ xin
 
 // xn--efvy88h : Guangzhou YU Wei Information Technology Co., Ltd.
 // https://www.iana.org/domains/root/db/xn--efvy88h.html
-新闻
+xn--efvy88h
 
 // xn--fct429k : Amazon Registry Services, Inc.
 // https://www.iana.org/domains/root/db/xn--fct429k.html
-家電
+xn--fct429k
 
 // xn--fhbei : VeriSign Sarl
 // https://www.iana.org/domains/root/db/xn--fhbei.html
@@ -10972,27 +10972,27 @@ xin
 
 // xn--fiq228c5hs : Beijing TLD Registry Technology Limited
 // https://www.iana.org/domains/root/db/xn--fiq228c5hs.html
-中文网
+xn--fiq228c5hs
 
 // xn--fiq64b : CITIC Group Corporation
 // https://www.iana.org/domains/root/db/xn--fiq64b.html
-中信
+xn--fiq64b
 
 // xn--fjq720a : Binky Moon, LLC
 // https://www.iana.org/domains/root/db/xn--fjq720a.html
-娱乐
+xn--fjq720a
 
 // xn--flw351e : Charleston Road Registry Inc.
 // https://www.iana.org/domains/root/db/xn--flw351e.html
-谷歌
+xn--flw351e
 
 // xn--fzys8d69uvgm : PCCW Enterprises Limited
 // https://www.iana.org/domains/root/db/xn--fzys8d69uvgm.html
-電訊盈科
+xn--fzys8d69uvgm
 
 // xn--g2xx48c : Nawang Heli(Xiamen) Network Service Co., LTD.
 // https://www.iana.org/domains/root/db/xn--g2xx48c.html
-购物
+xn--g2xx48c
 
 // xn--gckr3f0f : Amazon Registry Services, Inc.
 // https://www.iana.org/domains/root/db/xn--gckr3f0f.html
@@ -11000,11 +11000,11 @@ xin
 
 // xn--gk3at1e : Amazon Registry Services, Inc.
 // https://www.iana.org/domains/root/db/xn--gk3at1e.html
-通販
+xn--gk3at1e
 
 // xn--hxt814e : Zodiac Taurus Limited
 // https://www.iana.org/domains/root/db/xn--hxt814e.html
-网店
+xn--hxt814e
 
 // xn--i1b6b1a6a2e : Public Interest Registry
 // https://www.iana.org/domains/root/db/xn--i1b6b1a6a2e.html
@@ -11012,11 +11012,11 @@ xin
 
 // xn--imr513n : Internet DotTrademark Organisation Limited
 // https://www.iana.org/domains/root/db/xn--imr513n.html
-餐厅
+xn--imr513n
 
 // xn--io0a7i : China Internet Network Information Center (CNNIC)
 // https://www.iana.org/domains/root/db/xn--io0a7i.html
-网络
+xn--io0a7i
 
 // xn--j1aef : VeriSign Sarl
 // https://www.iana.org/domains/root/db/xn--j1aef.html
@@ -11024,19 +11024,19 @@ xin
 
 // xn--jlq480n2rg : Amazon Registry Services, Inc.
 // https://www.iana.org/domains/root/db/xn--jlq480n2rg.html
-亚马逊
+xn--jlq480n2rg
 
 // xn--jvr189m : Amazon Registry Services, Inc.
 // https://www.iana.org/domains/root/db/xn--jvr189m.html
-食品
+xn--jvr189m
 
 // xn--kcrx77d1x4a : Koninklijke Philips N.V.
 // https://www.iana.org/domains/root/db/xn--kcrx77d1x4a.html
-飞利浦
+xn--kcrx77d1x4a
 
 // xn--kput3i : Beijing RITT-Net Technology Development Co., Ltd
 // https://www.iana.org/domains/root/db/xn--kput3i.html
-手机
+xn--kput3i
 
 // xn--mgba3a3ejt : Aramco Services Company
 // https://www.iana.org/domains/root/db/xn--mgba3a3ejt.html
@@ -11068,7 +11068,7 @@ xin
 
 // xn--mxtq1m : Net-Chinese Co., Ltd.
 // https://www.iana.org/domains/root/db/xn--mxtq1m.html
-政府
+xn--mxtq1m
 
 // xn--ngbc5azd : International Domain Registry Pty. Ltd.
 // https://www.iana.org/domains/root/db/xn--ngbc5azd.html
@@ -11084,19 +11084,19 @@ xin
 
 // xn--nqv7f : Public Interest Registry
 // https://www.iana.org/domains/root/db/xn--nqv7f.html
-机构
+xn--nqv7f
 
 // xn--nqv7fs00ema : Public Interest Registry
 // https://www.iana.org/domains/root/db/xn--nqv7fs00ema.html
-组织机构
+xn--nqv7fs00ema
 
 // xn--nyqy26a : Stable Tone Limited
 // https://www.iana.org/domains/root/db/xn--nyqy26a.html
-健康
+xn--nyqy26a
 
 // xn--otu796d : Jiang Yu Liang Cai Technology Company Limited
 // https://www.iana.org/domains/root/db/xn--otu796d.html
-招聘
+xn--otu796d
 
 // xn--p1acf : Rusnames Limited
 // https://www.iana.org/domains/root/db/xn--p1acf.html
@@ -11104,7 +11104,7 @@ xin
 
 // xn--pssy2u : VeriSign Sarl
 // https://www.iana.org/domains/root/db/xn--pssy2u.html
-大拿
+xn--pssy2u
 
 // xn--q9jyb4c : Charleston Road Registry Inc.
 // https://www.iana.org/domains/root/db/xn--q9jyb4c.html
@@ -11116,15 +11116,15 @@ xin
 
 // xn--rhqv96g : Stable Tone Limited
 // https://www.iana.org/domains/root/db/xn--rhqv96g.html
-世界
+xn--rhqv96g
 
 // xn--rovu88b : Amazon Registry Services, Inc.
 // https://www.iana.org/domains/root/db/xn--rovu88b.html
-書籍
+xn--rovu88b
 
 // xn--ses554g : KNET Co., Ltd.
 // https://www.iana.org/domains/root/db/xn--ses554g.html
-网址
+xn--ses554g
 
 // xn--t60b56a : VeriSign Sarl
 // https://www.iana.org/domains/root/db/xn--t60b56a.html
@@ -11136,11 +11136,11 @@ xin
 
 // xn--tiq49xqyj : Pontificium Consilium de Comunicationibus Socialibus (PCCS) (Pontifical Council for Social Communication)
 // https://www.iana.org/domains/root/db/xn--tiq49xqyj.html
-天主教
+xn--tiq49xqyj
 
 // xn--unup4y : Binky Moon, LLC
 // https://www.iana.org/domains/root/db/xn--unup4y.html
-游戏
+xn--unup4y
 
 // xn--vermgensberater-ctb : Deutsche Vermögensberatung Aktiengesellschaft DVAG
 // https://www.iana.org/domains/root/db/xn--vermgensberater-ctb.html
@@ -11152,27 +11152,27 @@ vermögensberatung
 
 // xn--vhquv : Binky Moon, LLC
 // https://www.iana.org/domains/root/db/xn--vhquv.html
-企业
+xn--vhquv
 
 // xn--vuq861b : Beijing Tele-info Technology Co., Ltd.
 // https://www.iana.org/domains/root/db/xn--vuq861b.html
-信息
+xn--vuq861b
 
 // xn--w4r85el8fhu5dnra : Kerry Trading Co. Limited
 // https://www.iana.org/domains/root/db/xn--w4r85el8fhu5dnra.html
-嘉里大酒店
+xn--w4r85el8fhu5dnra
 
 // xn--w4rs40l : Kerry Trading Co. Limited
 // https://www.iana.org/domains/root/db/xn--w4rs40l.html
-嘉里
+xn--w4rs40l
 
 // xn--xhq521b : Guangzhou YU Wei Information Technology Co., Ltd.
 // https://www.iana.org/domains/root/db/xn--xhq521b.html
-广东
+xn--xhq521b
 
 // xn--zfr164b : China Organizational Name Administration Center
 // https://www.iana.org/domains/root/db/xn--zfr164b.html
-政务
+xn--zfr164b
 
 // xyz : XYZ.COM LLC
 // https://www.iana.org/domains/root/db/xyz.html

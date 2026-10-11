@@ -84,6 +84,9 @@ pub struct Backend {
     pub status: watch::Receiver<(u64, String)>,
     pub opened: Arc<Mutex<Vec<(u32, String)>>>,
     sent_datagrams: Arc<AtomicUsize>,
+    /// Peer actions on the emulated group-owned bidirectional stream 0, with
+    /// the time elapsed since that QUIC connection became ready.
+    pub stream_zero: Arc<Mutex<Vec<(Duration, String)>>>,
     state: Arc<Mutex<State>>,
     task: JoinHandle<()>,
 }
@@ -105,6 +108,15 @@ impl Drop for Backend {
 }
 impl Backend {
     pub fn start(ca: PathBuf) -> Self {
+        Self::start_with(ca, false)
+    }
+    /// `idle_stream_zero` emulates the documented NWConnectionGroup property
+    /// that the group object owns client bidirectional stream 0 and exposes
+    /// no I/O on it: stream 0 is allocated before any request, never written
+    /// and never finished, so the first production request uses stream 4.
+    pub fn start_with(ca: PathBuf, idle_stream_zero: bool) -> Self {
+        let stream_zero = Arc::new(Mutex::new(Vec::new()));
+        let zero_events = stream_zero.clone();
         let limit: Option<usize> = Some(0);
         let (tx, mut events) = mpsc::channel::<Event>(512);
         let bridge = Bridge::new(tx);
@@ -133,6 +145,7 @@ impl Backend {
                         let bridge = owner.clone();
                         let state = native.clone();
                         let ca = ca.clone();
+                        let zero_events = zero_events.clone();
                         workers.spawn(async move {
                             let result: io::Result<()> = async {
                                 let alpn = options
@@ -190,6 +203,35 @@ impl Backend {
                                         .map_err(io::Error::other)?
                                         .await
                                         .map_err(io::Error::other)?;
+                                    if idle_stream_zero {
+                                        let ready = std::time::Instant::now();
+                                        let (mut send, mut recv) =
+                                            connection.open_bi().await.map_err(io::Error::other)?;
+                                        assert_eq!(u64::from(send.id()), 0);
+                                        let events = zero_events.clone();
+                                        // Keep both halves alive: dropping them would
+                                        // send FIN or STOP_SENDING, which the group
+                                        // does not do.
+                                        tokio::spawn(async move {
+                                            let stopped = send.stopped().await;
+                                            events.lock().unwrap().push((
+                                                ready.elapsed(),
+                                                format!("peer STOP_SENDING result: {stopped:?}"),
+                                            ));
+                                            std::future::pending::<()>().await;
+                                            drop(send);
+                                        });
+                                        let events = zero_events.clone();
+                                        tokio::spawn(async move {
+                                            let received = recv.read_to_end(1024).await;
+                                            events.lock().unwrap().push((
+                                                ready.elapsed(),
+                                                format!("peer stream end result: {received:?}"),
+                                            ));
+                                            std::future::pending::<()>().await;
+                                            drop(recv);
+                                        });
+                                    }
                                     let maximum = connection.max_datagram_size().unwrap_or(0);
                                     let maximum = limit.map_or(maximum, |limit| maximum.min(limit));
                                     state
@@ -438,6 +480,7 @@ impl Backend {
             status,
             opened,
             sent_datagrams,
+            stream_zero,
             state,
             task,
         }

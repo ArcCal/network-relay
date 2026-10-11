@@ -19,6 +19,11 @@ use tokio::{
 };
 
 const WAIT: Duration = Duration::from_secs(10);
+// The readiness probe sends no application datagrams. Refresh it before the
+// Rust server's minimum supported UDP idle expiry (120 seconds), without
+// changing any independent SOCKS flow or generating Internet probe traffic.
+const PROBE_RENEW: Duration = Duration::from_secs(60);
+const STABLE_SESSION: Duration = Duration::from_secs(30);
 
 #[derive(Debug, thiserror::Error)]
 #[error(
@@ -294,7 +299,8 @@ impl Client {
         let mut keep = Keep::default();
         keep.lease = Some(lease);
         keep.tasks.push(tokio::spawn(async move {
-            let _ = driver.wait_idle().await;
+            let error = driver.wait_idle().await;
+            tracing::debug!("HTTP/3 connection driver ended: {error}");
         }));
         if udp {
             use h3::ConnectionState;
@@ -338,31 +344,83 @@ impl Client {
     /// admission. This is not an Internet reachability or continuous DNS test.
     pub async fn monitor(&self) -> Result<()> {
         let mut backoff = Duration::from_secs(1);
+        let mut ready_since = None;
         loop {
-            self.selected.send_replace(None);
-            let result: Result<()> = async {
-                let Opened { stream, transport } = self.open(&self.probe_target.ip().to_string(), self.probe_target.port(), true).await?;
-                let mode = match transport { "HTTP/3" => "h3", "HTTP/2" => "h2", _ => "http/1.1" };
-                self.selected.send_replace(Some(mode.into()));
-                self.bridge.emit(native::STATUS, 0, 0, 1, format!("Relay ready; {transport}; authenticated CONNECT-UDP")).await?;
-                tracing::info!("Relay ready; {transport}; authenticated CONNECT-UDP (destination reachability is not implied)");
-                let mut flow = UdpFlow::new(stream);
-                while flow.recv().await?.is_some() {}
-                anyhow::bail!("relay control flow ended")
-            }.await;
-            self.selected.send_replace(None);
-            if let Err(e) = result {
-                if terminal(&e) {
-                    return Err(e);
-                }
-                tracing::warn!("Relay session failed: {e:#}");
-                self.bridge
-                    .emit(native::STATUS, 0, 0, 2, format!("{e:#}"))
+            let result: Result<ProbeEnd> = async {
+                let Opened { stream, transport } = self
+                    .open(&self.probe_target.ip().to_string(), self.probe_target.port(), true)
                     .await?;
+                let mode = match transport {
+                    "HTTP/3" => "h3",
+                    "HTTP/2" => "h2",
+                    _ => "http/1.1",
+                };
+                self.selected.send_replace(Some(mode.into()));
+                if ready_since.is_none() {
+                    ready_since = Some(tokio::time::Instant::now());
+                    self.bridge
+                        .emit(native::STATUS, 0, 0, 1, format!("Relay ready; {transport}; authenticated CONNECT-UDP"))
+                        .await?;
+                    tracing::info!("Relay ready; {transport}; authenticated CONNECT-UDP (destination reachability is not implied)");
+                } else {
+                    tracing::debug!("Readiness probe refreshed; {transport}; existing SOCKS flows continue");
+                }
+                let mut flow = UdpFlow::new(stream);
+                watch_probe(&mut flow).await
+            }
+            .await;
+            match result {
+                Ok(end) => {
+                    // A planned renewal or clean peer FIN only retires the
+                    // admission probe. Re-open it without a failure status.
+                    tracing::debug!(?end, "Refreshing relay readiness probe");
+                    if end == ProbeEnd::PeerFinished {
+                        // Bound retry traffic if a peer repeatedly admits a
+                        // request and immediately finishes it.
+                        tokio::time::sleep(Duration::from_secs(1)).await;
+                    }
+                    continue;
+                }
+                Err(e) => {
+                    self.selected.send_replace(None);
+                    if terminal(&e) {
+                        return Err(e);
+                    }
+                    if ready_since
+                        .take()
+                        .is_some_and(|since| since.elapsed() >= STABLE_SESSION)
+                    {
+                        backoff = Duration::from_secs(1);
+                    }
+                    tracing::warn!("Relay session failed: {e:#}");
+                    self.bridge
+                        .emit(native::STATUS, 0, 0, 2, format!("{e:#}"))
+                        .await?;
+                }
             }
             tracing::info!("Reconnecting in {:.1}s", backoff.as_secs_f64());
             tokio::time::sleep(backoff).await;
             backoff = (backoff * 2).min(Duration::from_secs(30));
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum ProbeEnd {
+    RenewalDue,
+    PeerFinished,
+}
+async fn watch_probe(flow: &mut UdpFlow) -> Result<ProbeEnd> {
+    let renewal = tokio::time::sleep(PROBE_RENEW);
+    tokio::pin!(renewal);
+    loop {
+        tokio::select! {
+            result = flow.recv() => {
+                if result?.is_none() {
+                    return Ok(ProbeEnd::PeerFinished);
+                }
+            }
+            _ = &mut renewal => return Ok(ProbeEnd::RenewalDue),
         }
     }
 }
@@ -434,5 +492,60 @@ impl UdpFlow {
             }
             self.decoder.push(&bytes[..count]);
         }
+    }
+}
+
+#[cfg(test)]
+mod probe_tests {
+    use super::*;
+
+    #[tokio::test(start_paused = true)]
+    async fn idle_probe_renews_without_sending_application_datagrams() {
+        let (stream, mut peer) = tokio::io::duplex(128);
+        let mut flow = UdpFlow::new(Stream::new(stream, Keep::default()));
+        let started = tokio::time::Instant::now();
+        assert_eq!(watch_probe(&mut flow).await.unwrap(), ProbeEnd::RenewalDue);
+        assert_eq!(started.elapsed(), PROBE_RENEW);
+        assert!(
+            tokio::time::timeout(Duration::from_secs(1), peer.read_u8())
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn incoming_capsules_do_not_extend_the_probe_renewal_deadline() {
+        let (stream, mut peer) = tokio::io::duplex(128);
+        let waiting = tokio::spawn(async move {
+            let mut flow = UdpFlow::new(Stream::new(stream, Keep::default()));
+            watch_probe(&mut flow).await
+        });
+        tokio::task::yield_now().await;
+        tokio::time::advance(PROBE_RENEW - Duration::from_secs(1)).await;
+        peer.write_all(&[0, 2, 0, b'a']).await.unwrap();
+        tokio::task::yield_now().await;
+        assert!(!waiting.is_finished());
+        tokio::time::advance(Duration::from_secs(1)).await;
+        assert_eq!(waiting.await.unwrap().unwrap(), ProbeEnd::RenewalDue);
+    }
+
+    #[tokio::test]
+    async fn clean_peer_fin_is_a_probe_refresh() {
+        let (stream, mut peer) = tokio::io::duplex(128);
+        let mut flow = UdpFlow::new(Stream::new(stream, Keep::default()));
+        peer.shutdown().await.unwrap();
+        assert_eq!(
+            watch_probe(&mut flow).await.unwrap(),
+            ProbeEnd::PeerFinished
+        );
+    }
+
+    #[tokio::test]
+    async fn truncated_capsule_at_fin_remains_a_failure() {
+        let (stream, mut peer) = tokio::io::duplex(128);
+        let mut flow = UdpFlow::new(Stream::new(stream, Keep::default()));
+        peer.write_all(&[0, 2, 0]).await.unwrap();
+        peer.shutdown().await.unwrap();
+        assert!(watch_probe(&mut flow).await.is_err());
     }
 }

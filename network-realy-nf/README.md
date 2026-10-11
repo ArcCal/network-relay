@@ -11,9 +11,11 @@ required to build it.
 **Development status:** the protocol core is implemented. Production socket,
 TLS and QUIC operations are supplied by Apple Network.framework. Linux core
 checks are available; the user has reported a Mac build/launch and successful
-SOCKS TCP and UDP forwarding with Rust network-relay. The current outer transport
-was not captured alongside those probes. The complete native matrix remains
-incomplete, and HTTP/3 remains experimental.
+forced HTTP/2 SOCKS TCP and UDP forwarding with Rust network-relay. Native HTTP/3
+reaches admission but repeatedly fails with EINVAL about ten seconds later.
+Stream-error propagation and idle-probe lifecycle defects are now fixed with
+portable tests; the fixes still need Mac validation. The complete native matrix
+remains incomplete, and HTTP/3 remains experimental.
 See [implementation status](docs/STATUS.md) before treating this as a release.
 “Perfect compatibility” is an acceptance goal, not a result we have established.
 

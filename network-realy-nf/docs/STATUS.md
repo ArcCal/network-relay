@@ -11,9 +11,9 @@ proof that this new binary has failed or succeeded.
   authorization and DATAGRAM Capsule parsing/encoding.
 - SOCKS5 CONNECT and UDP ASSOCIATE source enforcement and bounded destination
   flow management. Server-side DNS forwarding; no client IP-stack dependency.
-- 30 protocol/parser unit tests, 21 native-boundary tests and 5 FFI lifecycle
+- 37 unit tests, 21 native-boundary tests and 5 FFI lifecycle
   tests passed. They cover malformed Capsule handling, queue bounds, EOF/error
-  propagation, half-close, cancellation isolation, terminal security failures
+  propagation, opposite-pump failure wakeups, probe renewal, half-close, cancellation isolation, terminal security failures
   and native initialization/exit while routine core logs are suppressed.
 - `cargo check` and project-only Clippy with warnings denied passed on Linux.
   This establishes Rust compilation, not Swift
@@ -35,11 +35,13 @@ troubleshooting on Rust network-relay, a SOCKS HTTPS request returned Google's
 200 response and the UDP observer received a matching DNS response with eight
 answers. [Selected evidence and coverage](evidence/native-mac-20261011.md).
 
-These are positive native application forwarding results, reported by the user.
-The current run identity and outer transport were not included with the successful
-probes; curl's `HTTP/2 200` identifies Google's response protocol, not the outer
-relay transport. Complete build/test/signature output and native results for
-caddy-network-relay and HTTP/3 are still missing.
+The later cumulative trace now attributes these positive native results to
+forced HTTP/2 run `810BA952`. Native H3 runs `5FBDACF5` and `30625FF0` reach
+admission but repeatedly fail with group EINVAL approximately ten seconds later.
+Run `E5EF8AE9` shows a different H2 incident: clean readiness-probe EOF after
+300.001568 seconds. [Current trace and provenance](evidence/native-quic-20261011.json).
+Complete build/test/signature output, native Caddy results and sustained native
+H3 forwarding are still missing.
 
 ## Implemented, requiring further Mac verification
 
@@ -60,22 +62,41 @@ No macOS SDK is available in this environment. These Swift sources and Mac
 commands have **not** been compiled or executed here. The user-reported Mac
 results above are separate from the checks executed in this environment.
 
+## Confirmed defects repaired in source
+
+- HTTP/2/3 stream pump failure could leave opposite pending I/O asleep. Both
+  directions now wake, preserve the first cause and deliver buffered response
+  bytes before a read failure. Three regression tests pass.
+- The idle readiness probe's normal EOF was reported as a relay failure. The
+  source now renews admission every 60 seconds and refreshes clean FIN without
+  warning/failure status, preserving independent SOCKS flows and selected
+  transport. Four regression tests pass; native/malformed errors remain failures.
+- Retry delay no longer stays at 30 seconds after a long admitted session;
+  a readiness interval of at least 30 seconds resets it to one second. Short H3
+  flaps retain exponential backoff. H3 driver termination is logged at DEBUG.
+
+These are portable source repairs. No Mac retest establishes that the new binary
+runs them correctly or that they stop the unrelated native H3 EINVAL.
+
 ## Confirmed issues and limitations
 
-- **Original-client HTTP/3 fault remains unresolved.** The user confirmed Masque
-  NF and the removed Masque Swift fail with native HTTP/3 while HTTP/2 works on
-  the same Rust masque-server. This is a CONNECT-IP observation; the new relay
-  application has not undergone that native test. [Research](QUIC-RESEARCH.md).
-- The latest original NF log, 08:50–08:53 UTC, records two natural H3 response
-  timeouts in `1AC94CBF`; HTTP/2 immediately works afterwards. A separate
-  `caddy-masuqe` profile times out before TLS readiness even over HTTP/2. Its
-  actual endpoint is absent, so it is not evidence of the same QUIC mechanism.
+- **This new client's native H3 is unstable.** Several forced H3 connections are
+  admitted and then fail with native group EINVAL about ten seconds later.
+  Business-flow groups also fail. The trigger is not proven and is not repaired.
+  [Research and handoff](QUIC-RESEARCH.md).
+- H1 logs include a control connection reset and individual flow timeouts; H2
+  logs include individual flow resets. Their causes are unconfirmed. Do not
+  declare all TCP transports stable for long sessions from the one positive H2
+  forwarding test, or treat every per-flow reset as a global relay failure.
+- Historical Masque NF/removed Swift failures are separate CONNECT-IP evidence;
+  the old response timeout must not be substituted for this admitted-H3 fault.
 - The complete Apple-to-both-server acceptance matrix and build/test/signature
   artifacts are missing. Therefore “perfect interoperability” has not been delivered.
 - One outer connection per flow can exhaust restrictive server connection limits
   and adds handshake overhead. Shared HTTP/2/3 connections are not implemented.
-- The idle UDP readiness probe can be rejected by destination policy or closed by
-  server idle timeout. It does not verify end-to-end access and sends no heartbeat.
+- Readiness verifies authenticated CONNECT-UDP admission only. It sends no target
+  traffic or heartbeat, can be denied by destination policy, and cannot establish
+  Internet reachability or continuously verify every independent SOCKS flow.
 - Custom UDP templates are accepted only by core configuration, not by the GUI.
   Mutual TLS/client-certificate identity, BIND, SOCKS UDP fragments, Intel builds
   and pre-macOS-27 support are not implemented.
@@ -86,8 +107,10 @@ results above are separate from the checks executed in this environment.
 
 ## Possible issues, not established root causes
 
-- Old NWConnectionGroup stream ownership, child options and initial implicit
-  stream allocation may still prevent a server accepting the intended H3 request.
+- Initial bidi ownership and an implicit idle SID 0 may interact with the Rust
+  server's ten-second header rejection and Apple's group lifecycle. Actual request
+  SID 4 is recorded and legal, but idle 0, a server reset and native error promotion
+  have not been traced. The deployed server build is not pinned.
 - Stream-only extraction may avoid DATAGRAM lifecycle coupling, but no Mac A/B
   has shown that it fixes the earlier failure. Disabling GREASE is also unproven.
 - Native UDP overflow, address rebinding, network migration, long idle sessions
@@ -98,10 +121,8 @@ results above are separate from the checks executed in this environment.
 
 ## Deferred work and QUIC stopping rule
 
-Complete the recorded native HTTP/2 TCP/UDP rows against both servers, including
-the application run identity and actual outer transport. Try one fixed-configuration
-H3 run with actual SIDs and stage logs. If
-H3 still fails, retain its evidence and mark the transport experimental; continue
-using forced HTTP/2. Do not spend further time rewriting the QUIC backend merely
-to complete this initial delivery. A future repairer can choose a bounded A/B
-from the research report without changing either server in this task.
+The native H3 stopping rule has been reached. Preserve the failing runs and use
+forced HTTP/2; do not spend this delivery replacing the QUIC backend. A future
+repairer can select a bounded A/B from the report without changing either server
+in this task. Confirm the new source fixes on a Mac and complete native H2 TCP/UDP
+against Caddy, then the remaining UI, security, concurrency and long-session gates.

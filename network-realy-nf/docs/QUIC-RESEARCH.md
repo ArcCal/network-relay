@@ -4,17 +4,111 @@ Date: 2026-10-11. This report separates observed failures, supported mechanisms,
 unproven hypotheses and this new client's implementation choices. It does not
 assert that Network.framework has an unavoidable defect.
 
-## New relay application observation
+## Current conclusion
 
-The user has now built and launched Network Realy NF source
-`666b795c881b44eeaade9891edfae04ffcbd34a6` on a Mac and reported successful SOCKS
-TCP forwarding to Google and UDP DNS forwarding through Rust network-relay.
-Earlier HTTP/2 404 responses coincided with explicit server authentication
-failures; those failures do not identify a native transport defect. The successful
-terminal probes lack a current application run/transport line, and curl's
-`HTTP/2 200` describes Google's response protocol. These results establish a
-reported native TCP/UDP forwarding success, but no new HTTP/3 result or controlled
-QUIC diagnosis. [Evidence and remaining scope](evidence/native-mac-20261011.md).
+**Network Realy NF's forced native HTTP/3 is confirmed unstable in the supplied
+Mac run. Its root cause is unresolved.** Authentication and the intended H3
+request succeed; native QUIC groups then repeatedly fail with POSIX 22 (EINVAL),
+approximately ten seconds after readiness. This differs from the older Masque
+NF response timeout. Neither a Linux Quinn test nor HTTP/2 success repairs or
+validates Apple's QUIC path. Do not describe this as an unavoidable framework
+defect, or claim that the changes below fix the native EINVAL.
+
+Two separately established client defects have been repaired in the current
+source: HTTP stream pump errors did not wake the opposite pending I/O operation;
+and normal expiry of an idle readiness probe was treated as a relay failure.
+The fixes have portable regression coverage, but no Mac retest yet.
+
+## New relay application observations
+
+The supplied cumulative log identifies app/core 0.1.0, built at
+2026-10-11T09:37:18Z from source
+`666b795c881b44eeaade9891edfae04ffcbd34a6`. The user earlier reported macOS
+27.0.1, build 26A434. The endpoint is `relay.kitendesecschool.com`, with server
+IP override `35.212.234.101:443`, using Rust network-relay. The deployed server's
+exact source revision, executable hash and effective timeout configuration are
+not recorded. The later source fixes were not present in this Mac binary.
+
+Selected lines and original-upload hashes are retained in
+[native-quic-20261011.log](evidence/native-quic-20261011.log) and
+[native-quic-20261011.json](evidence/native-quic-20261011.json). The three uploads
+are cumulative observations, not three independent controlled experiments.
+Credentials, password hashes, Google cookies and application payload are omitted.
+
+| Observation | Evidence | Interpretation |
+| --- | --- | --- |
+| Forced native HTTP/2 TCP and UDP work | Run `810BA952`, readiness 09:55:43.635736; Google 200 and DNS UDP response at 09:56:09 | User-reported positive H2 forwarding against one Rust deployment; the app trace now supplies the outer transport attribution |
+| Native H3 reaches admission, then fails | Run `5FBDACF5`, ready 09:57:22.411888; native EINVAL 09:57:32.387843 | 9.975955 seconds after admission; this is not a missing initial HTTP/3 response |
+| New H3 attempts repeat the same timing | Run `30625FF0`, five ready/failure intervals: 10.004961, 10.079869, 10.000147, 9.998890 and 10.004688 seconds | Persistent native failure while the forced transport is unchanged; retries back off 1, 2, 4, 8 and 16 seconds |
+| Real request SID is 4 | Resource 162, parent 148, SID 4, requested bidi; resource 170, parent 151, also SID 4 | These are actual metadata IDs, unlike the old bridge-handle-only logs. SID 4 is legal; no trace of SID 0 is supplied |
+| Native parent and business flow fail too | Parents 148/151 fail at 09:58:01/09:58:02; a SOCKS CONNECT had been admitted at 09:57:52.886760 | More than a readiness-probe warning; independent H3 flow groups also fail. Admission is not proof of a completed HTTPS transfer |
+| An H2 probe ends after five minutes | Run `E5EF8AE9`, ready 10:02:25.883977; clean control EOF 10:07:25.885545 | 300.001568 seconds; consistent with the server's default UDP flow idle expiry |
+| Other TCP events are separate | H1 run `39938F96` has a control connection reset; H2 logs include individual SOCKS resource resets/timeouts | Do not combine per-flow closure, clean probe expiry and H3 group EINVAL into one root cause |
+
+The positive TCP/UDP probes ran on the user's Mac, not here. curl's `HTTP/2 200`
+alone identifies Google's response protocol; the newly supplied application run
+is what attributes the outer H2 transport. There is still no sustained native
+H3 TCP/UDP acceptance result or native Caddy matrix. Earlier H2 404s coincided
+with explicit server authentication failures and are a separate resolved
+configuration incident. [Mac forwarding evidence](evidence/native-mac-20261011.md).
+
+## Repairs made after reviewing these logs
+
+1. **Wake pending I/O on either HTTP pump's error.** `Core/src/stream.rs` used to
+   store an error string without waking a reader waiting on the opposite pump.
+   A writer failure could leave an idle reader pending; a read failure could
+   leave a backpressured writer pending. A shared failure state now registers
+   and wakes both directions, preserves the first error, returns buffered bytes
+   before a read error, and reports the error through flush/shutdown. Three
+   regression tests cover these cases. Normal half-close remains independent.
+2. **Refresh the idle admission probe rather than report normal expiry as a
+   broken relay.** The probe sends no UDP payload and the source server defaults
+   to a 300-second UDP idle expiry, with a supported minimum of 120 seconds.
+   The client now replaces its probe every 60 seconds, without migrating or
+   stopping independent SOCKS flows. Clean peer FIN also refreshes the probe;
+   malformed Capsules and native I/O errors remain failures. Four regression
+   tests cover idle renewal without traffic, a fixed renewal deadline despite
+   incoming Capsules, clean FIN and truncated-Capsule rejection. This is probe
+   lifecycle handling, not an Internet heartbeat or a native QUIC repair.
+3. **Keep useful failure diagnostics.** HTTP/3 driver termination is now logged
+   at DEBUG. Retry delay resets after at least 30 seconds of admitted readiness;
+   a ten-second H3 flap still receives exponential backoff. Native stream options,
+   certificate checks and transport selection have not been relaxed.
+
+All 63 ordinary Rust tests pass (37 unit, 21 boundary, five ABI), project Clippy
+passes, and both real Rust/Caddy matrices pass H1/H2/H3 through the test-only
+rustls/Quinn emulator. The matrices include 2 MiB TCP half-close and UDP payloads
+through 65,000 bytes. A full cloud filesystem briefly blocked recompilation;
+removing generated cache restored the checks, with no server or source change.
+These results verify the portable repairs and preserve protocol compatibility;
+they cannot establish a native EINVAL fix or a Swift build result.
+
+## Leading explanation to investigate, not a proven cause
+
+Opening client bidi SID 4 implicitly makes lower same-type SID 0 exist under
+RFC 9000. A plausible sequence is: the group owns an unused initial bidi stream;
+the app's extracted request uses SID 4 and succeeds; a server header deadline
+then rejects idle SID 0; the legacy Apple group exposes that rejection as group
+EINVAL. This explains both successful admission and a repeatable ten-second
+failure, but its last steps have not been observed.
+
+The inspected Rust network-relay source accepts request resolvers concurrently
+in `src/server/over_h3.rs`. It applies `HEADER_TIMEOUT = 10 seconds` from
+`src/server/mod.rs`. `vendor/h3/src/server/request.rs::resolve_request_before`
+rejects late HEADERS with STOP_SENDING and RESET_STREAM carrying
+`H3_REQUEST_REJECTED`; it does not intentionally close the whole connection.
+Thus the older **serial parsing blocks request 4 behind idle 0** explanation
+cannot simply be reused for this successful-admission case. The actual deployed
+build may differ from the inspected source. No server trace identifies idle SID
+0, its rejection code or the first event preceding the Apple group failure.
+
+The client configures QUIC `idleTimeout = 60_000`. Apple's documentation defines
+this value in **milliseconds**, so it is 60 seconds, not 60,000 seconds; stream
+metadata sets a connection keepalive interval of 30 seconds. The observed ten-
+second failures therefore do not match the configured native idle timeout.
+Increasing this timeout or adding keepalives is not an evidenced fix.
+The separate clean H2 EOF at 300 seconds fits application UDP idle policy;
+transport keepalive does not send a UDP Capsule to reset that policy timer.
 
 ## Confirmed historical observations
 
@@ -84,8 +178,10 @@ that implementation.
 5. This independent client omits native DATAGRAM extraction and disables H3
    DATAGRAM advertisement. It uses standard Capsules and adds actual stream-ID
    logs. Its initial H3 layout also disables outbound GREASE. These changes are
-   **not** a one-variable diagnosis of the historical fault and have no native
-   success result yet.
+   **not** a one-variable diagnosis of the historical fault. The new native logs
+   show successful H3 admission but subsequent EINVAL; these choices have not
+   delivered stable native H3. Client-side DATAGRAM extraction is therefore not
+   required for the new failure to occur.
 
 The initial relay-core interoperability runner tests both real relay binaries
 through an emulator; see [STATUS.md](STATUS.md) and recorded results. It cannot
@@ -95,11 +191,12 @@ answer whether Apple's old QUIC API works on this Mac.
 
 | Candidate | Supporting evidence | Limits / counterevidence |
 | --- | --- | --- |
-| Implicit unused lower bidi stream plus serial request-head parsing | Controlled idle-stream test; Quinn #1742 reports data on stream 4 while 0 is idle | User SIDs unknown; stream 4 is legal; historical Swift already reserved a request child but still failed |
-| Fresh child QUIC options associate incorrectly with the parent | VpnHood and fuziki source comments describe fresh-options/ENETDOWN behavior | Third-party reports; this NF case already receives peer control bytes and completes local HEADERS write |
-| DATAGRAM extraction interferes with stream dispatch or lifecycle | DitchOoM #173 describes streams-only workaround; old clients retain a DATAGRAM receive loop even after selecting Capsules | NF receives peer control/QPACK; another DitchOoM ENETDOWN was later attributed to its own leaked lifecycle |
+| Implicit idle bidi 0 is rejected, triggering native group failure | New request SID 4 is real; failures repeat near ten seconds; inspected server has a ten-second late-header rejection | Idle 0 and the rejection have not been traced; deployed server build unknown; native error promotion is unproven |
+| Serial request-head parsing blocks a higher stream | Controlled historical masque-server idle-stream test; Quinn #1742 | Explains a sufficient old timeout condition, not the new admitted request; current network-relay parses concurrently |
+| Fresh child QUIC options associate incorrectly with the parent | VpnHood and fuziki source comments describe fresh-options/ENETDOWN behavior | Third-party reports; the new client completes admission before EINVAL; requires a controlled native options A/B |
+| DATAGRAM extraction interferes with stream dispatch or lifecycle | DitchOoM #173; old clients retain a DATAGRAM receive loop | New failing client has no DATAGRAM extraction, so it is not necessary for this fault; another DitchOoM ENETDOWN was its own lifecycle leak |
 | Metadata/READY/cancellation delivery or wrong stream direction | Old NF had diagnostic and defensive gaps; no actual-SID log | No captured evidence identifying a bridge race, wrong request type or callback deadlock as this root cause |
-| OS-specific old API behavior | Both failing clients share native transport; HTTP/2 differs | Same symptoms can arise from application sequencing or server parsing; no official confirmation for 27.0.1/26A434 |
+| OS-specific old API behavior | Older clients and this new binary share the old native QUIC API; H2 is usable | Framework boundary is implicated, but sequencing, child ownership and server rejection may interact; no official confirmation for 27.0.1/26A434 |
 
 POSIX 50 `.waiting` followed by `.ready` and peer bytes is not proof of persistent
 network failure. Apple documents waiting errors as nonfatal. An available QUIC
@@ -125,6 +222,10 @@ successful negotiation or a usable tunnel.
   [inboundStreams](https://developer.apple.com/documentation/network/networkconnection/inboundstreams(_:))
   and [actual streamID](https://developer.apple.com/documentation/network/quic/stream/streamid).
   The old extract contract does not promise the first extracted stream is SID 0.
+- Apple's [QUIC idle timeout](https://developer.apple.com/documentation/network/nwprotocolquic/options/idletimeout)
+  specifies milliseconds; [metadata keepalive](https://developer.apple.com/documentation/network/nwprotocolquic/metadata/keepalive)
+  describes connection keepalive behavior. Neither guarantees that resetting
+  an unused child stream leaves an old group usable on the reported OS.
 - [Apple swift-nio-quic 0.4.1 initial bidi ownership](https://github.com/apple/swift-nio-quic/blob/0.4.1/Sources/NIOQUIC/SwiftNetwork/SwiftNetworkQUICConnection.swift#L409)
   and [first-bidi reuse](https://github.com/apple/swift-nio-quic/blob/0.4.1/Sources/NIOQUIC/SwiftNetwork/SwiftNetworkQUICConnection.swift#L558).
   This is a useful ownership pattern, not the source of the installed old API.
@@ -140,22 +241,30 @@ successful negotiation or a usable tunnel.
   are discovery catalogs. Alamofire, Moya and URLSession wrappers do not validate
   raw QUIC stream/DATAGRAM combinations or replace a CONNECT-UDP tunnel backend.
 
-The cited observations were inherited from the completed Masque NF investigation;
-this task has not rerun those public projects or asserted fresh upstream results.
+The project observations were inherited from the completed Masque NF study;
+those projects have not been rerun on the user's OS. Apple's extraction,
+idle-timeout and keepalive documentation was checked again for this update.
 
 ## Limited next steps
 
-First establish native HTTP/2 TCP and UDP against both relay servers. Then perform
-one forced H3 test with fixed endpoint/IP/SNI/credentials and no settings changes.
-Keep ordinary deadlines and collect actual SID, parent resource, stream purpose,
-requested direction, HEADERS-send completion, response receive and first error.
-Pair it with the server's accepted SID/header-parse trace if available. Do not log
+The stopping rule has been reached: preserve the confirmed H3 failure, keep forced
+HTTP/2 as the operational baseline and hand off QUIC repair. Do not repeat native
+tests indefinitely or spend this delivery rewriting the transport. Native Caddy
+H2, long-session behavior and the new fixes still require Mac acceptance.
+
+A future repairer can make one bounded native reproduction with fixed settings,
+no unrelated SOCKS traffic, and synchronized client/server traces. First capture
+accepted SIDs 0/4, late-header rejection or connection-close code, and which native
+callback first reports EINVAL. Record the deployed server revision and effective
+timeout configuration before comparing them with this report. Do not log
 Authorization, full request headers, application payload or certificate contents.
 
-If still failing, stop initial QUIC development and preserve the failing run.
-Potential future A/B tests, one change each: child-options inheritance; initial
-request-stream ownership; old group versus modern system API; bounded server
-request parsing. Changing either server is outside this application's task scope.
+Then test one variable: first-bidi ownership/reuse; child-options inheritance
+while preserving uni/bidi direction; or old group versus modern system QUIC API.
+An isolated Quinn experiment can verify that rejecting idle 0 leaves request 4
+usable on the same Rust build, but cannot prove Apple's reaction. Raising or
+disabling a header deadline would only be a diagnostic experiment, not a security-
+preserving repair. Changing either server is outside this application's task scope.
 A replacement QUIC backend is a later design decision because it may violate the
 Network.framework ownership goal. Longer timeouts, relaxed trust and successful
 HTTP/2 fallback must not be used as evidence of forced-H3 success.

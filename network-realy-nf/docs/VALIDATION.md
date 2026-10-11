@@ -10,7 +10,7 @@ binary SHA-256 in [interop-results.json](evidence/interop-results.json).
 
 | Check | Result | Coverage boundary |
 | --- | --- | --- |
-| Rust parser/protocol unit tests | 30 passed | In-memory protocol/parser behavior |
+| Rust unit tests | 37 passed | 30 existing protocol/parser checks; three stream-error and four probe-lifecycle regressions |
 | Native bridge tests | 21 passed | Rust side and synthetic native events |
 | C ABI lifecycle tests | 5 passed | Exported ABI, cancellation, security error policy and quiet log levels |
 | Project Clippy, warnings denied | Passed | `--no-deps --lib`; vendored upstream lint debt excluded |
@@ -62,12 +62,17 @@ TCP and UDP probes following account troubleshooting on Rust network-relay.
 Google returned `HTTP/2 200`; the UDP helper reported eight DNS answers in a
 160-byte response. These ran on the user's Mac, unlike the Linux emulator matrix.
 
-The successful probes lack the corresponding app run/source identity and `Relay
-ready` transport line. curl's status line identifies the destination response
-protocol; it cannot establish the outer relay protocol. Thus native forwarding
-has a reported positive result, while a fully attributed forced HTTP/2 row,
-caddy-network-relay, HTTP/3 and the complete native acceptance matrix remain
-pending. No full Mac build/test/smoke/signature artifact was supplied.
+The later cumulative log supplies forced H2 run `810BA952`, ready at 09:55:43.635736
+with the UDP relay at 09:56:09. This now attributes the positive terminal probes
+to outer HTTP/2; curl's destination response alone would not do so.
+Forced native H3 runs `5FBDACF5` and `30625FF0` reach admission, then fail with
+native EINVAL approximately ten seconds later: **FAIL for session stability**.
+An H2 control probe ends cleanly after 300.001568 seconds, consistent with idle
+expiry; its lifecycle handling is now fixed in source. These new portable fixes
+have not run on the Mac. [Trace and hashes](evidence/native-quic-20261011.json).
+
+Native Caddy coverage, sustained H3 forwarding and the complete native acceptance
+matrix remain incomplete. No full Mac build/test/smoke/signature artifact was supplied.
 
 ## Remaining Mac gates
 

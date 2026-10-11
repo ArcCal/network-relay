@@ -5,7 +5,10 @@ new checkout. It does not build Masque NF or modify either relay server. The
 macOS build and native interoperability cannot run in the Linux cloud environment.
 The user has since reported a Mac build/launch and successful SOCKS TCP/UDP probes;
 [the recorded evidence](evidence/native-mac-20261011.md) distinguishes these from
-the still-incomplete native matrix. A compiler failure is a failed gate.
+the still-incomplete native matrix. The supplied native H3 run repeatedly fails
+after admission; the [handoff report](QUIC-RESEARCH.md) records it. The new portable
+stream-error and readiness-probe fixes have not been retested on a Mac.
+A compiler failure is a failed gate.
 
 ## Prerequisites
 
@@ -195,6 +198,12 @@ curl alone does not test UDP. These small observations are not the full
 compatibility acceptance matrix.
 
 ## One bounded HTTP/3 observation
+
+The supplied 0.1.0 run has already met this stopping rule: it reached admission
+and repeatedly failed with native EINVAL approximately ten seconds later. Keep
+HTTP/2 as the working baseline. The procedure below is for a deliberate repair
+retest, not a request to repeat the same failing run. Admission alone is not a
+PASS; sustained TCP and UDP traffic and a stable session are required.
 
 Keep the same domain, IP, certificate verification and account. Set
 **Everything**, select forced **HTTP/3 (QUIC, UDP)** and allow one attempt to

@@ -2,7 +2,7 @@
 """Run the production relay protocol core against both real server binaries.
 Transport is emulated with test-only rustls/Quinn; this is not a macOS result.
 """
-import argparse, json, os, pathlib, secrets, socket, subprocess, tempfile, threading, time
+import argparse, datetime, hashlib, json, os, pathlib, secrets, socket, subprocess, tempfile, threading, time
 
 
 def run(*command, **kw):
@@ -16,7 +16,20 @@ def main():
     parser.add_argument('--results',type=pathlib.Path,default=pathlib.Path('docs/evidence/interop-results.json'))
     args=parser.parse_args()
     root=pathlib.Path(__file__).resolve().parents[1]
-    result={'scope':'production protocol core over test-only rustls/Quinn native bridge emulator','native_network_framework':'NOT RUN','servers':[]}
+    def tree_digest(directory):
+        digest=hashlib.sha256()
+        files=sorted(directory.rglob('*.rs'))
+        for path in files:
+            digest.update(path.relative_to(directory).as_posix().encode()+b'\0')
+            digest.update(hashlib.sha256(path.read_bytes()).digest())
+        return {'sha256':digest.hexdigest(),'rust_files':len(files),'method':'sorted relative path + NUL + file SHA-256 bytes'}
+    result={'scope':'production protocol core over test-only rustls/Quinn native bridge emulator',
+            'executed_at_utc':datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            'client_core_source':tree_digest(root/'Core/src'),
+            'client_h3_source':tree_digest(root/'Core/vendor/h3/src'),
+            'client_manifest_sha256':hashlib.sha256((root/'Core/Cargo.toml').read_bytes()).hexdigest(),
+            'client_lockfile_sha256':hashlib.sha256((root/'Core/Cargo.lock').read_bytes()).hexdigest(),
+            'native_network_framework':'NOT RUN','servers':[]}
     with tempfile.TemporaryDirectory(prefix='realy-nf-interop-') as tmp:
         directory=pathlib.Path(tmp)
         def openssl(*arguments): run('openssl',*arguments,cwd=directory,timeout=15)

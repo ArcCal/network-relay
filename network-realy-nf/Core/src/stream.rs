@@ -5,7 +5,7 @@ use std::{
     io,
     pin::Pin,
     sync::{Arc, Mutex},
-    task::{Context, Poll},
+    task::{Context, Poll, Waker},
 };
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, DuplexStream, ReadBuf};
 
@@ -26,9 +26,52 @@ impl Drop for Keep {
     }
 }
 
+#[derive(Default)]
+struct FailureState {
+    message: Option<String>,
+    reader: Option<Waker>,
+    writer: Option<Waker>,
+}
+#[derive(Default)]
+struct Failure(Mutex<FailureState>);
+impl Failure {
+    fn record(&self, message: String) {
+        let (reader, writer) = {
+            let mut state = self.0.lock().unwrap();
+            if state.message.is_none() {
+                state.message = Some(message);
+            }
+            (state.reader.take(), state.writer.take())
+        };
+        // Waking outside the lock allows either task to inspect the failure.
+        for waker in [reader, writer].into_iter().flatten() {
+            waker.wake();
+        }
+    }
+    fn register(&self, cx: &Context<'_>, reading: bool) {
+        let mut state = self.0.lock().unwrap();
+        let slot = if reading {
+            &mut state.reader
+        } else {
+            &mut state.writer
+        };
+        if slot.as_ref().is_none_or(|w| !w.will_wake(cx.waker())) {
+            *slot = Some(cx.waker().clone());
+        }
+    }
+    fn error(&self) -> Option<io::Error> {
+        self.0
+            .lock()
+            .unwrap()
+            .message
+            .as_ref()
+            .map(|s| io::Error::new(io::ErrorKind::ConnectionReset, s.clone()))
+    }
+}
+
 pub struct Stream {
     io: Box<dyn Duplex>,
-    error: Arc<Mutex<Option<String>>>,
+    error: Arc<Failure>,
     pub keep: Keep,
 }
 impl Stream {
@@ -67,7 +110,7 @@ impl Stream {
             }
             .await;
             if let Err(e) = result {
-                *error.lock().unwrap() = Some(e.to_string());
+                error.record(e.to_string());
             }
             let _ = sink.shutdown().await;
         }));
@@ -112,7 +155,7 @@ impl Stream {
                     guard.0.take();
                 }
                 Err(e) => {
-                    *error.lock().unwrap() = Some(e.to_string());
+                    error.record(e.to_string());
                 }
             }
         }));
@@ -152,7 +195,7 @@ impl Stream {
                     guard.0.take();
                 }
                 Err(e) => {
-                    *error.lock().unwrap() = Some(e.to_string());
+                    error.record(e.to_string());
                 }
             }
             let _ = sink.shutdown().await;
@@ -187,18 +230,14 @@ impl Stream {
                     guard.0.take();
                 }
                 Err(e) => {
-                    *error.lock().unwrap() = Some(e.to_string());
+                    error.record(e.to_string());
                 }
             }
         }));
         stream
     }
     fn failure(&self) -> Option<io::Error> {
-        self.error
-            .lock()
-            .unwrap()
-            .as_ref()
-            .map(|s| io::Error::new(io::ErrorKind::ConnectionReset, s.clone()))
+        self.error.error()
     }
 }
 impl AsyncRead for Stream {
@@ -207,10 +246,16 @@ impl AsyncRead for Stream {
         cx: &mut Context<'_>,
         buf: &mut ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
+        if buf.remaining() == 0 {
+            return Poll::Ready(Ok(()));
+        }
+        self.error.register(cx, true);
         let before = buf.filled().len();
         let result = Pin::new(&mut self.io).poll_read(cx, buf);
-        if matches!(result, Poll::Ready(Ok(())))
-            && buf.filled().len() == before
+        // Deliver already-buffered bytes first, including data received before
+        // the opposite pump failed. A failure also completes an idle read.
+        if buf.filled().len() == before
+            && matches!(result, Poll::Pending | Poll::Ready(Ok(())))
             && let Some(e) = self.failure()
         {
             return Poll::Ready(Err(e));
@@ -224,15 +269,86 @@ impl AsyncWrite for Stream {
         cx: &mut Context<'_>,
         buf: &[u8],
     ) -> Poll<io::Result<usize>> {
+        self.error.register(cx, false);
         if let Some(e) = self.failure() {
             return Poll::Ready(Err(e));
         }
         Pin::new(&mut self.io).poll_write(cx, buf)
     }
     fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        self.error.register(cx, false);
+        if let Some(e) = self.failure() {
+            return Poll::Ready(Err(e));
+        }
         Pin::new(&mut self.io).poll_flush(cx)
     }
     fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        self.error.register(cx, false);
+        if let Some(e) = self.failure() {
+            return Poll::Ready(Err(e));
+        }
         Pin::new(&mut self.io).poll_shutdown(cx)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::time::{Duration, timeout};
+
+    #[tokio::test]
+    async fn write_pump_failure_wakes_idle_reader_without_peer_fin() {
+        let (mut stream, _source, _sink) = Stream::pipes(Keep::default());
+        let failure = stream.error.clone();
+        let waiting = tokio::spawn(async move { stream.read_u8().await });
+        tokio::task::yield_now().await;
+        failure.record("outbound pump failed".into());
+        let error = timeout(Duration::from_secs(1), waiting)
+            .await
+            .expect("failed writer must wake idle reader")
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::ConnectionReset);
+        assert_eq!(error.to_string(), "outbound pump failed");
+    }
+
+    #[tokio::test]
+    async fn read_pump_failure_wakes_backpressured_writer() {
+        let (mut stream, _source, _sink) = Stream::pipes(Keep::default());
+        stream.write_all(&vec![0; 64 << 10]).await.unwrap();
+        let failure = stream.error.clone();
+        let waiting = tokio::spawn(async move { stream.write_u8(1).await });
+        tokio::task::yield_now().await;
+        failure.record("inbound pump failed".into());
+        let error = timeout(Duration::from_secs(1), waiting)
+            .await
+            .expect("failed reader must wake blocked writer")
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(error.to_string(), "inbound pump failed");
+    }
+
+    #[tokio::test]
+    async fn buffered_bytes_precede_failure_and_first_error_is_retained() {
+        let (mut stream, _source, mut sink) = Stream::pipes(Keep::default());
+        sink.write_all(b"response").await.unwrap();
+        stream.error.record("first failure".into());
+        stream.error.record("cleanup failure".into());
+        let mut bytes = [0; 8];
+        stream.read_exact(&mut bytes).await.unwrap();
+        assert_eq!(&bytes, b"response");
+        assert_eq!(
+            stream.read_u8().await.unwrap_err().to_string(),
+            "first failure"
+        );
+        assert_eq!(
+            stream.flush().await.unwrap_err().to_string(),
+            "first failure"
+        );
+        assert_eq!(
+            stream.shutdown().await.unwrap_err().to_string(),
+            "first failure"
+        );
+        assert_eq!(stream.read(&mut []).await.unwrap(), 0);
     }
 }

@@ -1,0 +1,10 @@
+{
+  "source_filename": "Pasted text.txt",
+  "source_bytes": 347542,
+  "source_lines": 3516,
+  "source_sha256": "e9e52f5f03efd89e4e420708a5d5ff66688139720e33809a76547859c479b8d1",
+  "archive_filename": "nf-0850-transport-excerpts.log",
+  "archive_lines": 132,
+  "archive_sha256": "0257bf8f928fb2caf38852ed44acb6ffcb4985a735d4c24a778d470a3b1af05a",
+  "scope": "Verbatim transport/connection events and selected H3 bridge resources; no authorization, full headers, payload, local SOCKS destinations or unrelated application traffic. Resource handles are not QUIC stream IDs."
+}

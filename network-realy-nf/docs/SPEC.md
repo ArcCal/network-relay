@@ -1,6 +1,6 @@
 # Application and wire specification
 
-Revision: 0.1.0 development. Normative words describe the acceptance target;
+Revision: 0.1.0 development, 2026-10-11. Normative words describe the acceptance target;
 [STATUS.md](STATUS.md) says which requirements have actually been verified.
 
 ## Supported protocol profile
@@ -48,6 +48,33 @@ as in the copied adapter. Test emulator trust is restricted to its fixture CA.
 - Dropping an unfinished stream resets/cancels it and aborts owned pumps/drivers.
   Dropping the last native lease releases its resources. Late events for another
   app generation must not revive a cancelled connection.
+
+## Readiness and failure classification
+
+Authenticated CONNECT-UDP admission is the readiness condition. It must not be
+presented as proof of destination reachability, a completed HTTPS transfer or
+sustained HTTP/3 forwarding. The idle readiness probe sends no target datagrams;
+current source replaces it after 60 seconds and refreshes clean peer FIN without
+reporting a relay failure. Independent SOCKS flows retain their own lifetimes.
+Malformed Capsules and native I/O errors remain failures. A failure in either
+HTTP stream pump must wake pending I/O in the opposite direction while preserving
+buffered response bytes and normal half-close semantics.
+
+Forced transport selection must remain forced; a silent switch from failing
+HTTP/3 to HTTP/2 does not pass HTTP/3 acceptance. Automatic fallback must be
+tested separately. Retry delay is exponential for short failures and resets
+after at least 30 seconds of admitted readiness; repeated ten-second failures
+must not be hidden by retry logs or reported as a stable session.
+
+The latest supplied older binary has one complete HTTP/3 admission-to-EINVAL
+cycle lasting 10.002560 seconds in run `16A52488`; its following SID 4 request
+ends awaiting a response. The same upload has separate HTTP/2 control-flow
+closures near 300 seconds, plus broken-pipe/timeouts with unproven causes.
+[Evidence](evidence/native-http3-20261011-1202.md) records the exact build and
+observation limits. Current probe/pump source repairs have portable tests but no
+Mac retest; native HTTP/3 stability is unresolved. Different Masque NF profile
+outcomes must not be treated as proof of this application's root cause or as
+identification of a server backend from a display label.
 
 ## SOCKS5 profile
 
@@ -97,14 +124,56 @@ firewalls, helpers or another application's processes.
 
 ## Compatibility acceptance
 
+The server pairings for this application are network-relay and
+caddy-network-relay. Masque NF's masque-server/caddy-masque CONNECT-IP matrix is
+a separate acceptance task. Do not substitute a different client's pass or
+another server's pass for a missing pairing.
+
 Each server must independently pass native TCP and UDP tests for every advertised
 transport, including authentication rejection, certificate rejection, destination
 policy rejection, remote DNS, IPv4/IPv6, empty and large UDP packets, binary bulk
 TCP, both half-close directions, cancellation, server disconnect, reconnect,
-network changes and automatic fallback. Tests must record client source/build,
-OS/SDK, server revision/configuration and transport-specific results.
+network changes and automatic fallback. Exercise at least ten minutes of native
+admitted operation, with actual TCP/UDP target responses and separate idle and
+active periods, to cover the observed ten-second failure and five-minute probe
+expiry. This minimum is a regression gate, not proof of indefinite stability.
+Probe renewal must preserve independent active flows, and a clean probe FIN
+must not produce a global failure status. Test stream errors, buffered data and
+half-closes independently from native QUIC group failures.
+
+Tests must record client source/build, OS/build/SDK, server revision and binary
+hash, effective configuration and transport-specific results. Use disposable
+accounts and test targets. Logs must not contain passwords, Authorization,
+application payload or certificate/private-key contents. Capture actual QUIC
+stream IDs, direction, parent/group, request/response phases and reset/close codes;
+bridge resource handles alone must not be interpreted as stream IDs. Correlate
+the first native error with server events before assigning a root cause.
 
 A Linux emulator pass, QUIC `.ready`, local HEADERS completion, a listener opening,
 or one successful CONNECT does not establish this acceptance matrix. Until the
 native matrix passes, the product must remain development/experimental and must
 not advertise universal or perfect compatibility.
+
+## Independent investigation and change scope
+
+All hypothesized remedies and research recommendations in the existing documents
+are non-binding references. Claude or another repairer must first review actual
+source, specifications, dependency versions, sanitized evidence and test coverage,
+then independently verify applicable Apple documentation and open-source code.
+Choose a minimal necessary repair from that evidence; do not mechanically apply
+the reports' suggested options, stream layout, timeouts or API/backend migration.
+If a claim cannot be reproduced or distinguished from alternatives, keep it a
+hypothesis. Network.framework's involvement does not prove an inherent defect.
+
+Production DNS, sockets, TLS and QUIC must remain owned by Network.framework.
+Other clients and server production code remain read-only comparison material
+for changes scoped to this application. Changes are limited to QUIC/HTTP/3 or
+another defect supported by clear evidence. Evaluate each proposed change's
+necessity, evidence, affected behavior and regression risks before editing, then
+validate that focused change before proceeding to another. Speculative cleanup,
+unrelated refactoring, dependency upgrades and redesign are outside this repair.
+Preserve settings, security and supported TCP behavior, and add meaningful
+regression tests for confirmed defects. Passing portable tests is necessary but
+cannot replace the native pairing that failed. Report failures and untested gates explicitly; update
+the status/research documents when a bounded investigation cannot establish a
+fix. [CLAUDE-HANDOFF.md](CLAUDE-HANDOFF.md) provides the cross-client work order.

@@ -58,24 +58,28 @@ PASS SOCKS UDP: DNS www.google.com via 1.1.1.1:53; reply=1.1.1.1:53; answers=8; 
   The observation helper sends the query only to the SOCKS UDP relay and checks
   the response ID, question, DNS response structure and answer presence. Its
   sockets belong to the external observer, not the application's production I/O.
-- These results follow the Rust network-relay server troubleshooting above.
-  The server type is identified by that user-supplied context, not by a server
-  identity or a correlated application run embedded in the terminal output.
+- The later cumulative application log supplies run `810BA952`: forced HTTP/2
+  at 09:55:42 UTC, authenticated HTTP/2 readiness at 09:55:43.635736, and a SOCKS
+  UDP relay opened at 09:56:09. The terminal response has the same 09:56:09 UTC
+  timestamp. This now attributes the positive probes to the forced HTTP/2 run.
+  Rust network-relay is identified by the user's server deployment context.
 
 ## Coverage boundary and remaining evidence
 
-The commands were supplied for a forced HTTP/2 test, but neither a file name nor
-curl's `HTTP/2 200` proves the outer relay transport. That status line describes
-the HTTPS response from Google through the relayed TCP connection. The earlier
-exported settings selected HTTP/1.1; no current application `Relay ready` line
-or run ID accompanied these successful probes. Record their outer transport as
-**unconfirmed**, rather than declaring a forced native HTTP/2 row complete.
-Likewise, the latest known source identity above is not a fresh identity captured
-alongside these probes.
+The terminal status alone identifies Google's response protocol. The subsequently
+supplied application trace provides the missing outer HTTP/2 attribution; this
+supersedes the earlier unconfirmed designation. The trace is cumulative and
+includes the launch identity above; no new launch/build identity was supplied.
+The endpoint logged for this deployment is `relay.kitendesecschool.com`, with IP
+override `35.212.234.101:443`. Certificate-name validation remains enabled.
 
 This establishes a user-reported native application forwarding success for one
 Rust server deployment. It does not establish native caddy-network-relay
-compatibility, HTTP/3 success, Automatic fallback, every UI interaction, negative
+compatibility, sustained HTTP/3 forwarding, Automatic fallback, every UI interaction, negative
 trust cases, large transfers, IPv6, concurrency or long-session behavior. The
-complete native acceptance matrix remains incomplete. Preserve HTTP/2 as the
-requested baseline and the single-attempt QUIC stopping rule.
+complete native acceptance matrix remains incomplete. Later forced HTTP/3 runs
+reach admission but repeatedly fail with native EINVAL about ten seconds later.
+An HTTP/2 readiness probe also ends cleanly after 300.001568 seconds. These are
+different incidents; see the [QUIC report](../QUIC-RESEARCH.md), [selected log](native-quic-20261011.log)
+and [original-upload hashes](native-quic-20261011.json). No Mac retest of the new
+stream-error propagation and readiness-probe renewal fixes has run yet.

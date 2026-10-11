@@ -65,8 +65,11 @@ A separate authenticated idle CONNECT-UDP flow acts as the connection monitor.
 It does not prove arbitrary destination reachability, web access, working DNS or
 continued liveness after a network change. The default probe target is
 `1.1.1.1:53`; no application datagram is sent. Core configuration can override
-`probe_target`. Server idle timeouts may close this flow and cause reconnects.
-There is no application heartbeat yet. TCP-only policies that deny this probe
+`probe_target`. The client renews the probe every 60 seconds, before the Rust
+server's minimum supported UDP idle expiry. Clean probe FIN refreshes admission
+without a failure status; native errors and malformed Capsules still trigger
+failure/retry. Renewal retains the selected transport and existing independent
+SOCKS flows. It sends no application heartbeat. TCP-only policies that deny this probe
 are not supported by the current readiness design.
 
 Automatic mode tries HTTP/3 for five seconds, then native TCP with ALPN `h2`,
@@ -74,6 +77,8 @@ Automatic mode tries HTTP/3 for five seconds, then native TCP with ALPN `h2`,
 to downgrade. Forced modes do not silently change transport. The monitor's
 successful transport becomes the preferred mode for new flows until reconnect.
 Existing flows have separate outer connections and are not migrated.
+Retry backoff remains exponential for short failures and returns to one second
+after at least 30 seconds of admitted readiness. Readiness is not target reachability.
 
 ## HTTP/3 scope
 

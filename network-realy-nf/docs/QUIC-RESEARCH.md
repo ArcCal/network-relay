@@ -4,6 +4,18 @@ Date: 2026-10-11. This report separates observed failures, supported mechanisms,
 unproven hypotheses and this new client's implementation choices. It does not
 assert that Network.framework has an unavoidable defect.
 
+## New relay application observation
+
+The user has now built and launched Network Realy NF source
+`666b795c881b44eeaade9891edfae04ffcbd34a6` on a Mac and reported successful SOCKS
+TCP forwarding to Google and UDP DNS forwarding through Rust network-relay.
+Earlier HTTP/2 404 responses coincided with explicit server authentication
+failures; those failures do not identify a native transport defect. The successful
+terminal probes lack a current application run/transport line, and curl's
+`HTTP/2 200` describes Google's response protocol. These results establish a
+reported native TCP/UDP forwarding success, but no new HTTP/3 result or controlled
+QUIC diagnosis. [Evidence and remaining scope](evidence/native-mac-20261011.md).
+
 ## Confirmed historical observations
 
 The user reported macOS 27.0.1, build 26A434, on a Mac mini. Masque NF and Masque

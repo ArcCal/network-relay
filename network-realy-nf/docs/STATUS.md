@@ -26,7 +26,22 @@ Only cases actually reported PASS in that file count as verified. The emulator
 uses test-only rustls/Quinn in place of Network.framework; its PASS cannot be
 promoted to a native interoperability claim.
 
-## Implemented, awaiting Mac verification
+## User-reported Mac execution
+
+The user built and launched source revision
+`666b795c881b44eeaade9891edfae04ffcbd34a6` on a Mac. Application/native/core logs
+establish that the renamed binary and native bridge ran. Following account
+troubleshooting on Rust network-relay, a SOCKS HTTPS request returned Google's
+200 response and the UDP observer received a matching DNS response with eight
+answers. [Selected evidence and coverage](evidence/native-mac-20261011.md).
+
+These are positive native application forwarding results, reported by the user.
+The current run identity and outer transport were not included with the successful
+probes; curl's `HTTP/2 200` identifies Google's response protocol, not the outer
+relay transport. Complete build/test/signature output and native results for
+caddy-network-relay and HTTP/3 are still missing.
+
+## Implemented, requiring further Mac verification
 
 - SwiftUI/AppKit window, icon, menu bar, independent store and TOML import/export.
 - Automatic restart after server/transport selection; retaining the active server
@@ -37,12 +52,13 @@ promoted to a native interoperability claim.
 - Five live log levels, ordered from Everything to Errors Only, with the copied
   Masque NF log view, bounded retention, complete-buffer copy/save and embedded
   source/build identity. Detailed records relay host/SNI and real QUIC stream
-  IDs/parents; Everything adds I/O metadata. These Swift changes await Mac
-  compilation and runtime verification, as does the rest of the GUI.
+  IDs/parents; Everything adds I/O metadata. The reported application launch
+  establishes compilation of that revision; the log controls and broader GUI
+  interactions still require their own runtime checks.
 
 No macOS SDK is available in this environment. These Swift sources and Mac
-commands have **not** been compiled or executed here. A source copy or shell
-syntax check is insufficient evidence that the app builds.
+commands have **not** been compiled or executed here. The user-reported Mac
+results above are separate from the checks executed in this environment.
 
 ## Confirmed issues and limitations
 
@@ -54,8 +70,8 @@ syntax check is insufficient evidence that the app builds.
   timeouts in `1AC94CBF`; HTTP/2 immediately works afterwards. A separate
   `caddy-masuqe` profile times out before TLS readiness even over HTTP/2. Its
   actual endpoint is absent, so it is not evidence of the same QUIC mechanism.
-- Native application build and complete Apple-to-both-server acceptance matrix
-  are missing. Therefore “perfect interoperability” has not been delivered.
+- The complete Apple-to-both-server acceptance matrix and build/test/signature
+  artifacts are missing. Therefore “perfect interoperability” has not been delivered.
 - One outer connection per flow can exhaust restrictive server connection limits
   and adds handshake overhead. Shared HTTP/2/3 connections are not implemented.
 - The idle UDP readiness probe can be rejected by destination policy or closed by
@@ -76,13 +92,15 @@ syntax check is insufficient evidence that the app builds.
   has shown that it fixes the earlier failure. Disabling GREASE is also unproven.
 - Native UDP overflow, address rebinding, network migration, long idle sessions
   and EOF/cancellation races need real Apple runtime testing.
-- Copying tested Masque NF UI code does not prove renamed imports, linker flags
-  and this new bundle work together. The first Mac build is a required gate.
+- The user-reported build/launch establishes that the renamed code linked and
+  ran for the supplied revision. It does not verify every GUI action or the
+  portable Swift tests and native smoke gates.
 
 ## Deferred work and QUIC stopping rule
 
-Prioritize a first Mac build and native HTTP/2 TCP/UDP validation against both
-servers. Try one fixed-configuration H3 run with actual SIDs and stage logs. If
+Complete the recorded native HTTP/2 TCP/UDP rows against both servers, including
+the application run identity and actual outer transport. Try one fixed-configuration
+H3 run with actual SIDs and stage logs. If
 H3 still fails, retain its evidence and mark the transport experimental; continue
 using forced HTTP/2. Do not spend further time rewriting the QUIC backend merely
 to complete this initial delivery. A future repairer can choose a bounded A/B

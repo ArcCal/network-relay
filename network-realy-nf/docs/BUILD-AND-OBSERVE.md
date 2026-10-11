@@ -2,9 +2,10 @@
 
 This guide builds **Network Realy NF**, the CONNECT/CONNECT-UDP client, from a
 new checkout. It does not build Masque NF or modify either relay server. The
-macOS build and native interoperability have not yet been executed in the cloud
-environment. A compiler failure is a failed gate; the steps below are not a
-claim that the native application has already passed.
+macOS build and native interoperability cannot run in the Linux cloud environment.
+The user has since reported a Mac build/launch and successful SOCKS TCP/UDP probes;
+[the recorded evidence](evidence/native-mac-20261011.md) distinguishes these from
+the still-incomplete native matrix. A compiler failure is a failed gate.
 
 ## Prerequisites
 

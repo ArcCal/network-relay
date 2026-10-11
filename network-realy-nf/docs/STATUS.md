@@ -105,6 +105,17 @@ runs them correctly or that they stop the unrelated native H3 EINVAL.
 - Passwords use the copied private-file store; Keychain integration and independent
   security audit are pending. Ad-hoc signing is not notarization.
 
+## Native confirmation, 2026-10-11 14:12–14:16 UTC
+
+A Mac run of `97479f7` ([evidence](evidence/native-http3-20261011-1412.md))
+logged `groupSID=0` for every group and every request on SID 4. Seven
+QUIC groups failed as the **group** object, with POSIX 22, 10.36–11.60 s
+after their first request. HTTP/2 and HTTP/1.1 controls stayed up. This
+confirms natively the client side of the idle-stream-0 chain. The server
+event is inferred from source and emulator, not yet logged. Unrepaired: the
+group API cannot use stream 0, and both relay servers are outside this
+directory.
+
 ## Possible issues, not established root causes
 
 - Initial bidi ownership and an implicit idle SID 0 may interact with the

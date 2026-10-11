@@ -112,9 +112,20 @@ logged `groupSID=0` for every group and every request on SID 4. Seven
 QUIC groups failed as the **group** object, with POSIX 22, 10.36–11.60 s
 after their first request. HTTP/2 and HTTP/1.1 controls stayed up. This
 confirms natively the client side of the idle-stream-0 chain. The server
-event is inferred from source and emulator, not yet logged. Unrepaired: the
-group API cannot use stream 0, and both relay servers are outside this
-directory.
+event is inferred from source and emulator, not yet logged. The group API
+cannot use stream 0, so the repair is server-side.
+
+## Server repair, 2026-10-11 (implemented and tested; native confirmation pending)
+
+With server changes permitted, both relay servers now start the HTTP/3 header
+deadline at a request stream's first byte and leave an unwritten stream open:
+network-relay `9821c4f`, caddy-network-relay `ef04df6`. Network Realy NF is
+unchanged. Against the rebuilt servers, `Core/tests/idle_stream_zero.rs` sees
+no event on stream 0 thirteen seconds after admission (before: reset at
+10.01 s), and the unchanged real-server matrix passes over HTTP/1.1, HTTP/2 and
+HTTP/3 ([evidence](evidence/native-http3-20261011-1412.md#server-repair)).
+Native confirmation needs a deployed fixed server: no group `POSIX 22` about
+ten seconds after the first request, and HTTP/3 sessions that stay up.
 
 ## Possible issues, not established root causes
 

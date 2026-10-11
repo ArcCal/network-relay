@@ -654,7 +654,7 @@ def _install(args):
             command = [binary, 'profile', '--host', identity.domain, '--port', str(identity.port),
                        '--user', identity.user, '--name', PROFILE_NAME,
                        '--exclude-domain', identity.domain, '--ui-toggle-enabled', 'true',
-                       '--match-domain', 'example.invalid']
+                       '--match-domain', 'example.invalid', '--no-http3']
             staged_profile = staging / 'device.mobileconfig'
             run(command + ['--out', staged_profile], input=identity.password + '\n', capture=True)
             data = RULES.profile_with_domains(staged_profile.read_bytes(), domains)
@@ -799,7 +799,7 @@ def apply_install(binary, config_data, state_data, identity, *, automated_cert, 
 
 def main():
     parser = argparse.ArgumentParser(description='Install or update Network Relay on Debian 12/13 x64 and hand '
-                                                 'over a mobileconfig that relays selected domains.')
+                                                 'over an HTTP/2-only mobileconfig that relays selected domains.')
     parser.add_argument('--profile', type=Path, help='import the server address and credentials from an existing '
                         'mobileconfig; recommended when one was provided')
     parser.add_argument('--domain', help='relay domain; required without --profile, '

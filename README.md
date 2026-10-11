@@ -254,6 +254,7 @@ All checks passed.
 - To get the profile as a file instead (to AirDrop it from a Mac, say), add `--profile-out /root/iphone.mobileconfig`; delete that file once the device has it.
 - If the link expired before you used it, make a new password and profile as in [Changing the password](#changing-the-password).
 - The generated profile matches the deduplicated root domains from `deploy/domains/google-ai-social.txt`, gfwlist and the eighteen blackmatrix7 service lists; other domains do not use this Relay configuration. The relay's own hostname is excluded. For the conversion details and intentionally broad shared CDN scope, see [the deployment guide](docs/deploy-debian13.md).
+- Both standalone installers generate HTTP/2-only profiles: `HTTP2RelayURL` is present and `HTTP3RelayURL` is omitted. Reinstall the regenerated profile on each device to apply this change; previously installed profiles do not update automatically.
 - Passing the self-check on the machine **does not mean** the relay is reachable from the internet (the cloud firewall filters incoming traffic). The device is the final test.
 
 ### Re-run, upgrade or refresh the routing lists
@@ -662,7 +663,7 @@ The output is **one compact XML `.mobileconfig`, strictly below 524288 bytes (51
 
 ### Generate a profile separately
 
-`deploy/global-profile.py` combines the following sources into one profile:
+`deploy/global-profile.py` generates an HTTP/2-only profile, retaining HTTPS certificate validation and the existing authentication method. It combines the following sources:
 
 - `deploy/domains/google-ai-social.txt`: Google, Gemini, YouTube, Claude, ChatGPT, X and others;
 - `deploy/domains/global-services.txt`: Meta AI, Instagram, Spotify, Pandora, The New York Times, Wikipedia, YouTube Music and others;

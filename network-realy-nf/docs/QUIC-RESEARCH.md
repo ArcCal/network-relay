@@ -19,6 +19,20 @@ source: HTTP stream pump errors did not wake the opposite pending I/O operation;
 and normal expiry of an idle readiness probe was treated as a relay failure.
 The fixes have portable regression coverage, but no Mac retest yet.
 
+### 2026-10-11 follow-up: server reaction to idle stream 0
+
+See [the evidence](evidence/idle-group-stream-zero-20261011.md). Apple DTS
+documents that an `NWConnectionGroup` owns client bidirectional stream 0 and
+exposes no I/O on it, so the observed request on SID 4 leaves stream 0
+implicitly open and idle. With that state emulated, real Rust network-relay
+and caddy-network-relay binaries each reset and stop stream 0 about ten
+seconds after readiness (codes 0x10B and 0x10D). The admitted stream-4
+session continues on Quinn. The final link, Network.framework surfacing that
+reset as group EINVAL, is still unobserved. The EINVAL remains unrepaired.
+No client fix is possible with the group API, and a server-side change is
+outside this directory. The client now logs group failures at WARN and the
+group-owned SID at Detailed.
+
 ## New relay application observations
 
 The supplied cumulative log identifies app/core 0.1.0, built at

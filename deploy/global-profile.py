@@ -321,7 +321,7 @@ def main(argv=None):
     out = args.out or Path(f'{host}-{args.user}.mobileconfig')
     command = [str(find_binary(args.binary)), 'profile', '--host', host, '--user', args.user, '--port', str(args.port),
                '--ui-toggle-enabled', args.ui_toggle_enabled, '--exclude-domain', host,
-               '--match-domain', 'example.invalid']
+               '--match-domain', 'example.invalid', '--no-http3']
     if args.name:
         command += ['--name', args.name]
     if args.allow_dns_failover:

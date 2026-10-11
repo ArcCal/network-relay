@@ -52,6 +52,15 @@ def service_rule_fixtures(directory):
             "  - IP-CIDR,192.0.2.0/24,no-resolve\n")
 
 
+def assert_http2_only(test, raw):
+    payload = plistlib.loads(raw)['PayloadContent'][0]
+    test.assertEqual(payload['PayloadType'], 'com.apple.relay.managed')
+    test.assertEqual(len(payload['Relays']), 1)
+    relay = payload['Relays'][0]
+    test.assertEqual(relay['HTTP2RelayURL'], 'https://relay.example.com' + deploy.UDP_TEMPLATE)
+    test.assertNotIn('HTTP3RelayURL', relay)
+
+
 class DeploymentTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix='relay-deploy-test-')
@@ -277,6 +286,7 @@ class DeploymentTests(unittest.TestCase):
         apt = [c for c in self.calls if c[0] == 'apt-get']
         self.assertTrue(any(all(p in c for p in ('build-essential', 'pkg-config', 'git')) for c in apt))
         profile = next((deploy.SITE / '.publish').glob('*.mobileconfig'))
+        assert_http2_only(self, profile.read_bytes())
         domains = plistlib.loads(profile.read_bytes())['PayloadContent'][0]['MatchDomains']
         for name in global_profile.SERVICE_RULE_NAMES:
             self.assertIn(f'{name.lower()}-rules.example', domains)
@@ -324,6 +334,7 @@ class DeploymentTests(unittest.TestCase):
         restart = self.calls.index(['systemctl', 'restart', 'network-relay'])
         self.assertLess(generation, restart, 'the profile is ready before the account starts')
         identity, raw = deploy.read_profile(published[0])
+        assert_http2_only(self, raw)
         self.assertGreaterEqual(len(identity.password), 24)
         self.assertNotIn(identity.password, output.getvalue())
         self.assertFalse(deploy.LEGACY_PROFILE.exists())
@@ -343,6 +354,21 @@ class DeploymentTests(unittest.TestCase):
         self.assertEqual(out.stat().st_mode & 0o777, 0o600)
         self.assertEqual(list((deploy.SITE / '.publish').glob('*.mobileconfig')), [], 'nothing published')
         self.assertEqual(deploy.read_profile(out)[0].user, 'iphone')
+        assert_http2_only(self, out.read_bytes())
+
+    @unittest.skipUnless(BINARY.exists(), 'run cargo build first')
+    def test_refresh_of_imported_http3_only_profile_preserves_credentials_and_uses_http2(self):
+        self.certificates()
+        previous = fixture_profile()
+        del previous['PayloadContent'][0]['Relays'][0]['HTTP2RelayURL']
+        source = self.profile_file(previous)
+        original = source.read_bytes()
+        out = self.root / 'http2.mobileconfig'
+        with mock.patch.object(deploy, 'run', side_effect=self.fake_run), redirect_stdout(io.StringIO()):
+            self.assertEqual(deploy.install(self.args(profile=source, refresh_profile=True, profile_out=out)), 0)
+        assert_http2_only(self, out.read_bytes())
+        self.assertEqual(deploy.read_profile(out)[0].password, PASSWORD)
+        self.assertEqual(source.read_bytes(), original, 'the imported profile is not overwritten')
 
     @unittest.skipUnless(BINARY.exists(), 'set RELAY_BINARY')
     def test_combined_root_profile_and_refresh_keep_existing_credentials(self):
@@ -364,6 +390,7 @@ class DeploymentTests(unittest.TestCase):
                 self.assertEqual(deploy.install(self.args(refresh_profile=True, profile_out=out, **options)), 0)
                 self.assertEqual(verify.call_args.args[0].password, identity.password)
         payload = plistlib.loads(out.read_bytes())['PayloadContent'][0]
+        assert_http2_only(self, out.read_bytes())
         self.assertIn('google.com', payload['MatchDomains'])
         self.assertIn('blocked.co.uk', payload['MatchDomains'])
         self.assertIn('list-only.org', payload['MatchDomains'])
@@ -401,6 +428,7 @@ class DeploymentTests(unittest.TestCase):
                 authenticate.assert_not_called()
                 prompt.assert_not_called()
         identity = deploy.read_profile(out)[0]
+        assert_http2_only(self, out.read_bytes())
         self.assertNotEqual(identity.password, old_identity.password)
         self.assertGreaterEqual(len(identity.password), 24)
         after = tomllib.loads(deploy.CONFIG.read_text())
@@ -979,7 +1007,7 @@ class GlobalProfileTests(unittest.TestCase):
             self.assertEqual(payload['ExcludedDomains'], ['relay.example.com'])
             self.assertIs(payload['UIToggleEnabled'], True, 'the user can switch off a relay that is down')
             relay = payload['Relays'][0]
-            self.assertTrue(relay['HTTP3RelayURL'].startswith('https://relay.example.com/.well-known/masque/udp/'))
+            assert_http2_only(self, out.read_bytes())
             basic = relay['AdditionalHTTPHeaderFields']['Authorization'].split()[1]
             self.assertEqual(base64.b64decode(basic).decode(), 'iphone:' + PASSWORD)
 

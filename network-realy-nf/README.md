@@ -20,9 +20,15 @@ See [implementation status](docs/STATUS.md) before treating this as a release.
 - [Completed, suspected, confirmed and missing work](docs/STATUS.md)
 - [QUIC investigation and repair handover](docs/QUIC-RESEARCH.md)
 - [Validation procedure and evidence](docs/VALIDATION.md)
+- [Fresh Mac build, log levels and TCP/UDP observation](docs/BUILD-AND-OBSERVE.md)
 - [Source provenance](SOURCE-PROVENANCE.json)
 
 ## Build on a Mac
+
+For a fresh checkout, toolchain setup, five log levels and a bounded HTTP/3
+observation, follow [BUILD-AND-OBSERVE.md](docs/BUILD-AND-OBSERVE.md). While this
+addition is under review, check out `codex/network-realy-nf`; the application is
+not yet on `main`.
 
 The initial target follows Masque NF: **Apple silicon, macOS 27+, Xcode with a
 macOS 27+ SDK, and stable Rust supporting edition 2024**. Full Xcode is required;

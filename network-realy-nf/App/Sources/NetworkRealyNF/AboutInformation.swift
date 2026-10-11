@@ -4,6 +4,7 @@ import Foundation
 struct AppInformation {
     let version: String
     let coreVersion: String
+    let sourceRevision: String
     let builtAt: Date?
 
     init(info: [String: Any] = Bundle.main.infoDictionary ?? [:]) {
@@ -11,6 +12,8 @@ struct AppInformation {
         let clientVersion = info["NetworkRealyNFCoreVersion"] as? String ?? ""
         version = appVersion.isEmpty ? "Unknown" : appVersion
         coreVersion = clientVersion.isEmpty ? "Unknown" : clientVersion
+        let source = info["NetworkRealyNFSourceRevision"] as? String ?? ""
+        sourceRevision = source.isEmpty ? "Unknown" : source
         // Local builds have a build timestamp, without claiming a release was published.
         guard let timestamp = info["NetworkRealyNFBuildAt"] as? String else {
             builtAt = nil

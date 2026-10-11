@@ -12,10 +12,11 @@ binary SHA-256 in [interop-results.json](evidence/interop-results.json).
 | --- | --- | --- |
 | Rust parser/protocol unit tests | 30 passed | In-memory protocol/parser behavior |
 | Native bridge tests | 21 passed | Rust side and synthetic native events |
-| C ABI lifecycle tests | 4 passed | Exported ABI, cancellation and security error policy |
+| C ABI lifecycle tests | 5 passed | Exported ABI, cancellation, security error policy and quiet log levels |
 | Project Clippy, warnings denied | Passed | `--no-deps --lib`; vendored upstream lint debt excluded |
 | Real network-relay matrix | Passed | Production core over test-only rustls/Quinn bridge |
 | Real caddy-network-relay matrix | Passed | Same core/backend and separate Go/Caddy process |
+| External UDP observation tool | Local fixtures passed | IPv4/domain success; wrong DNS ID, truncated record, association rejection and timeout; does not run the Apple client |
 | macOS Swift model tests | Not run | No Swift toolchain currently available here |
 | macOS full GUI build and signature | Not run | No Apple SDK/runtime here |
 | Native Apple-to-server H1/H2/H3 matrix | Not run | Required before a native compatibility claim |
@@ -53,6 +54,10 @@ test as ignored does not verify server interoperability. Keep disposable test
 credentials and CA keys out of version control.
 
 ## Required Mac gates
+
+The step-by-step commands, level meanings and capture procedure are in
+[BUILD-AND-OBSERVE.md](BUILD-AND-OBSERVE.md). Its UDP probe is an external SOCKS
+observation tool, not a replacement for the application or a portable test pass.
 
 1. Run `bash build-macos.sh` on Apple silicon macOS 27 with the appropriate Xcode
    SDK. Record OS/build, Xcode version, Rust version and source commit. Record

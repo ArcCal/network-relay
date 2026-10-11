@@ -16,8 +16,11 @@ listen = ["127.0.0.1:1080"]
 struct Instance(*mut Handle);
 impl Instance {
     fn start() -> Self {
+        Self::start_with_level(2)
+    }
+    fn start_with_level(level: u32) -> Self {
         let config = CString::new(CONFIG).unwrap();
-        let handle = unsafe { nf_start(config.as_ptr(), 2) };
+        let handle = unsafe { nf_start(config.as_ptr(), level) };
         assert!(!handle.is_null());
         Self(handle)
     }
@@ -54,6 +57,32 @@ impl Instance {
 impl Drop for Instance {
     fn drop(&mut self) {
         unsafe { nf_destroy(self.0) }
+    }
+}
+
+#[test]
+fn quiet_logging_suppresses_info_without_losing_native_requests_or_exit() {
+    for level in [0, 1] {
+        let core = Instance::start_with_level(level);
+        let listener = core.until(8);
+        assert!(core.input(101, listener.1, 0, br#"{"local":"127.0.0.1:1080"}"#));
+        let quic = loop {
+            let event = core.next();
+            if event.0 == 20 {
+                assert!(
+                    !String::from_utf8_lossy(&event.3).contains(" INFO "),
+                    "quiet logging must suppress routine core output"
+                );
+            } else if event.0 == 2 {
+                break event;
+            } else {
+                assert_ne!(event.0, 99, "initialization unexpectedly exited");
+            }
+        };
+        assert!(core.input(104, quic.1, 1, b"certificate validation failed"));
+        let exit = core.until(99);
+        assert_eq!(exit.2, 1);
+        assert!(String::from_utf8_lossy(&exit.3).contains("certificate"));
     }
 }
 

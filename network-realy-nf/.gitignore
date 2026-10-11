@@ -8,3 +8,7 @@ __pycache__/
 *.pem
 *.key
 .DS_Store
+build-macos.log
+build-environment.txt
+nf-*-curl.log
+nf-*-udp.log

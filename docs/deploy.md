@@ -4,6 +4,8 @@ For an automatic install on Debian 12/13 x64 using an uploaded prebuilt binary, 
 
 The README's [one-step install](../README.md#option-1-one-step-install-on-debian-1213-recommended) and [manual install](../README.md#option-2-manual-install) are the complete deployment steps. This page covers a few alternatives mentioned there.
 
+For an end-to-end manual workflow using macOS cross-compilation, SCP, Certbot with Cloudflare DNS challenge, automatic renewal, and an HTTP/2-only device profile, see [Manual deployment from macOS with Cloudflare DNS validation](manual-mac-cloudflare-dns.md). DNS validation needs no inbound port 80.
+
 ## Building from source
 
 When there is no release, or you want the latest code, build on the server yourself. It needs about 1 GB of memory; a server with little memory may need swap first.

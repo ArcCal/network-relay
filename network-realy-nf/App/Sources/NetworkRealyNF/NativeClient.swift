@@ -255,6 +255,7 @@ final class NativeClient {
         }, queue)
     }
     private func openTCP(_ id: UInt64, _ options: Options) {
+        log("DEBUG", "Native TLS opening resource=\(id) host=\(options.host) port=\(options.port) certificateName=\(options.server_name) ALPN=\(options.alpn.joined(separator: ","))")
         let tls = NWProtocolTLS.Options()
         let trust = TrustResult()
         configureTLS(tls.securityProtocolOptions, name: options.server_name, trustResult: trust)
@@ -301,6 +302,7 @@ final class NativeClient {
     }
 
     private func openQUIC(_ id: UInt64, _ options: Options) {
+        log("DEBUG", "Native QUIC opening resource=\(id) host=\(options.host) port=\(options.port) certificateName=\(options.server_name) ALPN=\(options.alpn.joined(separator: ","))")
         let quic = NWProtocolQUIC.Options(alpn: options.alpn)
         let trust = TrustResult()
         configureTLS(quic.securityProtocolOptions, name: options.server_name, trustResult: trust)
@@ -362,7 +364,7 @@ final class NativeClient {
                 fail(id, message: "Native QUIC stream metadata unavailable"); return
             }
             metadata.keepAlive = .seconds(30)
-            log("DEBUG", "Native QUIC stream resource=\(id) SID=\(metadata.streamIdentifier) direction=\(unidirectional ? "uni" : "bidi")")
+            log("DEBUG", "Native QUIC stream resource=\(id) parent=\(parent) SID=\(metadata.streamIdentifier) requestedDirection=\(unidirectional ? "uni" : "bidi")")
             ready(id, readyMetadata(connection))
         }
     }
@@ -379,6 +381,7 @@ final class NativeClient {
                 }
                 guard id != 0 else { removePending(connection); connection.cancel(); return }
                 connections[id] = Connection(connection, parent: parent)
+                log("DEBUG", "Native QUIC inbound stream resource=\(id) parent=\(parent) SID=\(metadata.stream_id)")
                 removePending(connection)
                 // It is already started; replace the handler without restarting.
                 connection.stateUpdateHandler = { [weak self, weak connection] state in

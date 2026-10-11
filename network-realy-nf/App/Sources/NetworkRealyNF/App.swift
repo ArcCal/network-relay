@@ -227,6 +227,8 @@ struct AboutView: View {
                 Divider()
                 LabeledContent("Protocol core version", value: information.coreVersion)
                 Divider()
+                LabeledContent("Source revision", value: information.sourceRevision)
+                Divider()
                 LabeledContent("Built") {
                     if let date = information.builtAt {
                         Text(date.formatted(date: .abbreviated, time: .standard))
@@ -761,7 +763,7 @@ struct LogList: View {
                 .nfCard()
                 HStack {
                     Picker("Show", selection: Binding(get: { tunnel.configuration.logLevel }, set: { tunnel.setLogLevel($0) })) {
-                        ForEach(LogLevel.allCases, id: \.self) { level in
+                        ForEach(LogLevel.allCases.reversed(), id: \.self) { level in
                             Text(level.title).tag(level)
                         }
                     }

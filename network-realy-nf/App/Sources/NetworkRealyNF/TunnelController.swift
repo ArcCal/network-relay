@@ -21,7 +21,9 @@ final class TunnelController: ObservableObject {
     var settings: Settings { configuration.settings }
     var isConfigured: Bool { (try? clientConfiguration(settings, password: configuration.password)) != nil }
     func launched() {
-        appendLog(["\(timestamp()) INFO app: Network Realy NF launched; Network.framework transport"])
+        let information = AppInformation()
+        let built = information.builtAt.map { ISO8601DateFormatter().string(from: $0) } ?? "Unknown"
+        appendLog(["\(timestamp()) INFO app: Network Realy NF launched; Network.framework transport; app \(information.version); core \(information.coreVersion); built \(built); source \(information.sourceRevision)"])
         if configuration.connectOnLaunch {
             if isConfigured { connect() }
             else { appendLog(["\(timestamp()) WARN app: Launch connection skipped: complete the selected server settings first."]) }
@@ -45,7 +47,8 @@ final class TunnelController: ObservableObject {
     func setLogLevel(_ level: LogLevel) {
         guard level != configuration.logLevel else { return }
         var new = configuration; new.logLevel = level
-        saveChoice(new); adopt(new)
+        guard saveChoice(new) else { return }
+        adopt(new)
     }
     @discardableResult
     private func saveChoice(_ new: Configuration) -> Bool {

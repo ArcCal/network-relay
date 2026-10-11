@@ -102,6 +102,8 @@ impl Drop for LineWriter {
 }
 fn filter(level: u32) -> String {
     match level {
+        0 => "error".into(),
+        1 => "warn".into(),
         3 => "info,network_realy_nf_core=debug".into(),
         // Third-party wire traces can dump encoded authentication or user
         // data. Only our reviewed metadata diagnostics may use TRACE.

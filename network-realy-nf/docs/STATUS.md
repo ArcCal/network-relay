@@ -11,9 +11,10 @@ proof that this new binary has failed or succeeded.
   authorization and DATAGRAM Capsule parsing/encoding.
 - SOCKS5 CONNECT and UDP ASSOCIATE source enforcement and bounded destination
   flow management. Server-side DNS forwarding; no client IP-stack dependency.
-- 30 protocol/parser unit tests, 21 native-boundary tests and 4 FFI lifecycle
+- 30 protocol/parser unit tests, 21 native-boundary tests and 5 FFI lifecycle
   tests passed. They cover malformed Capsule handling, queue bounds, EOF/error
-  propagation, half-close, cancellation isolation and terminal security failures.
+  propagation, half-close, cancellation isolation, terminal security failures
+  and native initialization/exit while routine core logs are suppressed.
 - `cargo check` and project-only Clippy with warnings denied passed on Linux.
   This establishes Rust compilation, not Swift
   compilation, application packaging or Apple runtime behavior.
@@ -33,6 +34,11 @@ promoted to a native interoperability claim.
 - Native TCP/TLS, local SOCKS TCP/UDP and NWConnectionGroup QUIC adapter.
 - Streams-only HTTP/3 Capsules, no DATAGRAM extraction, actual SID diagnostic log.
 - macOS build, signing/bundling script and native boundary smoke runner.
+- Five live log levels, ordered from Everything to Errors Only, with the copied
+  Masque NF log view, bounded retention, complete-buffer copy/save and embedded
+  source/build identity. Detailed records relay host/SNI and real QUIC stream
+  IDs/parents; Everything adds I/O metadata. These Swift changes await Mac
+  compilation and runtime verification, as does the rest of the GUI.
 
 No macOS SDK is available in this environment. These Swift sources and Mac
 commands have **not** been compiled or executed here. A source copy or shell

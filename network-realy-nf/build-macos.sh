@@ -12,6 +12,10 @@ if [[ $(sw_vers -productVersion | cut -d. -f1) -lt 27 ]] ||
 fi
 NF_ROOT=$(cd "$(dirname "$0")" && pwd)
 NF_VERSION=$(tr -d '[:space:]' < "$NF_ROOT/VERSION")
+NF_SOURCE=$(git -C "$NF_ROOT" rev-parse HEAD 2>/dev/null || printf 'Unknown')
+if [[ $NF_SOURCE != Unknown ]] && [[ -n $(git -C "$NF_ROOT" status --porcelain -- .) ]]; then
+    NF_SOURCE="$NF_SOURCE-dirty"
+fi
 export RUSTUP_TOOLCHAIN=${RUSTUP_TOOLCHAIN:-stable}
 export MACOSX_DEPLOYMENT_TARGET=27.0
 export CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-"$NF_ROOT/Core/target"}
@@ -36,6 +40,7 @@ cp "$NF_BIN/NetworkRealyNF" "$NF_APP/Contents/MacOS/NetworkRealyNF"
 sed "s/@VERSION@/$NF_VERSION/g" "$NF_ROOT/Info.plist.in" > "$NF_APP/Contents/Info.plist"
 plutil -insert NetworkRealyNFCoreVersion -string "$NF_VERSION (Rust HTTP CONNECT / CONNECT-UDP)" "$NF_APP/Contents/Info.plist"
 plutil -insert NetworkRealyNFBuildAt -string "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" "$NF_APP/Contents/Info.plist"
+plutil -insert NetworkRealyNFSourceRevision -string "$NF_SOURCE" "$NF_APP/Contents/Info.plist"
 NF_ICONS="$NF_STAGE/AppIcon.iconset"
 mkdir -p "$NF_ICONS"
 for size in 16 32 128 256 512; do

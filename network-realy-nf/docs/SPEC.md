@@ -83,8 +83,16 @@ an existing active selection. Invalid settings fail before a usable client start
 
 Stored settings, exported TOML and log filenames use this app's identity. Export
 may omit passwords; export with passwords must use private file permissions.
-Logs retain at most 5,000 recent lines in memory, with Normal, Detailed and
-Everything filters. The app must not manage system proxy settings, routes,
+Logs retain at most 5,000 recent lines in memory. The level menu runs from most
+to least detailed: Everything (TRACE through ERROR), Detailed (DEBUG through
+ERROR), Normal (INFO through ERROR), Warnings and Errors, Errors Only. Changing
+the level updates the view and runtime logging without reconnecting. The copied
+Masque NF presentation includes selectable monospaced lines, severity colors,
+Follow latest, Latest, Copy All and Save. Exports include all retained lines,
+including those hidden by the current view. Native/app operation messages may
+remain in the buffer at a low view level; ungenerated diagnostics cannot be
+recovered later. Verbose records are removed first at the retention cap; logs
+are not automatically persisted to disk. The app must not manage system proxy settings, routes,
 firewalls, helpers or another application's processes.
 
 ## Compatibility acceptance

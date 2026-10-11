@@ -2552,6 +2552,32 @@ async fn http3_request_whose_headers_never_arrive_is_rejected() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn http3_unwritten_request_stream_is_left_open() {
+    // Apple's QUIC connection group owns client bidirectional stream 0 and
+    // never writes it; its first request uses stream 4, which implicitly
+    // opens stream 0 (RFC 9000 §3.2). Cancelling stream 0 fails the client's
+    // whole connection, so the header deadline starts at the first byte.
+    let relay = TestRelay::start("").await;
+    let (echo, _e) = echo_server().await;
+    let (mut h3, conn, _driver) = raw_h3(&relay, true).await;
+    let (unwritten, _unwritten_recv) = conn.open_bi().await.unwrap();
+    assert_eq!(unwritten.id().index(), 0);
+    let request = Request::builder()
+        .method(Method::CONNECT)
+        .uri(echo.to_string())
+        .header("authorization", auth::basic_authorization(ALICE.0, ALICE.1))
+        .body(())
+        .unwrap();
+    let mut tunnel = h3.send_request(request).await.unwrap();
+    assert_eq!(within("CONNECT response", tunnel.recv_response()).await.unwrap().status(), StatusCode::OK);
+    let wait = Duration::from_secs(12); // past the ten-second header deadline
+    assert!(tokio::time::timeout(wait, unwritten.stopped()).await.is_err(), "stream 0 was cancelled");
+    tunnel.send_data(Bytes::from_static(b"after")).await.unwrap();
+    let mut got = within("echo after the deadline", tunnel.recv_data()).await.unwrap().unwrap();
+    assert_eq!(got.copy_to_bytes(got.remaining()), "after");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn connect_udp_protocol_token_is_matched_without_case() {
     // RFC 9110 §7.8: upgrade tokens, and so :protocol (RFC 8441 §4), are
     // compared without regard to case.

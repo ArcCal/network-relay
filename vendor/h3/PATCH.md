@@ -33,6 +33,10 @@ Original source and MIT license retained. Changes are confined to:
   cancelling both directions of its stream with H3_REQUEST_REJECTED (RFC 9114
   section 4.1.1), so the client may retry it. Dropping the resolver, the only
   way upstream to give up, ends the stream with a FIN and no response.
+  `RequestResolver::wait_for_data()` waits, without a deadline, for a
+  request stream's first byte or end, so a server can start that deadline
+  there and leave unwritten streams (implicitly opened lower IDs, RFC 9000
+  section 3.2) alone.
 - `proto/headers.rs`: `TE: trailers` is matched without regard to case, as
   ABNF literals are (RFC 5234 section 2.3).
 - `server/request.rs`: the 431 answer to a request whose field section is

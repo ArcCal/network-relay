@@ -294,9 +294,18 @@ impl Relay {
                         let (relay, info, conn, routes, sender_tx) =
                             (self.clone(), info.clone(), conn.clone(), routes.clone(), sender_tx.clone());
                         let stopped = stopped.clone();
-                        let active = info.request_started();
                         tokio::spawn(async move {
-                            let _active = active;
+                            let mut resolver = resolver;
+                            // A stream the client has not written is neither a
+                            // request nor late. Apple's QUIC connection group
+                            // implicitly opens client stream 0 and never
+                            // writes it; cancelling it fails the client's
+                            // whole connection. The header deadline and the
+                            // request count start at the first byte.
+                            if !resolver.wait_for_data().await {
+                                return;
+                            }
+                            let _active = info.request_started();
                             // Headers late: h3 rejects the request with
                             // H3_REQUEST_REJECTED (RFC 9114 §4.1.1). The outer
                             // bound covers a 431 response the client never

@@ -20,6 +20,7 @@ This project and [masque-vpn](https://github.com/ArcCal/masque-vpn) are two inde
 - [Common pitfalls (read these)](#common-pitfalls-read-these)
 - [Option 1: one-step install on Debian 12/13 (recommended)](#option-1-one-step-install-on-debian-1213-recommended)
 - [Option 2: manual install (other systems, or to control every step yourself)](#option-2-manual-install)
+- [Manual deployment: build on macOS, upload with SCP, and use Certbot with Cloudflare DNS validation](docs/manual-mac-cloudflare-dns.md)
 - [Installing the profile on iPhone, iPad and Mac](#installing-the-profile-on-iphone-ipad-and-mac)
 - [A profile for named services plus gfwlist](#a-profile-for-named-services-plus-gfwlist)
 - [Changing the password](#changing-the-password)
@@ -322,6 +323,8 @@ For more details, see [docs/deploy-debian13.md](docs/deploy-debian13.md).
 ## Option 2: manual install
 
 For Debian 12, Ubuntu 22.04 and later, or if you want to control every step yourself. You need a Linux server with a public IP and a domain. The commands use Debian as the example; Ubuntu is the same.
+
+For a complete alternative that builds a Linux x86_64 executable on an Intel or Apple Silicon Mac, uploads it with SCP, obtains and renews certificates through the Cloudflare API and DNS challenge, and generates an HTTP/2-only device profile, see [Manual deployment from macOS with Cloudflare DNS validation](docs/manual-mac-cloudflare-dns.md). That workflow does not require inbound port 80.
 
 ### Step 1: Firewall and domain
 

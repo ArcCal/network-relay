@@ -1,0 +1,10 @@
+Core/target/
+App/.build/
+build/
+dist/
+.local/
+__pycache__/
+*.pyc
+*.pem
+*.key
+.DS_Store

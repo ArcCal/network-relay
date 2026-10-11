@@ -1,0 +1,8 @@
+uri_template = "https://203.0.113.5:443/.well-known/masque/udp/{target_host}/{target_port}/"
+server_name = "masque.example.com"
+username = "macbook"
+password = "p\"a\\ss word"
+mode = "socks"
+
+[socks]
+listen = ["[::1]:1081"]

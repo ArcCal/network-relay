@@ -1,0 +1,132 @@
+2026-10-11T08:50:31Z INFO app: Masque NF launched; Network.framework transport
+2026-10-11T08:50:31Z INFO app: Connecting to caddy-masuqe; SOCKS5 127.0.0.1:1080; HTTP/3 (QUIC, UDP) [run=BC0D76E0]
+2026-10-11T08:50:36Z INFO app: Settings saved; reconnecting with the changed parameters; existing proxy sessions will end
+2026-10-11T08:50:37Z INFO app: Disconnected
+2026-10-11T08:50:37Z INFO app: Connecting to caddy-masuqe; SOCKS5 127.0.0.1:1080; HTTP/2 (TCP) [run=FE3C5E7C]
+2026-10-11T08:50:46Z INFO app: Disconnect requested
+2026-10-11T08:50:46Z INFO app: Disconnected
+2026-10-11T08:50:47Z INFO app: Connecting to caddy-masuqe; SOCKS5 127.0.0.1:1080; HTTP/2 (TCP) [run=E4F71A52]
+2026-10-11T08:50:57.747598Z  WARN masque_nf_core::client: session failed: timed out [run=E4F71A52]
+2026-10-11T08:51:02Z INFO app: Disconnect requested
+2026-10-11T08:51:02Z INFO app: Disconnected
+2026-10-11T08:51:07Z INFO app: Connecting to caddy-masuqe; SOCKS5 127.0.0.1:1080; HTTP/1.1 (TCP) [run=1A133807]
+2026-10-11T08:51:13Z INFO app: Settings saved; reconnecting with the changed parameters; existing proxy sessions will end
+2026-10-11T08:51:13Z INFO app: Disconnected
+2026-10-11T08:51:13Z INFO app: Connecting to masque-vpn; SOCKS5 127.0.0.1:1080; HTTP/1.1 (TCP) [run=D3544BE2]
+2026-10-11T08:51:14Z DEBUG native: Native TLS connection ready, ALPN http/1.1 [run=D3544BE2]
+2026-10-11T08:51:14.542134Z  INFO masque_nf_core::client: tunnel up transport="HTTP/1.1" addresses=10.89.0.100/32 routes=8 [run=D3544BE2]
+2026-10-11T08:51:18Z INFO app: Settings saved; reconnecting with the changed parameters; existing proxy sessions will end
+2026-10-11T08:51:18Z INFO app: Disconnected
+2026-10-11T08:51:18Z INFO app: Connecting to masque-vpn; SOCKS5 127.0.0.1:1080; HTTP/2 (TCP) [run=FD585D97]
+2026-10-11T08:51:19Z DEBUG native: Native TLS connection ready, ALPN h2 [run=FD585D97]
+2026-10-11T08:51:20.700385Z  INFO masque_nf_core::client: tunnel up transport="HTTP/2" addresses=10.89.0.100/32 routes=8 [run=FD585D97]
+2026-10-11T08:51:25Z INFO app: Settings saved; reconnecting with the changed parameters; existing proxy sessions will end
+2026-10-11T08:51:25Z INFO app: Disconnected
+2026-10-11T08:51:25Z INFO app: Connecting to masque-vpn; SOCKS5 127.0.0.1:1080; HTTP/3 (QUIC, UDP) [run=D0C67B36]
+2026-10-11T08:51:27Z DEBUG native: Native QUIC waiting: POSIXErrorCode(rawValue: 50): Network is down [run=D0C67B36]
+2026-10-11T08:51:27Z DEBUG native: Native QUIC ready, usable DATAGRAM payload 1168 bytes [run=D0C67B36]
+2026-10-11T08:51:27.598970Z  INFO masque_nf_core::client: Native QUIC DATAGRAM capacity is too small; negotiating HTTP/3 DATAGRAM Capsules available=1168 required=1289 [run=D0C67B36]
+2026-10-11T08:51:31Z INFO app: Settings saved; reconnecting with the changed parameters; existing proxy sessions will end
+2026-10-11T08:51:31Z INFO app: Disconnected
+2026-10-11T08:51:31Z INFO app: Connecting to masque-vpn; SOCKS5 127.0.0.1:1080; HTTP/2 (TCP) [run=E27F03FF]
+2026-10-11T08:51:32Z DEBUG native: Native TLS connection ready, ALPN h2 [run=E27F03FF]
+2026-10-11T08:51:32.752895Z  INFO masque_nf_core::client: tunnel up transport="HTTP/2" addresses=10.89.0.100/32 routes=8 [run=E27F03FF]
+2026-10-11T08:51:49Z INFO app: Settings saved; reconnecting with the changed parameters; existing proxy sessions will end
+2026-10-11T08:51:49Z INFO app: Disconnected
+2026-10-11T08:51:49Z INFO app: Connecting to masque-vpn; SOCKS5 127.0.0.1:1080; HTTP/1.1 (TCP) [run=EE86A1A3]
+2026-10-11T08:51:50Z DEBUG native: Native TLS connection ready, ALPN http/1.1 [run=EE86A1A3]
+2026-10-11T08:51:50.716344Z  INFO masque_nf_core::client: tunnel up transport="HTTP/1.1" addresses=10.89.0.100/32 routes=8 [run=EE86A1A3]
+2026-10-11T08:51:53Z INFO app: Settings saved; reconnecting with the changed parameters; existing proxy sessions will end
+2026-10-11T08:51:53Z INFO app: Disconnected
+2026-10-11T08:51:53Z INFO app: Connecting to masque-vpn; SOCKS5 127.0.0.1:1080; HTTP/2 (TCP) [run=13DEF72C]
+2026-10-11T08:51:54Z DEBUG native: Native TLS connection ready, ALPN h2 [run=13DEF72C]
+2026-10-11T08:51:54.851009Z  INFO masque_nf_core::client: tunnel up transport="HTTP/2" addresses=10.89.0.100/32 routes=8 [run=13DEF72C]
+2026-10-11T08:51:58Z INFO app: Settings saved; reconnecting with the changed parameters; existing proxy sessions will end
+2026-10-11T08:51:58Z INFO app: Disconnected
+2026-10-11T08:51:58Z INFO app: Connecting to masque-vpn; SOCKS5 127.0.0.1:1080; HTTP/3 (QUIC, UDP) [run=1AC94CBF]
+2026-10-11T08:51:58Z TRACE native: Native I/O request kind=2 resource=2 bytes=92 [run=1AC94CBF]
+2026-10-11T08:52:00Z DEBUG native: Native QUIC waiting: POSIXErrorCode(rawValue: 50): Network is down [run=1AC94CBF]
+2026-10-11T08:52:00Z DEBUG native: Native QUIC ready, usable DATAGRAM payload 1168 bytes [run=1AC94CBF]
+2026-10-11T08:52:00.356828Z  INFO masque_nf_core::client: Native QUIC DATAGRAM capacity is too small; negotiating HTTP/3 DATAGRAM Capsules available=1168 required=1289 [run=1AC94CBF]
+2026-10-11T08:52:00Z TRACE native: Native I/O request kind=3 resource=37 bytes=0 [run=1AC94CBF]
+2026-10-11T08:52:00Z TRACE native: Native I/O request kind=3 resource=38 bytes=0 [run=1AC94CBF]
+2026-10-11T08:52:00Z TRACE native: Native I/O request kind=3 resource=39 bytes=0 [run=1AC94CBF]
+2026-10-11T08:52:00Z TRACE native: Native I/O request kind=4 resource=37 bytes=31 [run=1AC94CBF]
+2026-10-11T08:52:00Z TRACE native: Native I/O request kind=4 resource=39 bytes=1 [run=1AC94CBF]
+2026-10-11T08:52:00Z TRACE native: Native I/O request kind=4 resource=38 bytes=1 [run=1AC94CBF]
+2026-10-11T08:52:00Z TRACE native: Native I/O request kind=5 resource=43 bytes=0 [run=1AC94CBF]
+2026-10-11T08:52:00Z TRACE native: Native I/O request kind=5 resource=44 bytes=0 [run=1AC94CBF]
+2026-10-11T08:52:00Z TRACE native: Native stream 43 received 31 bytes; final=false [run=1AC94CBF]
+2026-10-11T08:52:00Z TRACE native: Native I/O request kind=5 resource=45 bytes=0 [run=1AC94CBF]
+2026-10-11T08:52:00Z TRACE native: Native stream 44 received 1 bytes; final=false [run=1AC94CBF]
+2026-10-11T08:52:00Z TRACE native: Native I/O request kind=5 resource=46 bytes=0 [run=1AC94CBF]
+2026-10-11T08:52:00Z TRACE native: Native stream 45 received 1 bytes; final=false [run=1AC94CBF]
+2026-10-11T08:52:00Z TRACE native: Native I/O request kind=3 resource=47 bytes=0 [run=1AC94CBF]
+2026-10-11T08:52:00Z TRACE native: Native stream 46 received 23 bytes; final=true [run=1AC94CBF]
+2026-10-11T08:52:00Z TRACE native: Native I/O request kind=5 resource=43 bytes=0 [run=1AC94CBF]
+2026-10-11T08:52:00Z TRACE native: Native I/O request kind=7 resource=46 bytes=0 [run=1AC94CBF]
+2026-10-11T08:52:00Z TRACE native: Native I/O request kind=3 resource=48 bytes=0 [run=1AC94CBF]
+2026-10-11T08:52:00Z TRACE native: Native I/O request kind=4 resource=48 bytes=120 [run=1AC94CBF]
+2026-10-11T08:52:00Z TRACE native: Native I/O request kind=5 resource=48 bytes=0 [run=1AC94CBF]
+2026-10-11T08:52:10Z TRACE native: Native I/O request kind=7 resource=48 bytes=0 [run=1AC94CBF]
+2026-10-11T08:52:10.593018Z  WARN masque_nf_core::client: session failed: no HTTP/3 response: deadline has elapsed [run=1AC94CBF]
+2026-10-11T08:52:10Z TRACE native: Native I/O request kind=7 resource=38 bytes=0 [run=1AC94CBF]
+2026-10-11T08:52:10Z TRACE native: Native I/O request kind=7 resource=45 bytes=0 [run=1AC94CBF]
+2026-10-11T08:52:10Z TRACE native: Native I/O request kind=7 resource=47 bytes=0 [run=1AC94CBF]
+2026-10-11T08:52:10Z TRACE native: Native I/O request kind=7 resource=37 bytes=0 [run=1AC94CBF]
+2026-10-11T08:52:10Z TRACE native: Native I/O request kind=7 resource=44 bytes=0 [run=1AC94CBF]
+2026-10-11T08:52:10Z TRACE native: Native I/O request kind=7 resource=43 bytes=0 [run=1AC94CBF]
+2026-10-11T08:52:10Z TRACE native: Native I/O request kind=7 resource=39 bytes=0 [run=1AC94CBF]
+2026-10-11T08:52:10Z TRACE native: Native I/O request kind=7 resource=2 bytes=0 [run=1AC94CBF]
+2026-10-11T08:52:13Z DEBUG native: Native QUIC waiting: POSIXErrorCode(rawValue: 50): Network is down [run=1AC94CBF]
+2026-10-11T08:52:13Z DEBUG native: Native QUIC ready, usable DATAGRAM payload 1168 bytes [run=1AC94CBF]
+2026-10-11T08:52:13.367081Z  INFO masque_nf_core::client: Native QUIC DATAGRAM capacity is too small; negotiating HTTP/3 DATAGRAM Capsules available=1168 required=1289 [run=1AC94CBF]
+2026-10-11T08:52:13Z TRACE native: Native I/O request kind=3 resource=110 bytes=0 [run=1AC94CBF]
+2026-10-11T08:52:13Z TRACE native: Native I/O request kind=3 resource=111 bytes=0 [run=1AC94CBF]
+2026-10-11T08:52:13Z TRACE native: Native I/O request kind=3 resource=112 bytes=0 [run=1AC94CBF]
+2026-10-11T08:52:13Z TRACE native: Native I/O request kind=4 resource=110 bytes=31 [run=1AC94CBF]
+2026-10-11T08:52:13Z TRACE native: Native I/O request kind=4 resource=112 bytes=1 [run=1AC94CBF]
+2026-10-11T08:52:13Z TRACE native: Native I/O request kind=4 resource=111 bytes=1 [run=1AC94CBF]
+2026-10-11T08:52:13Z TRACE native: Native I/O request kind=3 resource=131 bytes=0 [run=1AC94CBF]
+2026-10-11T08:52:13Z TRACE native: Native I/O request kind=3 resource=133 bytes=0 [run=1AC94CBF]
+2026-10-11T08:52:13Z TRACE native: Native I/O request kind=4 resource=133 bytes=120 [run=1AC94CBF]
+2026-10-11T08:52:13Z TRACE native: Native I/O request kind=5 resource=133 bytes=0 [run=1AC94CBF]
+2026-10-11T08:52:23Z TRACE native: Native I/O request kind=7 resource=133 bytes=0 [run=1AC94CBF]
+2026-10-11T08:52:23.602864Z  WARN masque_nf_core::client: session failed: no HTTP/3 response: deadline has elapsed [run=1AC94CBF]
+2026-10-11T08:52:23Z TRACE native: Native I/O request kind=7 resource=111 bytes=0 [run=1AC94CBF]
+2026-10-11T08:52:23Z TRACE native: Native I/O request kind=7 resource=131 bytes=0 [run=1AC94CBF]
+2026-10-11T08:52:23Z TRACE native: Native I/O request kind=7 resource=112 bytes=0 [run=1AC94CBF]
+2026-10-11T08:52:23Z TRACE native: Native I/O request kind=7 resource=110 bytes=0 [run=1AC94CBF]
+2026-10-11T08:52:27Z INFO app: Settings saved; reconnecting with the changed parameters; existing proxy sessions will end
+2026-10-11T08:52:27Z INFO app: Disconnected
+2026-10-11T08:52:27Z INFO app: Connecting to masque-vpn; SOCKS5 127.0.0.1:1080; HTTP/2 (TCP) [run=7B10D991]
+2026-10-11T08:52:28Z DEBUG native: Native TLS connection ready, ALPN h2 [run=7B10D991]
+2026-10-11T08:52:28.680049Z  INFO masque_nf_core::client: tunnel up transport="HTTP/2" addresses=10.89.0.100/32 routes=8 [run=7B10D991]
+2026-10-11T08:52:31Z INFO app: Settings saved; reconnecting with the changed parameters; existing proxy sessions will end
+2026-10-11T08:52:31Z INFO app: Disconnected
+2026-10-11T08:52:31Z INFO app: Connecting to masque-vpn; SOCKS5 127.0.0.1:1080; HTTP/1.1 (TCP) [run=B12BA7AE]
+2026-10-11T08:52:32Z DEBUG native: Native TLS connection ready, ALPN http/1.1 [run=B12BA7AE]
+2026-10-11T08:52:32.857996Z  INFO masque_nf_core::client: tunnel up transport="HTTP/1.1" addresses=10.89.0.100/32 routes=8 [run=B12BA7AE]
+2026-10-11T08:52:36Z INFO app: Settings saved; reconnecting with the changed parameters; existing proxy sessions will end
+2026-10-11T08:52:36Z INFO app: Disconnected
+2026-10-11T08:52:36Z INFO app: Connecting to masque-vpn; SOCKS5 127.0.0.1:1080; HTTP/3 (QUIC, UDP) [run=C8593A29]
+2026-10-11T08:52:38Z DEBUG native: Native QUIC waiting: POSIXErrorCode(rawValue: 50): Network is down [run=C8593A29]
+2026-10-11T08:52:38Z DEBUG native: Native QUIC ready, usable DATAGRAM payload 1168 bytes [run=C8593A29]
+2026-10-11T08:52:38.920909Z  INFO masque_nf_core::client: Native QUIC DATAGRAM capacity is too small; negotiating HTTP/3 DATAGRAM Capsules available=1168 required=1289 [run=C8593A29]
+2026-10-11T08:52:40Z INFO app: Settings saved; reconnecting with the changed parameters; existing proxy sessions will end
+2026-10-11T08:52:40Z INFO app: Disconnected
+2026-10-11T08:52:40Z INFO app: Connecting to caddy-masuqe; SOCKS5 127.0.0.1:1080; HTTP/1.1 (TCP) [run=21F7B4C2]
+2026-10-11T08:52:50Z INFO app: Settings saved; reconnecting with the changed parameters; existing proxy sessions will end
+2026-10-11T08:52:50Z INFO app: Disconnected
+2026-10-11T08:52:50Z INFO app: Connecting to caddy-masuqe; SOCKS5 127.0.0.1:1080; HTTP/2 (TCP) [run=D628E192]
+2026-10-11T08:52:55Z INFO app: Settings saved; reconnecting with the changed parameters; existing proxy sessions will end
+2026-10-11T08:52:55Z INFO app: Disconnected
+2026-10-11T08:52:55Z INFO app: Connecting to caddy-masuqe; SOCKS5 127.0.0.1:1080; HTTP/3 (QUIC, UDP) [run=AB8453E2]
+2026-10-11T08:52:59Z INFO app: Disconnect requested
+2026-10-11T08:52:59Z INFO app: Disconnected
+2026-10-11T08:53:00Z INFO app: Connecting to caddy-masuqe; SOCKS5 127.0.0.1:1080; HTTP/3 (QUIC, UDP) [run=617D4509]
+2026-10-11T08:53:01Z INFO app: Disconnect requested
+2026-10-11T08:53:01Z INFO app: Disconnected
+2026-10-11T08:53:10Z INFO app: Connecting to masque-vpn; SOCKS5 127.0.0.1:1080; HTTP/2 (TCP) [run=77185E82]
+2026-10-11T08:53:11Z DEBUG native: Native TLS connection ready, ALPN h2 [run=77185E82]
+2026-10-11T08:53:12.068114Z  INFO masque_nf_core::client: tunnel up transport="HTTP/2" addresses=10.89.0.100/32 routes=8 [run=77185E82]

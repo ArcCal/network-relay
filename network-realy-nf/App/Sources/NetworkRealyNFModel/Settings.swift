@@ -17,6 +17,12 @@ public struct Settings: Codable, Equatable {
     public var connectOnLaunch: Bool
     /// Which HTTP version carries the tunnel.
     public var transport: Transport
+    /// A keytab with the proxy's Kerberos keys: programs then authenticate
+    /// to the proxy with GSS-API (RFC 1961). Empty: no authentication.
+    public var gssapiKeytab: String
+    /// The Kerberos clients admitted, separated by commas or spaces; empty
+    /// for any the keytab's realm authenticates.
+    public var gssapiPrincipals: String
 
     public init(
         serverIP: String = "",
@@ -25,7 +31,9 @@ public struct Settings: Codable, Equatable {
         listenAddress: String = "127.0.0.1",
         port: Int = 1080,
         connectOnLaunch: Bool = false,
-        transport: Transport = .auto
+        transport: Transport = .auto,
+        gssapiKeytab: String = "",
+        gssapiPrincipals: String = ""
     ) {
         self.serverIP = serverIP
         self.domain = domain
@@ -34,10 +42,12 @@ public struct Settings: Codable, Equatable {
         self.port = port
         self.connectOnLaunch = connectOnLaunch
         self.transport = transport
+        self.gssapiKeytab = gssapiKeytab
+        self.gssapiPrincipals = gssapiPrincipals
     }
 
     private enum CodingKeys: String, CodingKey {
-        case serverIP, domain, username, listenAddress, port, connectOnLaunch, transport
+        case serverIP, domain, username, listenAddress, port, connectOnLaunch, transport, gssapiKeytab, gssapiPrincipals
     }
 
     /// A field that is missing or unreadable, because another version of
@@ -61,6 +71,8 @@ public struct Settings: Codable, Equatable {
         port = value(.port, defaults.port)
         connectOnLaunch = value(.connectOnLaunch, defaults.connectOnLaunch)
         transport = value(.transport, defaults.transport)
+        gssapiKeytab = value(.gssapiKeytab, defaults.gssapiKeytab)
+        gssapiPrincipals = value(.gssapiPrincipals, defaults.gssapiPrincipals)
     }
 
     /// The SOCKS5 address programs are set to use, such as `127.0.0.1:1080`.
@@ -106,6 +118,8 @@ public enum SettingsError: Error, Equatable, LocalizedError {
     case invalidPassword
     case invalidListenAddress
     case invalidPort
+    case invalidKeytab
+    case principalsWithoutKeytab
 
     public var errorDescription: String? {
         switch self {
@@ -118,6 +132,8 @@ public enum SettingsError: Error, Equatable, LocalizedError {
         case .invalidPassword: return "The password must not contain control characters such as line breaks."
         case .invalidListenAddress: return "The listen address must be an IP address, such as 127.0.0.1."
         case .invalidPort: return "The port must be between 1 and 65535."
+        case .invalidKeytab: return "The Kerberos keytab must be a full path, such as /Users/me/socks.keytab, or empty."
+        case .principalsWithoutKeytab: return "Kerberos clients need a Kerberos keytab."
         }
     }
 }
@@ -172,7 +188,29 @@ public func clientConfiguration(_ settings: Settings, password: String) throws -
         "[socks]",
         "listen = [\(tomlString(listen))]",
     ]
+    if let kerberos = try gssapi(settings) {
+        lines.append("gssapi_keytab = \(tomlString(kerberos.keytab))")
+        if !kerberos.principals.isEmpty {
+            lines.append("gssapi_principals = [\(kerberos.principals.map(tomlString).joined(separator: ", "))]")
+        }
+    }
     return lines.joined(separator: "\n") + "\n"
+}
+
+/// The checked Kerberos keytab and admitted clients, if a keytab is set.
+func gssapi(_ settings: Settings) throws -> (keytab: String, principals: [String])? {
+    let keytab = settings.gssapiKeytab.trimmed
+    let principals = settings.gssapiPrincipals.split(whereSeparator: { $0 == "," || $0.isWhitespace }).map(String.init)
+    if keytab.isEmpty {
+        if !principals.isEmpty {
+            throw SettingsError.principalsWithoutKeytab
+        }
+        return nil
+    }
+    if !keytab.hasPrefix("/") || keytab.unicodeScalars.contains(where: { $0.properties.generalCategory == .control }) {
+        throw SettingsError.invalidKeytab
+    }
+    return (keytab, principals)
 }
 
 /// The checked `host:port` the SOCKS5 proxy listens on.

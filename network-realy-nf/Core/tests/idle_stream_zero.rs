@@ -29,6 +29,8 @@ async fn idle_group_stream_zero() {
         mode: "socks".into(),
         socks: network_realy_nf_core::Socks {
             listen: vec!["127.0.0.1:0".parse().unwrap()],
+            gssapi_keytab: None,
+            gssapi_principals: Vec::new(),
         },
     };
     let backend = support::Backend::start_with(config["ca"].as_str().unwrap().into(), true);

@@ -653,7 +653,11 @@ where
             //= https://www.rfc-editor.org/rfc/rfc9114#section-6.2.3
             //# They MAY also be
             //# sent on connections where no data is currently being transferred.
-            ready!(self.poll_grease_stream(cx));
+            // The grease stream is optional: while it is still being opened
+            // (asynchronously on some transports), return the frame already
+            // read instead of losing it; the stream is polled again with the
+            // next control frame.
+            let _ = self.poll_grease_stream(cx);
         }
 
         Poll::Ready(Ok(res))
@@ -817,6 +821,9 @@ pub struct RequestStream<S, B> {
     pub(super) conn_state: Arc<SharedState>,
     pub(super) max_field_section_size: u64,
     send_grease_frame: bool,
+    // Set on a client's request streams. This client never sends MAX_PUSH_ID,
+    // so a PUSH_PROMISE is an ID error there (RFC 9114 section 7.2.5).
+    pub(super) client: bool,
     forbid_trailers: bool,
 }
 
@@ -834,6 +841,7 @@ impl<S, B> RequestStream<S, B> {
             max_field_section_size,
             trailers: None,
             send_grease_frame: grease,
+            client: false,
             forbid_trailers: false,
         }
     }
@@ -886,6 +894,19 @@ where
                     return Poll::Ready(Ok(None));
                 }
                 Ok(Some(Frame::Data { .. })) => (),
+                //= https://www.rfc-editor.org/rfc/rfc9114#section-7.2.5
+                //# A client MUST treat
+                //# receipt of a PUSH_PROMISE frame that contains a larger push ID than
+                //# the client has advertised as a connection error of H3_ID_ERROR.
+                // A client never sends MAX_PUSH_ID, so every push ID is larger.
+                Ok(Some(Frame::PushPromise(_))) if self.client => {
+                    return Poll::Ready(Err(self.handle_connection_error_on_stream(
+                        InternalConnectionError::new(
+                            Code::H3_ID_ERROR,
+                            "PUSH_PROMISE without MAX_PUSH_ID".to_string(),
+                        ),
+                    )));
+                }
                 Ok(Some(other_frame)) => {
                     //= https://www.rfc-editor.org/rfc/rfc9114#section-4.1
                     //# Receipt of an invalid sequence of frames MUST be treated as a
@@ -942,6 +963,19 @@ where
                 }
                 Ok(None) => return Poll::Ready(Ok(None)),
                 Ok(Some(Frame::Headers(encoded))) => encoded,
+                //= https://www.rfc-editor.org/rfc/rfc9114#section-7.2.5
+                //# A client MUST treat
+                //# receipt of a PUSH_PROMISE frame that contains a larger push ID than
+                //# the client has advertised as a connection error of H3_ID_ERROR.
+                // A client never sends MAX_PUSH_ID, so every push ID is larger.
+                Ok(Some(Frame::PushPromise(_))) if self.client => {
+                    return Poll::Ready(Err(self.handle_connection_error_on_stream(
+                        InternalConnectionError::new(
+                            Code::H3_ID_ERROR,
+                            "PUSH_PROMISE without MAX_PUSH_ID".to_string(),
+                        ),
+                    )));
+                }
                 Ok(Some(other_frame)) => {
                     //= https://www.rfc-editor.org/rfc/rfc9114#section-4.1
                     //# Receipt of an invalid sequence of frames MUST be treated as a
@@ -987,6 +1021,15 @@ where
                     return Poll::Ready(Err(
                         self.handle_frame_stream_error_on_request_stream(frame_stream_error)
                     ))
+                }
+                // A PUSH_PROMISE may follow a response (RFC 9114 section 4.1).
+                Poll::Ready(Ok(Some(Frame::PushPromise(_)))) if self.client => {
+                    return Poll::Ready(Err(self.handle_connection_error_on_stream(
+                        InternalConnectionError::new(
+                            Code::H3_ID_ERROR,
+                            "PUSH_PROMISE without MAX_PUSH_ID".to_string(),
+                        ),
+                    )));
                 }
                 Poll::Ready(Ok(Some(trailing_frame))) => {
                     // Received a known frame after trailers -> fail.
@@ -1163,6 +1206,7 @@ where
                 conn_state: self.conn_state.clone(),
                 max_field_section_size: 0,
                 send_grease_frame: self.send_grease_frame,
+                client: self.client,
                 forbid_trailers: self.forbid_trailers,
             },
             RequestStream {
@@ -1171,6 +1215,7 @@ where
                 conn_state: self.conn_state,
                 max_field_section_size: self.max_field_section_size,
                 send_grease_frame: self.send_grease_frame,
+                client: self.client,
                 forbid_trailers: self.forbid_trailers,
             },
         )

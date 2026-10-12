@@ -568,6 +568,7 @@ dependencies = [
  "hyper",
  "hyper-util",
  "quinn",
+ "rcgen",
  "rustls",
  "rustls-pki-types",
  "serde",

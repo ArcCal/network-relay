@@ -105,16 +105,40 @@ runs them correctly or that they stop the unrelated native H3 EINVAL.
 - Passwords use the copied private-file store; Keychain integration and independent
   security audit are pending. Ad-hoc signing is not notarization.
 
+## Native confirmation, 2026-10-11 14:12–14:16 UTC
+
+A Mac run of `97479f7` ([evidence](evidence/native-http3-20261011-1412.md))
+logged `groupSID=0` for every group and every request on SID 4. Seven
+QUIC groups failed as the **group** object, with POSIX 22, 10.36–11.60 s
+after their first request. HTTP/2 and HTTP/1.1 controls stayed up. This
+confirms natively the client side of the idle-stream-0 chain. The server
+event is inferred from source and emulator, not yet logged. The group API
+cannot use stream 0, so the repair is server-side.
+
+## Server repair, 2026-10-11 (implemented and tested; native confirmation pending)
+
+With server changes permitted, both relay servers now start the HTTP/3 header
+deadline at a request stream's first byte and leave an unwritten stream open:
+network-relay `9821c4f`, caddy-network-relay `ef04df6`. Network Realy NF is
+unchanged. Against the rebuilt servers, `Core/tests/idle_stream_zero.rs` sees
+no event on stream 0 thirteen seconds after admission (before: reset at
+10.01 s), and the unchanged real-server matrix passes over HTTP/1.1, HTTP/2 and
+HTTP/3 ([evidence](evidence/native-http3-20261011-1412.md#server-repair)).
+Native confirmation needs a deployed fixed server: no group `POSIX 22` about
+ten seconds after the first request, and HTTP/3 sessions that stay up.
+
 ## Possible issues, not established root causes
 
 - Initial bidi ownership and an implicit idle SID 0 may interact with the
   servers' ten-second header rejection and Apple's group lifecycle. Since
   2026-10-11, two of the three steps are established without a Mac
   ([evidence](evidence/idle-group-stream-zero-20261011.md)). Apple documents
-  that the group owns stream 0 with no I/O on it. Both relay servers reset
-  and stop an idle stream 0 about ten seconds after the first request: the
-  Rust relay with H3_REQUEST_REJECTED, caddy-network-relay with
-  H3_REQUEST_INCOMPLETE. The emulator measured both. Still unverified:
+  that the group owns stream 0 with no I/O on it. Before their repairs
+  (network-relay `9821c4f`, caddy-network-relay `ef04df6`), both relay
+  servers reset and stopped an idle stream 0 about ten seconds after the
+  first request: the Rust relay with H3_REQUEST_REJECTED,
+  caddy-network-relay with H3_REQUEST_INCOMPLETE. The emulator measured
+  both. Still unverified:
   that Network.framework turns that reset into the group EINVAL, and which
   server build is deployed. Group failures are now logged at WARN to settle
   this on a Mac.

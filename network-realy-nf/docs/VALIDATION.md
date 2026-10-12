@@ -48,6 +48,15 @@ after readiness, and the stream-4 CONNECT-UDP session kept echoing at 13 s.
 logging change was not compiled, because no Swift toolchain is available.
 Details: [evidence](evidence/idle-group-stream-zero-20261011.md).
 
+Rerun 2026-10-11T14:52Z against the repaired servers (network-relay `9821c4f`,
+binary SHA-256 `fc4e0dbc…d34ebf2d`; caddy-network-relay `ef04df6`, Go 1.26.8,
+`-tags http2legacy`, `fb6003e6…bd52eb54`), same emulator, client Core tree
+digest `6689a9a0…`: `idle_stream_zero` records no event on stream 0 thirteen
+seconds after admission for either server, and `real_server_matrix` passes for
+both. `cargo test --locked`: 37 unit, 5 and 21 integration tests passed. Not
+Network.framework; native acceptance is pending
+([evidence](evidence/native-http3-20261011-1412.md#server-repair)).
+
 ## Repeat portable validation
 
 ```bash

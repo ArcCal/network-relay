@@ -33,6 +33,15 @@ No client fix is possible with the group API, and a server-side change is
 outside this directory. The client now logs group failures at WARN and the
 group-owned SID at Detailed.
 
+Later the same day, a Mac run confirmed `groupSID=0`, requests on SID 4 and
+group EINVAL failures 10.36–11.60 s after each group's first request
+([evidence](evidence/native-http3-20261011-1412.md)). Server changes were then
+permitted: network-relay `9821c4f` and caddy-network-relay `ef04df6` start the
+header deadline at a request stream's first byte, so the unwritten stream 0 is
+left open. Network Realy NF is unchanged. Emulator and server tests pass;
+native acceptance against a deployed fixed server is pending, and that
+acceptance is what will confirm the last link (reset → group EINVAL).
+
 ## New relay application observations
 
 The supplied cumulative log identifies app/core 0.1.0, built at

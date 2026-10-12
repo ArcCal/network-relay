@@ -78,6 +78,19 @@ where
         req.resolve().await
     }
 
+    /// Waits, without a deadline, until the request stream has received
+    /// data or its end. Returns `false` if the stream failed first.
+    pub async fn wait_for_data(&mut self) -> bool {
+        let stream = &mut self.frame_stream.stream;
+        std::future::poll_fn(|cx| {
+            if stream.buf().has_remaining() || stream.is_eos() {
+                return std::task::Poll::Ready(true);
+            }
+            stream.poll_read(cx).map(|r| r.is_ok())
+        })
+        .await
+    }
+
     /// Like [`Self::resolve_request`], but gives up when `deadline` completes
     /// before the request's HEADERS frame has arrived. The request was not
     /// processed, so both directions of its stream are then cancelled with

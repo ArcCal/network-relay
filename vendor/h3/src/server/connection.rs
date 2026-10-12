@@ -30,7 +30,7 @@ use crate::{
 };
 
 #[cfg(feature = "tracing")]
-use tracing::{instrument, trace, warn};
+use tracing::{instrument, trace};
 
 use super::request::RequestResolver;
 
@@ -60,6 +60,8 @@ where
     pub(super) recv_closing: Option<PushId>,
     // The id of the last stream received by this connection.
     pub(super) last_accepted_stream: Option<StreamId>,
+    // The largest push ID a MAX_PUSH_ID frame has allowed, if any.
+    pub(super) max_push_id: Option<PushId>,
 }
 
 impl<C, B> ConnectionState for Connection<C, B>
@@ -253,29 +255,35 @@ where
                 trace!("Got settings > {:?}", _setting);
             }
             &Frame::Goaway(id) => self.inner.process_goaway(&mut self.recv_closing, id)?,
-            _frame @ Frame::MaxPushId(_) | _frame @ Frame::CancelPush(_) => {
-                #[cfg(feature = "tracing")]
-                warn!("Control frame ignored {:?}", _frame);
+            //= https://www.rfc-editor.org/rfc/rfc9114#section-7.2.7
+            //# A MAX_PUSH_ID frame cannot reduce the maximum push
+            //# ID; receipt of a MAX_PUSH_ID frame that contains a smaller value than
+            //# previously received MUST be treated as a connection error of type
+            //# H3_ID_ERROR.
+            &Frame::MaxPushId(id) => {
+                if self.max_push_id.is_some_and(|max| id < max) {
+                    return Poll::Ready(Err(self.inner.handle_connection_error(
+                        InternalConnectionError::new(
+                            Code::H3_ID_ERROR,
+                            format!("MAX_PUSH_ID reduced to {}", id),
+                        ),
+                    )));
+                }
+                self.max_push_id = Some(id);
+            }
 
-                //= https://www.rfc-editor.org/rfc/rfc9114#section-7.2.3
-                //= type=TODO
-                //# If a CANCEL_PUSH frame is received that
-                //# references a push ID greater than currently allowed on the
-                //# connection, this MUST be treated as a connection error of type
-                //# H3_ID_ERROR.
-
-                //= https://www.rfc-editor.org/rfc/rfc9114#section-7.2.3
-                //= type=TODO
-                //# If a server receives a CANCEL_PUSH frame for a push
-                //# ID that has not yet been mentioned by a PUSH_PROMISE frame, this MUST
-                //# be treated as a connection error of type H3_ID_ERROR.
-
-                //= https://www.rfc-editor.org/rfc/rfc9114#section-7.2.7
-                //= type=TODO
-                //# A MAX_PUSH_ID frame cannot reduce the maximum push
-                //# ID; receipt of a MAX_PUSH_ID frame that contains a smaller value than
-                //# previously received MUST be treated as a connection error of type
-                //# H3_ID_ERROR.
+            //= https://www.rfc-editor.org/rfc/rfc9114#section-7.2.3
+            //# If a server receives a CANCEL_PUSH frame for a push
+            //# ID that has not yet been mentioned by a PUSH_PROMISE frame, this MUST
+            //# be treated as a connection error of type H3_ID_ERROR.
+            // This server never sends PUSH_PROMISE, so no push ID has been mentioned.
+            &Frame::CancelPush(id) => {
+                return Poll::Ready(Err(self.inner.handle_connection_error(
+                    InternalConnectionError::new(
+                        Code::H3_ID_ERROR,
+                        format!("CANCEL_PUSH for unpromised push ID {}", id),
+                    ),
+                )));
             }
 
             //= https://www.rfc-editor.org/rfc/rfc9114#section-7.2.5

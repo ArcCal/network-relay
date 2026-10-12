@@ -2577,6 +2577,43 @@ async fn http3_unwritten_request_stream_is_left_open() {
     assert_eq!(got.copy_to_bytes(got.remaining()), "after");
 }
 
+#[tokio::test]
+async fn http3_push_control_frames_are_checked() {
+    // The relay never sends PUSH_PROMISE, so a CANCEL_PUSH names a push ID it
+    // has not mentioned (RFC 9114 §7.2.3), and MAX_PUSH_ID cannot be reduced
+    // (§7.2.7): both are H3_ID_ERROR. An increasing MAX_PUSH_ID is accepted.
+    let relay = TestRelay::start("").await;
+    let tls = network_relay::tls::client_config(Some(&relay.env.path("ca.pem")), &[b"h3"]).unwrap();
+    let crypto = quinn::crypto::rustls::QuicClientConfig::try_from(tls).unwrap();
+    let cfg = quinn::ClientConfig::new(std::sync::Arc::new(crypto));
+    let ep = quinn::Endpoint::client("127.0.0.1:0".parse().unwrap()).unwrap();
+    let id_error = h3::error::Code::H3_ID_ERROR.value();
+    for (frames, error) in [
+        (&[0x03, 0x01, 0x00][..], Some(id_error)),
+        (&[0x0d, 0x01, 0x01, 0x0d, 0x01, 0x00][..], Some(id_error)),
+        (&[0x0d, 0x01, 0x00, 0x0d, 0x01, 0x01, 0x0d, 0x01, 0x01][..], None),
+    ] {
+        let conn = ep.connect_with(cfg.clone(), relay.addr, "relay.test").unwrap().await.unwrap();
+        let mut control = conn.open_uni().await.unwrap();
+        // Control stream type, empty SETTINGS, then the frames under test.
+        control.write_all(&[0x00, 0x04, 0x00]).await.unwrap();
+        control.write_all(frames).await.unwrap();
+        match error {
+            Some(code) => {
+                let closed = within("H3_ID_ERROR", conn.closed()).await;
+                assert!(
+                    matches!(closed, quinn::ConnectionError::ApplicationClosed(ref c) if c.error_code.into_inner() == code),
+                    "{frames:02x?}: {closed:?}"
+                );
+            }
+            None => assert!(
+                tokio::time::timeout(Duration::from_secs(1), conn.closed()).await.is_err(),
+                "{frames:02x?}: connection closed"
+            ),
+        }
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn connect_udp_protocol_token_is_matched_without_case() {
     // RFC 9110 §7.8: upgrade tokens, and so :protocol (RFC 8441 §4), are

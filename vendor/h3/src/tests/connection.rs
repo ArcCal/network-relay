@@ -605,6 +605,83 @@ async fn control_stream_frame_unexpected() {
     tokio::select! { _ = server_fut => (), _ = client_fut => panic!("client resolved first") };
 }
 
+/// Sends SETTINGS and then `frames` on a client control stream, and returns
+/// what the server's next `accept` gives within a second (`None`: nothing).
+async fn server_after_control_frames(frames: Vec<Frame<Bytes>>) -> Option<ConnectionError> {
+    let mut pair = Pair::default();
+    let mut server = pair.server();
+
+    let client_fut = async {
+        let connection = pair.client_inner().await;
+        let mut control_stream = connection.open_uni().await.unwrap();
+        let mut buf = BytesMut::new();
+        StreamType::CONTROL.encode(&mut buf);
+        Frame::Settings::<Bytes>(Settings::default()).encode(&mut buf);
+        for frame in &frames {
+            frame.encode(&mut buf);
+        }
+        control_stream.write_all(&buf[..]).await.unwrap();
+        tokio::time::sleep(Duration::from_secs(10)).await;
+    };
+
+    let server_fut = async {
+        let conn = server.next().await;
+        let mut incoming = server::Connection::new(conn).await.unwrap();
+        match tokio::time::timeout(Duration::from_secs(1), incoming.accept()).await {
+            Ok(result) => result.map(|_| ()).err(),
+            Err(_) => None,
+        }
+    };
+
+    tokio::select! { e = server_fut => e, _ = client_fut => panic!("client resolved first") }
+}
+
+#[tokio::test]
+async fn server_cancel_push_is_id_error() {
+    init_tracing();
+    //= https://www.rfc-editor.org/rfc/rfc9114#section-7.2.3
+    //= type=test
+    //# If a server receives a CANCEL_PUSH frame for a push
+    //# ID that has not yet been mentioned by a PUSH_PROMISE frame, this MUST
+    //# be treated as a connection error of type H3_ID_ERROR.
+    assert_matches!(
+        server_after_control_frames(vec![Frame::CancelPush(PushId(0))]).await,
+        Some(ConnectionError::Local {
+            error: LocalError::Application {
+                code: Code::H3_ID_ERROR,
+                ..
+            }
+        })
+    );
+}
+
+#[tokio::test]
+async fn server_max_push_id_reduced_is_id_error() {
+    init_tracing();
+    //= https://www.rfc-editor.org/rfc/rfc9114#section-7.2.7
+    //= type=test
+    //# A MAX_PUSH_ID frame cannot reduce the maximum push
+    //# ID; receipt of a MAX_PUSH_ID frame that contains a smaller value than
+    //# previously received MUST be treated as a connection error of type
+    //# H3_ID_ERROR.
+    assert_matches!(
+        server_after_control_frames(vec![Frame::MaxPushId(PushId(1)), Frame::MaxPushId(PushId(0))]).await,
+        Some(ConnectionError::Local {
+            error: LocalError::Application {
+                code: Code::H3_ID_ERROR,
+                ..
+            }
+        })
+    );
+}
+
+#[tokio::test]
+async fn server_max_push_id_not_reduced_is_accepted() {
+    init_tracing();
+    let frames = vec![Frame::MaxPushId(PushId(0)), Frame::MaxPushId(PushId(1)), Frame::MaxPushId(PushId(1))];
+    assert_matches!(server_after_control_frames(frames).await, None);
+}
+
 #[tokio::test]
 async fn timeout_on_control_frame_read() {
     init_tracing();

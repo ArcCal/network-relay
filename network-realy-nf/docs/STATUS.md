@@ -133,10 +133,12 @@ ten seconds after the first request, and HTTP/3 sessions that stay up.
   servers' ten-second header rejection and Apple's group lifecycle. Since
   2026-10-11, two of the three steps are established without a Mac
   ([evidence](evidence/idle-group-stream-zero-20261011.md)). Apple documents
-  that the group owns stream 0 with no I/O on it. Both relay servers reset
-  and stop an idle stream 0 about ten seconds after the first request: the
-  Rust relay with H3_REQUEST_REJECTED, caddy-network-relay with
-  H3_REQUEST_INCOMPLETE. The emulator measured both. Still unverified:
+  that the group owns stream 0 with no I/O on it. Before their repairs
+  (network-relay `9821c4f`, caddy-network-relay `ef04df6`), both relay
+  servers reset and stopped an idle stream 0 about ten seconds after the
+  first request: the Rust relay with H3_REQUEST_REJECTED,
+  caddy-network-relay with H3_REQUEST_INCOMPLETE. The emulator measured
+  both. Still unverified:
   that Network.framework turns that reset into the group EINVAL, and which
   server build is deployed. Group failures are now logged at WARN to settle
   this on a Mac.

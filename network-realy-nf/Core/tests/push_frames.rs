@@ -59,6 +59,8 @@ async fn http3_client_checks_push_frames() {
         mode: "socks".into(),
         socks: network_realy_nf_core::Socks {
             listen: vec!["127.0.0.1:0".parse().unwrap()],
+            gssapi_keytab: None,
+            gssapi_principals: Vec::new(),
         },
     };
     let established = [&OK[..], &PUSH_PROMISE[..]].concat();

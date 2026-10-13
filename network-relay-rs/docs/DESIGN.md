@@ -4,7 +4,7 @@ Revision: 0.1.0 development, 2026-10-12.
 
 ## Goals
 
-Network Relay RS preserves Network Realy NF's user workflow while removing its
+Network Relay RS preserves Network Relay NF's user workflow while removing its
 Network.framework transport dependency. The owner requested a separate app,
 with separate code and documents under the network-relay repository. Server
 code and the existing NF application remain unchanged. Rust implements the

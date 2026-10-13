@@ -1,7 +1,7 @@
 # Source and dependency notices
 
 The application behavior and shared icon were adapted from ArcCal's Network
-Realy NF at the revision recorded in SOURCE-PROVENANCE.json. Its Rust protocol
+Relay NF at the revision recorded in SOURCE-PROVENANCE.json. Its Rust protocol
 core, protocol parsers and vendored hyperium/h3 implementation were independently
 copied into this application. UI behavior was reimplemented in Rust; no Swift
 or Network.framework adapter is a build dependency.

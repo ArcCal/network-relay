@@ -1,7 +1,7 @@
 # Network Relay RS
 
 Network Relay RS is an independent Rust macOS client for **network-relay** and
-**caddy-network-relay**. It reproduces Network Realy NF's server profiles, settings,
+**caddy-network-relay**. It reproduces Network Relay NF's server profiles, settings,
 menu-bar controls, status, icon and five-level log workflow. Application and
 protocol code are Rust. The GUI calls native AppKit through Rust bindings;
 Tokio, rustls and Quinn implement the networking. It contains no Swift source
@@ -10,7 +10,7 @@ and does not use Network.framework for sockets, TLS or QUIC.
 Its complete code, vendored protocol dependencies, build scripts and documents
 live in `network-relay-rs/`. Building it does not require another application's
 source or change the parent relay server. Its bundle identifier and private
-settings store are separate from Network Realy NF.
+settings store are separate from Network Relay NF.
 
 **Development status:** the production Rust transport passes real local
 network-relay and caddy-network-relay TCP/UDP matrices for HTTP/1.1, HTTP/2 and

@@ -375,7 +375,7 @@ fn private_atomic_saves_and_duplicate_saved_ids() {
 fn default_storage_is_independent_of_nf() {
     let path = Configuration::default_path();
     assert!(path.ends_with("Library/Application Support/NetworkRelayRS/configuration.json"));
-    assert!(!path.to_string_lossy().contains("NetworkRealyNF"));
+    assert!(!path.to_string_lossy().contains("NetworkRelayNF"));
 }
 
 #[test]

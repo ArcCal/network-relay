@@ -291,15 +291,17 @@ impl Client {
             .enable_datagram(false)
             .send_grease(false)
             .max_field_section_size(16384);
-        let (mut driver, mut sender) = tokio::time::timeout(
+        let (driver, mut sender) = tokio::time::timeout(
             WAIT,
             builder.build::<_, _, Bytes>(crate::quic::Connection::new(native)),
         )
         .await??;
+        let driver = Arc::new(std::sync::Mutex::new(driver));
         let mut keep = Keep::default();
         keep.lease = Some(lease);
+        keep.h3_driver = Some(driver.clone());
         keep.tasks.push(tokio::spawn(async move {
-            let error = driver.wait_idle().await;
+            let error = std::future::poll_fn(|cx| driver.lock().unwrap().poll_close(cx)).await;
             tracing::debug!("HTTP/3 connection driver ended: {error}");
         }));
         if udp {

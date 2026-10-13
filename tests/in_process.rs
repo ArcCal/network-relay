@@ -2577,6 +2577,68 @@ async fn http3_unwritten_request_stream_is_left_open() {
     assert_eq!(got.copy_to_bytes(got.remaining()), "after");
 }
 
+/// The relay's check client never sends MAX_PUSH_ID, so its maximum push ID
+/// is unset (RFC 9114 §7.2.7): a server's CANCEL_PUSH (§7.2.3) or PUSH_PROMISE
+/// (§7.2.5) names a push ID beyond it, H3_ID_ERROR. A MAX_PUSH_ID from a
+/// server is H3_FRAME_UNEXPECTED (§7.2.7), and a malformed payload
+/// H3_FRAME_ERROR (§7.1). A raw server observes the client close the
+/// connection.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn http3_check_client_checks_push_frames() {
+    use h3::error::Code;
+    let relay = TestRelay::start("").await;
+    let certs = CertStore::open(&relay.env.path("fullchain.pem"), &relay.env.path("privkey.pem")).unwrap();
+    let tls_config = network_relay::tls::server_config(certs, &[b"h3"], false, false).unwrap();
+    let crypto = quinn::crypto::rustls::QuicServerConfig::try_from(tls_config).unwrap();
+    let endpoint = quinn::Endpoint::server(
+        quinn::ServerConfig::with_crypto(std::sync::Arc::new(crypto)),
+        "127.0.0.1:0".parse().unwrap(),
+    )
+    .unwrap();
+    let address = endpoint.local_addr().unwrap();
+    let mut opts = relay.options(ALICE, address, address);
+    opts.port = address.port();
+    opts.addresses = vec![address];
+    for (control, response, want) in [
+        (&[0x03, 0x01, 0x00][..], None, Code::H3_ID_ERROR),
+        (&[][..], Some(&[0x05, 0x04, 0x00, 0x00, 0x00, 0xd9][..]), Code::H3_ID_ERROR),
+        (&[0x0d, 0x01, 0x00][..], None, Code::H3_FRAME_UNEXPECTED),
+        (&[0x03, 0x02, 0x00, 0x00][..], None, Code::H3_FRAME_ERROR),
+        (&[0x0d, 0x01, 0x40, 0x07, 0x01, 0x00][..], None, Code::H3_FRAME_ERROR),
+    ] {
+        let server = async {
+            let conn = within("the client's connection", endpoint.accept()).await.unwrap().await.unwrap();
+            let mut ctrl = conn.open_uni().await.unwrap();
+            // Control stream: SETTINGS with SETTINGS_ENABLE_CONNECT_PROTOCOL
+            // and SETTINGS_H3_DATAGRAM, then the frames under test.
+            let mut bytes = vec![0x00, 0x04, 0x04, 0x08, 0x01, 0x33, 0x01];
+            bytes.extend_from_slice(control);
+            ctrl.write_all(&bytes).await.unwrap();
+            if let Some(response) = response {
+                let (mut send, _recv) = within("the client's request", conn.accept_bi()).await.unwrap();
+                send.write_all(response).await.unwrap();
+            }
+            within("the client's close", conn.closed()).await
+        };
+        let client = async {
+            let mut h3 = H3::connect(&opts, &opts.addresses).await.unwrap();
+            let request = Request::builder().method(Method::GET).uri("https://relay.test/").body(()).unwrap();
+            if let Ok(mut stream) = h3.request(request).await {
+                let _ = tokio::time::timeout(Duration::from_secs(2), stream.recv_response()).await;
+            }
+            // The check is over: the client gives the connection up.
+            drop(h3);
+            std::future::pending::<()>().await;
+        };
+        let closed = tokio::select! { closed = server => closed, _ = client => unreachable!() };
+        let want = want.value();
+        assert!(
+            matches!(closed, quinn::ConnectionError::ApplicationClosed(ref c) if c.error_code.into_inner() == want),
+            "{control:02x?} {response:02x?}: {closed:?}, want {want:#x}"
+        );
+    }
+}
+
 #[tokio::test]
 async fn http3_push_control_frames_are_checked() {
     // The relay never sends PUSH_PROMISE, so a CANCEL_PUSH names a push ID it
@@ -2588,10 +2650,16 @@ async fn http3_push_control_frames_are_checked() {
     let cfg = quinn::ClientConfig::new(std::sync::Arc::new(crypto));
     let ep = quinn::Endpoint::client("127.0.0.1:0".parse().unwrap()).unwrap();
     let id_error = h3::error::Code::H3_ID_ERROR.value();
+    let frame_error = h3::error::Code::H3_FRAME_ERROR.value();
     for (frames, error) in [
         (&[0x03, 0x01, 0x00][..], Some(id_error)),
         (&[0x0d, 0x01, 0x01, 0x0d, 0x01, 0x00][..], Some(id_error)),
         (&[0x0d, 0x01, 0x00, 0x0d, 0x01, 0x01, 0x0d, 0x01, 0x01][..], None),
+        // A payload with bytes after its push ID, or one that ends inside it,
+        // is H3_FRAME_ERROR (§7.1).
+        (&[0x03, 0x02, 0x00, 0x00][..], Some(frame_error)),
+        (&[0x0d, 0x02, 0x00, 0x00][..], Some(frame_error)),
+        (&[0x0d, 0x01, 0x40, 0x0d, 0x01, 0x00][..], Some(frame_error)),
     ] {
         let conn = ep.connect_with(cfg.clone(), relay.addr, "relay.test").unwrap().await.unwrap();
         let mut control = conn.open_uni().await.unwrap();
@@ -2611,6 +2679,23 @@ async fn http3_push_control_frames_are_checked() {
                 "{frames:02x?}: connection closed"
             ),
         }
+    }
+    // On a request stream these frames are unexpected however malformed
+    // (§7.2.3, §7.2.6, §7.2.7); their malformed payloads are frame errors
+    // too (§7.1). Either way the connection closes.
+    let unexpected = h3::error::Code::H3_FRAME_UNEXPECTED.value();
+    for frame in [&[0x03, 0x02, 0x00, 0x00][..], &[0x0d, 0x02, 0x00, 0x00][..], &[0x07, 0x02, 0x00, 0x00][..]] {
+        let conn = ep.connect_with(cfg.clone(), relay.addr, "relay.test").unwrap().await.unwrap();
+        let mut control = conn.open_uni().await.unwrap();
+        control.write_all(&[0x00, 0x04, 0x00]).await.unwrap();
+        let (mut request, _response) = conn.open_bi().await.unwrap();
+        request.write_all(frame).await.unwrap();
+        let closed = within("a connection error", conn.closed()).await;
+        assert!(
+            matches!(closed, quinn::ConnectionError::ApplicationClosed(ref c)
+                if [unexpected, frame_error].contains(&c.error_code.into_inner())),
+            "{frame:02x?}: {closed:?}"
+        );
     }
 }
 

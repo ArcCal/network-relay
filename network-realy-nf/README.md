@@ -60,7 +60,11 @@ Enter the relay domain, optional server IP, username and password. Use HTTP/2
 for initial testing. The default CONNECT-UDP endpoint is
 `/.well-known/masque/udp/{target_host}/{target_port}/`. The domain remains the
 TLS certificate name even when a server IP is supplied. The local SOCKS default
-is `127.0.0.1:1080`; it may conflict with a running Masque NF instance.
+is `127.0.0.1:1080`; it may conflict with a running Masque NF instance. To
+require Kerberos (GSS-API, RFC 1961) from programs using the proxy, set
+**Kerberos keytab** to a keytab holding the proxy's keys (and optionally
+**Kerberos clients**); their traffic to the proxy is then integrity-protected or
+encrypted as agreed.
 
 ```bash
 curl -I --noproxy '' --proxy socks5h://127.0.0.1:1080 \
@@ -80,6 +84,9 @@ cargo test --locked --manifest-path Core/Cargo.toml
 python3 scripts/test-interop.py \
   --rust-server /absolute/path/to/network-relay \
   --caddy /absolute/path/to/caddy-with-network-relay
+scripts/test-socks-gssapi.sh \
+  --rust-server /absolute/path/to/network-relay \
+  --caddy /absolute/path/to/caddy-with-network-relay
 ```
 
 The second command starts disposable real server processes and local echo
@@ -88,3 +95,5 @@ production protocol core over a **test-only rustls/Quinn bridge emulator**.
 It does not validate Apple's QUIC implementation. Test credentials, keys and
 server configs are kept in a temporary directory and removed afterwards.
 Production does not use or link the emulator's rustls/Quinn transport backends.
+The third runs the SOCKS GSS-API test the same way, with a throwaway MIT
+Kerberos realm (it needs krb5-kdc, krb5-admin-server and krb5-user).

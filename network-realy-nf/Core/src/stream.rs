@@ -17,12 +17,28 @@ pub struct Keep {
     pub tasks: Vec<tokio::task::JoinHandle<()>>,
     pub sender: Option<Box<dyn Send>>,
     pub lease: Option<Arc<crate::native::Lease>>,
+    pub h3_driver: Option<Arc<H3Driver>>,
 }
+pub type H3Driver = Mutex<h3::client::Connection<crate::quic::Connection, Bytes>>;
 impl Drop for Keep {
     fn drop(&mut self) {
+        if let Some(driver) = &self.h3_driver {
+            send_h3_connection_error(driver);
+        }
         for task in &self.tasks {
             task.abort();
         }
+    }
+}
+/// h3 hands a connection error found on a request stream (a PUSH_PROMISE,
+/// for example, is H3_ID_ERROR: RFC 9114 section 7.2.5) to the connection
+/// driver, which closes the connection with that code when next polled. Poll
+/// it once before the connection is given up, so the close carries the error
+/// instead of code 0. Without a pending error this does nothing; it registers
+/// no useful waker, so call it only when giving up.
+pub fn send_h3_connection_error(driver: &H3Driver) {
+    if let Ok(mut driver) = driver.lock() {
+        let _ = driver.poll_close(&mut std::task::Context::from_waker(Waker::noop()));
     }
 }
 

@@ -49,6 +49,25 @@ Original source and MIT license retained. Changes are confined to:
   over the limit stops the client's sending with H3_NO_ERROR and finishes the
   response (RFC 9114 section 4.1); upstream dropped the stream, which stopped
   it with code 0.
+- `proto/frame.rs`: a frame payload must hold exactly the fields of its type
+  (RFC 9114 section 7.1). A CANCEL_PUSH, GOAWAY, MAX_PUSH_ID, SETTINGS or
+  PUSH_PROMISE payload that ends inside a field, or has bytes after the last
+  one, is a connection error of type H3_FRAME_ERROR. Upstream read a field
+  across the end of the payload into the next frame, or left the extra bytes
+  to be parsed as one.
+- `client/connection.rs`, `client/stream.rs`, `connection.rs`: the client never
+  sends MAX_PUSH_ID, so its maximum push ID stays unset (RFC 9114 section
+  7.2.7) and no push ID is allowed: a CANCEL_PUSH on the control stream
+  (section 7.2.3) and a PUSH_PROMISE on a request stream (section 7.2.5) are
+  connection errors of type H3_ID_ERROR. Upstream closed the connection with
+  H3_FRAME_UNEXPECTED. `tests/connection.rs` checks both, and the other
+  push-frame errors, as the server observes the client's close.
+- `connection.rs`: a control frame is no longer lost when the optional grease
+  stream (RFC 9114 section 6.2.3) is still being opened. Upstream returned
+  Pending after reading the frame and dropped it; where streams open
+  asynchronously, as through Network.framework, the first frames after
+  SETTINGS (a GOAWAY, or a CANCEL_PUSH that must close the connection) were
+  silently ignored.
 
 The relay integration tests cover trailers without FIN, empty DATA, ordinary
 half-close, bulk transfers and the malformed requests above; `proto::headers`

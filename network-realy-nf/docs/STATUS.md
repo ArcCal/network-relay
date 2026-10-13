@@ -11,7 +11,7 @@ proof that this new binary has failed or succeeded.
   authorization and DATAGRAM Capsule parsing/encoding.
 - SOCKS5 CONNECT and UDP ASSOCIATE source enforcement and bounded destination
   flow management. Server-side DNS forwarding; no client IP-stack dependency.
-- 43 unit tests, 22 native-boundary tests and 5 FFI lifecycle
+- 43 unit tests, 25 native-boundary tests and 6 FFI lifecycle
   tests passed (2026-10-13). They cover malformed Capsule handling, queue bounds, EOF/error
   propagation, opposite-pump failure wakeups, probe renewal, half-close, cancellation isolation, terminal security failures, retried 502/503/504, connection aborts
   and native initialization/exit while routine core logs are suppressed.
@@ -64,6 +64,21 @@ results above are separate from the checks executed in this environment.
 
 ## Confirmed defects repaired in source
 
+- (2026-10-13) A late nonempty receive callback after Rust removed a resource
+  was reported as `Native stream receive queue overflow`. The DATA boundary now
+  distinguishes accepted content, a closed resource, a full live queue and
+  invalid input. Swift ignores already-closed delivery without replacing the
+  original error; real queue saturation still fails the stream. Queue bounds,
+  pull-driven reads, EOF delivery and the legacy boolean ABI remain unchanged.
+  Four new regression tests cover closure, saturation, parallel-flow isolation
+  and FFI results. [Investigation and validation](evidence/receive-callback-20261013.md).
+- (2026-10-13) A user-reported macOS 27.0.1 crash entered
+  `nw_quic_set_application_error` from `NativeClient.close`, then called
+  `strlen(NULL)`. QUIC group closure now supplies an explicit empty reason
+  instead of the initializer's optional nil default, preserving the error code.
+  An independent open-source implementation documents the same workaround.
+  This native workaround still requires a Mac retest; portable tests cannot
+  establish its runtime effect. See the crash section in the same evidence file.
 - HTTP/2/3 stream pump failure could leave opposite pending I/O asleep. Both
   directions now wake, preserve the first cause and deliver buffered response
   bytes before a read failure. Three regression tests pass.

@@ -38,6 +38,15 @@ pub const ERROR: u32 = 104;
 pub const IN_DATAGRAM: u32 = 105;
 pub const IN_UDP: u32 = 106;
 pub const MAX_CHUNK: usize = 65536;
+/// Nonempty stream delivery distinguishes teardown from a full live queue.
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DataInputResult {
+    Accepted = 0,
+    Closed = 1,
+    Full = 2,
+    Invalid = 3,
+}
 /// CLOSE flags for a TCP connection: reset it rather than send FIN, so its
 /// peer learns that the data ended because of a failure. (For QUIC streams
 /// and groups, CLOSE flags carry the application error code.)
@@ -231,9 +240,26 @@ impl Bridge {
             bridge: self.clone(),
         })
     }
+    pub fn input_data(&self, id: u64, data: &[u8]) -> DataInputResult {
+        if data.is_empty() {
+            return DataInputResult::Invalid;
+        }
+        let map = self.resources.lock().unwrap();
+        let Some(r) = map.get(&id) else {
+            return DataInputResult::Closed;
+        };
+        match r.rx.try_send(Ok(Some(Bytes::copy_from_slice(data)))) {
+            Ok(()) => DataInputResult::Accepted,
+            Err(mpsc::error::TrySendError::Closed(_)) => DataInputResult::Closed,
+            Err(mpsc::error::TrySendError::Full(_)) => DataInputResult::Full,
+        }
+    }
     pub fn input(&self, kind: u32, id: u64, token: u64, flags: u64, data: &[u8]) -> bool {
         if kind == ERROR {
             return self.fail(id, flags, data);
+        }
+        if kind == DATA && flags != 1 {
+            return self.input_data(id, data) == DataInputResult::Accepted;
         }
         let mut map = self.resources.lock().unwrap();
         let Some(r) = map.get_mut(&id) else {
@@ -254,14 +280,7 @@ impl Bridge {
                     });
                 r.ready.take().is_some_and(|tx| tx.send(parsed).is_ok())
             }
-            DATA if flags == 1 || !data.is_empty() => {
-                r.rx.try_send(Ok(if flags == 1 {
-                    None
-                } else {
-                    Some(Bytes::copy_from_slice(data))
-                }))
-                .is_ok()
-            }
+            DATA if flags == 1 => r.rx.try_send(Ok(None)).is_ok(),
             ACK => r.writes.remove(&token).is_some_and(|tx| {
                 tx.send(if flags == 0 {
                     Ok(())

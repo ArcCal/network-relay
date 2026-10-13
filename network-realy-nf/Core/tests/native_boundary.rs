@@ -70,7 +70,10 @@ async fn reads_are_pull_driven_and_preserve_chunk_boundaries_and_eof() {
     });
     let read = events.recv().await.unwrap();
     assert_eq!(read.kind, READ);
-    assert!(bridge.input(DATA, id, 0, 0, b"abcdefgh"));
+    assert_eq!(
+        bridge.input_data(id, b"abcdefgh"),
+        DataInputResult::Accepted
+    );
     let read = events.recv().await.unwrap();
     assert_eq!(read.kind, READ);
     assert!(bridge.input(DATA, id, 0, 0, b"ij"));
@@ -485,7 +488,10 @@ async fn queued_data_is_delivered_before_a_later_native_failure() {
     let id = io.id();
     // Fill the one-slot receive queue before failure closes its sender. The
     // original error must remain available even when it cannot enter that queue.
-    assert!(bridge.input(DATA, id, 0, 0, b"abcdefgh"));
+    assert_eq!(
+        bridge.input_data(id, b"abcdefgh"),
+        DataInputResult::Accepted
+    );
     assert!(bridge.input(ERROR, id, 0, 4, b"receive failed after buffered data"));
     assert_eq!(
         (
@@ -514,6 +520,94 @@ async fn queued_data_is_delivered_before_a_later_native_failure() {
         "a failed resource must never request more native data"
     );
     assert!(bridge.resources.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn full_receive_queue_retains_its_original_data_and_recovers_after_consumption() {
+    let (bridge, mut events) = instance();
+    let mut io = bounded(connection(&bridge, &mut events)).await;
+    let id = io.id();
+    assert_eq!(bridge.input_data(id, b"first"), DataInputResult::Accepted);
+    assert_eq!(bridge.input_data(id, b"rejected"), DataInputResult::Full);
+    assert!(!bridge.input(DATA, id, 0, 0, b"also rejected"));
+    assert_eq!(bridge.input_data(id, b""), DataInputResult::Invalid);
+    assert_eq!(bridge.resources.lock().unwrap()[&id].rx.capacity(), 0);
+
+    let mut first = [0; 5];
+    bounded(io.read_exact(&mut first)).await.unwrap();
+    assert_eq!(first, *b"first");
+    assert_eq!(bridge.input_data(id, b"next"), DataInputResult::Accepted);
+    let mut next = [0; 4];
+    bounded(io.read_exact(&mut next)).await.unwrap();
+    assert_eq!(next, *b"next");
+    // The legacy EOF form still ignores any attached payload.
+    assert!(bridge.input(DATA, id, 0, 1, b"not stream content"));
+    assert_eq!(bounded(io.read(&mut [0])).await.unwrap(), 0);
+    assert!(
+        events.try_recv().is_err(),
+        "buffered input needs no extra READ"
+    );
+}
+
+#[tokio::test]
+async fn late_data_before_native_close_preserves_original_error_and_parallel_flow() {
+    let (bridge, mut events) = instance();
+    let failed = bounded(connection(&bridge, &mut events)).await;
+    let mut stable = bounded(connection(&bridge, &mut events)).await;
+    let id = failed.id();
+    let stable_id = stable.id();
+    let mut reader = failed.read_half();
+    let pending = tokio::spawn(async move { reader.read_u8().await });
+    let read = next_event(&mut events).await;
+    assert_eq!((read.kind, read.id), (READ, id));
+    assert_eq!(bridge.resources.lock().unwrap()[&id].rx.capacity(), 1);
+    assert!(bridge.input(ERROR, id, 0, 3, b"original receive deadline"));
+    // Swift has not consumed the queued CLOSE when this callback arrives.
+    assert_eq!(
+        bridge.input_data(id, b"late content"),
+        DataInputResult::Closed
+    );
+    assert!(!bridge.input(DATA, id, 0, 0, b"legacy late content"));
+    assert!(!bridge.input(ERROR, id, 0, 4, b"must not replace original error"));
+    let close = next_event(&mut events).await;
+    assert_eq!((close.kind, close.id), (CLOSE, id));
+    let error = bounded(pending).await.unwrap().unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+    assert_eq!(error.to_string(), "original receive deadline");
+    drop(failed);
+    assert!(
+        events.try_recv().is_err(),
+        "late data must not emit a second CLOSE"
+    );
+
+    assert_eq!(
+        bridge.input_data(stable_id, b"healthy"),
+        DataInputResult::Accepted
+    );
+    let mut healthy = [0; 7];
+    bounded(stable.read_exact(&mut healthy)).await.unwrap();
+    assert_eq!(healthy, *b"healthy");
+    assert!(bridge.resources.lock().unwrap().contains_key(&stable_id));
+    assert!(events.try_recv().is_err(), "parallel flow must stay open");
+}
+
+#[tokio::test]
+async fn dropped_receive_channel_is_closed_even_before_resource_release() {
+    let (bridge, mut events) = instance();
+    let io = bounded(connection(&bridge, &mut events)).await;
+    let id = io.id();
+    let lease = io.lease.clone();
+    drop(io);
+    assert!(bridge.resources.lock().unwrap()[&id].rx.is_closed());
+    assert_eq!(
+        bridge.input_data(id, b"late content"),
+        DataInputResult::Closed
+    );
+    assert!(!bridge.input(DATA, id, 0, 0, b"legacy late content"));
+    drop(lease);
+    let close = next_event(&mut events).await;
+    assert_eq!((close.kind, close.id), (CLOSE, id));
+    assert!(events.try_recv().is_err());
 }
 
 #[tokio::test]

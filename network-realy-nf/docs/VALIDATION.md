@@ -57,6 +57,29 @@ both. `cargo test --locked`: 37 unit, 5 and 21 integration tests passed. Not
 Network.framework; native acceptance is pending
 ([evidence](evidence/native-http3-20261011-1412.md#server-repair)).
 
+### Review of QUIC and large downloads (2026-10-13)
+
+Linux x86_64, Rust 1.99.0; servers built from `main`: network-relay `a842cb6`
+(release, SHA-256 `f64ef177…`) and caddy-network-relay `8a0df41` (Go 1.26.9,
+`-tags http2legacy`, `ab5527c5…`). Production core over the Quinn/rustls
+emulator, **not Network.framework**. This host has no IPv6, so the fixture's
+UDP echo ran on an uncommitted IPv4 copy of `test-interop.py` (as before).
+
+| Check | Result |
+| --- | --- |
+| `cargo fmt --check -p network-realy-nf-core`, Clippy `--lib` and `--all-targets` with `-D warnings` | Pass |
+| `cargo test --locked` | 43 unit, 5 FFI, 22 native-boundary, 1 push-frame, 1 GSS-API stand-in passed |
+| `real_server_matrix`, both servers, HTTP/1.1, HTTP/2, HTTP/3 | Pass, before and after the changes |
+| `large_transfer` (new), both servers, all three transports | Pass at 64 and 256 MiB: exact bytes directly and through SOCKS (46–78 MiB/s, debug build); a 5-second reader pause; a destination reset after 8 MiB is an error directly and ECONNRESET to the SOCKS program |
+| `idle_stream_zero` | Both servers: no event on stream 0 thirteen seconds after admission |
+| `scripts/test-socks-gssapi.sh` (real Kerberos, both servers) | Pass |
+| Readiness monitor at a reached tunnel limit (`max_tunnels_per_user = 1`, exploratory test) | Before: the monitor ended with HTTP 503 on every transport and server. After: status "reconnecting", then ready once the tunnel is free |
+| Cancelled download releases its tunnel (exploratory, same limit) | Free again within 4–44 ms on every transport and server |
+| Concurrent outer connections (exploratory, default limits) | network-relay 64 over TCP and QUIC; caddy-network-relay 64 over HTTP/3, 80 of 80 over HTTP/2 |
+
+The exploratory tests were not kept; their findings are recorded in
+[STATUS.md](STATUS.md). The Swift `forceCancel()` change was not compiled.
+
 ## Repeat portable validation
 
 ```bash
@@ -65,6 +88,16 @@ cargo clippy --locked --manifest-path Core/Cargo.toml --no-deps --lib -- -D warn
 python3 scripts/test-interop.py \
   --rust-server /absolute/path/to/network-relay \
   --caddy /absolute/path/to/caddy-with-network-relay
+```
+
+Large downloads and aborts over every transport (pass `--results` elsewhere to
+keep the matrix evidence file; `RELAY_NF_DOWNLOAD_MIB` sets the size):
+
+```bash
+python3 scripts/test-interop.py \
+  --rust-server /absolute/path/to/network-relay \
+  --caddy /absolute/path/to/caddy-with-network-relay \
+  --test large_transfer --results /tmp/large-transfer.json
 ```
 
 The real-server test is ignored in ordinary `cargo test` because it requires

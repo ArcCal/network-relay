@@ -589,8 +589,15 @@ final class NativeClient {
             connection.native.stateUpdateHandler = nil
             if code != 0, let metadata = connection.native.metadata(definition: NWProtocolQUIC.definition) as? NWProtocolQUIC.Metadata {
                 metadata.streamApplicationErrorCode = code
+                connection.native.cancel()
+            } else if code != 0 {
+                // The core aborts a TCP connection (such as a SOCKS client's
+                // whose tunnel failed): disconnect at once, without the FIN
+                // that would make cut-off data look complete.
+                connection.native.forceCancel()
+            } else {
+                connection.native.cancel()
             }
-            connection.native.cancel()
         }
     }
     private func invalidate() {

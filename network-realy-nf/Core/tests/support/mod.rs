@@ -50,6 +50,9 @@ struct Stream {
     write: tokio::sync::Mutex<Writer>,
     stop: CancellationToken,
     parent: u64,
+    /// A second handle on a host TCP socket, to reset it on an aborting
+    /// CLOSE as Network.framework's forceCancel does.
+    socket: Mutex<Option<std::net::TcpStream>>,
 }
 impl Stream {
     fn halves(read: Reader, write: Writer, parent: u64) -> Arc<Self> {
@@ -58,7 +61,15 @@ impl Stream {
             write: tokio::sync::Mutex::new(write),
             stop: CancellationToken::new(),
             parent,
+            socket: Mutex::new(None),
         })
+    }
+    fn tcp(tcp: HostStream, parent: u64) -> Arc<Self> {
+        let socket = tcp.into_std().unwrap();
+        let handle = socket.try_clone().unwrap();
+        let stream = Self::split(HostStream::from_std(socket).unwrap(), parent);
+        *stream.socket.lock().unwrap() = Some(handle);
+        stream
     }
     fn split<T: AsyncRead + AsyncWrite + Unpin + Send + 'static>(io: T, parent: u64) -> Arc<Self> {
         let (r, w) = tokio::io::split(io);
@@ -406,7 +417,7 @@ impl Backend {
                         );
                         let bridge = owner.clone();
                         let state = native.clone();
-                        workers.spawn(async move {loop{tokio::select!{_=stop.cancelled()=>break,accepted=listener.accept()=>{let(tcp,peer)=accepted.unwrap();let mut state=state.lock().unwrap();let id=bridge.accept(event.id,0,Ready{local:local.to_string(),peer:peer.to_string(),..Ready::default()});if id!=0{state.streams.insert(id,Stream::split(tcp,event.id));}}}}});
+                        workers.spawn(async move {loop{tokio::select!{_=stop.cancelled()=>break,accepted=listener.accept()=>{let(tcp,peer)=accepted.unwrap();let mut state=state.lock().unwrap();let id=bridge.accept(event.id,0,Ready{local:local.to_string(),peer:peer.to_string(),..Ready::default()});if id!=0{state.streams.insert(id,Stream::tcp(tcp,event.id));}}}}});
                     }
                     OPEN_UDP => {
                         let udp = Arc::new(
@@ -444,6 +455,12 @@ impl Backend {
                     CLOSE => {
                         let mut state = native.lock().unwrap();
                         if let Some(stream) = state.streams.remove(&event.id) {
+                            if event.flags == ABORT
+                                && let Some(socket) = stream.socket.lock().unwrap().take()
+                                && let Ok(socket) = HostStream::from_std(socket)
+                            {
+                                socket.set_zero_linger().unwrap();
+                            }
                             stream.stop.cancel();
                         }
                         let children = state

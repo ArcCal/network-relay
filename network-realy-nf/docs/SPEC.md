@@ -48,6 +48,11 @@ as in the copied adapter. Test emulator trust is restricted to its fixture CA.
 - Dropping an unfinished stream resets/cancels it and aborts owned pumps/drivers.
   Dropping the last native lease releases its resources. Late events for another
   app generation must not revive a cancelled connection.
+- A SOCKS CONNECT whose tunnel fails (the relay resets the stream, as both servers
+  do when the destination resets, or the TLS/QUIC connection fails) resets the
+  program's TCP connection instead of finishing it with FIN, so a cut-off download
+  does not look complete (the relays do the same towards destinations: RFC 9113
+  §8.5, RFC 9114 §4.4). A clean end of the tunnel still ends with FIN.
 
 ## Readiness and failure classification
 
@@ -59,6 +64,11 @@ reporting a relay failure. Independent SOCKS flows retain their own lifetimes.
 Malformed Capsules and native I/O errors remain failures. A failure in either
 HTTP stream pump must wake pending I/O in the opposite direction while preserving
 buffered response bytes and normal half-close semantics.
+
+Rejected credentials, rejected requests (4xx, 500, 501) and TLS security
+failures are terminal. Gateway failures and a full relay (502, 503, 504, which
+both servers send for destination/DNS failures and for reached tunnel limits)
+are temporary: the monitor reports them and retries; they must not end the client.
 
 Forced transport selection must remain forced; a silent switch from failing
 HTTP/3 to HTTP/2 does not pass HTTP/3 acceptance. Automatic fallback must be

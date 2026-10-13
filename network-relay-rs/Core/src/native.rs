@@ -38,6 +38,10 @@ pub const ERROR: u32 = 104;
 pub const IN_DATAGRAM: u32 = 105;
 pub const IN_UDP: u32 = 106;
 pub const MAX_CHUNK: usize = 65536;
+/// CLOSE flags for a TCP connection: reset it rather than send FIN, so its
+/// peer learns that the data ended because of a failure. (For QUIC streams
+/// and groups, CLOSE flags carry the application error code.)
+pub const ABORT: u64 = 1;
 
 #[derive(Debug)]
 pub struct Event {
@@ -405,6 +409,12 @@ impl Io {
     }
     pub fn set_nodelay(&self, _: bool) -> io::Result<()> {
         Ok(())
+    }
+    /// Resets the TCP connection instead of closing it with FIN.
+    pub fn abort(&self) {
+        if let Some(bridge) = self.lease.bridge() {
+            bridge.control(CLOSE, self.id(), ABORT);
+        }
     }
     pub fn read_half(&self) -> Self {
         Self {

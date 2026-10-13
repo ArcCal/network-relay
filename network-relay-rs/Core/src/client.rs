@@ -422,12 +422,19 @@ async fn watch_probe(flow: &mut UdpFlow) -> Result<ProbeEnd> {
         }
     }
 }
+/// Failures that retrying cannot fix: rejected credentials or requests, and
+/// TLS security failures. A gateway failure or a full relay (502, 503, 504:
+/// RFC 9110 sections 15.6.3 to 15.6.5) is temporary, so the monitor retries.
 pub fn terminal(error: &anyhow::Error) -> bool {
-    error.downcast_ref::<Rejected>().is_some()
-        || error.chain().any(|e| {
-            e.downcast_ref::<std::io::Error>()
-                .is_some_and(|e| e.kind() == std::io::ErrorKind::PermissionDenied)
-        })
+    error.downcast_ref::<Rejected>().is_some_and(|r| {
+        !matches!(
+            r.0,
+            StatusCode::BAD_GATEWAY | StatusCode::SERVICE_UNAVAILABLE | StatusCode::GATEWAY_TIMEOUT
+        )
+    }) || error.chain().any(|e| {
+        e.downcast_ref::<std::io::Error>()
+            .is_some_and(|e| e.kind() == std::io::ErrorKind::PermissionDenied)
+    })
 }
 fn check(
     status: StatusCode,
@@ -628,6 +635,21 @@ mod probe_tests {
             watch_probe(&mut flow).await.unwrap(),
             ProbeEnd::PeerFinished
         );
+    }
+
+    #[test]
+    fn temporary_relay_refusals_are_retried() {
+        for code in [502, 503, 504] {
+            let refusal = Rejected(StatusCode::from_u16(code).unwrap());
+            assert!(!terminal(&refusal.into()), "HTTP {code} is temporary");
+        }
+        for code in [400, 401, 403, 404, 405, 407, 500, 501] {
+            let refusal = Rejected(StatusCode::from_u16(code).unwrap());
+            assert!(terminal(&refusal.into()), "HTTP {code} needs the user");
+        }
+        let tls = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "certificate");
+        assert!(terminal(&anyhow::Error::from(tls).context("TLS")));
+        assert!(!terminal(&anyhow::anyhow!("timed out")));
     }
 
     #[tokio::test]

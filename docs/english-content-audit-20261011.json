@@ -43,7 +43,7 @@
       "repository": "network-realy-nf",
       "text_files_scanned": 112,
       "remaining_han_files": [],
-      "scope_note": "Obsolete local staging repository; canonical application is network-relay/network-realy-nf."
+      "scope_note": "Obsolete local staging repository; its historical repository name is preserved. The canonical application is network-relay/network-relay-nf."
     },
     {
       "repository": "network-relay",

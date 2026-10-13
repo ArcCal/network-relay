@@ -80,6 +80,9 @@ struct Stream {
     read: tokio::sync::Mutex<ReadHalf>,
     write: tokio::sync::Mutex<WriteHalf>,
     stop: CancellationToken,
+    /// A second handle on an accepted local TCP socket, to reset it when
+    /// the core aborts the connection (CLOSE with `ABORT`).
+    tcp: Mutex<Option<std::net::TcpStream>>,
 }
 impl Stream {
     fn new(read: ReadHalf, write: WriteHalf, stop: CancellationToken) -> Arc<Self> {
@@ -87,7 +90,15 @@ impl Stream {
             read: tokio::sync::Mutex::new(read),
             write: tokio::sync::Mutex::new(write),
             stop,
+            tcp: Mutex::new(None),
         })
+    }
+    fn tcp(tcp: TcpStream, stop: CancellationToken) -> io::Result<Arc<Self>> {
+        let socket = tcp.into_std()?;
+        let handle = socket.try_clone()?;
+        let stream = Self::socket(TcpStream::from_std(socket)?, stop);
+        *locked(&stream.tcp) = Some(handle);
+        Ok(stream)
     }
     fn socket<T: AsyncRead + AsyncWrite + Send + Unpin + 'static>(
         io: T,
@@ -669,6 +680,14 @@ async fn run(
                             b"",
                         ),
                         Kind::Stream(stream) => {
+                            // An aborted TCP connection ends with a reset,
+                            // not a FIN, once its last handle is dropped.
+                            if event.flags == ABORT
+                                && let Some(socket) = locked(&stream.tcp).take()
+                                && let Ok(socket) = TcpStream::from_std(socket)
+                            {
+                                let _ = socket.set_zero_linger();
+                            }
                             let code = if event.flags == 0 { 0x10c } else { event.flags };
                             workers.spawn(async move {
                                 stream.reset(code).await;
@@ -800,7 +819,7 @@ async fn open_resource(
                         Resource {
                             parent: event.id,
                             stop: child_stop.clone(),
-                            kind: Kind::Stream(Stream::socket(tcp, child_stop)),
+                            kind: Kind::Stream(Stream::tcp(tcp, child_stop)?),
                         },
                     );
                 }
@@ -852,6 +871,35 @@ mod tests {
         backend.shutdown().await;
         assert_eq!(backend.resource_count(), 0);
         assert!(locked(&backend.bridge.resources).is_empty());
+    }
+    #[tokio::test]
+    async fn an_aborted_local_connection_is_reset_and_a_released_one_finished() {
+        let mut backend = Backend::start(BackendOptions::default()).unwrap();
+        let listener = backend
+            .bridge
+            .listen("127.0.0.1:0".parse().unwrap())
+            .await
+            .unwrap();
+        for abort in [true, false] {
+            let mut peer = TcpStream::connect(listener.local_addr().unwrap())
+                .await
+                .unwrap();
+            let (accepted, _) = listener.accept().await.unwrap();
+            if abort {
+                accepted.abort();
+            }
+            drop(accepted);
+            let mut byte = [0];
+            let result = tokio::time::timeout(Duration::from_secs(2), peer.read(&mut byte))
+                .await
+                .unwrap();
+            if abort {
+                assert_eq!(result.unwrap_err().kind(), io::ErrorKind::ConnectionReset);
+            } else {
+                assert_eq!(result.unwrap(), 0, "a released connection ends with FIN");
+            }
+        }
+        backend.shutdown().await;
     }
     #[tokio::test]
     async fn shutdown_wakes_a_blocked_socket_read_and_releases_resources() {

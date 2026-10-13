@@ -172,6 +172,27 @@ timeouts and protocol behavior remain relevant. A short local matrix does not
 prove indefinite compatibility with arbitrary deployment versions. Applicable
 IETF normative requirements and Apple platform rules remain mandatory.
 
+## Defects found and repaired (2026-10-13)
+
+Both reproduced with the production Rust transport against network-relay
+`a842cb6` and caddy-network-relay `8a0df41`, over HTTP/1.1, HTTP/2 and HTTP/3:
+
+- **A full relay ended the client.** Every HTTP refusal was terminal, so a 503
+  from a server at its tunnel limit (with `max_tunnels_per_user = 1` and one
+  tunnel held) made the readiness monitor return and the whole client stop;
+  502/504 (temporary destination or DNS failures) did the same. 502, 503 and
+  504 are now retried with backoff; credential, request and TLS rejections stay
+  terminal. Regression: `client::probe_tests::temporary_relay_refusals_are_retried`.
+- **A cut-off download looked complete.** When the destination reset mid-download,
+  the relays reset the HTTP stream or connection, but the SOCKS program's
+  connection was closed with FIN (it read 3–6 MiB of 8 MiB, then a clean end).
+  The SOCKS session now aborts it (`native::ABORT`) and the backend resets the
+  accepted socket; the program sees ECONNRESET on every transport with both
+  servers. A clean tunnel end still sends FIN. Regression:
+  `backend::tests::an_aborted_local_connection_is_reset_and_a_released_one_finished`.
+
+The same two defects were found and repaired in Network Realy NF's core.
+
 Known failed checks, if any, must be added here with a reproducer, exact versions
 and the smallest justified repair. A failure that cannot be safely repaired
 must remain visible rather than being relabeled as unsupported or a success.

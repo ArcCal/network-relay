@@ -112,7 +112,16 @@ async fn session(client: Arc<Client>, mut io: native::Io, peer: SocketAddr) -> R
                 Ok(mut opened) => {
                     reply(&mut io, 0, None).await?;
                     tracing::debug!(%peer, host=%target.host, port=target.port, transport=opened.transport, "SOCKS CONNECT ready");
-                    tokio::io::copy_bidirectional(&mut io, &mut opened.stream).await?;
+                    if let Err(e) = tokio::io::copy_bidirectional(&mut io, &mut opened.stream).await
+                    {
+                        // A failed tunnel, such as one whose destination
+                        // reset, resets the program's connection as the
+                        // relay resets the destination's (RFC 9113 section
+                        // 8.5, RFC 9114 section 4.4): with a FIN, a cut-off
+                        // download would look complete.
+                        io.abort();
+                        return Err(e.into());
+                    }
                 }
                 Err(e) => {
                     reply(&mut io, 1, None).await?;

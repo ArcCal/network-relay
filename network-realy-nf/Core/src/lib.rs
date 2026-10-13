@@ -287,6 +287,25 @@ pub unsafe extern "C" fn nf_input(
     };
     h.bridge.input(kind, id, token, flags, bytes)
 }
+/// Delivers nonempty stream content without mistaking a late callback for overflow.
+/// # Safety
+/// Same live-handle and readable-buffer requirements as `nf_input`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn nf_input_data(
+    handle: *mut Handle,
+    id: u64,
+    data: *const u8,
+    len: usize,
+) -> u32 {
+    let Some(h) = (unsafe { handle.as_ref() }) else {
+        return native::DataInputResult::Invalid as u32;
+    };
+    if len == 0 || len > 262144 || data.is_null() {
+        return native::DataInputResult::Invalid as u32;
+    }
+    let bytes = unsafe { std::slice::from_raw_parts(data, len) };
+    h.bridge.input_data(id, bytes) as u32
+}
 /// # Safety
 /// Same live-handle and readable-buffer requirements as `nf_input`.
 #[unsafe(no_mangle)]

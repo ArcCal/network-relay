@@ -52,10 +52,9 @@ cargo --version
 
 ## Download and build
 
-The application is currently in the `codex/network-realy-nf` branch of
-`ArcCal/network-relay`, under review in [PR #18](https://github.com/ArcCal/network-relay/pull/18).
-Until that PR is merged, cloning `main` will not provide this application. For
-this private repository, use an existing GitHub login that can read it. If Git
+The application is included on `main` in `ArcCal/network-relay`, under
+`network-realy-nf/`. For this private repository, use an existing GitHub login
+that can read it. If Git
 reports an authentication error, authenticate with GitHub CLI (`gh auth login`,
 then `gh auth setup-git`) or your normal Git credential manager; do not put a
 token into the clone URL.
@@ -66,7 +65,7 @@ directory and avoids reusing an old checkout or its build products:
 ```bash
 . "$HOME/.cargo/env"
 NF_CHECKOUT="$HOME/Downloads/network-relay-nf-$(date +%Y%m%d-%H%M%S)"
-git clone --branch codex/network-realy-nf --single-branch \
+git clone --branch main --single-branch \
   https://github.com/ArcCal/network-relay.git "$NF_CHECKOUT"
 cd "$NF_CHECKOUT/network-realy-nf"
 export CARGO_TARGET_DIR="$PWD/Core/target"

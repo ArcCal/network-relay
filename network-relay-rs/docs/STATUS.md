@@ -191,7 +191,7 @@ Both reproduced with the production Rust transport against network-relay
   servers. A clean tunnel end still sends FIN. Regression:
   `backend::tests::an_aborted_local_connection_is_reset_and_a_released_one_finished`.
 
-The same two defects were found and repaired in Network Realy NF's core.
+The same two defects were found and repaired in Network Relay NF's core.
 
 Known failed checks, if any, must be added here with a reproducer, exact versions
 and the smallest justified repair. A failure that cannot be safely repaired

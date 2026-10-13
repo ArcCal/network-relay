@@ -1,7 +1,7 @@
 //! Independent application settings and NF-compatible explicit imports.
 //!
 //! This module never reads another application's private settings. Exported
-//! TOML remains compatible with Network Realy NF, including omitted passwords.
+//! TOML remains compatible with Network Relay NF, including omitted passwords.
 use network_relay_rs_core as core;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -359,7 +359,7 @@ impl Configuration {
 
     pub fn exported_toml(&self, with_passwords: bool, scope: TransferScope) -> String {
         let mut lines = vec![
-            "# Network Relay RS settings; compatible with Network Realy NF imports.".into(),
+            "# Network Relay RS settings; compatible with Network Relay NF imports.".into(),
             if scope == TransferScope::Application {
                 "# Application settings only; servers and passwords are left out.".into()
             } else if with_passwords {

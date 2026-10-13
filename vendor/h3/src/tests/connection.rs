@@ -682,6 +682,136 @@ async fn server_max_push_id_not_reduced_is_accepted() {
     assert_matches!(server_after_control_frames(frames).await, None);
 }
 
+/// Runs an h3 client against a raw server that sends `control` after its
+/// SETTINGS and answers the client's request with `response`, if any. Returns
+/// the code with which the client closed the connection, as the server saw it.
+async fn client_close_code(control: &[u8], response: Option<&[u8]>) -> Option<u64> {
+    let mut pair = Pair::default();
+    let endpoint = pair.server_inner();
+
+    let server_fut = async {
+        let conn = endpoint.accept().await.unwrap().await.unwrap();
+        let mut control_stream = conn.open_uni().await.unwrap();
+        let mut buf = BytesMut::new();
+        StreamType::CONTROL.encode(&mut buf);
+        Frame::Settings::<Bytes>(Settings::default()).encode(&mut buf);
+        buf.extend_from_slice(control);
+        control_stream.write_all(&buf[..]).await.unwrap();
+        if let Some(response) = response {
+            let (mut send, _recv) = conn.accept_bi().await.unwrap();
+            send.write_all(response).await.unwrap();
+        }
+        match tokio::time::timeout(Duration::from_secs(2), conn.closed()).await {
+            Ok(h3_quinn::quinn::ConnectionError::ApplicationClosed(close)) => {
+                Some(close.error_code.into_inner())
+            }
+            Ok(other) => panic!("connection ended with {:?}", other),
+            Err(_) => None,
+        }
+    };
+
+    let client_fut = async {
+        let (mut driver, mut send_request) = client::new(pair.client().await).await.unwrap();
+        let drive = async move {
+            let _ = future::poll_fn(|cx| driver.poll_close(cx)).await;
+        };
+        let request = async move {
+            let mut stream = send_request
+                .send_request(Request::get("http://localhost/").body(()).unwrap())
+                .await?;
+            stream.finish().await?;
+            stream.recv_response().await?;
+            while stream.recv_data().await?.is_some() {}
+            stream.recv_trailers().await?;
+            Ok::<_, StreamError>(())
+        };
+        let _ = tokio::join!(drive, request);
+        tokio::time::sleep(Duration::from_secs(10)).await;
+    };
+
+    tokio::select! { code = server_fut => code, _ = client_fut => panic!("client resolved first") }
+}
+
+// HEADERS with :status 200 (QPACK static table index 25).
+const RESPONSE_200: &[u8] = &[0x01, 0x03, 0x00, 0x00, 0xd9];
+
+#[tokio::test]
+async fn client_cancel_push_is_id_error() {
+    init_tracing();
+    //= https://www.rfc-editor.org/rfc/rfc9114#section-7.2.3
+    //= type=test
+    //# If a CANCEL_PUSH frame is received that
+    //# references a push ID greater than currently allowed on the
+    //# connection, this MUST be treated as a connection error of type
+    //# H3_ID_ERROR.
+    assert_eq!(
+        client_close_code(&[0x03, 0x01, 0x00], None).await,
+        Some(Code::H3_ID_ERROR.value())
+    );
+}
+
+#[tokio::test]
+async fn client_push_promise_is_id_error() {
+    init_tracing();
+    //= https://www.rfc-editor.org/rfc/rfc9114#section-7.2.5
+    //= type=test
+    //# A client MUST treat
+    //# receipt of a PUSH_PROMISE frame that contains a larger push ID than
+    //# the client has advertised as a connection error of H3_ID_ERROR.
+    let promise: &[u8] = &[0x05, 0x04, 0x00, 0x00, 0x00, 0xd9];
+    for response in [
+        promise.to_vec(),
+        [RESPONSE_200, promise].concat(),
+        [RESPONSE_200, &[0x00, 0x01, b'a'], promise].concat(),
+    ] {
+        assert_eq!(
+            client_close_code(&[], Some(&response)).await,
+            Some(Code::H3_ID_ERROR.value()),
+            "{:02x?}",
+            response
+        );
+    }
+}
+
+#[tokio::test]
+async fn client_push_frames_keep_their_other_errors() {
+    init_tracing();
+    for (control, response, code) in [
+        // MAX_PUSH_ID is never sent by a server (section 7.2.7).
+        (&[0x0d, 0x01, 0x00][..], None, Code::H3_FRAME_UNEXPECTED),
+        // PUSH_PROMISE is not permitted on the control stream (section 7.2.5).
+        (&[0x05, 0x02, 0x00, 0xd9][..], None, Code::H3_FRAME_UNEXPECTED),
+        // CANCEL_PUSH on a request stream (section 7.2.3).
+        (&[][..], Some(&[0x03, 0x01, 0x00][..]), Code::H3_FRAME_UNEXPECTED),
+        // A payload longer than its push ID (section 7.1).
+        (&[0x03, 0x02, 0x00, 0x00][..], None, Code::H3_FRAME_ERROR),
+        // A payload that ends inside its push ID (section 7.1).
+        (&[0x03, 0x01, 0x40, 0x07, 0x01, 0x00][..], None, Code::H3_FRAME_ERROR),
+    ] {
+        assert_eq!(
+            client_close_code(control, response).await,
+            Some(code.value()),
+            "{:02x?} {:02x?}",
+            control,
+            response
+        );
+    }
+}
+
+#[tokio::test]
+async fn client_accepts_a_response_and_goaway() {
+    init_tracing();
+    // The request completes, and the client closes gracefully once it has no
+    // more requests to send.
+    let no_error = Some(Code::H3_NO_ERROR.value());
+    assert_eq!(client_close_code(&[], Some(RESPONSE_200)).await, no_error);
+    // A GOAWAY for a later stream is not an error either.
+    assert_eq!(
+        client_close_code(&[0x07, 0x01, 0x04], Some(RESPONSE_200)).await,
+        no_error
+    );
+}
+
 #[tokio::test]
 async fn timeout_on_control_frame_read() {
     init_tracing();

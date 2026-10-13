@@ -91,6 +91,32 @@ final class ServersTests: XCTestCase {
         XCTAssertEqual(change { $0.logLevel = .warnings }, .none)
         XCTAssertEqual(change { $0.logLevel = .detailed }, .none)
         XCTAssertEqual(change { $0.logLevel = .everything }, .none)
+        // Kerberos for programs using the proxy.
+        XCTAssertEqual(change { $0.gssapiKeytab = "/etc/socks.keytab" }, .reconnect)
+    }
+
+    func testKerberosForProgramsUsingTheProxy() throws {
+        var configuration = both
+        let plain = try clientConfiguration(configuration.settings, password: configuration.password)
+        XCTAssertFalse(plain.contains("gssapi"), plain)
+        configuration.gssapiKeytab = " /Users/me/socks.keytab "
+        configuration.gssapiPrincipals = "alice@EXAMPLE.COM, bob@EXAMPLE.COM"
+        XCTAssertNoThrow(try configuration.check())
+        let text = try clientConfiguration(configuration.settings, password: configuration.password)
+        XCTAssertTrue(text.hasSuffix(
+            "[socks]\nlisten = [\"127.0.0.1:1080\"]\ngssapi_keytab = \"/Users/me/socks.keytab\"\n"
+                + "gssapi_principals = [\"alice@EXAMPLE.COM\", \"bob@EXAMPLE.COM\"]\n"), text)
+        // Saved and read back with the rest of the settings.
+        let saved = try JSONDecoder().decode(Configuration.self, from: JSONEncoder().encode(configuration))
+        XCTAssertEqual(saved.gssapiKeytab, configuration.gssapiKeytab)
+        XCTAssertEqual(saved.gssapiPrincipals, configuration.gssapiPrincipals)
+        // Checked as the proxy's settings, not a server's.
+        configuration.gssapiKeytab = "socks.keytab"
+        XCTAssertThrowsError(try configuration.check()) { XCTAssertEqual($0 as? SettingsError, .invalidKeytab) }
+        configuration.gssapiKeytab = ""
+        XCTAssertThrowsError(try configuration.check()) {
+            XCTAssertEqual($0 as? SettingsError, .principalsWithoutKeytab)
+        }
     }
 }
 

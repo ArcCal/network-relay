@@ -110,7 +110,8 @@ impl Frame<PayloadLen> {
         #[cfg(feature = "tracing")]
         trace!("frame ty: {:?}", ty);
 
-        let frame = match ty {
+        // Decoded in a closure so that a field error reaches the check below.
+        let frame = (|| match ty {
             FrameType::HEADERS => Ok(Frame::Headers(payload.copy_to_bytes(len as usize))),
             FrameType::SETTINGS => Ok(Frame::Settings(Settings::decode(&mut payload)?)),
             FrameType::CANCEL_PUSH => Ok(Frame::CancelPush(payload.get_var()?.try_into()?)),
@@ -127,12 +128,26 @@ impl Frame<PayloadLen> {
             | FrameType::H2_CONTINUATION => Err(FrameError::UnsupportedFrame(ty.0)),
             FrameType::WEBTRANSPORT_BI_STREAM | FrameType::DATA => unreachable!(),
             _ => {
-                buf.advance(len as usize);
+                payload.advance(len as usize);
                 //= https://www.rfc-editor.org/rfc/rfc9114#section-7.2.8
                 //# Endpoints MUST
                 //# NOT consider these frames to have any meaning upon receipt.
                 Err(FrameError::UnknownFrame(ty.0))
             }
+        })();
+
+        //= https://www.rfc-editor.org/rfc/rfc9114#section-7.1
+        //# Each frame's payload MUST contain exactly the fields identified in its
+        //# description.  A frame payload that contains additional bytes after the
+        //# identified fields or a frame payload that terminates before the end of
+        //# the identified fields MUST be treated as a connection error of type
+        //# H3_FRAME_ERROR.
+        // The whole payload is buffered at this point, so a field that runs past
+        // it is truncated rather than incomplete.
+        let frame = match frame {
+            Err(FrameError::Incomplete(_)) => Err(FrameError::Malformed),
+            Ok(_) if payload.has_remaining() => Err(FrameError::Malformed),
+            frame => frame,
         };
 
         if let Ok(_frame) = &frame {
@@ -645,6 +660,29 @@ mod tests {
         let mut buf = Cursor::new(&[4, 4, 0, 255, 128]);
         let decoded = Frame::decode(&mut buf);
         assert_matches!(decoded, Err(FrameError::Incomplete(6)));
+    }
+
+    #[test]
+    fn payload_with_extra_bytes_is_malformed() {
+        //= https://www.rfc-editor.org/rfc/rfc9114#section-7.1
+        //= type=test
+        //# A frame payload that contains additional bytes after the
+        //# identified fields or a frame payload that terminates before the end of
+        //# the identified fields MUST be treated as a connection error of type
+        //# H3_FRAME_ERROR.
+        for wire in [[3, 2, 0, 0], [7, 2, 0, 0], [13, 2, 0, 0]] {
+            let mut buf = Cursor::new(&wire);
+            assert_matches!(Frame::decode(&mut buf), Err(FrameError::Malformed), "{wire:?}");
+        }
+    }
+
+    #[test]
+    fn payload_with_truncated_field_is_malformed() {
+        // A two-byte varint in a one-byte payload, followed by another frame.
+        for wire in [[3, 1, 0x40, 3, 1, 0], [7, 1, 0x40, 3, 1, 0], [13, 1, 0x40, 3, 1, 0]] {
+            let mut buf = Cursor::new(&wire);
+            assert_matches!(Frame::decode(&mut buf), Err(FrameError::Malformed), "{wire:?}");
+        }
     }
 
     fn codec_frame_check(mut frame: Frame<Bytes>, wire: &[u8], check_frame: Frame<Bytes>) {

@@ -9,6 +9,13 @@
       "masque-nf/Tests"
     ]
   },
+  "masque_vpn_gssapi": {
+    "repository": "https://github.com/ArcCal/masque-vpn",
+    "commit": "401ab689b039224535f5ddb573c41b32603f8c2d",
+    "paths": [
+      "crates/masque-vpn/src/gssapi.rs"
+    ]
+  },
   "relay_wire_formats": {
     "repository": "https://github.com/ArcCal/network-relay",
     "commit": "117ae24702c9f0c4d29518d77c2987365e2b9027",

@@ -14,6 +14,7 @@ def main():
     parser.add_argument('--rust-server',required=True,type=pathlib.Path)
     parser.add_argument('--caddy',required=True,type=pathlib.Path)
     parser.add_argument('--results',type=pathlib.Path,default=pathlib.Path('docs/evidence/interop-results.json'))
+    parser.add_argument('--test',default='server_interop',help='the Core test binary whose ignored tests run against each server')
     args=parser.parse_args()
     root=pathlib.Path(__file__).resolve().parents[1]
     def tree_digest(directory):
@@ -93,9 +94,9 @@ def main():
                                 time.sleep(.05)
                         fixture=directory/'fixture.json';fixture.write_text(json.dumps({'kind':kind,'server':f'127.0.0.1:{port}','ca':str(directory/'ca.pem'),'password':password,'tcp':'%s:%s'%tcp.getsockname(),'udp':f'127.0.0.1:{udp.getsockname()[1]}'}));fixture.chmod(0o600)
                         environment['RELAY_NF_FIXTURE']=str(fixture)
-                        tested=subprocess.run(['cargo','test','--locked','--manifest-path',str(root/'Core/Cargo.toml'),'--test','server_interop','--','--ignored','--nocapture'],cwd=root,env=environment,capture_output=True,text=True,timeout=240)
+                        tested=subprocess.run(['cargo','test','--locked','--manifest-path',str(root/'Core/Cargo.toml'),'--test',args.test,'--','--ignored','--nocapture'],cwd=root,env=environment,capture_output=True,text=True,timeout=240)
                         print(tested.stdout);print(tested.stderr)
-                        result['servers'].append({'kind':kind,'binary_sha256':__import__('hashlib').sha256(binary.read_bytes()).hexdigest(),'outcome':'PASS' if tested.returncode==0 else 'FAIL','test':'real_server_matrix','output':tested.stdout})
+                        result['servers'].append({'kind':kind,'binary_sha256':__import__('hashlib').sha256(binary.read_bytes()).hexdigest(),'outcome':'PASS' if tested.returncode==0 else 'FAIL','test':'real_server_matrix' if args.test=='server_interop' else args.test,'output':tested.stdout})
                         args.results.parent.mkdir(parents=True,exist_ok=True);args.results.write_text(json.dumps(result,indent=2)+'\n')
                         if tested.returncode: raise RuntimeError(kind+' interoperability failed')
                     finally:

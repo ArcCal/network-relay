@@ -118,10 +118,18 @@ where
             })?;
 
         //= https://www.rfc-editor.org/rfc/rfc9114#section-7.2.5
-        //= type=TODO
         //# A client MUST treat
         //# receipt of a PUSH_PROMISE frame that contains a larger push ID than
         //# the client has advertised as a connection error of H3_ID_ERROR.
+        // This client never sends MAX_PUSH_ID, so every push ID is larger.
+        if let Frame::PushPromise(_) = frame {
+            return Err(
+                self.handle_connection_error_on_stream(InternalConnectionError::new(
+                    Code::H3_ID_ERROR,
+                    "PUSH_PROMISE without MAX_PUSH_ID".to_string(),
+                )),
+            );
+        }
 
         //= https://www.rfc-editor.org/rfc/rfc9114#section-7.2.5
         //= type=TODO

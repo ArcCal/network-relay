@@ -214,14 +214,14 @@ where
             .await
             .map_err(|e| self.handle_quic_stream_error(e))?;
 
-        let request_stream = RequestStream {
-            inner: connection::RequestStream::new(
-                FrameStream::new(BufRecvStream::new(stream)),
-                self.max_field_section_size,
-                self.conn_state.clone(),
-                self.send_grease_frame,
-            ),
-        };
+        let mut inner = connection::RequestStream::new(
+            FrameStream::new(BufRecvStream::new(stream)),
+            self.max_field_section_size,
+            self.conn_state.clone(),
+            self.send_grease_frame,
+        );
+        inner.client = true;
+        let request_stream = RequestStream { inner };
         // send the grease frame only once
         self.send_grease_frame = false;
         Ok(request_stream)
@@ -452,6 +452,26 @@ where
                 //# A client MUST treat the
                 //# receipt of a MAX_PUSH_ID frame as a connection error of type
                 //# H3_FRAME_UNEXPECTED.
+                //= https://www.rfc-editor.org/rfc/rfc9114#section-7.2.3
+                //# If a CANCEL_PUSH frame is received that
+                //# references a push ID greater than currently allowed on the
+                //# connection, this MUST be treated as a connection error of type
+                //# H3_ID_ERROR.
+
+                //= https://www.rfc-editor.org/rfc/rfc9114#section-7.2.7
+                //# The maximum push ID is unset when an HTTP/3 connection is created,
+                //# meaning that a server cannot push until it receives a MAX_PUSH_ID
+                //# frame.
+                // This client never sends MAX_PUSH_ID, so no push ID is allowed.
+                Ok(Frame::CancelPush(id)) => {
+                    return Poll::Ready(self.inner.handle_connection_error(
+                        InternalConnectionError::new(
+                            Code::H3_ID_ERROR,
+                            format!("CANCEL_PUSH for push ID {} without MAX_PUSH_ID", id),
+                        ),
+                    ));
+                }
+
                 Ok(frame) => {
                     return Poll::Ready(self.inner.handle_connection_error(
                         InternalConnectionError::new(

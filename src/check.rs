@@ -274,6 +274,19 @@ pub struct H3 {
     _drive: AbortOnDrop,
 }
 
+impl Drop for H3 {
+    fn drop(&mut self) {
+        // h3 hands a connection error found on a request stream (a
+        // PUSH_PROMISE, for example, is H3_ID_ERROR: RFC 9114 section 7.2.5)
+        // to the driver, which closes the connection with that code when next
+        // polled. Poll it once before the connection is given up, so the close
+        // carries the error; without one this does nothing.
+        if let Ok(mut driver) = self.driver.lock() {
+            let _ = driver.poll_close(&mut std::task::Context::from_waker(std::task::Waker::noop()));
+        }
+    }
+}
+
 /// Aborts a background task when dropped.
 pub struct AbortOnDrop(tokio::task::JoinHandle<()>);
 

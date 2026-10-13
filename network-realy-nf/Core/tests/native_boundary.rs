@@ -763,3 +763,26 @@ async fn incoming_datagrams_are_bounded_and_report_overflow() {
     assert_eq!(quic.datagrams.recv().await.unwrap(), b"datagram"[..]);
     assert!(bridge.input(IN_DATAGRAM, quic.io.id(), 0, 0, b"room again"));
 }
+
+#[tokio::test]
+async fn abort_resets_the_native_connection_and_wakes_pending_io() {
+    let (bridge, mut events) = instance();
+    let io = connection(&bridge, &mut events).await;
+    let id = io.id();
+    let mut reader = io.read_half();
+    let read = tokio::spawn(async move { reader.read_u8().await });
+    assert_eq!(events.recv().await.unwrap().kind, READ);
+    io.abort();
+    let close = next_event(&mut events).await;
+    assert_eq!((close.kind, close.id, close.flags), (CLOSE, id, ABORT));
+    assert_eq!(
+        read.await.unwrap().unwrap_err().kind(),
+        io::ErrorKind::ConnectionAborted
+    );
+    drop(io);
+    assert!(bridge.resources.lock().unwrap().is_empty());
+    assert!(
+        events.try_recv().is_err(),
+        "no graceful close after the abort"
+    );
+}

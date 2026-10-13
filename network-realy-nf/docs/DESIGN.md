@@ -76,7 +76,7 @@ are not supported by the current readiness design.
 
 Automatic mode tries HTTP/3 for five seconds, then native TCP with ALPN `h2`,
 `http/1.1`. Authentication/security rejection is terminal rather than a reason
-to downgrade. Forced modes do not silently change transport. The monitor's
+to downgrade; 502, 503 and 504 refusals are temporary and are retried. Forced modes do not silently change transport. The monitor's
 successful transport becomes the preferred mode for new flows until reconnect.
 Existing flows have separate outer connections and are not migrated.
 Retry backoff remains exponential for short failures and returns to one second

@@ -443,7 +443,7 @@ final class NativeClient {
         if entry.eof { input(102, id, flags: 1); return }
         entry.reading = true
         entry.native.receive(minimumIncompleteLength: 1, maximumLength: max(1, maximum)) { [weak self, weak entry] data, _, complete, error in
-            guard let self, let entry, connections[id] === entry, handle != nil else { return }
+            guard let self, let entry, connections[id] === entry, let handle else { return }
             entry.reading = false
             if let error, failureFlag(error, trust: entry.trust) == 1 {
                 fail(id, error: error); return
@@ -452,7 +452,20 @@ final class NativeClient {
             // Deliver that content first; Rust drains it before the error.
             if let data, !data.isEmpty {
                 log("TRACE", "Native stream \(id) received \(data.count) bytes; final=\(complete)")
-                if !input(102, id, data: data) { fail(id, message: "Native stream receive queue overflow"); return }
+                let result = data.withUnsafeBytes { bytes in
+                    nf_input_data(handle, id, bytes.bindMemory(to: UInt8.self).baseAddress, data.count)
+                }
+                switch result {
+                case UInt32(NF_DATA_ACCEPTED.rawValue): break
+                case UInt32(NF_DATA_CLOSED.rawValue):
+                    // Rust removed the resource before its queued CLOSE reached
+                    // this native queue. The original terminal result wins.
+                    return
+                case UInt32(NF_DATA_FULL.rawValue):
+                    fail(id, message: "Native stream receive queue overflow"); return
+                default:
+                    fail(id, message: "Native stream receive data rejected"); return
+                }
             }
             if let error { fail(id, error: error); return }
             entry.eof = complete
@@ -564,7 +577,9 @@ final class NativeClient {
         if let group = groups.removeValue(forKey: id) {
             group.native.stateUpdateHandler = nil; group.native.newConnectionHandler = nil
             if code != 0, let metadata = group.native.metadata(definition: NWProtocolQUIC.definition) as? NWProtocolQUIC.Metadata {
-                metadata.applicationError = .init(code: code)
+                // macOS 27 can dereference a nil reason while setting this
+                // metadata. An empty reason preserves the protocol error code.
+                metadata.applicationError = .init(code: code, reason: "")
             }
             group.datagrams?.stateUpdateHandler = nil; group.datagrams?.cancel(); group.native.cancel()
         }

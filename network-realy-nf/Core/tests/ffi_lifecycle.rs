@@ -168,3 +168,47 @@ fn invalid_and_null_abi_input_is_rejected_without_a_runtime() {
         nf_free_event(ptr::null_mut());
     }
 }
+
+#[test]
+fn data_input_abi_distinguishes_full_closed_and_invalid_without_changing_legacy_input() {
+    let core = Instance::start();
+    // Hold initialization at LISTEN: its receive channel is live and unread.
+    let listener = core.until(8);
+    let id = listener.1;
+    let chunk = b"native content";
+    assert_eq!(
+        unsafe { nf_input_data(ptr::null_mut(), id, chunk.as_ptr(), chunk.len()) },
+        3
+    );
+    assert_eq!(unsafe { nf_input_data(core.0, id, ptr::null(), 1) }, 3);
+    assert_eq!(unsafe { nf_input_data(core.0, id, chunk.as_ptr(), 0) }, 3);
+    let oversized = vec![0; 262145];
+    assert_eq!(
+        unsafe { nf_input_data(core.0, id, oversized.as_ptr(), oversized.len()) },
+        3
+    );
+    assert_eq!(
+        unsafe { nf_input_data(core.0, u64::MAX, chunk.as_ptr(), chunk.len()) },
+        1
+    );
+    assert_eq!(
+        unsafe { nf_input_data(core.0, id, chunk.as_ptr(), chunk.len()) },
+        0
+    );
+    assert_eq!(
+        unsafe { nf_input_data(core.0, id, chunk.as_ptr(), chunk.len()) },
+        2
+    );
+    assert!(!core.input(102, id, 0, chunk));
+    assert!(
+        !core.input(102, id, 1, b""),
+        "full legacy EOF is still rejected"
+    );
+    assert!(core.input(104, id, 4, b"original native failure"));
+    assert_eq!(
+        unsafe { nf_input_data(core.0, id, chunk.as_ptr(), chunk.len()) },
+        1
+    );
+    assert!(!core.input(102, id, 0, chunk));
+    assert_eq!(core.until(99).2, 1);
+}

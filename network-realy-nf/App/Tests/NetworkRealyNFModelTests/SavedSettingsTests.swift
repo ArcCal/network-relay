@@ -117,7 +117,8 @@ final class SavedSettingsTests: XCTestCase {
         let object = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any])
         XCTAssertEqual(Set(object.keys), ["servers", "selectedServer", "logLevel", "settings", "password"])
         let settings = try XCTUnwrap(object["settings"] as? [String: Any])
-        XCTAssertEqual(Set(settings.keys), ["serverIP", "domain", "username", "listenAddress", "port", "connectOnLaunch", "transport"])
+        // The Kerberos fields are new; earlier versions ignore keys they do not know.
+        XCTAssertEqual(Set(settings.keys), ["serverIP", "domain", "username", "listenAddress", "port", "connectOnLaunch", "transport", "gssapiKeytab", "gssapiPrincipals"])
         XCTAssertEqual(settings["domain"] as? String, "de.example.com")
         XCTAssertEqual(settings["port"] as? Int, 1081)
         XCTAssertEqual(object["password"] as? String, "other")

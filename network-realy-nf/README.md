@@ -31,9 +31,8 @@ See [implementation status](docs/STATUS.md) before treating this as a release.
 ## Build on a Mac
 
 For a fresh checkout, toolchain setup, five log levels and a bounded HTTP/3
-observation, follow [BUILD-AND-OBSERVE.md](docs/BUILD-AND-OBSERVE.md). While this
-addition is under review, check out `codex/network-realy-nf`; the application is
-not yet on `main`.
+observation, follow [BUILD-AND-OBSERVE.md](docs/BUILD-AND-OBSERVE.md). The
+application is included on `main` in the network-relay repository.
 
 The initial target follows Masque NF: **Apple silicon, macOS 27+, Xcode with a
 macOS 27+ SDK, and stable Rust supporting edition 2024**. Full Xcode is required;

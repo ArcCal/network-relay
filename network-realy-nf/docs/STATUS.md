@@ -11,9 +11,9 @@ proof that this new binary has failed or succeeded.
   authorization and DATAGRAM Capsule parsing/encoding.
 - SOCKS5 CONNECT and UDP ASSOCIATE source enforcement and bounded destination
   flow management. Server-side DNS forwarding; no client IP-stack dependency.
-- 37 unit tests, 21 native-boundary tests and 5 FFI lifecycle
-  tests passed. They cover malformed Capsule handling, queue bounds, EOF/error
-  propagation, opposite-pump failure wakeups, probe renewal, half-close, cancellation isolation, terminal security failures
+- 43 unit tests, 22 native-boundary tests and 5 FFI lifecycle
+  tests passed (2026-10-13). They cover malformed Capsule handling, queue bounds, EOF/error
+  propagation, opposite-pump failure wakeups, probe renewal, half-close, cancellation isolation, terminal security failures, retried 502/503/504, connection aborts
   and native initialization/exit while routine core logs are suppressed.
 - `cargo check` and project-only Clippy with warnings denied passed on Linux.
   This establishes Rust compilation, not Swift
@@ -74,6 +74,20 @@ results above are separate from the checks executed in this environment.
 - Retry delay no longer stays at 30 seconds after a long admitted session;
   a readiness interval of at least 30 seconds resets it to one second. Short H3
   flaps retain exponential backoff. H3 driver termination is logged at DEBUG.
+- (2026-10-13) Every HTTP refusal was terminal, so a 503 from a relay at its
+  tunnel limit (or a 502/504) on the readiness probe ended the whole client: all
+  SOCKS sessions closed and nothing reconnected. Reproduced against both servers
+  with `max_tunnels_per_user = 1` over HTTP/1.1, HTTP/2 and HTTP/3. 502, 503 and
+  504 are now retried with backoff and shown as reconnecting; the client becomes
+  ready again once a tunnel is free. Credential, request and TLS rejections stay
+  terminal.
+- (2026-10-13) When a tunnel failed mid-transfer (the destination reset, so the
+  relay reset the HTTP/2 or HTTP/3 stream or dropped the HTTP/1.1 connection),
+  the SOCKS program's connection was closed with FIN: a cut-off download looked
+  complete. The core now aborts that connection (CLOSE with `native::ABORT`) and
+  the app resets it with `NWConnection.forceCancel()`. Through the emulator the
+  program now sees ECONNRESET on every transport with both servers. **The Swift
+  change has not been compiled or run** (no Swift toolchain here).
 
 These are portable source repairs. No Mac retest establishes that the new binary
 runs them correctly or that they stop the unrelated native H3 EINVAL.
@@ -94,6 +108,13 @@ runs them correctly or that they stop the unrelated native H3 EINVAL.
   artifacts are missing. Therefore “perfect interoperability” has not been delivered.
 - One outer connection per flow can exhaust restrictive server connection limits
   and adds handshake overhead. Shared HTTP/2/3 connections are not implemented.
+  Measured 2026-10-13 with default limits: network-relay accepts 64 connections
+  per client IP over TCP and QUIC, and caddy-network-relay 64 HTTP/3 connections
+  (HTTP/2 was not limited at 80). Beyond about 63 concurrent SOCKS flows (the
+  readiness probe holds one connection), new flows fail.
+- The client waits 10 seconds for a CONNECT response; network-relay may take up
+  to 15 (5-second DNS timeout plus its default 10-second connect timeout). A slow
+  destination can therefore fail as a client timeout rather than the relay's 504.
 - Readiness verifies authenticated CONNECT-UDP admission only. It sends no target
   traffic or heartbeat, can be denied by destination policy, and cannot establish
   Internet reachability or continuously verify every independent SOCKS flow.

@@ -1,14 +1,17 @@
 {
-  "finished_at_utc": "2026-10-14T22:20:18.186671+00:00",
+  "finished_at_utc": "2026-10-14T22:51:15.365610+00:00",
   "command": "bash scripts/test.sh",
   "exit_code": 0,
   "test_runner_passes": 604,
   "test_runner_failures": 0,
-  "ignored": 1,
+  "ignored": 2,
   "strict_clippy_passed": true,
   "owned_formatting_passed": true,
   "vendor_tests_passed": true,
   "independent_consumer_passed": true,
-  "log_sha256": "db171085105f85cc3854465aae4d50895f33909b37c6b0b3c6cc920dd7ff2a6f",
-  "note": "Includes the minimal H3 SETTINGS correction and resource-availability guard. Long soak runs separately. Matrix assertion/case counts are not added to test-runner count. Root-only profile ownership branch was not exercised as non-root."
+  "log_sha256": "94b13df872dffeb6928bcdea056ceaa3ac4e759807e11ffb05411490ad963d46",
+  "note": "Includes the minimal H3 SETTINGS correction, resource-availability guard and test-only timeout diagnostics. Long soak and the explicitly invoked diagnostic stress are separate. The ignored diagnostic test writes its passing artifact only after cleanup in the subsequent test-only ordering correction; touched formatting/Clippy and an explicitly executed one-round diagnostic subsequently passed, with evidence recorded separately. Matrix case counts are not added to the test-runner total. Root-only profile ownership branch was not exercised as non-root.",
+  "post_workflow_test_only_change": "Move the ignored diagnostic test passing-artifact write after successful flow/fixture cleanup; production unchanged.",
+  "post_change_owned_format_and_clippy_passed": true,
+  "post_change_executed_diagnostic": "docs/evidence/h3-bulk-cleanup-order-summary.json"
 }

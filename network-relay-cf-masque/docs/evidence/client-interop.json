@@ -22,7 +22,7 @@
     }
   },
   "client_sources_modified": false,
-  "ended_unix": 1792016443,
+  "ended_unix": 1792018317,
   "live_cloudflare": false,
   "matrix": [
     {
@@ -31,7 +31,7 @@
         "certificate_name_rejected": true,
         "client": "nf",
         "core_version": "0.1.0",
-        "elapsed_ms": 1162,
+        "elapsed_ms": 556,
         "ingress": "http/1.1",
         "native_bridge_emulated_on_linux": true,
         "quic_datagrams_sent": 0,
@@ -100,8 +100,8 @@
       "dns_queries_delta": 3,
       "egress": "h2",
       "ingress": "http/1.1",
-      "packet_delta_downloaded": 1812,
-      "packet_delta_uploaded": 1787
+      "packet_delta_downloaded": 1828,
+      "packet_delta_uploaded": 1792
     },
     {
       "client": "nf",
@@ -109,7 +109,7 @@
         "certificate_name_rejected": true,
         "client": "nf",
         "core_version": "0.1.0",
-        "elapsed_ms": 664,
+        "elapsed_ms": 990,
         "ingress": "h2",
         "native_bridge_emulated_on_linux": true,
         "quic_datagrams_sent": 0,
@@ -178,8 +178,8 @@
       "dns_queries_delta": 2,
       "egress": "h2",
       "ingress": "h2",
-      "packet_delta_downloaded": 1824,
-      "packet_delta_uploaded": 1800
+      "packet_delta_downloaded": 1823,
+      "packet_delta_uploaded": 1793
     },
     {
       "client": "nf",
@@ -187,9 +187,711 @@
         "certificate_name_rejected": true,
         "client": "nf",
         "core_version": "0.1.0",
-        "elapsed_ms": 1197,
+        "elapsed_ms": 1233,
         "ingress": "h3",
         "native_bridge_emulated_on_linux": true,
+        "quic_datagrams_sent": 0,
+        "rows": [
+          {
+            "bytes": 2097152,
+            "half_close": true,
+            "protocol": "tcp",
+            "sha256": "91d6f139837323de3829070b54945b770230a2fbfd270b370184b57305bfaf65",
+            "target": "fixture.test",
+            "transport": "HTTP/3"
+          },
+          {
+            "bytes": 0,
+            "protocol": "udp",
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "target": "fixture.test",
+            "whole_datagram": true
+          },
+          {
+            "bytes": 1,
+            "protocol": "udp",
+            "sha256": "2b4c342f5433ebe591a1da77e013d1b72475562d48578dca8b84bac6651c3cb9",
+            "target": "fixture.test",
+            "whole_datagram": true
+          },
+          {
+            "bytes": 1200,
+            "protocol": "udp",
+            "sha256": "7ceaec51eb0363aa6a4157d444e84e15ef6a2abb2d821f9123b29aaee61bec19",
+            "target": "fixture.test",
+            "whole_datagram": true
+          },
+          {
+            "bytes": 16384,
+            "half_close": true,
+            "protocol": "tcp",
+            "sha256": "ebb1b719a8cfe5681439d2a080bbde1daf5f52ca84ca58cbd47d3e0ad3a551cb",
+            "target": "fd00::2",
+            "transport": "HTTP/3"
+          },
+          {
+            "bytes": 0,
+            "protocol": "udp",
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "target": "fd00::2",
+            "whole_datagram": true
+          },
+          {
+            "bytes": 1,
+            "protocol": "udp",
+            "sha256": "2b4c342f5433ebe591a1da77e013d1b72475562d48578dca8b84bac6651c3cb9",
+            "target": "fd00::2",
+            "whole_datagram": true
+          },
+          {
+            "bytes": 1200,
+            "protocol": "udp",
+            "sha256": "7ceaec51eb0363aa6a4157d444e84e15ef6a2abb2d821f9123b29aaee61bec19",
+            "target": "fd00::2",
+            "whole_datagram": true
+          }
+        ],
+        "wrong_password_rejected": true
+      },
+      "dns_queries_delta": 2,
+      "egress": "h2",
+      "ingress": "h3",
+      "packet_delta_downloaded": 1845,
+      "packet_delta_uploaded": 1789
+    },
+    {
+      "client": "rs",
+      "client_evidence": {
+        "certificate_name_rejected": true,
+        "client": "rs",
+        "core_version": "0.1.0",
+        "elapsed_ms": 509,
+        "ingress": "http/1.1",
+        "production_backend_resources_after_shutdown": 0,
+        "quic_datagrams_sent": 0,
+        "rows": [
+          {
+            "bytes": 2097152,
+            "half_close": true,
+            "protocol": "tcp",
+            "sha256": "91d6f139837323de3829070b54945b770230a2fbfd270b370184b57305bfaf65",
+            "target": "fixture.test",
+            "transport": "HTTP/1.1"
+          },
+          {
+            "bytes": 0,
+            "protocol": "udp",
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "target": "fixture.test",
+            "whole_datagram": true
+          },
+          {
+            "bytes": 1,
+            "protocol": "udp",
+            "sha256": "2b4c342f5433ebe591a1da77e013d1b72475562d48578dca8b84bac6651c3cb9",
+            "target": "fixture.test",
+            "whole_datagram": true
+          },
+          {
+            "bytes": 1200,
+            "protocol": "udp",
+            "sha256": "7ceaec51eb0363aa6a4157d444e84e15ef6a2abb2d821f9123b29aaee61bec19",
+            "target": "fixture.test",
+            "whole_datagram": true
+          },
+          {
+            "bytes": 16384,
+            "half_close": true,
+            "protocol": "tcp",
+            "sha256": "ebb1b719a8cfe5681439d2a080bbde1daf5f52ca84ca58cbd47d3e0ad3a551cb",
+            "target": "fd00::2",
+            "transport": "HTTP/1.1"
+          },
+          {
+            "bytes": 0,
+            "protocol": "udp",
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "target": "fd00::2",
+            "whole_datagram": true
+          },
+          {
+            "bytes": 1,
+            "protocol": "udp",
+            "sha256": "2b4c342f5433ebe591a1da77e013d1b72475562d48578dca8b84bac6651c3cb9",
+            "target": "fd00::2",
+            "whole_datagram": true
+          },
+          {
+            "bytes": 1200,
+            "protocol": "udp",
+            "sha256": "7ceaec51eb0363aa6a4157d444e84e15ef6a2abb2d821f9123b29aaee61bec19",
+            "target": "fd00::2",
+            "whole_datagram": true
+          }
+        ],
+        "wrong_password_rejected": true
+      },
+      "dns_queries_delta": 2,
+      "egress": "h2",
+      "ingress": "http/1.1",
+      "packet_delta_downloaded": 1826,
+      "packet_delta_uploaded": 1769
+    },
+    {
+      "client": "rs",
+      "client_evidence": {
+        "certificate_name_rejected": true,
+        "client": "rs",
+        "core_version": "0.1.0",
+        "elapsed_ms": 776,
+        "ingress": "h2",
+        "production_backend_resources_after_shutdown": 0,
+        "quic_datagrams_sent": 0,
+        "rows": [
+          {
+            "bytes": 2097152,
+            "half_close": true,
+            "protocol": "tcp",
+            "sha256": "91d6f139837323de3829070b54945b770230a2fbfd270b370184b57305bfaf65",
+            "target": "fixture.test",
+            "transport": "HTTP/2"
+          },
+          {
+            "bytes": 0,
+            "protocol": "udp",
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "target": "fixture.test",
+            "whole_datagram": true
+          },
+          {
+            "bytes": 1,
+            "protocol": "udp",
+            "sha256": "2b4c342f5433ebe591a1da77e013d1b72475562d48578dca8b84bac6651c3cb9",
+            "target": "fixture.test",
+            "whole_datagram": true
+          },
+          {
+            "bytes": 1200,
+            "protocol": "udp",
+            "sha256": "7ceaec51eb0363aa6a4157d444e84e15ef6a2abb2d821f9123b29aaee61bec19",
+            "target": "fixture.test",
+            "whole_datagram": true
+          },
+          {
+            "bytes": 16384,
+            "half_close": true,
+            "protocol": "tcp",
+            "sha256": "ebb1b719a8cfe5681439d2a080bbde1daf5f52ca84ca58cbd47d3e0ad3a551cb",
+            "target": "fd00::2",
+            "transport": "HTTP/2"
+          },
+          {
+            "bytes": 0,
+            "protocol": "udp",
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "target": "fd00::2",
+            "whole_datagram": true
+          },
+          {
+            "bytes": 1,
+            "protocol": "udp",
+            "sha256": "2b4c342f5433ebe591a1da77e013d1b72475562d48578dca8b84bac6651c3cb9",
+            "target": "fd00::2",
+            "whole_datagram": true
+          },
+          {
+            "bytes": 1200,
+            "protocol": "udp",
+            "sha256": "7ceaec51eb0363aa6a4157d444e84e15ef6a2abb2d821f9123b29aaee61bec19",
+            "target": "fd00::2",
+            "whole_datagram": true
+          }
+        ],
+        "wrong_password_rejected": true
+      },
+      "dns_queries_delta": 2,
+      "egress": "h2",
+      "ingress": "h2",
+      "packet_delta_downloaded": 1838,
+      "packet_delta_uploaded": 1790
+    },
+    {
+      "client": "rs",
+      "client_evidence": {
+        "certificate_name_rejected": true,
+        "client": "rs",
+        "core_version": "0.1.0",
+        "elapsed_ms": 673,
+        "ingress": "h3",
+        "production_backend_resources_after_shutdown": 0,
+        "quic_datagrams_sent": 0,
+        "rows": [
+          {
+            "bytes": 2097152,
+            "half_close": true,
+            "protocol": "tcp",
+            "sha256": "91d6f139837323de3829070b54945b770230a2fbfd270b370184b57305bfaf65",
+            "target": "fixture.test",
+            "transport": "HTTP/3"
+          },
+          {
+            "bytes": 0,
+            "protocol": "udp",
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "target": "fixture.test",
+            "whole_datagram": true
+          },
+          {
+            "bytes": 1,
+            "protocol": "udp",
+            "sha256": "2b4c342f5433ebe591a1da77e013d1b72475562d48578dca8b84bac6651c3cb9",
+            "target": "fixture.test",
+            "whole_datagram": true
+          },
+          {
+            "bytes": 1200,
+            "protocol": "udp",
+            "sha256": "7ceaec51eb0363aa6a4157d444e84e15ef6a2abb2d821f9123b29aaee61bec19",
+            "target": "fixture.test",
+            "whole_datagram": true
+          },
+          {
+            "bytes": 16384,
+            "half_close": true,
+            "protocol": "tcp",
+            "sha256": "ebb1b719a8cfe5681439d2a080bbde1daf5f52ca84ca58cbd47d3e0ad3a551cb",
+            "target": "fd00::2",
+            "transport": "HTTP/3"
+          },
+          {
+            "bytes": 0,
+            "protocol": "udp",
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "target": "fd00::2",
+            "whole_datagram": true
+          },
+          {
+            "bytes": 1,
+            "protocol": "udp",
+            "sha256": "2b4c342f5433ebe591a1da77e013d1b72475562d48578dca8b84bac6651c3cb9",
+            "target": "fd00::2",
+            "whole_datagram": true
+          },
+          {
+            "bytes": 1200,
+            "protocol": "udp",
+            "sha256": "7ceaec51eb0363aa6a4157d444e84e15ef6a2abb2d821f9123b29aaee61bec19",
+            "target": "fd00::2",
+            "whole_datagram": true
+          }
+        ],
+        "wrong_password_rejected": true
+      },
+      "dns_queries_delta": 2,
+      "egress": "h2",
+      "ingress": "h3",
+      "packet_delta_downloaded": 1819,
+      "packet_delta_uploaded": 1805
+    },
+    {
+      "client": "nf-current",
+      "client_evidence": {
+        "certificate_name_rejected": true,
+        "client": "nf-current",
+        "core_version": "0.1.0",
+        "elapsed_ms": 381,
+        "ingress": "http/1.1",
+        "native_bridge_emulated_on_linux": true,
+        "quic_datagrams_sent": 0,
+        "rows": [
+          {
+            "bytes": 2097152,
+            "half_close": true,
+            "protocol": "tcp",
+            "sha256": "91d6f139837323de3829070b54945b770230a2fbfd270b370184b57305bfaf65",
+            "target": "fixture.test",
+            "transport": "HTTP/1.1"
+          },
+          {
+            "bytes": 0,
+            "protocol": "udp",
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "target": "fixture.test",
+            "whole_datagram": true
+          },
+          {
+            "bytes": 1,
+            "protocol": "udp",
+            "sha256": "2b4c342f5433ebe591a1da77e013d1b72475562d48578dca8b84bac6651c3cb9",
+            "target": "fixture.test",
+            "whole_datagram": true
+          },
+          {
+            "bytes": 1200,
+            "protocol": "udp",
+            "sha256": "7ceaec51eb0363aa6a4157d444e84e15ef6a2abb2d821f9123b29aaee61bec19",
+            "target": "fixture.test",
+            "whole_datagram": true
+          },
+          {
+            "bytes": 16384,
+            "half_close": true,
+            "protocol": "tcp",
+            "sha256": "ebb1b719a8cfe5681439d2a080bbde1daf5f52ca84ca58cbd47d3e0ad3a551cb",
+            "target": "fd00::2",
+            "transport": "HTTP/1.1"
+          },
+          {
+            "bytes": 0,
+            "protocol": "udp",
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "target": "fd00::2",
+            "whole_datagram": true
+          },
+          {
+            "bytes": 1,
+            "protocol": "udp",
+            "sha256": "2b4c342f5433ebe591a1da77e013d1b72475562d48578dca8b84bac6651c3cb9",
+            "target": "fd00::2",
+            "whole_datagram": true
+          },
+          {
+            "bytes": 1200,
+            "protocol": "udp",
+            "sha256": "7ceaec51eb0363aa6a4157d444e84e15ef6a2abb2d821f9123b29aaee61bec19",
+            "target": "fd00::2",
+            "whole_datagram": true
+          }
+        ],
+        "wrong_password_rejected": true
+      },
+      "dns_queries_delta": 2,
+      "egress": "h2",
+      "ingress": "http/1.1",
+      "packet_delta_downloaded": 1833,
+      "packet_delta_uploaded": 1790
+    },
+    {
+      "client": "nf-current",
+      "client_evidence": {
+        "certificate_name_rejected": true,
+        "client": "nf-current",
+        "core_version": "0.1.0",
+        "elapsed_ms": 661,
+        "ingress": "h2",
+        "native_bridge_emulated_on_linux": true,
+        "quic_datagrams_sent": 0,
+        "rows": [
+          {
+            "bytes": 2097152,
+            "half_close": true,
+            "protocol": "tcp",
+            "sha256": "91d6f139837323de3829070b54945b770230a2fbfd270b370184b57305bfaf65",
+            "target": "fixture.test",
+            "transport": "HTTP/2"
+          },
+          {
+            "bytes": 0,
+            "protocol": "udp",
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "target": "fixture.test",
+            "whole_datagram": true
+          },
+          {
+            "bytes": 1,
+            "protocol": "udp",
+            "sha256": "2b4c342f5433ebe591a1da77e013d1b72475562d48578dca8b84bac6651c3cb9",
+            "target": "fixture.test",
+            "whole_datagram": true
+          },
+          {
+            "bytes": 1200,
+            "protocol": "udp",
+            "sha256": "7ceaec51eb0363aa6a4157d444e84e15ef6a2abb2d821f9123b29aaee61bec19",
+            "target": "fixture.test",
+            "whole_datagram": true
+          },
+          {
+            "bytes": 16384,
+            "half_close": true,
+            "protocol": "tcp",
+            "sha256": "ebb1b719a8cfe5681439d2a080bbde1daf5f52ca84ca58cbd47d3e0ad3a551cb",
+            "target": "fd00::2",
+            "transport": "HTTP/2"
+          },
+          {
+            "bytes": 0,
+            "protocol": "udp",
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "target": "fd00::2",
+            "whole_datagram": true
+          },
+          {
+            "bytes": 1,
+            "protocol": "udp",
+            "sha256": "2b4c342f5433ebe591a1da77e013d1b72475562d48578dca8b84bac6651c3cb9",
+            "target": "fd00::2",
+            "whole_datagram": true
+          },
+          {
+            "bytes": 1200,
+            "protocol": "udp",
+            "sha256": "7ceaec51eb0363aa6a4157d444e84e15ef6a2abb2d821f9123b29aaee61bec19",
+            "target": "fd00::2",
+            "whole_datagram": true
+          }
+        ],
+        "wrong_password_rejected": true
+      },
+      "dns_queries_delta": 2,
+      "egress": "h2",
+      "ingress": "h2",
+      "packet_delta_downloaded": 1838,
+      "packet_delta_uploaded": 1791
+    },
+    {
+      "client": "nf-current",
+      "client_evidence": {
+        "certificate_name_rejected": true,
+        "client": "nf-current",
+        "core_version": "0.1.0",
+        "elapsed_ms": 1027,
+        "ingress": "h3",
+        "native_bridge_emulated_on_linux": true,
+        "quic_datagrams_sent": 0,
+        "rows": [
+          {
+            "bytes": 2097152,
+            "half_close": true,
+            "protocol": "tcp",
+            "sha256": "91d6f139837323de3829070b54945b770230a2fbfd270b370184b57305bfaf65",
+            "target": "fixture.test",
+            "transport": "HTTP/3"
+          },
+          {
+            "bytes": 0,
+            "protocol": "udp",
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "target": "fixture.test",
+            "whole_datagram": true
+          },
+          {
+            "bytes": 1,
+            "protocol": "udp",
+            "sha256": "2b4c342f5433ebe591a1da77e013d1b72475562d48578dca8b84bac6651c3cb9",
+            "target": "fixture.test",
+            "whole_datagram": true
+          },
+          {
+            "bytes": 1200,
+            "protocol": "udp",
+            "sha256": "7ceaec51eb0363aa6a4157d444e84e15ef6a2abb2d821f9123b29aaee61bec19",
+            "target": "fixture.test",
+            "whole_datagram": true
+          },
+          {
+            "bytes": 16384,
+            "half_close": true,
+            "protocol": "tcp",
+            "sha256": "ebb1b719a8cfe5681439d2a080bbde1daf5f52ca84ca58cbd47d3e0ad3a551cb",
+            "target": "fd00::2",
+            "transport": "HTTP/3"
+          },
+          {
+            "bytes": 0,
+            "protocol": "udp",
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "target": "fd00::2",
+            "whole_datagram": true
+          },
+          {
+            "bytes": 1,
+            "protocol": "udp",
+            "sha256": "2b4c342f5433ebe591a1da77e013d1b72475562d48578dca8b84bac6651c3cb9",
+            "target": "fd00::2",
+            "whole_datagram": true
+          },
+          {
+            "bytes": 1200,
+            "protocol": "udp",
+            "sha256": "7ceaec51eb0363aa6a4157d444e84e15ef6a2abb2d821f9123b29aaee61bec19",
+            "target": "fd00::2",
+            "whole_datagram": true
+          }
+        ],
+        "wrong_password_rejected": true
+      },
+      "dns_queries_delta": 2,
+      "egress": "h2",
+      "ingress": "h3",
+      "packet_delta_downloaded": 1822,
+      "packet_delta_uploaded": 1795
+    },
+    {
+      "client": "rs-current",
+      "client_evidence": {
+        "certificate_name_rejected": true,
+        "client": "rs-current",
+        "core_version": "0.1.0",
+        "elapsed_ms": 552,
+        "ingress": "http/1.1",
+        "production_backend_resources_after_shutdown": 0,
+        "quic_datagrams_sent": 0,
+        "rows": [
+          {
+            "bytes": 2097152,
+            "half_close": true,
+            "protocol": "tcp",
+            "sha256": "91d6f139837323de3829070b54945b770230a2fbfd270b370184b57305bfaf65",
+            "target": "fixture.test",
+            "transport": "HTTP/1.1"
+          },
+          {
+            "bytes": 0,
+            "protocol": "udp",
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "target": "fixture.test",
+            "whole_datagram": true
+          },
+          {
+            "bytes": 1,
+            "protocol": "udp",
+            "sha256": "2b4c342f5433ebe591a1da77e013d1b72475562d48578dca8b84bac6651c3cb9",
+            "target": "fixture.test",
+            "whole_datagram": true
+          },
+          {
+            "bytes": 1200,
+            "protocol": "udp",
+            "sha256": "7ceaec51eb0363aa6a4157d444e84e15ef6a2abb2d821f9123b29aaee61bec19",
+            "target": "fixture.test",
+            "whole_datagram": true
+          },
+          {
+            "bytes": 16384,
+            "half_close": true,
+            "protocol": "tcp",
+            "sha256": "ebb1b719a8cfe5681439d2a080bbde1daf5f52ca84ca58cbd47d3e0ad3a551cb",
+            "target": "fd00::2",
+            "transport": "HTTP/1.1"
+          },
+          {
+            "bytes": 0,
+            "protocol": "udp",
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "target": "fd00::2",
+            "whole_datagram": true
+          },
+          {
+            "bytes": 1,
+            "protocol": "udp",
+            "sha256": "2b4c342f5433ebe591a1da77e013d1b72475562d48578dca8b84bac6651c3cb9",
+            "target": "fd00::2",
+            "whole_datagram": true
+          },
+          {
+            "bytes": 1200,
+            "protocol": "udp",
+            "sha256": "7ceaec51eb0363aa6a4157d444e84e15ef6a2abb2d821f9123b29aaee61bec19",
+            "target": "fd00::2",
+            "whole_datagram": true
+          }
+        ],
+        "wrong_password_rejected": true
+      },
+      "dns_queries_delta": 2,
+      "egress": "h2",
+      "ingress": "http/1.1",
+      "packet_delta_downloaded": 1825,
+      "packet_delta_uploaded": 1791
+    },
+    {
+      "client": "rs-current",
+      "client_evidence": {
+        "certificate_name_rejected": true,
+        "client": "rs-current",
+        "core_version": "0.1.0",
+        "elapsed_ms": 785,
+        "ingress": "h2",
+        "production_backend_resources_after_shutdown": 0,
+        "quic_datagrams_sent": 0,
+        "rows": [
+          {
+            "bytes": 2097152,
+            "half_close": true,
+            "protocol": "tcp",
+            "sha256": "91d6f139837323de3829070b54945b770230a2fbfd270b370184b57305bfaf65",
+            "target": "fixture.test",
+            "transport": "HTTP/2"
+          },
+          {
+            "bytes": 0,
+            "protocol": "udp",
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "target": "fixture.test",
+            "whole_datagram": true
+          },
+          {
+            "bytes": 1,
+            "protocol": "udp",
+            "sha256": "2b4c342f5433ebe591a1da77e013d1b72475562d48578dca8b84bac6651c3cb9",
+            "target": "fixture.test",
+            "whole_datagram": true
+          },
+          {
+            "bytes": 1200,
+            "protocol": "udp",
+            "sha256": "7ceaec51eb0363aa6a4157d444e84e15ef6a2abb2d821f9123b29aaee61bec19",
+            "target": "fixture.test",
+            "whole_datagram": true
+          },
+          {
+            "bytes": 16384,
+            "half_close": true,
+            "protocol": "tcp",
+            "sha256": "ebb1b719a8cfe5681439d2a080bbde1daf5f52ca84ca58cbd47d3e0ad3a551cb",
+            "target": "fd00::2",
+            "transport": "HTTP/2"
+          },
+          {
+            "bytes": 0,
+            "protocol": "udp",
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "target": "fd00::2",
+            "whole_datagram": true
+          },
+          {
+            "bytes": 1,
+            "protocol": "udp",
+            "sha256": "2b4c342f5433ebe591a1da77e013d1b72475562d48578dca8b84bac6651c3cb9",
+            "target": "fd00::2",
+            "whole_datagram": true
+          },
+          {
+            "bytes": 1200,
+            "protocol": "udp",
+            "sha256": "7ceaec51eb0363aa6a4157d444e84e15ef6a2abb2d821f9123b29aaee61bec19",
+            "target": "fd00::2",
+            "whole_datagram": true
+          }
+        ],
+        "wrong_password_rejected": true
+      },
+      "dns_queries_delta": 2,
+      "egress": "h2",
+      "ingress": "h2",
+      "packet_delta_downloaded": 1815,
+      "packet_delta_uploaded": 1789
+    },
+    {
+      "client": "rs-current",
+      "client_evidence": {
+        "certificate_name_rejected": true,
+        "client": "rs-current",
+        "core_version": "0.1.0",
+        "elapsed_ms": 710,
+        "ingress": "h3",
+        "production_backend_resources_after_shutdown": 0,
         "quic_datagrams_sent": 0,
         "rows": [
           {
@@ -257,709 +959,7 @@
       "egress": "h2",
       "ingress": "h3",
       "packet_delta_downloaded": 1832,
-      "packet_delta_uploaded": 1795
-    },
-    {
-      "client": "rs",
-      "client_evidence": {
-        "certificate_name_rejected": true,
-        "client": "rs",
-        "core_version": "0.1.0",
-        "elapsed_ms": 451,
-        "ingress": "http/1.1",
-        "production_backend_resources_after_shutdown": 0,
-        "quic_datagrams_sent": 0,
-        "rows": [
-          {
-            "bytes": 2097152,
-            "half_close": true,
-            "protocol": "tcp",
-            "sha256": "91d6f139837323de3829070b54945b770230a2fbfd270b370184b57305bfaf65",
-            "target": "fixture.test",
-            "transport": "HTTP/1.1"
-          },
-          {
-            "bytes": 0,
-            "protocol": "udp",
-            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-            "target": "fixture.test",
-            "whole_datagram": true
-          },
-          {
-            "bytes": 1,
-            "protocol": "udp",
-            "sha256": "2b4c342f5433ebe591a1da77e013d1b72475562d48578dca8b84bac6651c3cb9",
-            "target": "fixture.test",
-            "whole_datagram": true
-          },
-          {
-            "bytes": 1200,
-            "protocol": "udp",
-            "sha256": "7ceaec51eb0363aa6a4157d444e84e15ef6a2abb2d821f9123b29aaee61bec19",
-            "target": "fixture.test",
-            "whole_datagram": true
-          },
-          {
-            "bytes": 16384,
-            "half_close": true,
-            "protocol": "tcp",
-            "sha256": "ebb1b719a8cfe5681439d2a080bbde1daf5f52ca84ca58cbd47d3e0ad3a551cb",
-            "target": "fd00::2",
-            "transport": "HTTP/1.1"
-          },
-          {
-            "bytes": 0,
-            "protocol": "udp",
-            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-            "target": "fd00::2",
-            "whole_datagram": true
-          },
-          {
-            "bytes": 1,
-            "protocol": "udp",
-            "sha256": "2b4c342f5433ebe591a1da77e013d1b72475562d48578dca8b84bac6651c3cb9",
-            "target": "fd00::2",
-            "whole_datagram": true
-          },
-          {
-            "bytes": 1200,
-            "protocol": "udp",
-            "sha256": "7ceaec51eb0363aa6a4157d444e84e15ef6a2abb2d821f9123b29aaee61bec19",
-            "target": "fd00::2",
-            "whole_datagram": true
-          }
-        ],
-        "wrong_password_rejected": true
-      },
-      "dns_queries_delta": 2,
-      "egress": "h2",
-      "ingress": "http/1.1",
-      "packet_delta_downloaded": 1829,
-      "packet_delta_uploaded": 1783
-    },
-    {
-      "client": "rs",
-      "client_evidence": {
-        "certificate_name_rejected": true,
-        "client": "rs",
-        "core_version": "0.1.0",
-        "elapsed_ms": 1127,
-        "ingress": "h2",
-        "production_backend_resources_after_shutdown": 0,
-        "quic_datagrams_sent": 0,
-        "rows": [
-          {
-            "bytes": 2097152,
-            "half_close": true,
-            "protocol": "tcp",
-            "sha256": "91d6f139837323de3829070b54945b770230a2fbfd270b370184b57305bfaf65",
-            "target": "fixture.test",
-            "transport": "HTTP/2"
-          },
-          {
-            "bytes": 0,
-            "protocol": "udp",
-            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-            "target": "fixture.test",
-            "whole_datagram": true
-          },
-          {
-            "bytes": 1,
-            "protocol": "udp",
-            "sha256": "2b4c342f5433ebe591a1da77e013d1b72475562d48578dca8b84bac6651c3cb9",
-            "target": "fixture.test",
-            "whole_datagram": true
-          },
-          {
-            "bytes": 1200,
-            "protocol": "udp",
-            "sha256": "7ceaec51eb0363aa6a4157d444e84e15ef6a2abb2d821f9123b29aaee61bec19",
-            "target": "fixture.test",
-            "whole_datagram": true
-          },
-          {
-            "bytes": 16384,
-            "half_close": true,
-            "protocol": "tcp",
-            "sha256": "ebb1b719a8cfe5681439d2a080bbde1daf5f52ca84ca58cbd47d3e0ad3a551cb",
-            "target": "fd00::2",
-            "transport": "HTTP/2"
-          },
-          {
-            "bytes": 0,
-            "protocol": "udp",
-            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-            "target": "fd00::2",
-            "whole_datagram": true
-          },
-          {
-            "bytes": 1,
-            "protocol": "udp",
-            "sha256": "2b4c342f5433ebe591a1da77e013d1b72475562d48578dca8b84bac6651c3cb9",
-            "target": "fd00::2",
-            "whole_datagram": true
-          },
-          {
-            "bytes": 1200,
-            "protocol": "udp",
-            "sha256": "7ceaec51eb0363aa6a4157d444e84e15ef6a2abb2d821f9123b29aaee61bec19",
-            "target": "fd00::2",
-            "whole_datagram": true
-          }
-        ],
-        "wrong_password_rejected": true
-      },
-      "dns_queries_delta": 2,
-      "egress": "h2",
-      "ingress": "h2",
-      "packet_delta_downloaded": 1844,
-      "packet_delta_uploaded": 1799
-    },
-    {
-      "client": "rs",
-      "client_evidence": {
-        "certificate_name_rejected": true,
-        "client": "rs",
-        "core_version": "0.1.0",
-        "elapsed_ms": 697,
-        "ingress": "h3",
-        "production_backend_resources_after_shutdown": 0,
-        "quic_datagrams_sent": 0,
-        "rows": [
-          {
-            "bytes": 2097152,
-            "half_close": true,
-            "protocol": "tcp",
-            "sha256": "91d6f139837323de3829070b54945b770230a2fbfd270b370184b57305bfaf65",
-            "target": "fixture.test",
-            "transport": "HTTP/3"
-          },
-          {
-            "bytes": 0,
-            "protocol": "udp",
-            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-            "target": "fixture.test",
-            "whole_datagram": true
-          },
-          {
-            "bytes": 1,
-            "protocol": "udp",
-            "sha256": "2b4c342f5433ebe591a1da77e013d1b72475562d48578dca8b84bac6651c3cb9",
-            "target": "fixture.test",
-            "whole_datagram": true
-          },
-          {
-            "bytes": 1200,
-            "protocol": "udp",
-            "sha256": "7ceaec51eb0363aa6a4157d444e84e15ef6a2abb2d821f9123b29aaee61bec19",
-            "target": "fixture.test",
-            "whole_datagram": true
-          },
-          {
-            "bytes": 16384,
-            "half_close": true,
-            "protocol": "tcp",
-            "sha256": "ebb1b719a8cfe5681439d2a080bbde1daf5f52ca84ca58cbd47d3e0ad3a551cb",
-            "target": "fd00::2",
-            "transport": "HTTP/3"
-          },
-          {
-            "bytes": 0,
-            "protocol": "udp",
-            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-            "target": "fd00::2",
-            "whole_datagram": true
-          },
-          {
-            "bytes": 1,
-            "protocol": "udp",
-            "sha256": "2b4c342f5433ebe591a1da77e013d1b72475562d48578dca8b84bac6651c3cb9",
-            "target": "fd00::2",
-            "whole_datagram": true
-          },
-          {
-            "bytes": 1200,
-            "protocol": "udp",
-            "sha256": "7ceaec51eb0363aa6a4157d444e84e15ef6a2abb2d821f9123b29aaee61bec19",
-            "target": "fd00::2",
-            "whole_datagram": true
-          }
-        ],
-        "wrong_password_rejected": true
-      },
-      "dns_queries_delta": 2,
-      "egress": "h2",
-      "ingress": "h3",
-      "packet_delta_downloaded": 1834,
       "packet_delta_uploaded": 1789
-    },
-    {
-      "client": "nf-current",
-      "client_evidence": {
-        "certificate_name_rejected": true,
-        "client": "nf-current",
-        "core_version": "0.1.0",
-        "elapsed_ms": 1308,
-        "ingress": "http/1.1",
-        "native_bridge_emulated_on_linux": true,
-        "quic_datagrams_sent": 0,
-        "rows": [
-          {
-            "bytes": 2097152,
-            "half_close": true,
-            "protocol": "tcp",
-            "sha256": "91d6f139837323de3829070b54945b770230a2fbfd270b370184b57305bfaf65",
-            "target": "fixture.test",
-            "transport": "HTTP/1.1"
-          },
-          {
-            "bytes": 0,
-            "protocol": "udp",
-            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-            "target": "fixture.test",
-            "whole_datagram": true
-          },
-          {
-            "bytes": 1,
-            "protocol": "udp",
-            "sha256": "2b4c342f5433ebe591a1da77e013d1b72475562d48578dca8b84bac6651c3cb9",
-            "target": "fixture.test",
-            "whole_datagram": true
-          },
-          {
-            "bytes": 1200,
-            "protocol": "udp",
-            "sha256": "7ceaec51eb0363aa6a4157d444e84e15ef6a2abb2d821f9123b29aaee61bec19",
-            "target": "fixture.test",
-            "whole_datagram": true
-          },
-          {
-            "bytes": 16384,
-            "half_close": true,
-            "protocol": "tcp",
-            "sha256": "ebb1b719a8cfe5681439d2a080bbde1daf5f52ca84ca58cbd47d3e0ad3a551cb",
-            "target": "fd00::2",
-            "transport": "HTTP/1.1"
-          },
-          {
-            "bytes": 0,
-            "protocol": "udp",
-            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-            "target": "fd00::2",
-            "whole_datagram": true
-          },
-          {
-            "bytes": 1,
-            "protocol": "udp",
-            "sha256": "2b4c342f5433ebe591a1da77e013d1b72475562d48578dca8b84bac6651c3cb9",
-            "target": "fd00::2",
-            "whole_datagram": true
-          },
-          {
-            "bytes": 1200,
-            "protocol": "udp",
-            "sha256": "7ceaec51eb0363aa6a4157d444e84e15ef6a2abb2d821f9123b29aaee61bec19",
-            "target": "fd00::2",
-            "whole_datagram": true
-          }
-        ],
-        "wrong_password_rejected": true
-      },
-      "dns_queries_delta": 2,
-      "egress": "h2",
-      "ingress": "http/1.1",
-      "packet_delta_downloaded": 1817,
-      "packet_delta_uploaded": 1777
-    },
-    {
-      "client": "nf-current",
-      "client_evidence": {
-        "certificate_name_rejected": true,
-        "client": "nf-current",
-        "core_version": "0.1.0",
-        "elapsed_ms": 830,
-        "ingress": "h2",
-        "native_bridge_emulated_on_linux": true,
-        "quic_datagrams_sent": 0,
-        "rows": [
-          {
-            "bytes": 2097152,
-            "half_close": true,
-            "protocol": "tcp",
-            "sha256": "91d6f139837323de3829070b54945b770230a2fbfd270b370184b57305bfaf65",
-            "target": "fixture.test",
-            "transport": "HTTP/2"
-          },
-          {
-            "bytes": 0,
-            "protocol": "udp",
-            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-            "target": "fixture.test",
-            "whole_datagram": true
-          },
-          {
-            "bytes": 1,
-            "protocol": "udp",
-            "sha256": "2b4c342f5433ebe591a1da77e013d1b72475562d48578dca8b84bac6651c3cb9",
-            "target": "fixture.test",
-            "whole_datagram": true
-          },
-          {
-            "bytes": 1200,
-            "protocol": "udp",
-            "sha256": "7ceaec51eb0363aa6a4157d444e84e15ef6a2abb2d821f9123b29aaee61bec19",
-            "target": "fixture.test",
-            "whole_datagram": true
-          },
-          {
-            "bytes": 16384,
-            "half_close": true,
-            "protocol": "tcp",
-            "sha256": "ebb1b719a8cfe5681439d2a080bbde1daf5f52ca84ca58cbd47d3e0ad3a551cb",
-            "target": "fd00::2",
-            "transport": "HTTP/2"
-          },
-          {
-            "bytes": 0,
-            "protocol": "udp",
-            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-            "target": "fd00::2",
-            "whole_datagram": true
-          },
-          {
-            "bytes": 1,
-            "protocol": "udp",
-            "sha256": "2b4c342f5433ebe591a1da77e013d1b72475562d48578dca8b84bac6651c3cb9",
-            "target": "fd00::2",
-            "whole_datagram": true
-          },
-          {
-            "bytes": 1200,
-            "protocol": "udp",
-            "sha256": "7ceaec51eb0363aa6a4157d444e84e15ef6a2abb2d821f9123b29aaee61bec19",
-            "target": "fd00::2",
-            "whole_datagram": true
-          }
-        ],
-        "wrong_password_rejected": true
-      },
-      "dns_queries_delta": 2,
-      "egress": "h2",
-      "ingress": "h2",
-      "packet_delta_downloaded": 1819,
-      "packet_delta_uploaded": 1789
-    },
-    {
-      "client": "nf-current",
-      "client_evidence": {
-        "certificate_name_rejected": true,
-        "client": "nf-current",
-        "core_version": "0.1.0",
-        "elapsed_ms": 791,
-        "ingress": "h3",
-        "native_bridge_emulated_on_linux": true,
-        "quic_datagrams_sent": 0,
-        "rows": [
-          {
-            "bytes": 2097152,
-            "half_close": true,
-            "protocol": "tcp",
-            "sha256": "91d6f139837323de3829070b54945b770230a2fbfd270b370184b57305bfaf65",
-            "target": "fixture.test",
-            "transport": "HTTP/3"
-          },
-          {
-            "bytes": 0,
-            "protocol": "udp",
-            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-            "target": "fixture.test",
-            "whole_datagram": true
-          },
-          {
-            "bytes": 1,
-            "protocol": "udp",
-            "sha256": "2b4c342f5433ebe591a1da77e013d1b72475562d48578dca8b84bac6651c3cb9",
-            "target": "fixture.test",
-            "whole_datagram": true
-          },
-          {
-            "bytes": 1200,
-            "protocol": "udp",
-            "sha256": "7ceaec51eb0363aa6a4157d444e84e15ef6a2abb2d821f9123b29aaee61bec19",
-            "target": "fixture.test",
-            "whole_datagram": true
-          },
-          {
-            "bytes": 16384,
-            "half_close": true,
-            "protocol": "tcp",
-            "sha256": "ebb1b719a8cfe5681439d2a080bbde1daf5f52ca84ca58cbd47d3e0ad3a551cb",
-            "target": "fd00::2",
-            "transport": "HTTP/3"
-          },
-          {
-            "bytes": 0,
-            "protocol": "udp",
-            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-            "target": "fd00::2",
-            "whole_datagram": true
-          },
-          {
-            "bytes": 1,
-            "protocol": "udp",
-            "sha256": "2b4c342f5433ebe591a1da77e013d1b72475562d48578dca8b84bac6651c3cb9",
-            "target": "fd00::2",
-            "whole_datagram": true
-          },
-          {
-            "bytes": 1200,
-            "protocol": "udp",
-            "sha256": "7ceaec51eb0363aa6a4157d444e84e15ef6a2abb2d821f9123b29aaee61bec19",
-            "target": "fd00::2",
-            "whole_datagram": true
-          }
-        ],
-        "wrong_password_rejected": true
-      },
-      "dns_queries_delta": 2,
-      "egress": "h2",
-      "ingress": "h3",
-      "packet_delta_downloaded": 1838,
-      "packet_delta_uploaded": 1798
-    },
-    {
-      "client": "rs-current",
-      "client_evidence": {
-        "certificate_name_rejected": true,
-        "client": "rs-current",
-        "core_version": "0.1.0",
-        "elapsed_ms": 864,
-        "ingress": "http/1.1",
-        "production_backend_resources_after_shutdown": 0,
-        "quic_datagrams_sent": 0,
-        "rows": [
-          {
-            "bytes": 2097152,
-            "half_close": true,
-            "protocol": "tcp",
-            "sha256": "91d6f139837323de3829070b54945b770230a2fbfd270b370184b57305bfaf65",
-            "target": "fixture.test",
-            "transport": "HTTP/1.1"
-          },
-          {
-            "bytes": 0,
-            "protocol": "udp",
-            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-            "target": "fixture.test",
-            "whole_datagram": true
-          },
-          {
-            "bytes": 1,
-            "protocol": "udp",
-            "sha256": "2b4c342f5433ebe591a1da77e013d1b72475562d48578dca8b84bac6651c3cb9",
-            "target": "fixture.test",
-            "whole_datagram": true
-          },
-          {
-            "bytes": 1200,
-            "protocol": "udp",
-            "sha256": "7ceaec51eb0363aa6a4157d444e84e15ef6a2abb2d821f9123b29aaee61bec19",
-            "target": "fixture.test",
-            "whole_datagram": true
-          },
-          {
-            "bytes": 16384,
-            "half_close": true,
-            "protocol": "tcp",
-            "sha256": "ebb1b719a8cfe5681439d2a080bbde1daf5f52ca84ca58cbd47d3e0ad3a551cb",
-            "target": "fd00::2",
-            "transport": "HTTP/1.1"
-          },
-          {
-            "bytes": 0,
-            "protocol": "udp",
-            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-            "target": "fd00::2",
-            "whole_datagram": true
-          },
-          {
-            "bytes": 1,
-            "protocol": "udp",
-            "sha256": "2b4c342f5433ebe591a1da77e013d1b72475562d48578dca8b84bac6651c3cb9",
-            "target": "fd00::2",
-            "whole_datagram": true
-          },
-          {
-            "bytes": 1200,
-            "protocol": "udp",
-            "sha256": "7ceaec51eb0363aa6a4157d444e84e15ef6a2abb2d821f9123b29aaee61bec19",
-            "target": "fd00::2",
-            "whole_datagram": true
-          }
-        ],
-        "wrong_password_rejected": true
-      },
-      "dns_queries_delta": 2,
-      "egress": "h2",
-      "ingress": "http/1.1",
-      "packet_delta_downloaded": 1831,
-      "packet_delta_uploaded": 1793
-    },
-    {
-      "client": "rs-current",
-      "client_evidence": {
-        "certificate_name_rejected": true,
-        "client": "rs-current",
-        "core_version": "0.1.0",
-        "elapsed_ms": 1014,
-        "ingress": "h2",
-        "production_backend_resources_after_shutdown": 0,
-        "quic_datagrams_sent": 0,
-        "rows": [
-          {
-            "bytes": 2097152,
-            "half_close": true,
-            "protocol": "tcp",
-            "sha256": "91d6f139837323de3829070b54945b770230a2fbfd270b370184b57305bfaf65",
-            "target": "fixture.test",
-            "transport": "HTTP/2"
-          },
-          {
-            "bytes": 0,
-            "protocol": "udp",
-            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-            "target": "fixture.test",
-            "whole_datagram": true
-          },
-          {
-            "bytes": 1,
-            "protocol": "udp",
-            "sha256": "2b4c342f5433ebe591a1da77e013d1b72475562d48578dca8b84bac6651c3cb9",
-            "target": "fixture.test",
-            "whole_datagram": true
-          },
-          {
-            "bytes": 1200,
-            "protocol": "udp",
-            "sha256": "7ceaec51eb0363aa6a4157d444e84e15ef6a2abb2d821f9123b29aaee61bec19",
-            "target": "fixture.test",
-            "whole_datagram": true
-          },
-          {
-            "bytes": 16384,
-            "half_close": true,
-            "protocol": "tcp",
-            "sha256": "ebb1b719a8cfe5681439d2a080bbde1daf5f52ca84ca58cbd47d3e0ad3a551cb",
-            "target": "fd00::2",
-            "transport": "HTTP/2"
-          },
-          {
-            "bytes": 0,
-            "protocol": "udp",
-            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-            "target": "fd00::2",
-            "whole_datagram": true
-          },
-          {
-            "bytes": 1,
-            "protocol": "udp",
-            "sha256": "2b4c342f5433ebe591a1da77e013d1b72475562d48578dca8b84bac6651c3cb9",
-            "target": "fd00::2",
-            "whole_datagram": true
-          },
-          {
-            "bytes": 1200,
-            "protocol": "udp",
-            "sha256": "7ceaec51eb0363aa6a4157d444e84e15ef6a2abb2d821f9123b29aaee61bec19",
-            "target": "fd00::2",
-            "whole_datagram": true
-          }
-        ],
-        "wrong_password_rejected": true
-      },
-      "dns_queries_delta": 2,
-      "egress": "h2",
-      "ingress": "h2",
-      "packet_delta_downloaded": 1818,
-      "packet_delta_uploaded": 1786
-    },
-    {
-      "client": "rs-current",
-      "client_evidence": {
-        "certificate_name_rejected": true,
-        "client": "rs-current",
-        "core_version": "0.1.0",
-        "elapsed_ms": 992,
-        "ingress": "h3",
-        "production_backend_resources_after_shutdown": 0,
-        "quic_datagrams_sent": 0,
-        "rows": [
-          {
-            "bytes": 2097152,
-            "half_close": true,
-            "protocol": "tcp",
-            "sha256": "91d6f139837323de3829070b54945b770230a2fbfd270b370184b57305bfaf65",
-            "target": "fixture.test",
-            "transport": "HTTP/3"
-          },
-          {
-            "bytes": 0,
-            "protocol": "udp",
-            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-            "target": "fixture.test",
-            "whole_datagram": true
-          },
-          {
-            "bytes": 1,
-            "protocol": "udp",
-            "sha256": "2b4c342f5433ebe591a1da77e013d1b72475562d48578dca8b84bac6651c3cb9",
-            "target": "fixture.test",
-            "whole_datagram": true
-          },
-          {
-            "bytes": 1200,
-            "protocol": "udp",
-            "sha256": "7ceaec51eb0363aa6a4157d444e84e15ef6a2abb2d821f9123b29aaee61bec19",
-            "target": "fixture.test",
-            "whole_datagram": true
-          },
-          {
-            "bytes": 16384,
-            "half_close": true,
-            "protocol": "tcp",
-            "sha256": "ebb1b719a8cfe5681439d2a080bbde1daf5f52ca84ca58cbd47d3e0ad3a551cb",
-            "target": "fd00::2",
-            "transport": "HTTP/3"
-          },
-          {
-            "bytes": 0,
-            "protocol": "udp",
-            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-            "target": "fd00::2",
-            "whole_datagram": true
-          },
-          {
-            "bytes": 1,
-            "protocol": "udp",
-            "sha256": "2b4c342f5433ebe591a1da77e013d1b72475562d48578dca8b84bac6651c3cb9",
-            "target": "fd00::2",
-            "whole_datagram": true
-          },
-          {
-            "bytes": 1200,
-            "protocol": "udp",
-            "sha256": "7ceaec51eb0363aa6a4157d444e84e15ef6a2abb2d821f9123b29aaee61bec19",
-            "target": "fd00::2",
-            "whole_datagram": true
-          }
-        ],
-        "wrong_password_rejected": true
-      },
-      "dns_queries_delta": 2,
-      "egress": "h2",
-      "ingress": "h3",
-      "packet_delta_downloaded": 1831,
-      "packet_delta_uploaded": 1792
     },
     {
       "client": "nf",
@@ -967,7 +967,7 @@
         "certificate_name_rejected": true,
         "client": "nf",
         "core_version": "0.1.0",
-        "elapsed_ms": 442,
+        "elapsed_ms": 359,
         "ingress": "http/1.1",
         "native_bridge_emulated_on_linux": true,
         "quic_datagrams_sent": 0,
@@ -1036,8 +1036,8 @@
       "dns_queries_delta": 3,
       "egress": "h3",
       "ingress": "http/1.1",
-      "packet_delta_downloaded": 1796,
-      "packet_delta_uploaded": 1788
+      "packet_delta_downloaded": 1821,
+      "packet_delta_uploaded": 1816
     },
     {
       "client": "nf",
@@ -1045,7 +1045,7 @@
         "certificate_name_rejected": true,
         "client": "nf",
         "core_version": "0.1.0",
-        "elapsed_ms": 499,
+        "elapsed_ms": 452,
         "ingress": "h2",
         "native_bridge_emulated_on_linux": true,
         "quic_datagrams_sent": 0,
@@ -1114,8 +1114,8 @@
       "dns_queries_delta": 2,
       "egress": "h3",
       "ingress": "h2",
-      "packet_delta_downloaded": 1818,
-      "packet_delta_uploaded": 1825
+      "packet_delta_downloaded": 1811,
+      "packet_delta_uploaded": 1816
     },
     {
       "client": "nf",
@@ -1123,7 +1123,7 @@
         "certificate_name_rejected": true,
         "client": "nf",
         "core_version": "0.1.0",
-        "elapsed_ms": 461,
+        "elapsed_ms": 380,
         "ingress": "h3",
         "native_bridge_emulated_on_linux": true,
         "quic_datagrams_sent": 0,
@@ -1192,8 +1192,8 @@
       "dns_queries_delta": 2,
       "egress": "h3",
       "ingress": "h3",
-      "packet_delta_downloaded": 1790,
-      "packet_delta_uploaded": 1794
+      "packet_delta_downloaded": 1785,
+      "packet_delta_uploaded": 1796
     },
     {
       "client": "rs",
@@ -1201,7 +1201,7 @@
         "certificate_name_rejected": true,
         "client": "rs",
         "core_version": "0.1.0",
-        "elapsed_ms": 379,
+        "elapsed_ms": 394,
         "ingress": "http/1.1",
         "production_backend_resources_after_shutdown": 0,
         "quic_datagrams_sent": 0,
@@ -1270,8 +1270,8 @@
       "dns_queries_delta": 2,
       "egress": "h3",
       "ingress": "http/1.1",
-      "packet_delta_downloaded": 1820,
-      "packet_delta_uploaded": 1810
+      "packet_delta_downloaded": 1794,
+      "packet_delta_uploaded": 1784
     },
     {
       "client": "rs",
@@ -1279,7 +1279,7 @@
         "certificate_name_rejected": true,
         "client": "rs",
         "core_version": "0.1.0",
-        "elapsed_ms": 429,
+        "elapsed_ms": 396,
         "ingress": "h2",
         "production_backend_resources_after_shutdown": 0,
         "quic_datagrams_sent": 0,
@@ -1348,8 +1348,8 @@
       "dns_queries_delta": 2,
       "egress": "h3",
       "ingress": "h2",
-      "packet_delta_downloaded": 1800,
-      "packet_delta_uploaded": 1785
+      "packet_delta_downloaded": 1822,
+      "packet_delta_uploaded": 1808
     },
     {
       "client": "rs",
@@ -1357,7 +1357,7 @@
         "certificate_name_rejected": true,
         "client": "rs",
         "core_version": "0.1.0",
-        "elapsed_ms": 457,
+        "elapsed_ms": 398,
         "ingress": "h3",
         "production_backend_resources_after_shutdown": 0,
         "quic_datagrams_sent": 0,
@@ -1426,328 +1426,328 @@
       "dns_queries_delta": 2,
       "egress": "h3",
       "ingress": "h3",
-      "packet_delta_downloaded": 1882,
-      "packet_delta_uploaded": 1803
-    },
-    {
-      "client": "nf-current",
-      "client_evidence": {
-        "certificate_name_rejected": true,
-        "client": "nf-current",
-        "core_version": "0.1.0",
-        "elapsed_ms": 372,
-        "ingress": "http/1.1",
-        "native_bridge_emulated_on_linux": true,
-        "quic_datagrams_sent": 0,
-        "rows": [
-          {
-            "bytes": 2097152,
-            "half_close": true,
-            "protocol": "tcp",
-            "sha256": "91d6f139837323de3829070b54945b770230a2fbfd270b370184b57305bfaf65",
-            "target": "fixture.test",
-            "transport": "HTTP/1.1"
-          },
-          {
-            "bytes": 0,
-            "protocol": "udp",
-            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-            "target": "fixture.test",
-            "whole_datagram": true
-          },
-          {
-            "bytes": 1,
-            "protocol": "udp",
-            "sha256": "2b4c342f5433ebe591a1da77e013d1b72475562d48578dca8b84bac6651c3cb9",
-            "target": "fixture.test",
-            "whole_datagram": true
-          },
-          {
-            "bytes": 1200,
-            "protocol": "udp",
-            "sha256": "7ceaec51eb0363aa6a4157d444e84e15ef6a2abb2d821f9123b29aaee61bec19",
-            "target": "fixture.test",
-            "whole_datagram": true
-          },
-          {
-            "bytes": 16384,
-            "half_close": true,
-            "protocol": "tcp",
-            "sha256": "ebb1b719a8cfe5681439d2a080bbde1daf5f52ca84ca58cbd47d3e0ad3a551cb",
-            "target": "fd00::2",
-            "transport": "HTTP/1.1"
-          },
-          {
-            "bytes": 0,
-            "protocol": "udp",
-            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-            "target": "fd00::2",
-            "whole_datagram": true
-          },
-          {
-            "bytes": 1,
-            "protocol": "udp",
-            "sha256": "2b4c342f5433ebe591a1da77e013d1b72475562d48578dca8b84bac6651c3cb9",
-            "target": "fd00::2",
-            "whole_datagram": true
-          },
-          {
-            "bytes": 1200,
-            "protocol": "udp",
-            "sha256": "7ceaec51eb0363aa6a4157d444e84e15ef6a2abb2d821f9123b29aaee61bec19",
-            "target": "fd00::2",
-            "whole_datagram": true
-          }
-        ],
-        "wrong_password_rejected": true
-      },
-      "dns_queries_delta": 2,
-      "egress": "h3",
-      "ingress": "http/1.1",
-      "packet_delta_downloaded": 1818,
-      "packet_delta_uploaded": 1811
-    },
-    {
-      "client": "nf-current",
-      "client_evidence": {
-        "certificate_name_rejected": true,
-        "client": "nf-current",
-        "core_version": "0.1.0",
-        "elapsed_ms": 492,
-        "ingress": "h2",
-        "native_bridge_emulated_on_linux": true,
-        "quic_datagrams_sent": 0,
-        "rows": [
-          {
-            "bytes": 2097152,
-            "half_close": true,
-            "protocol": "tcp",
-            "sha256": "91d6f139837323de3829070b54945b770230a2fbfd270b370184b57305bfaf65",
-            "target": "fixture.test",
-            "transport": "HTTP/2"
-          },
-          {
-            "bytes": 0,
-            "protocol": "udp",
-            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-            "target": "fixture.test",
-            "whole_datagram": true
-          },
-          {
-            "bytes": 1,
-            "protocol": "udp",
-            "sha256": "2b4c342f5433ebe591a1da77e013d1b72475562d48578dca8b84bac6651c3cb9",
-            "target": "fixture.test",
-            "whole_datagram": true
-          },
-          {
-            "bytes": 1200,
-            "protocol": "udp",
-            "sha256": "7ceaec51eb0363aa6a4157d444e84e15ef6a2abb2d821f9123b29aaee61bec19",
-            "target": "fixture.test",
-            "whole_datagram": true
-          },
-          {
-            "bytes": 16384,
-            "half_close": true,
-            "protocol": "tcp",
-            "sha256": "ebb1b719a8cfe5681439d2a080bbde1daf5f52ca84ca58cbd47d3e0ad3a551cb",
-            "target": "fd00::2",
-            "transport": "HTTP/2"
-          },
-          {
-            "bytes": 0,
-            "protocol": "udp",
-            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-            "target": "fd00::2",
-            "whole_datagram": true
-          },
-          {
-            "bytes": 1,
-            "protocol": "udp",
-            "sha256": "2b4c342f5433ebe591a1da77e013d1b72475562d48578dca8b84bac6651c3cb9",
-            "target": "fd00::2",
-            "whole_datagram": true
-          },
-          {
-            "bytes": 1200,
-            "protocol": "udp",
-            "sha256": "7ceaec51eb0363aa6a4157d444e84e15ef6a2abb2d821f9123b29aaee61bec19",
-            "target": "fd00::2",
-            "whole_datagram": true
-          }
-        ],
-        "wrong_password_rejected": true
-      },
-      "dns_queries_delta": 2,
-      "egress": "h3",
-      "ingress": "h2",
-      "packet_delta_downloaded": 1782,
-      "packet_delta_uploaded": 1788
-    },
-    {
-      "client": "nf-current",
-      "client_evidence": {
-        "certificate_name_rejected": true,
-        "client": "nf-current",
-        "core_version": "0.1.0",
-        "elapsed_ms": 410,
-        "ingress": "h3",
-        "native_bridge_emulated_on_linux": true,
-        "quic_datagrams_sent": 0,
-        "rows": [
-          {
-            "bytes": 2097152,
-            "half_close": true,
-            "protocol": "tcp",
-            "sha256": "91d6f139837323de3829070b54945b770230a2fbfd270b370184b57305bfaf65",
-            "target": "fixture.test",
-            "transport": "HTTP/3"
-          },
-          {
-            "bytes": 0,
-            "protocol": "udp",
-            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-            "target": "fixture.test",
-            "whole_datagram": true
-          },
-          {
-            "bytes": 1,
-            "protocol": "udp",
-            "sha256": "2b4c342f5433ebe591a1da77e013d1b72475562d48578dca8b84bac6651c3cb9",
-            "target": "fixture.test",
-            "whole_datagram": true
-          },
-          {
-            "bytes": 1200,
-            "protocol": "udp",
-            "sha256": "7ceaec51eb0363aa6a4157d444e84e15ef6a2abb2d821f9123b29aaee61bec19",
-            "target": "fixture.test",
-            "whole_datagram": true
-          },
-          {
-            "bytes": 16384,
-            "half_close": true,
-            "protocol": "tcp",
-            "sha256": "ebb1b719a8cfe5681439d2a080bbde1daf5f52ca84ca58cbd47d3e0ad3a551cb",
-            "target": "fd00::2",
-            "transport": "HTTP/3"
-          },
-          {
-            "bytes": 0,
-            "protocol": "udp",
-            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-            "target": "fd00::2",
-            "whole_datagram": true
-          },
-          {
-            "bytes": 1,
-            "protocol": "udp",
-            "sha256": "2b4c342f5433ebe591a1da77e013d1b72475562d48578dca8b84bac6651c3cb9",
-            "target": "fd00::2",
-            "whole_datagram": true
-          },
-          {
-            "bytes": 1200,
-            "protocol": "udp",
-            "sha256": "7ceaec51eb0363aa6a4157d444e84e15ef6a2abb2d821f9123b29aaee61bec19",
-            "target": "fd00::2",
-            "whole_datagram": true
-          }
-        ],
-        "wrong_password_rejected": true
-      },
-      "dns_queries_delta": 2,
-      "egress": "h3",
-      "ingress": "h3",
-      "packet_delta_downloaded": 1789,
-      "packet_delta_uploaded": 1812
-    },
-    {
-      "client": "rs-current",
-      "client_evidence": {
-        "certificate_name_rejected": true,
-        "client": "rs-current",
-        "core_version": "0.1.0",
-        "elapsed_ms": 373,
-        "ingress": "http/1.1",
-        "production_backend_resources_after_shutdown": 0,
-        "quic_datagrams_sent": 0,
-        "rows": [
-          {
-            "bytes": 2097152,
-            "half_close": true,
-            "protocol": "tcp",
-            "sha256": "91d6f139837323de3829070b54945b770230a2fbfd270b370184b57305bfaf65",
-            "target": "fixture.test",
-            "transport": "HTTP/1.1"
-          },
-          {
-            "bytes": 0,
-            "protocol": "udp",
-            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-            "target": "fixture.test",
-            "whole_datagram": true
-          },
-          {
-            "bytes": 1,
-            "protocol": "udp",
-            "sha256": "2b4c342f5433ebe591a1da77e013d1b72475562d48578dca8b84bac6651c3cb9",
-            "target": "fixture.test",
-            "whole_datagram": true
-          },
-          {
-            "bytes": 1200,
-            "protocol": "udp",
-            "sha256": "7ceaec51eb0363aa6a4157d444e84e15ef6a2abb2d821f9123b29aaee61bec19",
-            "target": "fixture.test",
-            "whole_datagram": true
-          },
-          {
-            "bytes": 16384,
-            "half_close": true,
-            "protocol": "tcp",
-            "sha256": "ebb1b719a8cfe5681439d2a080bbde1daf5f52ca84ca58cbd47d3e0ad3a551cb",
-            "target": "fd00::2",
-            "transport": "HTTP/1.1"
-          },
-          {
-            "bytes": 0,
-            "protocol": "udp",
-            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-            "target": "fd00::2",
-            "whole_datagram": true
-          },
-          {
-            "bytes": 1,
-            "protocol": "udp",
-            "sha256": "2b4c342f5433ebe591a1da77e013d1b72475562d48578dca8b84bac6651c3cb9",
-            "target": "fd00::2",
-            "whole_datagram": true
-          },
-          {
-            "bytes": 1200,
-            "protocol": "udp",
-            "sha256": "7ceaec51eb0363aa6a4157d444e84e15ef6a2abb2d821f9123b29aaee61bec19",
-            "target": "fd00::2",
-            "whole_datagram": true
-          }
-        ],
-        "wrong_password_rejected": true
-      },
-      "dns_queries_delta": 2,
-      "egress": "h3",
-      "ingress": "http/1.1",
-      "packet_delta_downloaded": 1825,
+      "packet_delta_downloaded": 1824,
       "packet_delta_uploaded": 1826
     },
     {
+      "client": "nf-current",
+      "client_evidence": {
+        "certificate_name_rejected": true,
+        "client": "nf-current",
+        "core_version": "0.1.0",
+        "elapsed_ms": 348,
+        "ingress": "http/1.1",
+        "native_bridge_emulated_on_linux": true,
+        "quic_datagrams_sent": 0,
+        "rows": [
+          {
+            "bytes": 2097152,
+            "half_close": true,
+            "protocol": "tcp",
+            "sha256": "91d6f139837323de3829070b54945b770230a2fbfd270b370184b57305bfaf65",
+            "target": "fixture.test",
+            "transport": "HTTP/1.1"
+          },
+          {
+            "bytes": 0,
+            "protocol": "udp",
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "target": "fixture.test",
+            "whole_datagram": true
+          },
+          {
+            "bytes": 1,
+            "protocol": "udp",
+            "sha256": "2b4c342f5433ebe591a1da77e013d1b72475562d48578dca8b84bac6651c3cb9",
+            "target": "fixture.test",
+            "whole_datagram": true
+          },
+          {
+            "bytes": 1200,
+            "protocol": "udp",
+            "sha256": "7ceaec51eb0363aa6a4157d444e84e15ef6a2abb2d821f9123b29aaee61bec19",
+            "target": "fixture.test",
+            "whole_datagram": true
+          },
+          {
+            "bytes": 16384,
+            "half_close": true,
+            "protocol": "tcp",
+            "sha256": "ebb1b719a8cfe5681439d2a080bbde1daf5f52ca84ca58cbd47d3e0ad3a551cb",
+            "target": "fd00::2",
+            "transport": "HTTP/1.1"
+          },
+          {
+            "bytes": 0,
+            "protocol": "udp",
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "target": "fd00::2",
+            "whole_datagram": true
+          },
+          {
+            "bytes": 1,
+            "protocol": "udp",
+            "sha256": "2b4c342f5433ebe591a1da77e013d1b72475562d48578dca8b84bac6651c3cb9",
+            "target": "fd00::2",
+            "whole_datagram": true
+          },
+          {
+            "bytes": 1200,
+            "protocol": "udp",
+            "sha256": "7ceaec51eb0363aa6a4157d444e84e15ef6a2abb2d821f9123b29aaee61bec19",
+            "target": "fd00::2",
+            "whole_datagram": true
+          }
+        ],
+        "wrong_password_rejected": true
+      },
+      "dns_queries_delta": 2,
+      "egress": "h3",
+      "ingress": "http/1.1",
+      "packet_delta_downloaded": 1806,
+      "packet_delta_uploaded": 1815
+    },
+    {
+      "client": "nf-current",
+      "client_evidence": {
+        "certificate_name_rejected": true,
+        "client": "nf-current",
+        "core_version": "0.1.0",
+        "elapsed_ms": 436,
+        "ingress": "h2",
+        "native_bridge_emulated_on_linux": true,
+        "quic_datagrams_sent": 0,
+        "rows": [
+          {
+            "bytes": 2097152,
+            "half_close": true,
+            "protocol": "tcp",
+            "sha256": "91d6f139837323de3829070b54945b770230a2fbfd270b370184b57305bfaf65",
+            "target": "fixture.test",
+            "transport": "HTTP/2"
+          },
+          {
+            "bytes": 0,
+            "protocol": "udp",
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "target": "fixture.test",
+            "whole_datagram": true
+          },
+          {
+            "bytes": 1,
+            "protocol": "udp",
+            "sha256": "2b4c342f5433ebe591a1da77e013d1b72475562d48578dca8b84bac6651c3cb9",
+            "target": "fixture.test",
+            "whole_datagram": true
+          },
+          {
+            "bytes": 1200,
+            "protocol": "udp",
+            "sha256": "7ceaec51eb0363aa6a4157d444e84e15ef6a2abb2d821f9123b29aaee61bec19",
+            "target": "fixture.test",
+            "whole_datagram": true
+          },
+          {
+            "bytes": 16384,
+            "half_close": true,
+            "protocol": "tcp",
+            "sha256": "ebb1b719a8cfe5681439d2a080bbde1daf5f52ca84ca58cbd47d3e0ad3a551cb",
+            "target": "fd00::2",
+            "transport": "HTTP/2"
+          },
+          {
+            "bytes": 0,
+            "protocol": "udp",
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "target": "fd00::2",
+            "whole_datagram": true
+          },
+          {
+            "bytes": 1,
+            "protocol": "udp",
+            "sha256": "2b4c342f5433ebe591a1da77e013d1b72475562d48578dca8b84bac6651c3cb9",
+            "target": "fd00::2",
+            "whole_datagram": true
+          },
+          {
+            "bytes": 1200,
+            "protocol": "udp",
+            "sha256": "7ceaec51eb0363aa6a4157d444e84e15ef6a2abb2d821f9123b29aaee61bec19",
+            "target": "fd00::2",
+            "whole_datagram": true
+          }
+        ],
+        "wrong_password_rejected": true
+      },
+      "dns_queries_delta": 2,
+      "egress": "h3",
+      "ingress": "h2",
+      "packet_delta_downloaded": 1814,
+      "packet_delta_uploaded": 1817
+    },
+    {
+      "client": "nf-current",
+      "client_evidence": {
+        "certificate_name_rejected": true,
+        "client": "nf-current",
+        "core_version": "0.1.0",
+        "elapsed_ms": 399,
+        "ingress": "h3",
+        "native_bridge_emulated_on_linux": true,
+        "quic_datagrams_sent": 0,
+        "rows": [
+          {
+            "bytes": 2097152,
+            "half_close": true,
+            "protocol": "tcp",
+            "sha256": "91d6f139837323de3829070b54945b770230a2fbfd270b370184b57305bfaf65",
+            "target": "fixture.test",
+            "transport": "HTTP/3"
+          },
+          {
+            "bytes": 0,
+            "protocol": "udp",
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "target": "fixture.test",
+            "whole_datagram": true
+          },
+          {
+            "bytes": 1,
+            "protocol": "udp",
+            "sha256": "2b4c342f5433ebe591a1da77e013d1b72475562d48578dca8b84bac6651c3cb9",
+            "target": "fixture.test",
+            "whole_datagram": true
+          },
+          {
+            "bytes": 1200,
+            "protocol": "udp",
+            "sha256": "7ceaec51eb0363aa6a4157d444e84e15ef6a2abb2d821f9123b29aaee61bec19",
+            "target": "fixture.test",
+            "whole_datagram": true
+          },
+          {
+            "bytes": 16384,
+            "half_close": true,
+            "protocol": "tcp",
+            "sha256": "ebb1b719a8cfe5681439d2a080bbde1daf5f52ca84ca58cbd47d3e0ad3a551cb",
+            "target": "fd00::2",
+            "transport": "HTTP/3"
+          },
+          {
+            "bytes": 0,
+            "protocol": "udp",
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "target": "fd00::2",
+            "whole_datagram": true
+          },
+          {
+            "bytes": 1,
+            "protocol": "udp",
+            "sha256": "2b4c342f5433ebe591a1da77e013d1b72475562d48578dca8b84bac6651c3cb9",
+            "target": "fd00::2",
+            "whole_datagram": true
+          },
+          {
+            "bytes": 1200,
+            "protocol": "udp",
+            "sha256": "7ceaec51eb0363aa6a4157d444e84e15ef6a2abb2d821f9123b29aaee61bec19",
+            "target": "fd00::2",
+            "whole_datagram": true
+          }
+        ],
+        "wrong_password_rejected": true
+      },
+      "dns_queries_delta": 2,
+      "egress": "h3",
+      "ingress": "h3",
+      "packet_delta_downloaded": 1810,
+      "packet_delta_uploaded": 1809
+    },
+    {
       "client": "rs-current",
       "client_evidence": {
         "certificate_name_rejected": true,
         "client": "rs-current",
         "core_version": "0.1.0",
-        "elapsed_ms": 399,
+        "elapsed_ms": 334,
+        "ingress": "http/1.1",
+        "production_backend_resources_after_shutdown": 0,
+        "quic_datagrams_sent": 0,
+        "rows": [
+          {
+            "bytes": 2097152,
+            "half_close": true,
+            "protocol": "tcp",
+            "sha256": "91d6f139837323de3829070b54945b770230a2fbfd270b370184b57305bfaf65",
+            "target": "fixture.test",
+            "transport": "HTTP/1.1"
+          },
+          {
+            "bytes": 0,
+            "protocol": "udp",
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "target": "fixture.test",
+            "whole_datagram": true
+          },
+          {
+            "bytes": 1,
+            "protocol": "udp",
+            "sha256": "2b4c342f5433ebe591a1da77e013d1b72475562d48578dca8b84bac6651c3cb9",
+            "target": "fixture.test",
+            "whole_datagram": true
+          },
+          {
+            "bytes": 1200,
+            "protocol": "udp",
+            "sha256": "7ceaec51eb0363aa6a4157d444e84e15ef6a2abb2d821f9123b29aaee61bec19",
+            "target": "fixture.test",
+            "whole_datagram": true
+          },
+          {
+            "bytes": 16384,
+            "half_close": true,
+            "protocol": "tcp",
+            "sha256": "ebb1b719a8cfe5681439d2a080bbde1daf5f52ca84ca58cbd47d3e0ad3a551cb",
+            "target": "fd00::2",
+            "transport": "HTTP/1.1"
+          },
+          {
+            "bytes": 0,
+            "protocol": "udp",
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "target": "fd00::2",
+            "whole_datagram": true
+          },
+          {
+            "bytes": 1,
+            "protocol": "udp",
+            "sha256": "2b4c342f5433ebe591a1da77e013d1b72475562d48578dca8b84bac6651c3cb9",
+            "target": "fd00::2",
+            "whole_datagram": true
+          },
+          {
+            "bytes": 1200,
+            "protocol": "udp",
+            "sha256": "7ceaec51eb0363aa6a4157d444e84e15ef6a2abb2d821f9123b29aaee61bec19",
+            "target": "fd00::2",
+            "whole_datagram": true
+          }
+        ],
+        "wrong_password_rejected": true
+      },
+      "dns_queries_delta": 2,
+      "egress": "h3",
+      "ingress": "http/1.1",
+      "packet_delta_downloaded": 1806,
+      "packet_delta_uploaded": 1819
+    },
+    {
+      "client": "rs-current",
+      "client_evidence": {
+        "certificate_name_rejected": true,
+        "client": "rs-current",
+        "core_version": "0.1.0",
+        "elapsed_ms": 388,
         "ingress": "h2",
         "production_backend_resources_after_shutdown": 0,
         "quic_datagrams_sent": 0,
@@ -1816,8 +1816,8 @@
       "dns_queries_delta": 2,
       "egress": "h3",
       "ingress": "h2",
-      "packet_delta_downloaded": 1813,
-      "packet_delta_uploaded": 1818
+      "packet_delta_downloaded": 1795,
+      "packet_delta_uploaded": 1795
     },
     {
       "client": "rs-current",
@@ -1825,7 +1825,7 @@
         "certificate_name_rejected": true,
         "client": "rs-current",
         "core_version": "0.1.0",
-        "elapsed_ms": 439,
+        "elapsed_ms": 408,
         "ingress": "h3",
         "production_backend_resources_after_shutdown": 0,
         "quic_datagrams_sent": 0,
@@ -1894,12 +1894,12 @@
       "dns_queries_delta": 2,
       "egress": "h3",
       "ingress": "h3",
-      "packet_delta_downloaded": 1836,
-      "packet_delta_uploaded": 1834
+      "packet_delta_downloaded": 1802,
+      "packet_delta_uploaded": 1793
     }
   ],
   "native_macos_or_gui_tested": false,
   "native_nf_transport": "unchanged Linux test bridge emulator",
   "rs_transport": "unchanged production Tokio/rustls/Quinn backend",
-  "started_unix": 1792016426
+  "started_unix": 1792018302
 }

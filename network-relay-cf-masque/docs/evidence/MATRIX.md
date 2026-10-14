@@ -125,6 +125,33 @@ session and saves output plus worker/matrix PIDs under `target/test-runtime`.
 The launch record means acceptance is pending; final worker, soak-manifest and
 independent-summary results must all be checked after actual completion.
 
+The detached replacement PID 128443 passed all seven finite preflight targets,
+then **failed** at 22:35:59 UTC with Rust test exit 101 and `Connection error:
+Timeout`. It recorded 20 samples, ending at cycle 19 / 570.216823 measured
+seconds; the failure occurred during cycle 20's periodic inbound H3 bulk work.
+The original error lacks the failing WARP mode or send/receive/FIN phase. Its
+exact boundary is the unchanged inbound H3 client's QUIC timeout; this does
+not establish whether the underlying stall is a client, fixture or production
+defect. Timeouts have not been raised. The tracked manifest is
+`soak-manifest-20261014T222452Z-128443.json`; `soak-failure-128443.json` and
+`soak-failed-128443-output.txt` preserve diagnosis and original output.
+This is not a one-hour pass. Test-only diagnostics now record operation stage,
+byte progress, client close reason/stats and peer/egress observations.
+
+The subsequent ignored H3 diagnostic stress test passed with actual test exit 0
+after 434.01 seconds: 16 rounds on each fixed WARP mode, 32 transfers of 64 MiB,
+2 GiB sent and echoed in each direction, with all twelve retained business flows
+active. It preserved the unchanged client's idle limit. This did **not** reproduce
+or resolve the prior timeout and is not a one-hour soak. Exact executable hash,
+test output and evidence links are retained in
+`h3-bulk-diagnostic-summary-131141.json`.
+After moving the diagnostic's passed-evidence write after successful cleanup,
+a one-round follow-up also passed with exact exit 0 in 27.23 seconds (two
+64 MiB transfers, one per WARP mode). Its result is retained in
+`h3-bulk-cleanup-order-summary.json`. The new detached candidate keeps all
+timeouts unchanged and runs all seven finite preflight targets before its
+3900-second held-flow clock; its result remains pending until actual completion.
+
 Observed initial bulk evidence: 768 MiB sent and echoed in each direction across
 the six pairings. For the six repetitions on forced WARP H2, measured RSS growth
 was 5544 KiB; for forced WARP H3 it was 1604 KiB. Those initial artifacts preserve

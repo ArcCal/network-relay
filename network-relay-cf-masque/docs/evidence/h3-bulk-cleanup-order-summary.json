@@ -1,0 +1,14 @@
+{
+  "result": "passed",
+  "test_exit_code": 0,
+  "one_hour_soak": false,
+  "live_cloudflare": false,
+  "rounds_per_warp_mode": 1,
+  "transfers": 2,
+  "bytes_each_direction": 134217728,
+  "evidence_written_after_successful_cleanup": true,
+  "diagnostic_evidence": "docs/evidence/h3-bulk-diagnostic-1792018363263-138495.json",
+  "output": "docs/evidence/h3-bulk-cleanup-order-output.txt",
+  "test_artifact_sha256_after_execution": "e2e544368e2f16b847ba73e32aeb809b9baaae04c7705ea1868c99d59a36b3d7",
+  "original_timeout_resolved": false
+}

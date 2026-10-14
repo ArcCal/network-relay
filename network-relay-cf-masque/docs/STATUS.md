@@ -13,7 +13,7 @@ Updated during development on 2026-10-14; final evidence is in VALIDATION.md.
 | Large file integrity/half-close | Implemented | 64 MiB × two rounds × six pairings, 768 MiB each direction passed |
 | Abnormal reset, revocation and resource cleanup | Implemented | Protocol/stack/independent adversarial tests; final review fixes tracked |
 | Unchanged current NF/RS client cores | Implemented test harnesses | 24 current/historical pairings, 192 functional cases and 48 rejection checks passed; no native macOS claim |
-| Long-held TCP/UDP connection stability | Implemented test harness | Replacement final run pending; preliminary idle-scheduling failure and a later 56.5-minute SIGKILL interruption are not passes |
+| Long-held TCP/UDP connection stability | Implemented test harness; investigation open | Replacement run PID 128443 failed with a connection timeout at about ten minutes; earlier scheduling failure and 56.5-minute SIGKILL interruption are not passes |
 | Actual Cloudflare exit IP | Not established in this environment | H2 refused, H3 setup timeout before trace |
 | Real Cloudflare large download and hour-plus soak | Not executed successfully | Blocked by live setup; tools/instructions provided, no pass claim |
 | Native Apple NF GUI/profile/device execution | Not executed here | Linux portable/core tests cannot substitute for it |

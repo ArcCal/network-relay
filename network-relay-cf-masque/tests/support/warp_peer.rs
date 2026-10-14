@@ -294,6 +294,10 @@ impl WarpPeer {
     pub fn snapshot(&self) -> PeerSnapshot {
         self.observations.counters.snapshot()
     }
+
+    pub fn stack_diagnostics(&self) -> serde_json::Value {
+        serde_json::json!({"queue_drops": self.stack.queue_drops(), "sockets": self.stack.socket_count(), "socket_limit": self.stack.socket_limit(), "mtu": self.stack.mtu(), "tcp_buffer_bytes_per_socket": self.stack.tcp_buffer_bytes(), "failure": self.stack.failure_reason()})
+    }
     pub fn errors(&self) -> Vec<String> {
         self.observations.errors.lock().unwrap().clone()
     }

@@ -22,6 +22,25 @@ build and native retest; Linux rustls/Quinn fixtures do not run Network.framewor
 
 ## Earlier implementation record
 
+### Mac build initialization-stop follow-up
+
+The user's build of `867152d` passed 84 Core tests, 49 Swift model tests and the
+release Swift build. Five native smoke checks passed, but the final immediate
+initialization-stop check exited with `operation interrupted` and prevented
+packaging. A requested stop could cancel a pending native request before the
+initialization future was polled, and the core reported that cancellation as
+fatal.
+
+The core now polls initialization first to preserve an already-completed
+listener failure, and treats only an `Interrupted` request after an explicit
+stop as clean cancellation. No native smoke check is skipped. The previous
+source reproduced the failure on attempt 2 of a 1,000-stop stress test; the fix
+passed all 9 lifecycle tests and the full 87-test Core suite (4 external-fixture
+tests ignored), including 1,000 immediate stops, 50 listener restart cycles and
+preservation of a genuine listener failure. These are portable ABI tests; the
+Mac native smoke must be rerun by the build script. Protocols, QUIC options,
+runtime worker selection and server code are unchanged.
+
 Initial record dated 2026-10-11, version 0.1.0 development. This status belongs only to Network
 Relay NF. Historical Masque NF failures are evidence of an inherited risk, not
 proof that this new binary has failed or succeeded.

@@ -1,5 +1,14 @@
 # Implementation status
 
+## Local authentication removal, 2026-10-14
+
+Kerberos/GSS-API support, its UI/settings, native bridge and helper scripts are
+removed from Network Relay NF. The local proxy supports only no authentication.
+Remote relay Basic authentication and the HTTP/QUIC protocols are unchanged.
+The deliberately limited SOCKS5 profile is documented in [SPEC.md](SPEC.md).
+Dated test results below describe their recorded revisions before removal; the
+current build script runs the remaining checks and native smoke tests.
+
 ## Client response update, 2026-10-14
 
 Classic CONNECT now accepts any 2xx across HTTP/1.1, HTTP/2 and HTTP/3.
@@ -21,6 +30,12 @@ read as a new reproduction. The current response fix still needs a fresh Mac
 build and native retest; Linux rustls/Quinn fixtures do not run Network.framework.
 
 ## Earlier implementation record
+
+Post-removal portable validation: 83 Core tests and 50 Swift model tests passed,
+with no failures. The original Rust/Caddy server matrices passed HTTP/1.1,
+HTTP/2 and HTTP/3, including TCP, UDP, credentials, certificate identity and
+cleanup. Three external-fixture tests remain ignored in ordinary Core runs.
+These checks use rustls/Quinn emulation; native Mac verification remains separate.
 
 ### Mac build initialization-stop follow-up
 

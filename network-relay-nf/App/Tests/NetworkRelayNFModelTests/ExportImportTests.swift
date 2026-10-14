@@ -240,6 +240,18 @@ final class ExportImportTests: XCTestCase {
         XCTAssertEqual(tun.settings.proxyAddress, "127.0.0.1:1080")
     }
 
+    func testObsoleteSocksAuthenticationOptionsAreIgnoredOnImport() throws {
+        let settings = Settings(serverIP: "203.0.113.5", domain: "vpn.example.com:8443", username: "macbook", listenAddress: "::1", port: 1081, transport: .h3)
+        let text = try clientConfiguration(settings, password: "test-password")
+            + "gssapi_keytab = \"/private/socks.keytab\"\ngssapi_principals = [\"alice@EXAMPLE.COM\"]\n"
+        let imported = try Configuration.importing(text)
+        XCTAssertEqual(imported.settings, settings)
+        XCTAssertEqual(imported.password, "test-password")
+        XCTAssertFalse(imported.connectOnLaunch)
+        XCTAssertFalse(imported.exportedTOML(withPasswords: true).contains("gssapi"))
+        XCTAssertFalse(try clientConfiguration(imported.settings, password: imported.password).contains("gssapi"))
+    }
+
     func testFilesThatCannotBeImportedAreExplained() {
         func error(_ text: String) -> String {
             do {

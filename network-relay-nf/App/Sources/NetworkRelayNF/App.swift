@@ -297,8 +297,6 @@ struct Draft: Equatable {
     var listenAddress = "127.0.0.1"
     var port = ""
     var connectOnLaunch = false
-    var gssapiKeytab = ""
-    var gssapiPrincipals = ""
     /// Only an imported log level overrides the choice made in the Log tab.
     var importedLogLevel: LogLevel?
     /// The server to connect through once saved, chosen by an import that
@@ -315,8 +313,6 @@ struct Draft: Equatable {
         listenAddress = configuration.listenAddress
         port = String(configuration.port)
         connectOnLaunch = configuration.connectOnLaunch
-        gssapiKeytab = configuration.gssapiKeytab
-        gssapiPrincipals = configuration.gssapiPrincipals
         loaded = true
     }
 
@@ -326,7 +322,6 @@ struct Draft: Equatable {
             && (selectAfterSave == nil || selectAfterSave == configuration.selectedServer?.id)
         let applicationMatches = listenAddress == configuration.listenAddress
             && port == String(configuration.port) && connectOnLaunch == configuration.connectOnLaunch
-            && gssapiKeytab == configuration.gssapiKeytab && gssapiPrincipals == configuration.gssapiPrincipals
             && (importedLogLevel == nil || importedLogLevel == configuration.logLevel)
         switch scope {
         case .servers: return serversMatch
@@ -402,17 +397,11 @@ struct SettingsForm: View {
                 Section {
                     TextField("Listen address", text: $draft.listenAddress, prompt: Text("127.0.0.1"))
                     TextField("Port", text: $draft.port, prompt: Text("1080"))
-                    if !NetworkRelayNFModel.Settings(listenAddress: draft.listenAddress).listensOnlyLocally
-                        && draft.gssapiKeytab.trimmingCharacters(in: .whitespaces).isEmpty {
+                    if !NetworkRelayNFModel.Settings(listenAddress: draft.listenAddress).listensOnlyLocally {
                         Label("Any device on the same network can use this proxy.", systemImage: "exclamationmark.triangle")
                             .font(.caption)
                             .foregroundStyle(.orange)
                     }
-                    TextField("Kerberos keytab", text: $draft.gssapiKeytab, prompt: Text("Optional, /path/to/socks.keytab"))
-                    TextField("Kerberos clients", text: $draft.gssapiPrincipals, prompt: Text("Optional, alice@EXAMPLE.COM, …"))
-                    Text("With a keytab, programs must authenticate with Kerberos (GSS-API) to use the proxy. Kerberos clients limits who may; empty admits every client of the keytab's realm.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
                 } header: {
                     Label("SOCKS5 Proxy on This Mac", systemImage: "network")
                 }
@@ -598,8 +587,6 @@ struct SettingsForm: View {
             new.listenAddress = draft.listenAddress
             new.port = port
             new.connectOnLaunch = draft.connectOnLaunch
-            new.gssapiKeytab = draft.gssapiKeytab
-            new.gssapiPrincipals = draft.gssapiPrincipals
             if let level = draft.importedLogLevel { new.logLevel = level }
         }
         if let id = draft.selectAfterSave {

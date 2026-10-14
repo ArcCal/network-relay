@@ -1,6 +1,5 @@
 //! No host network sockets: all I/O is requested through the native bridge.
 pub mod client;
-pub mod gssapi;
 pub mod native;
 pub mod proto;
 pub mod quic;
@@ -40,25 +39,6 @@ fn automatic() -> String {
 #[derive(Clone, Deserialize)]
 pub struct Socks {
     pub listen: Vec<std::net::SocketAddr>,
-    /// A keytab: SOCKS clients then authenticate with GSS-API, such as
-    /// Kerberos (RFC 1961).
-    #[serde(default)]
-    pub gssapi_keytab: Option<std::path::PathBuf>,
-    /// The GSS-API client names admitted; empty for any the keytab's realm
-    /// authenticates.
-    #[serde(default)]
-    pub gssapi_principals: Vec<String>,
-}
-impl Socks {
-    /// The GSS-API acceptor, if a keytab is configured.
-    pub fn gssapi(&self) -> anyhow::Result<Option<Arc<dyn gssapi::Acceptor>>> {
-        let Some(keytab) = &self.gssapi_keytab else {
-            return Ok(None);
-        };
-        let acceptor = gssapi::Kerberos::new(keytab, self.gssapi_principals.clone())
-            .map_err(anyhow::Error::msg)?;
-        Ok(Some(Arc::new(acceptor)))
-    }
 }
 pub struct Handle {
     pub bridge: Arc<native::Bridge>,
@@ -152,12 +132,6 @@ pub unsafe extern "C" fn nf_start(input: *const c_char, level: u32) -> *mut Hand
     if config.mode != "socks"
         || !matches!(config.transport.as_str(), "auto" | "h3" | "h2" | "http/1.1")
         || config.socks.listen.is_empty()
-        || config
-            .socks
-            .gssapi_keytab
-            .as_deref()
-            .is_some_and(|k| !k.is_absolute())
-        || (!config.socks.gssapi_principals.is_empty() && config.socks.gssapi_keytab.is_none())
     {
         return ptr::null_mut();
     }
@@ -193,13 +167,12 @@ pub unsafe extern "C" fn nf_start(input: *const c_char, level: u32) -> *mut Hand
         let result = runtime.block_on(async {
             let work = async {
                 let client = client::Client::new(&config, thread_bridge.clone())?;
-                let gssapi = config.socks.gssapi()?;
                 let mut listeners = Vec::new();
                 for addr in &config.socks.listen {
                     listeners.push(thread_bridge.listen(*addr).await?);
                 }
                 tracing::info!("Network.framework SOCKS listeners ready");
-                socks::run(Arc::new(client), listeners, gssapi).await
+                socks::run(Arc::new(client), listeners).await
             };
             // Poll work first so a completed native failure is not hidden by
             // a simultaneous stop. Bridge::emit can itself report Interrupted

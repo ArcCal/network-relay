@@ -95,16 +95,13 @@ failure or a complete acceptance matrix.
 
 ## SOCKS5 profile
 
-RFC 1928 version 5, CONNECT and UDP ASSOCIATE. Without a Kerberos keytab there
-is no local authentication. With one, GSS-API (RFC 1961), the method RFC 1928
-section 3 requires every implementation to support, is the only method offered:
-context establishment (an abort message on failure), the protection-level
-subnegotiation (integrity, or integrity and confidentiality where the context
-offers it), and per-message encapsulation of the request, the reply, the relayed
-bytes and every UDP datagram of the association. An optional list of client
-principals limits who is admitted. BIND and UDP fragmentation are unsupported.
-The default listener is loopback; users may explicitly select a non-loopback IP,
-which without a keytab exposes an unauthenticated SOCKS listener. Remote destination names remain names and are resolved by the server.
+SOCKS5 CONNECT and UDP ASSOCIATE use only method 0x00 (no authentication).
+Kerberos/GSS-API and its settings are removed. This is an intentionally limited
+local profile: RFC 1928 §3 requires GSS-API support, so the app does not claim
+full RFC 1928 conformance. BIND and UDP fragmentation are unsupported.
+The default listener is loopback; an explicitly selected non-loopback IP exposes
+the same unauthenticated proxy. Remote relay account authentication is unchanged.
+Remote destination names remain names and are resolved by the server.
 ASCII DNS names, IPv4 and IPv6 address syntax are accepted; raw internationalized
 SOCKS names are not normalized and must be supplied as ASCII/Punycode.
 

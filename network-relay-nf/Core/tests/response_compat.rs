@@ -68,8 +68,6 @@ impl Fixture {
             mode: "socks".into(),
             socks: network_relay_nf_core::Socks {
                 listen: vec!["127.0.0.1:0".parse().unwrap()],
-                gssapi_keytab: None,
-                gssapi_principals: Vec::new(),
             },
         }
     }

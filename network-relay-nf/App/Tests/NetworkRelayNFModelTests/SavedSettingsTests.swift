@@ -117,8 +117,7 @@ final class SavedSettingsTests: XCTestCase {
         let object = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any])
         XCTAssertEqual(Set(object.keys), ["servers", "selectedServer", "logLevel", "settings", "password"])
         let settings = try XCTUnwrap(object["settings"] as? [String: Any])
-        // The Kerberos fields are new; earlier versions ignore keys they do not know.
-        XCTAssertEqual(Set(settings.keys), ["serverIP", "domain", "username", "listenAddress", "port", "connectOnLaunch", "transport", "gssapiKeytab", "gssapiPrincipals"])
+        XCTAssertEqual(Set(settings.keys), ["serverIP", "domain", "username", "listenAddress", "port", "connectOnLaunch", "transport"])
         XCTAssertEqual(settings["domain"] as? String, "de.example.com")
         XCTAssertEqual(settings["port"] as? Int, 1081)
         XCTAssertEqual(object["password"] as? String, "other")
@@ -135,6 +134,39 @@ final class SavedSettingsTests: XCTestCase {
         // And when 1.3 saves again, only that server is left.
         try JSONEncoder().encode(old).write(to: file)
         XCTAssertEqual(Configuration.load(from: file).servers.map(\.domain), ["de.example.com"])
+    }
+
+    func testObsoleteAuthenticationSettingsDoNotEraseSavedAccounts() throws {
+        var expected = two
+        expected.connectOnLaunch = false
+        let clean = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(expected)) as? [String: Any])
+        for legacy in [false, true] {
+            var envelope = clean
+            if legacy {
+                envelope.removeValue(forKey: "servers")
+                envelope.removeValue(forKey: "selectedServer")
+            }
+            let baseline = try JSONDecoder().decode(Configuration.self, from: JSONSerialization.data(withJSONObject: envelope))
+            let obsoleteSettings: [[String: Any]] = [
+                ["gssapiKeytab": "/private/socks.keytab", "gssapiPrincipals": "alice@EXAMPLE.COM"],
+                ["gssapiKeytab": false, "gssapiPrincipals": [1, 2]],
+            ]
+            for obsolete in obsoleteSettings {
+                var settings = try XCTUnwrap(envelope["settings"] as? [String: Any])
+                settings.merge(obsolete) { _, value in value }
+                envelope["settings"] = settings
+                try write(String(decoding: JSONSerialization.data(withJSONObject: envelope), as: UTF8.self))
+                let loaded = Configuration.load(from: file)
+                XCTAssertEqual(loaded, baseline)
+                XCTAssertFalse(loaded.connectOnLaunch)
+                try loaded.save(to: file)
+                let saved = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any])
+                let savedSettings = try XCTUnwrap(saved["settings"] as? [String: Any])
+                XCTAssertEqual(Set(savedSettings.keys), ["serverIP", "domain", "username", "listenAddress", "port", "connectOnLaunch", "transport"])
+                XCTAssertEqual(Configuration.load(from: file), baseline)
+                XCTAssertFalse(try clientConfiguration(loaded.settings, password: loaded.password).contains("gssapi"))
+            }
+        }
     }
 
     func testWhatCanBeReadIsKept() throws {

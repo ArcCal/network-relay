@@ -81,13 +81,10 @@ public struct Configuration: Codable, Equatable {
     /// Connect as soon as the app starts.
     public var connectOnLaunch: Bool
     public var logLevel: LogLevel
-    /// Kerberos for programs using the proxy (see `Settings`).
-    public var gssapiKeytab: String
-    public var gssapiPrincipals: String
 
     public init(
         servers: [Server] = [], selectedServerID: UUID? = nil, listenAddress: String = "127.0.0.1", port: Int = 1080,
-        connectOnLaunch: Bool = false, logLevel: LogLevel = .normal, gssapiKeytab: String = "", gssapiPrincipals: String = ""
+        connectOnLaunch: Bool = false, logLevel: LogLevel = .normal
     ) {
         self.servers = servers
         self.selectedServerID = selectedServerID
@@ -95,8 +92,6 @@ public struct Configuration: Codable, Equatable {
         self.port = port
         self.connectOnLaunch = connectOnLaunch
         self.logLevel = logLevel
-        self.gssapiKeytab = gssapiKeytab
-        self.gssapiPrincipals = gssapiPrincipals
     }
 
     /// The server connected to.
@@ -118,15 +113,13 @@ public struct Configuration: Codable, Equatable {
     public func settings(for server: Server) -> Settings {
         Settings(
             serverIP: server.serverIP, domain: server.domain, username: server.username, listenAddress: listenAddress,
-            port: port, connectOnLaunch: connectOnLaunch, transport: server.transport, gssapiKeytab: gssapiKeytab,
-            gssapiPrincipals: gssapiPrincipals)
+            port: port, connectOnLaunch: connectOnLaunch, transport: server.transport)
     }
 
     /// Why the settings cannot be saved, if they cannot: the proxy first,
     /// then each server, named.
     public func check() throws {
         _ = try NetworkRelayNFModel.listenAddress(settings)
-        _ = try gssapi(settings)
         for server in servers {
             do {
                 _ = try clientConfiguration(settings(for: server), password: server.password)
@@ -154,8 +147,6 @@ public struct Configuration: Codable, Equatable {
         listenAddress = old.listenAddress
         port = old.port
         connectOnLaunch = old.connectOnLaunch
-        gssapiKeytab = old.gssapiKeytab
-        gssapiPrincipals = old.gssapiPrincipals
         logLevel = (try? c.decodeIfPresent(LogLevel.self, forKey: .logLevel)) ?? .normal
         if c.contains(.servers) {
             servers = ((try? c.decode([Lenient<Server>].self, forKey: .servers)) ?? []).compactMap(\.value)

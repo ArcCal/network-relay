@@ -31,8 +31,6 @@ async fn real_server_matrix() {
             mode: "socks".into(),
             socks: network_relay_nf_core::Socks {
                 listen: vec!["127.0.0.1:0".parse().unwrap()],
-                gssapi_keytab: None,
-                gssapi_principals: Vec::new(),
             },
         };
         let backend = support::Backend::start(ca.into());
@@ -105,11 +103,7 @@ async fn real_server_matrix() {
             .await
             .unwrap();
         let address = listener.local_addr().unwrap();
-        let worker = tokio::spawn(network_relay_nf_core::socks::run(
-            client,
-            vec![listener],
-            None,
-        ));
+        let worker = tokio::spawn(network_relay_nf_core::socks::run(client, vec![listener]));
         let mut local = tokio::net::TcpStream::connect(address).await.unwrap();
         local.write_all(&[5, 1, 0]).await.unwrap();
         let mut greeting = [0; 2];

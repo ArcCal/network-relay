@@ -1,0 +1,150 @@
+[
+  {
+    "checks": [
+      {
+        "body_bytes": 67108864,
+        "elapsed_ms": 3703,
+        "http": "GET /large.bin",
+        "inbound": "h1",
+        "sha256": "6e337e4992fc84fc2744a38b784928aaaf460757861b749fcb01c066fbb80780"
+      },
+      {
+        "body_bytes": 67108864,
+        "elapsed_ms": 3521,
+        "http": "GET /large.bin",
+        "inbound": "h2",
+        "sha256": "6e337e4992fc84fc2744a38b784928aaaf460757861b749fcb01c066fbb80780"
+      },
+      {
+        "body_bytes": 67108864,
+        "elapsed_ms": 3745,
+        "http": "GET /large.bin",
+        "inbound": "h3",
+        "sha256": "6e337e4992fc84fc2744a38b784928aaaf460757861b749fcb01c066fbb80780"
+      }
+    ],
+    "egress": {
+      "available": true,
+      "dropped_packets": 0,
+      "failure": null,
+      "generation": 1,
+      "inbound_queue_drops": 0,
+      "ipv4": true,
+      "ipv6": true,
+      "mtu": 1280,
+      "received_ip_bytes": 207862468,
+      "received_packets": 163386,
+      "sent_ip_bytes": 190430,
+      "sent_packets": 4752,
+      "socket_limit": 64,
+      "sockets": 0,
+      "stack_queue_drops": 0,
+      "tcp_buffer_bytes_per_socket": 393216,
+      "transport": "HTTP/2",
+      "tunnel_addresses": [
+        "198.18.0.1",
+        "fd00::1"
+      ],
+      "workers": 2
+    },
+    "live_cloudflare": false,
+    "peer": {
+      "authenticated_clients": 1,
+      "dns_queries": 4,
+      "dns_tcp_queries": 0,
+      "h2_capsules": 4752,
+      "h3_datagrams": 0,
+      "h3_route_advertisements": 0,
+      "http_file_bytes_sent": 201326592,
+      "http_file_requests": 3,
+      "http_requests": 3,
+      "ip_bytes_from_client": 190430,
+      "ip_bytes_to_client": 207862468,
+      "ip_packets_from_client": 4752,
+      "ip_packets_to_client": 163386,
+      "tcp_bytes_received": 0,
+      "tcp_bytes_sent": 0,
+      "tcp_connections": 3,
+      "tunnels": 1,
+      "udp_bytes_received": 0,
+      "udp_bytes_sent": 0,
+      "udp_datagrams_received": 0,
+      "udp_datagrams_sent": 0
+    },
+    "warp_transport": "H2"
+  },
+  {
+    "checks": [
+      {
+        "body_bytes": 67108864,
+        "elapsed_ms": 3740,
+        "http": "GET /large.bin",
+        "inbound": "h1",
+        "sha256": "6e337e4992fc84fc2744a38b784928aaaf460757861b749fcb01c066fbb80780"
+      },
+      {
+        "body_bytes": 67108864,
+        "elapsed_ms": 3769,
+        "http": "GET /large.bin",
+        "inbound": "h2",
+        "sha256": "6e337e4992fc84fc2744a38b784928aaaf460757861b749fcb01c066fbb80780"
+      },
+      {
+        "body_bytes": 67108864,
+        "elapsed_ms": 3791,
+        "http": "GET /large.bin",
+        "inbound": "h3",
+        "sha256": "6e337e4992fc84fc2744a38b784928aaaf460757861b749fcb01c066fbb80780"
+      }
+    ],
+    "egress": {
+      "available": true,
+      "dropped_packets": 0,
+      "failure": null,
+      "generation": 1,
+      "inbound_queue_drops": 0,
+      "ipv4": true,
+      "ipv6": true,
+      "mtu": 1280,
+      "received_ip_bytes": 207877748,
+      "received_packets": 163768,
+      "sent_ip_bytes": 216830,
+      "sent_packets": 5412,
+      "socket_limit": 64,
+      "sockets": 0,
+      "stack_queue_drops": 0,
+      "tcp_buffer_bytes_per_socket": 393216,
+      "transport": "HTTP/3",
+      "tunnel_addresses": [
+        "198.18.0.1",
+        "fd00::1"
+      ],
+      "workers": 2
+    },
+    "live_cloudflare": false,
+    "peer": {
+      "authenticated_clients": 1,
+      "dns_queries": 4,
+      "dns_tcp_queries": 0,
+      "h2_capsules": 0,
+      "h3_datagrams": 5412,
+      "h3_route_advertisements": 1,
+      "http_file_bytes_sent": 201326592,
+      "http_file_requests": 3,
+      "http_requests": 3,
+      "ip_bytes_from_client": 216830,
+      "ip_bytes_to_client": 207877748,
+      "ip_packets_from_client": 5412,
+      "ip_packets_to_client": 163768,
+      "tcp_bytes_received": 0,
+      "tcp_bytes_sent": 0,
+      "tcp_connections": 3,
+      "tunnels": 1,
+      "udp_bytes_received": 0,
+      "udp_bytes_sent": 0,
+      "udp_datagrams_received": 0,
+      "udp_datagrams_sent": 0
+    },
+    "warp_transport": "H3"
+  }
+]

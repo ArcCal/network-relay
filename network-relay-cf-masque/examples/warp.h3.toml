@@ -1,0 +1,10 @@
+[warp]
+# An existing enrolled registration; not an API token or a WireGuard profile.
+registration = "../.secrets/warp-registration.json"
+# Required. There is no automatic fallback to HTTP/2 or direct egress.
+transport = "h3"
+dns = ["1.1.1.1:53"]
+keepalive_secs = 15
+idle_timeout_secs = 30
+# Optional numeric endpoint override. Registration port 0 maps to 443.
+# endpoint = "162.159.198.2:443"

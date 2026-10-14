@@ -1,0 +1,304 @@
+   Compiling h3 v0.0.8 (/workspace/network-relay/network-relay-cf-masque/vendor/h3)
+warning: method `send_stopped` is never used
+  --> src/tests/../../../h3-quinn/src/lib.rs:70:12
+   |
+51 | impl Connection {
+   | --------------- method in this implementation
+...
+70 |     pub fn send_stopped(&self) -> SendStopped {
+   |            ^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: method `take` is never used
+  --> src/tests/../../../h3-quinn/src/lib.rs:84:12
+   |
+82 | impl SendStopped {
+   | ---------------- method in this implementation
+83 |     /// Takes the notification for an accepted stream, at most once.
+84 |     pub fn take(&self, id: StreamId) -> Option<Stopped> {
+   |            ^^^^
+
+warning: `h3` (lib test) generated 2 warnings
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.59s
+     Running unittests src/lib.rs (target/debug/deps/h3-4908ed7d54fcda9a)
+
+running 260 tests
+test config::patch_tests::peer_draft00_zero_is_disabled ... ok
+test ext::tests::custom_static_protocol_does_not_change_received_token_parsing ... ok
+test buf::tests::cursor_advance ... ok
+test config::patch_tests::draft00_datagram_setting_wire_roundtrip_and_default ... ok
+test frame::tests::one_frame ... ok
+test frame::tests::incomplete_frame ... ok
+test frame::tests::header_spread_multiple_buf ... ok
+test frame::tests::poll_data_ignores_unknown_frames ... ok
+test frame::tests::poll_data_unexpected_end ... ok
+test frame::tests::poll_data_split ... ok
+test frame::tests::poll_data_eos_but_buffered_data ... ok
+test frame::tests::poll_full_request ... ok
+test frame::tests::poll_next_incomplete_frame ... ok
+test frame::tests::two_frames_then_incomplete ... ok
+test frame::tests::varint_spread_multiple_buf ... ok
+test proto::frame::tests::all_supported_settings_including_draft00_fit_and_decode ... ok
+test proto::frame::tests::boolean_settings_accept_zero_and_one_with_unknown_values_ignored ... ok
+test frame::tests::poll_next_applies_backpressure_before_reading_more_chunks ... ok
+test proto::frame::tests::boolean_settings_reject_invalid_local_insert_without_consuming_capacity ... ok
+test frame::tests::poll_next_reamining_data - should panic ... ok
+test proto::frame::tests::buffer_too_short ... ok
+test proto::frame::tests::boolean_settings_reject_non_boolean_wire_values ... ok
+test proto::frame::tests::data_frame ... ok
+test proto::frame::tests::duplicate_draft00_setting_retains_settings_error ... ok
+test proto::frame::tests::len_unexpected_end ... ok
+test proto::frame::tests::headers_frames ... ok
+test proto::frame::tests::payload_with_truncated_field_is_malformed ... ok
+test proto::frame::tests::payload_with_extra_bytes_is_malformed ... ok
+test proto::frame::tests::reserved_frame ... ok
+test proto::frame::tests::settings_frame_emtpy ... ok
+test proto::frame::tests::simple_frames ... ok
+test proto::frame::tests::type_unexpected_end ... ok
+test proto::frame::tests::settings_frame ... ok
+test proto::frame::tests::unknown_frame_type ... ok
+test proto::headers::tests::classic_connect_has_only_method_and_authority ... ok
+test proto::headers::tests::extended_connect_needs_scheme_path_and_authority ... ok
+test proto::headers::tests::preserves_duplicate_headers ... ok
+test proto::headers::tests::connection_specific_fields_are_malformed ... ok
+test proto::headers::tests::rejects_pseudo_header_after_regular_header ... ok
+test proto::headers::tests::rejects_undefined_pseudo_header ... ok
+test proto::headers::tests::request_has_authority ... ok
+test proto::headers::tests::request_has_different_host_and_authority ... ok
+test proto::headers::tests::request_has_empty_authority ... ok
+test proto::headers::tests::request_has_empty_host ... ok
+test proto::headers::tests::request_has_no_authority_nor_host ... ok
+test proto::headers::tests::request_has_host ... ok
+test proto::headers::tests::request_has_same_host_and_authority ... ok
+test proto::headers::tests::requests_need_exactly_one_method_scheme_and_path ... ok
+test qpack::block::test::base_index_too_small ... ok
+test proto::headers::tests::unknown_protocol_tokens_reach_the_application ... ok
+test qpack::block::test::header_prefix ... ok
+test qpack::block::test::header_prefix_table_size_0 ... ok
+test qpack::block::test::indexed_dynamic ... ok
+test qpack::block::test::literal_with_name_ref ... ok
+test qpack::block::test::indexed_static ... ok
+test qpack::block::test::indexed_with_postbase ... ok
+test qpack::block::test::literal_with_post_base_name_ref ... ok
+test qpack::decoder::tests::decode_indexed_header_field ... ok
+test qpack::block::test::literal ... ok
+test qpack::decoder::tests::decode_name_ref_header_field ... ok
+test qpack::decoder::tests::decode_single_pass_encoded ... ok
+test qpack::decoder::tests::decode_post_base_indexed ... ok
+test qpack::decoder::tests::decode_post_base_name_ref_header_field ... ok
+test qpack::decoder::tests::decode_without_name_ref_header_field ... ok
+test qpack::decoder::tests::enc_recv_accepts_truncated_messages ... ok
+test qpack::decoder::tests::enc_recv_buf_too_short ... ok
+test qpack::decoder::tests::largest_ref_too_big ... ok
+test qpack::decoder::tests::largest_ref_greater_than_max_entries ... ok
+test qpack::decoder::tests::test_dynamic_table_size_update ... ok
+test qpack::decoder::tests::test_duplicate_field ... ok
+test qpack::decoder::tests::test_header_too_long ... ok
+test qpack::decoder::tests::test_insert_field_with_wrong_name_index_from_dynamic_table ... ok
+test qpack::decoder::tests::test_insert_field_with_name_ref_into_dynamic_table ... ok
+test qpack::decoder::tests::test_insert_field_with_wrong_name_index_from_static_table ... ok
+test qpack::decoder::tests::test_insert_field_without_name_ref ... ok
+test qpack::dynamic::tests::blocked_stream_not_registered ... ok
+test qpack::dynamic::tests::blocked_stream_register_accumulate ... ok
+test qpack::dynamic::tests::blocked_stream_register_put_larger ... ok
+test qpack::dynamic::tests::blocked_stream_register_put_smaller ... ok
+test qpack::dynamic::tests::blocked_stream_registered ... ok
+test qpack::dynamic::tests::cannot_insert_field_greater_than_total_size ... ok
+test qpack::dynamic::tests::encoder_build ... ok
+test qpack::dynamic::tests::encode_insert_in_empty ... ok
+test qpack::dynamic::tests::encoder_can_evict_unreferenced ... ok
+test qpack::dynamic::tests::encoder_does_not_evict_referenced ... ok
+test qpack::dynamic::tests::encoder_find_relative ... ok
+test qpack::dynamic::tests::encoder_insertion_refs_not_commited ... ok
+test qpack::dynamic::tests::encoder_insertion_refs_commited ... ok
+test qpack::dynamic::tests::encoder_insertion_tracks_ref ... ok
+test qpack::dynamic::tests::encoder_insert ... ok
+test qpack::dynamic::tests::encoder_insertion_with_ref_tracks_both ... ok
+test qpack::dynamic::tests::encoder_maps_are_cleaned_on_eviction ... ok
+test qpack::dynamic::tests::encoder_ref_count_are_incremented ... ok
+test qpack::dynamic::tests::insert_again_after_encoder_ack ... ok
+test qpack::dynamic::tests::insert_static ... ok
+test qpack::dynamic::tests::no_insert_after_max_blocked_reached ... ok
+test qpack::dynamic::tests::no_insert_when_max_blocked_0 ... ok
+test qpack::dynamic::tests::test_add_field_drop_older_fields_to_have_enough_space ... ok
+test qpack::dynamic::tests::test_add_field_fitting_free_space ... ok
+test qpack::dynamic::tests::put_updates_maps ... ok
+test qpack::dynamic::tests::test_add_field_reduce_free_space ... ok
+test qpack::dynamic::tests::test_eviction_is_fifo ... ok
+test qpack::dynamic::tests::test_maximum_table_size_can_reach_maximum ... ok
+test qpack::dynamic::tests::test_maximum_table_size_can_reach_zero ... ok
+test qpack::dynamic::tests::test_table_size_is_sum_of_its_entries ... ok
+test qpack::dynamic::tests::test_table_supports_duplicated_entries ... ok
+test qpack::dynamic::tests::test_set_maximum_table_size_to_zero_clear_entries ... ok
+test qpack::dynamic::tests::test_try_add_field_larger_than_maximum_size ... ok
+test qpack::dynamic::tests::unblock_stream_decrement ... ok
+test qpack::dynamic::tests::test_try_set_too_large_maximum_table_size ... ok
+test qpack::dynamic::tests::unblock_stream_smaller ... ok
+test qpack::dynamic::tests::unblock_stream_larger ... ok
+test qpack::dynamic::tests::untrack_bloc_wrong_stream ... ok
+test qpack::dynamic::tests::untrack_block ... ok
+test qpack::dynamic::tests::untrack_block_not_in_map ... ok
+test qpack::dynamic::tests::untrack_block_wrong_count ... ok
+test qpack::encoder::tests::decoder_accept_truncated ... ok
+test qpack::dynamic::tests::untrack_trailers ... ok
+test qpack::encoder::tests::decoder_block_ack ... ok
+test qpack::encoder::tests::decoder_unknown_stream ... ok
+test qpack::encoder::tests::decoder_stream_cacnceled ... ok
+test qpack::encoder::tests::encode_dynamic_insert ... ok
+test qpack::encoder::tests::encode_dynamic_insert_nameref ... ok
+test qpack::encoder::tests::encode_literal ... ok
+test qpack::encoder::tests::encode_static ... ok
+test qpack::encoder::tests::encode_literal_nameref ... ok
+test qpack::encoder::tests::encode_literal_postbase_nameref ... ok
+test qpack::encoder::tests::encode_static_nameref ... ok
+test qpack::encoder::tests::encode_static_nameref_indexed_in_dynamic ... ok
+test qpack::encoder::tests::insert_count ... ok
+test qpack::field::tests::test_field_size_is_offset_by_32 ... ok
+test qpack::encoder::tests::encode_with_header_block ... ok
+test qpack::field::tests::with_value ... ok
+test qpack::prefix_int::test::allow_62_bit ... ok
+test qpack::prefix_int::test::codec_5_bits ... ok
+test qpack::prefix_int::test::codec_8_bits ... ok
+test qpack::prefix_int::test::number_never_ends_with_0x80 ... ok
+test qpack::prefix_int::test::overflow ... ok
+test qpack::prefix_int::test::overflow2 ... ok
+test qpack::prefix_int::test::size_too_big_of_size - should panic ... ok
+test qpack::prefix_int::test::size_too_big_value - should panic ... ok
+test qpack::prefix_string::decode::tests::test_read_bits ... ok
+test qpack::prefix_string::encode::tests::byte_ ... ok
+test qpack::prefix_string::encode::tests::byte_count_exact_when_bit_count_multiple_of_8 ... ok
+test qpack::prefix_string::decode::tests::test_decode_all_code_joined ... ok
+test qpack::prefix_string::encode::tests::test_set_bits ... ok
+test qpack::prefix_string::encode::tests::test_encode_all_code_joined ... ok
+test qpack::prefix_string::tests::codec_6 ... ok
+test qpack::prefix_string::tests::codec_8 ... ok
+test qpack::prefix_string::decode::tests::test_decode_single_value ... ok
+test qpack::prefix_string::tests::codec_8_empty ... ok
+test qpack::prefix_string::tests::decode_non_huffman ... ok
+test qpack::prefix_string::tests::decode_too_short ... ok
+test qpack::static_::tests::find ... ok
+test qpack::prefix_string::encode::tests::test_encode_single_value ... ok
+test qpack::static_::tests::find_by_name ... ok
+test qpack::static_::tests::invalid_index ... ok
+test qpack::static_::tests::test_static_table_index_is_0_based ... ok
+test qpack::static_::tests::test_static_table_can_get_field ... ok
+test qpack::stream::test::header_ack ... ok
+test qpack::static_::tests::test_static_table_is_full ... ok
+test qpack::stream::test::insert_count_increment ... ok
+test qpack::stream::test::insert_duplicate ... ok
+test qpack::stream::test::dynamic_table_size_update ... ok
+test qpack::stream::test::stream_cancel ... ok
+test qpack::stream::test::insert_with_name_ref ... ok
+test qpack::stream::test::insert_without_name_ref ... ok
+test qpack::tests::blocked_header ... ok
+test qpack::tests::codec_table_full ... ok
+test qpack::tests::codec_basic_get ... ok
+test qpack::tests::codec_table_size_0 ... ok
+test qpack::vas::tests::absolute_from_real_index ... ok
+test qpack::vas::tests::evicted ... ok
+test qpack::vas::tests::largest_ref ... ok
+test qpack::vas::tests::relative ... ok
+test qpack::vas::tests::test_first_insertion_without_drop ... ok
+test qpack::vas::tests::test_no_relative_index_when_empty ... ok
+test qpack::vas::tests::test_post_base_index ... ok
+test qpack::vas::tests::test_relative_underflow_protected ... ok
+test qpack::vas::tests::test_last_insertion_without_drop ... ok
+test qpack::vas::tests::test_last_insertion_with_drop ... ok
+test qpack::vas::tests::test_first_insertion_with_drop ... ok
+test server::connection::cancellation_tests::dropped_request_resolver_releases_ongoing_stream ... ok
+test shared_state::tests::peer_settings_distinguishes_received_defaults_and_keeps_first_frame ... ok
+test stream::tests::write_buf_advance_jumps_header_and_payload_start ... ok
+test stream::tests::write_buf_advances ... ok
+test stream::tests::write_buf_encode_frame ... ok
+test stream::tests::write_buf_encode_streamtype ... ok
+test stream::tests::write_buf_encode_streamtype_then_frame ... ok
+test stream::tests::write_wt_uni_header ... ok
+test server::connection::cancellation_tests::incomplete_request_resolver_releases_ongoing_stream ... ok
+test tests::connection::accept_request_end_on_client_close ... ok
+test tests::connection::client_cancel_push_is_id_error ... ok
+test tests::connection::client_accepts_a_response_and_goaway ... ok
+test tests::connection::client_close_only_on_last_sender_drop ... ok
+test tests::connection::client_extensions_share_received_settings_and_connection_failure ... ok
+test tests::connection::client_error_on_bidi_recv ... ok
+test tests::connection::connect ... ok
+test tests::connection::client_push_promise_is_id_error ... ok
+test server::connection::cancellation_tests::cancelled_request_resolver_releases_ongoing_stream ... ok
+test tests::connection::control_stream_frame_unexpected ... ok
+test tests::connection::control_close_send_error ... ok
+test tests::connection::goaway_from_server_not_request_id ... ok
+test tests::connection::graceful_shutdown_client ... ok
+test tests::connection::client_push_frames_keep_their_other_errors ... ok
+test tests::connection::h3_quinn_finish_flushes_buffered_data ... ok
+test tests::connection::graceful_shutdown_closes_when_idle ... ok
+test tests::connection::missing_settings ... ok
+test tests::connection::server_cancel_push_is_id_error ... ok
+test tests::connection::server_drop_close ... ok
+test tests::connection::server_max_push_id_reduced_is_id_error ... ok
+test tests::connection::server_not_blocking_on_idle_request ... ok
+test tests::connection::graceful_shutdown_grace_interval ... ok
+test tests::connection::settings_exchange_client ... ok
+test tests::connection::settings_exchange_server ... ok
+test tests::connection::graceful_shutdown_server_rejects ... ok
+test tests::connection::two_control_streams ... ok
+test tests::h3_quinn::tests::connection_closed_is_mapped_to_structured_variant ... ok
+test tests::connection::server_send_data_without_finish ... ok
+test tests::request::get ... ok
+test tests::request::finish_after_cancelled_send_data_keeps_connection_open ... ok
+test tests::connection::timeout_on_control_frame_read ... ok
+test tests::request::get_timeout_client_recv_data ... ok
+test tests::request::get_timeout_client_recv_response ... ok
+test tests::request::get_with_trailers_known_content_type ... ok
+test tests::request::get_with_trailers_unknown_content_type ... ok
+test tests::request::header_too_big_client_error ... ok
+test tests::request::get_timeout_server_accept ... ok
+test tests::request::header_too_big_discard_from_client_trailers ... ok
+test tests::request::header_too_big_discard_from_client ... ok
+test tests::request::header_too_big_response_from_server ... ok
+test tests::request::header_too_big_server_error ... ok
+test tests::request::header_too_big_server_error_trailers ... ok
+test tests::request::post ... ok
+test tests::connection::server_max_push_id_not_reduced_is_accepted ... ok
+test tests::request::request_invalid_data_after_trailers ... ok
+test tests::request::post_timeout_server_recv_data ... ok
+test tests::request::request_invalid_data_first ... ok
+test tests::request::request_invalid_data_frame_length_too_large ... ok
+test tests::request::request_invalid_data_frame_length_too_short ... ok
+test tests::request::request_invalid_frame_after_data ... ok
+test tests::request::request_invalid_frame_after_header ... ok
+test tests::request::request_invalid_frame_after_trailers ... ok
+test tests::request::request_invalid_frame_first ... ok
+test tests::request::request_invalid_two_trailers ... ok
+test tests::request::request_invalid_trailing_byte ... ok
+test tests::request::request_valid_header_data ... ok
+test tests::request::request_valid_header_data_trailer ... ok
+test tests::request::request_valid_header_trailer ... ok
+test tests::request::request_valid_header_multiple_data_trailer ... ok
+test tests::request::request_valid_one_header ... ok
+test tests::request::request_valid_unknown_frame_after_one_header ... ok
+test tests::request::request_valid_unknown_frame_before ... ok
+test tests::request::request_valid_unknown_frame_after_trailers ... ok
+test tests::request::request_valid_unknown_frame_interleaved_after_header ... ok
+test tests::request::request_valid_unknown_frame_interleaved_after_data ... ok
+test tests::request::request_valid_unknown_frame_interleaved_between_data ... ok
+test tests::request::request_valid_unknown_frame_interleaved_before_trailers ... ok
+test tests::request::header_too_big_client_error_trailer ... ok
+test tests::request::header_too_big_response_from_server_trailers ... ok
+
+test result: ok. 260 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 30.81s
+
+   Doc-tests h3
+
+running 9 tests
+test src/client/connection.rs - client::connection::Connection (line 301) ... ok
+test src/client/builder.rs - client::builder::Builder (line 45) ... ok
+test src/client/connection.rs - client::connection::SendRequest (line 50) ... ok
+test src/client/connection.rs - client::connection::Connection (line 324) ... ok
+test src/client/stream.rs - client::stream::RequestStream (line 44) ... ok
+test src/server/builder.rs - server::builder (line 8) ... ok
+test src/client/connection.rs - client::connection::SendRequest (line 76) ... ok
+test src/server/mod.rs - server (line 8) ... ok
+test src/server/stream.rs - server::stream::RequestStream<S,B>::is_0rtt (line 126) - compile ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.24s
+

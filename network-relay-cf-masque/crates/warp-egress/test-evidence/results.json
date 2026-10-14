@@ -1,0 +1,74 @@
+{
+  "observed_at_utc": "2026-10-14T20:38:35Z",
+  "package": "warp-masque-egress",
+  "reused_source": {
+    "repository": "https://github.com/ArcCal/cf-masque",
+    "revision": "a65c600494cd50fed2c621b8538be7abda5e7fa4",
+    "license": "MIT"
+  },
+  "checks": [
+    {
+      "command": "cargo check --locked -p warp-masque-egress --all-targets",
+      "result": "passed"
+    },
+    {
+      "command": "cargo test --locked -p warp-masque-egress --all-features",
+      "result": "passed",
+      "unit_tests_passed": 77,
+      "unit_tests_failed": 0,
+      "unit_tests_ignored": 0,
+      "unit_test_runner_seconds": 6.02,
+      "documentation_examples_compiled": 1
+    },
+    {
+      "command": "cargo clippy --locked -p warp-masque-egress --all-targets --all-features -- -D warnings",
+      "result": "passed"
+    },
+    {
+      "command": "cargo fmt --package warp-masque-egress -- --check",
+      "result": "passed"
+    }
+  ],
+  "behavior_covered": [
+    "synthetic pinned TLS and P-256 client identity over H2 and H3",
+    "WARP H2 plain CONNECT headers, bare IP capsules, and absent ALPN compatibility",
+    "H3 datagrams, route advertisement, framing and numeric varint decoding",
+    "bounded capsule parsing and H2 flow control below capsule size",
+    "terminal wakeups for SYN, established TCP reads and blocked writes, UDP reads and full sends",
+    "input and output packet channel closure, first failure preservation and stale abort handles",
+    "UDP selected-peer filtering, empty datagrams, payload ceilings and IPv6 MTU capability loss",
+    "socket and ephemeral-port limits, cancellation and released capacity",
+    "DNS UDP and TCP fallback at configurable port 5353, cache and shared query cancellation",
+    "rejection of cached, literal and pending DNS lookups after terminal failure",
+    "registration aliases, SEC1 conversion, key and pin validation, and redacted diagnostics",
+    "TCP IPv4 and IPv6 transfer, deterministic packet loss recovery and concurrent connections"
+  ],
+  "diagnostics_follow_up": {
+    "observed_at_utc": "2026-10-14T20:41:43Z",
+    "change": "Status retains assigned addresses while computing live IPv6 capability from an atomic availability/address/MTU snapshot; inherited reconnect comment corrected.",
+    "checks": [
+      {
+        "command": "cargo test --locked -p warp-masque-egress status_retains_assigned_addresses_across_mtu_loss_and_restoration",
+        "result": "passed",
+        "tests_passed": 1,
+        "tests_failed": 0,
+        "tests_filtered": 77
+      },
+      {
+        "command": "cargo clippy --locked -p warp-masque-egress --all-targets --all-features -- -D warnings",
+        "result": "passed"
+      },
+      {
+        "command": "cargo fmt --package warp-masque-egress -- --check",
+        "result": "passed"
+      }
+    ]
+  },
+  "limitations": [
+    "No live WARP operation or secret-file discovery was performed by the core crate agent.",
+    "This evidence does not include the separately owned six ingress/egress pair integration matrix or long soak.",
+    "One fixed-mode session is implemented; applications create a fresh controller to retry after failure.",
+    "UDP fragmentation is absent; payload ceilings at MTU 1280 are 1252 for IPv4 and 1232 for IPv6.",
+    "Socket limits and buffers are conservative constants: 64 sockets and 384 KiB total TCP buffers per socket."
+  ]
+}

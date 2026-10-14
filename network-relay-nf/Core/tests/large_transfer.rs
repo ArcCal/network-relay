@@ -102,8 +102,6 @@ fn settings(fixture: &serde_json::Value, transport: &str) -> Config {
         mode: "socks".into(),
         socks: network_relay_nf_core::Socks {
             listen: vec!["127.0.0.1:0".parse().unwrap()],
-            gssapi_keytab: None,
-            gssapi_principals: Vec::new(),
         },
     }
 }
@@ -214,7 +212,6 @@ async fn large_downloads() {
         let worker = tokio::spawn(network_relay_nf_core::socks::run(
             client.clone(),
             vec![listener],
-            None,
         ));
         let mut local = TcpStream::connect(address).await.unwrap();
         local.write_all(&[5, 1, 0]).await.unwrap();

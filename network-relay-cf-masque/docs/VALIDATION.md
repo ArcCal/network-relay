@@ -79,12 +79,26 @@ not an established cause or evidence of a transport assertion failure.
 After the independently found H3 SETTINGS validation correction, a replacement
 run must use the corrected fixed binary and retain its actual completion.
 
+That replacement, PID 128443, completed with test exit code 101 at
+2026-10-14T22:35:59Z: `Connection error: Timeout`. Its last of 20 metric rows
+records 570.216823 measured seconds, with both outer modes still available,
+one generation each, and no reported packet drops. The failure occurred before
+the next row, during the cycle containing the next periodic H3 bulk transfer;
+the precise failing operation and cause require diagnosis. This is an actual
+failed test, unlike the earlier unexplained SIGKILL, and is not a stability
+pass. The completed failed manifest and log are retained separately.
+
 Final sustained results and any source revisions after the snapshot must be
 reported explicitly. In particular a synthetic hour-plus run is not a live
 Cloudflare hour-plus run. The status table is updated only when the actual
 run completes.
 
 ## Live test blocker
+
+GitHub Actions on draft PR #31 did not start its lint/test job because of an
+Actions budget restriction; the job executed zero steps. See
+`docs/evidence/github-ci-20261014.json`. This is a separate publication check
+blocker, not an additional test pass or a code-test failure.
 
 The cloud environment reports HTTP proxy connectivity, no configured VPN,
 and an empty raw TCP domain/IP allowlist. Numeric WARP H2 connection attempts

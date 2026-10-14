@@ -2,6 +2,7 @@
 //! Every business connection crosses WarpEgress's real userspace packet pump.
 mod support;
 
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -206,25 +207,42 @@ async fn bulk(fixture: &Fixture, inbound: &str, bytes: usize) -> Result<serde_js
             }
         }
         "h3" => {
-            let mut client = check::H3::connect(&opts, &opts.addresses).await?;
-            let mut stream = client.request(connect_request(target).body(())?).await?;
-            ensure!(stream.recv_response().await?.status() == StatusCode::OK, "H3 CONNECT failed");
+            let mut client = check::H3::connect(&opts, &opts.addresses).await.context("H3 bulk connect client")?;
+            let mut stream =
+                client.request(connect_request(target).body(())?).await.context("H3 bulk request CONNECT")?;
+            ensure!(
+                stream.recv_response().await.context("H3 bulk receive CONNECT response")?.status() == StatusCode::OK,
+                "H3 CONNECT failed"
+            );
             let (mut send, mut recv) = stream.split();
+            let sent = AtomicUsize::new(0);
+            let received = AtomicUsize::new(0);
+            let finished = AtomicBool::new(false);
+            let received_eof = AtomicBool::new(false);
+            let last_sent_ms = AtomicUsize::new(0);
+            let last_received_ms = AtomicUsize::new(0);
             let writing = async {
                 let mut buf = vec![0; CHUNK];
                 for offset in (0..bytes).step_by(CHUNK) {
                     let count = CHUNK.min(bytes - offset);
                     fill_pattern(&mut buf[..count], offset);
-                    send.send_data(Bytes::copy_from_slice(&buf[..count])).await?;
+                    send.send_data(Bytes::copy_from_slice(&buf[..count]))
+                        .await
+                        .with_context(|| format!("H3 bulk send DATA at {offset}"))?;
+                    sent.fetch_add(count, Ordering::Relaxed);
+                    last_sent_ms.store(started.elapsed().as_millis() as usize, Ordering::Relaxed);
                 }
-                send.finish().await?;
+                send.finish().await.context("H3 bulk send FIN")?;
+                finished.store(true, Ordering::Relaxed);
                 Ok::<(), anyhow::Error>(())
             };
             let reading = async {
                 let mut hash = Sha256::new();
                 let mut count = 0usize;
-                while let Some(mut chunk) = recv.recv_data().await? {
+                while let Some(mut chunk) = recv.recv_data().await.context("H3 bulk receive DATA/FIN")? {
                     count += chunk.remaining();
+                    received.store(count, Ordering::Relaxed);
+                    last_received_ms.store(started.elapsed().as_millis() as usize, Ordering::Relaxed);
                     ensure!(count <= bytes, "H3 echoed extra data");
                     while chunk.has_remaining() {
                         let len = chunk.chunk().len();
@@ -232,14 +250,22 @@ async fn bulk(fixture: &Fixture, inbound: &str, bytes: usize) -> Result<serde_js
                         chunk.advance(len);
                     }
                 }
+                received_eof.store(true, Ordering::Relaxed);
                 ensure!(count == bytes, "H3 half-close lost bytes: {count}/{bytes}");
                 Ok::<String, anyhow::Error>(format!("{:x}", hash.finalize()))
             };
-            let (_, hash) =
-                tokio::time::timeout(Duration::from_secs(240), async { tokio::try_join!(writing, reading) })
-                    .await
-                    .context("H3 bulk deadline")??;
-            hash
+            let result = tokio::time::timeout(Duration::from_secs(240), async { tokio::try_join!(writing, reading) })
+                .await
+                .context("H3 bulk deadline")
+                .and_then(|result| result);
+            match result {
+                Ok((_, hash)) => hash,
+                Err(error) => {
+                    let diagnostic = serde_json::json!({"error_chain": format!("{error:#}"), "warp_transport": fixture.warp.status().transport, "inbound": inbound, "elapsed_ms": started.elapsed().as_millis(), "expected_bytes": bytes, "sent_data_bytes": sent.load(Ordering::Relaxed), "received_data_bytes": received.load(Ordering::Relaxed), "last_sent_ms": last_sent_ms.load(Ordering::Relaxed), "last_received_ms": last_received_ms.load(Ordering::Relaxed), "send_fin_completed": finished.load(Ordering::Relaxed), "received_eof": received_eof.load(Ordering::Relaxed), "quinn_close_reason": format!("{:?}", client.connection().close_reason()), "quinn_stats": format!("{:?}", client.connection().stats()), "egress": fixture.warp.status(), "peer": fixture.peer.snapshot(), "peer_stack": fixture.peer.stack_diagnostics(), "peer_errors": fixture.peer.errors(), "live_cloudflare": false});
+                    save_evidence("h3-bulk-failure", diagnostic.clone())?;
+                    return Err(error.context(format!("H3 bulk diagnostic: {diagnostic}")));
+                }
+            }
         }
         _ => unreachable!(),
     };
@@ -549,15 +575,17 @@ async fn one_hour_forced_h2_and_h3_soak_with_resource_metrics() -> Result<()> {
         }
         if cycles > 0 && cycles.is_multiple_of(10) {
             let inbound = ["h1", "h2", "h3"][(cycles as usize / 10) % 3];
-            for (_, fixture, _) in &fixtures {
-                bulk(fixture, inbound, BULK_BYTES).await?;
+            for (transport, fixture, _) in &fixtures {
+                bulk(fixture, inbound, BULK_BYTES).await.with_context(|| {
+                    format!("soak periodic bulk cycle {cycles}, inbound {inbound}, WARP {}", transport_name(*transport))
+                })?;
             }
         }
         let process = process_metrics();
         let (rss, fds) = required_resource_metrics(&process)?;
         ensure!(rss <= base_rss + 192 * 1024, "soak RSS exceeded bounded growth");
         ensure!(fds <= base_fds + 48, "soak leaked descriptors");
-        let modes: Vec<_> = fixtures.iter().map(|(transport, fixture, flows)| serde_json::json!({"warp_transport": transport_name(*transport), "egress": fixture.warp.status(), "peer": fixture.peer.snapshot(), "persistent_tcp": flows.tcp_metrics(), "persistent_udp": flows.udp_metrics(), "relay_tunnels": fixture.relay.relay.active_tunnels(), "relay_connections": fixture.relay.relay.open_connections()})).collect();
+        let modes: Vec<_> = fixtures.iter().map(|(transport, fixture, flows)| serde_json::json!({"warp_transport": transport_name(*transport), "egress": fixture.warp.status(), "peer": fixture.peer.snapshot(), "peer_stack": fixture.peer.stack_diagnostics(), "persistent_tcp": flows.tcp_metrics(), "persistent_udp": flows.udp_metrics(), "relay_tunnels": fixture.relay.relay.active_tunnels(), "relay_connections": fixture.relay.relay.open_connections()})).collect();
         let row = serde_json::json!({"elapsed_seconds": started.elapsed().as_secs_f64(), "cycle": cycles, "process": process, "modes": modes, "live_cloudflare": false});
         use std::io::Write;
         serde_json::to_writer(&mut log, &row)?;
@@ -581,5 +609,43 @@ async fn one_hour_forced_h2_and_h3_soak_with_resource_metrics() -> Result<()> {
         flows.shutdown().await?;
         fixture.finish().await?;
     }
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 6)]
+#[ignore = "diagnoses repeated H3 bulk with unchanged client idle limits; not a one-hour soak"]
+async fn diagnose_h3_bulk_with_persistent_pairings() -> Result<()> {
+    let rounds: usize = std::env::var("DIAG_BULK_ROUNDS").unwrap_or_else(|_| "16".into()).parse()?;
+    let mut fixtures = Vec::new();
+    for transport in [Transport::H2, Transport::H3] {
+        let fixture = Fixture::start(transport).await?;
+        standard_check(&fixture).await?;
+        let flows = PersistentFlows::start(&fixture.relay).await?;
+        fixtures.push((transport, fixture, flows));
+    }
+    let mut results = Vec::new();
+    for round in 0..rounds {
+        for (transport, fixture, flows) in &mut fixtures {
+            flows.check()?;
+            standard_check(fixture).await?;
+            eprintln!("H3 bulk diagnostic round {round}, WARP {}", transport_name(*transport));
+            let before = fixture.peer.snapshot();
+            match bulk(fixture, "h3", BULK_BYTES).await {
+                Ok(result) => results.push(serde_json::json!({"round": round, "warp_transport": transport_name(*transport), "bulk": result, "peer_before": before, "peer_after": fixture.peer.snapshot(), "egress": fixture.warp.status(), "persistent_tcp": flows.tcp_metrics(), "persistent_udp": flows.udp_metrics()})),
+                Err(error) => {
+                    save_evidence("h3-bulk-diagnostic", serde_json::json!({"result": "failed", "one_hour_soak": false, "live_cloudflare": false, "round": round, "warp_transport": transport_name(*transport), "error_chain": format!("{error:#}"), "prior_results": results, "peer_before": before, "peer_after": fixture.peer.snapshot(), "egress": fixture.warp.status(), "persistent_tcp": flows.tcp_metrics(), "persistent_udp": flows.udp_metrics()}))?;
+                    return Err(error.context(format!("diagnostic H3 bulk round {round}, WARP {}", transport_name(*transport))));
+                }
+            }
+        }
+    }
+    for (_, fixture, flows) in fixtures {
+        flows.shutdown().await?;
+        fixture.finish().await?;
+    }
+    save_evidence(
+        "h3-bulk-diagnostic",
+        serde_json::json!({"result": "passed", "one_hour_soak": false, "live_cloudflare": false, "rounds": rounds, "results": results}),
+    )?;
     Ok(())
 }

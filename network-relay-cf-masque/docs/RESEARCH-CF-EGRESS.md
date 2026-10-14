@@ -25,22 +25,22 @@ wakeup mechanism are required before integrating the library.
 
 ## Pinned source map
 
-Each source URL is permanent at the baseline above. Local paths resolve from
-this report's directory.
+Each source URL is permanent at the baseline above and resolves without a
+local research checkout.
 
 | Component | Inspected source and purpose |
 | --- | --- |
-| Tunnel, H3, H2, TLS, capsule parser | [`src/masque.rs`](../.research/upstream/cf-masque/src/masque.rs), [pinned source](https://github.com/ArcCal/cf-masque/blob/a65c600494cd50fed2c621b8538be7abda5e7fa4/src/masque.rs) |
-| Userspace TCP/UDP and socket lifetime | [`src/netstack.rs`](../.research/upstream/cf-masque/src/netstack.rs), [pinned source](https://github.com/ArcCal/cf-masque/blob/a65c600494cd50fed2c621b8538be7abda5e7fa4/src/netstack.rs) |
-| DNS parser, cache, in-flight sharing | [`src/dns.rs`](../.research/upstream/cf-masque/src/dns.rs), [pinned source](https://github.com/ArcCal/cf-masque/blob/a65c600494cd50fed2c621b8538be7abda5e7fa4/src/dns.rs) |
-| Registration/configuration | [`src/api.rs`](../.research/upstream/cf-masque/src/api.rs), [pinned source](https://github.com/ArcCal/cf-masque/blob/a65c600494cd50fed2c621b8538be7abda5e7fa4/src/api.rs) |
-| Packet pump and Happy Eyeballs currently inside SOCKS | [`src/socks.rs`](../.research/upstream/cf-masque/src/socks.rs), [pinned source](https://github.com/ArcCal/cf-masque/blob/a65c600494cd50fed2c621b8538be7abda5e7fa4/src/socks.rs) |
-| Kernel backend that must not become business egress | [`src/net.rs`](../.research/upstream/cf-masque/src/net.rs) |
-| Scoped forwarding cancellation | [`src/shutdown.rs`](../.research/upstream/cf-masque/src/shutdown.rs) |
-| Diagnostic IP/ICMP/DNS probes | [`src/probe.rs`](../.research/upstream/cf-masque/src/probe.rs), [`src/ip.rs`](../.research/upstream/cf-masque/src/ip.rs) |
-| Dependency/features and patched H3 | [`Cargo.toml`](../.research/upstream/cf-masque/Cargo.toml), [`vendor/h3/PATCH.md`](../.research/upstream/cf-masque/vendor/h3/PATCH.md) |
-| CLI/protocol fixture suites | [`tests/transport`](../.research/upstream/cf-masque/tests/transport/run.sh) |
-| Privileged RFC-server integration | [`tests/local-check.sh`](../.research/upstream/cf-masque/tests/local-check.sh), [`tests/ipv6-check.sh`](../.research/upstream/cf-masque/tests/ipv6-check.sh) |
+| Tunnel, H3, H2, TLS, capsule parser | [`src/masque.rs`](https://github.com/ArcCal/cf-masque/blob/a65c600494cd50fed2c621b8538be7abda5e7fa4/src/masque.rs), [pinned source](https://github.com/ArcCal/cf-masque/blob/a65c600494cd50fed2c621b8538be7abda5e7fa4/src/masque.rs) |
+| Userspace TCP/UDP and socket lifetime | [`src/netstack.rs`](https://github.com/ArcCal/cf-masque/blob/a65c600494cd50fed2c621b8538be7abda5e7fa4/src/netstack.rs), [pinned source](https://github.com/ArcCal/cf-masque/blob/a65c600494cd50fed2c621b8538be7abda5e7fa4/src/netstack.rs) |
+| DNS parser, cache, in-flight sharing | [`src/dns.rs`](https://github.com/ArcCal/cf-masque/blob/a65c600494cd50fed2c621b8538be7abda5e7fa4/src/dns.rs), [pinned source](https://github.com/ArcCal/cf-masque/blob/a65c600494cd50fed2c621b8538be7abda5e7fa4/src/dns.rs) |
+| Registration/configuration | [`src/api.rs`](https://github.com/ArcCal/cf-masque/blob/a65c600494cd50fed2c621b8538be7abda5e7fa4/src/api.rs), [pinned source](https://github.com/ArcCal/cf-masque/blob/a65c600494cd50fed2c621b8538be7abda5e7fa4/src/api.rs) |
+| Packet pump and Happy Eyeballs currently inside SOCKS | [`src/socks.rs`](https://github.com/ArcCal/cf-masque/blob/a65c600494cd50fed2c621b8538be7abda5e7fa4/src/socks.rs), [pinned source](https://github.com/ArcCal/cf-masque/blob/a65c600494cd50fed2c621b8538be7abda5e7fa4/src/socks.rs) |
+| Kernel backend that must not become business egress | [`src/net.rs`](https://github.com/ArcCal/cf-masque/blob/a65c600494cd50fed2c621b8538be7abda5e7fa4/src/net.rs) |
+| Scoped forwarding cancellation | [`src/shutdown.rs`](https://github.com/ArcCal/cf-masque/blob/a65c600494cd50fed2c621b8538be7abda5e7fa4/src/shutdown.rs) |
+| Diagnostic IP/ICMP/DNS probes | [`src/probe.rs`](https://github.com/ArcCal/cf-masque/blob/a65c600494cd50fed2c621b8538be7abda5e7fa4/src/probe.rs), [`src/ip.rs`](https://github.com/ArcCal/cf-masque/blob/a65c600494cd50fed2c621b8538be7abda5e7fa4/src/ip.rs) |
+| Dependency/features and patched H3 | [`Cargo.toml`](https://github.com/ArcCal/cf-masque/blob/a65c600494cd50fed2c621b8538be7abda5e7fa4/Cargo.toml), [`vendor/h3/PATCH.md`](https://github.com/ArcCal/cf-masque/blob/a65c600494cd50fed2c621b8538be7abda5e7fa4/vendor/h3/PATCH.md) |
+| CLI/protocol fixture suites | [`tests/transport`](https://github.com/ArcCal/cf-masque/blob/a65c600494cd50fed2c621b8538be7abda5e7fa4/tests/transport/run.sh) |
+| Privileged RFC-server integration | [`tests/local-check.sh`](https://github.com/ArcCal/cf-masque/blob/a65c600494cd50fed2c621b8538be7abda5e7fa4/tests/local-check.sh), [`tests/ipv6-check.sh`](https://github.com/ArcCal/cf-masque/blob/a65c600494cd50fed2c621b8538be7abda5e7fa4/tests/ipv6-check.sh) |
 
 The crate is currently a binary: `main.rs:4–14` declares private modules and
 there is no library target. Its manifest requires Rust 1.91 and smoltcp 0.14,

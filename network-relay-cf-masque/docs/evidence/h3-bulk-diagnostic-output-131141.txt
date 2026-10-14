@@ -1,0 +1,41 @@
+   Compiling network-relay-cf-masque v0.1.0 (/workspace/network-relay/network-relay-cf-masque)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.83s
+     Running tests/warp_matrix.rs (target/debug/deps/warp_matrix-b38850e40f540d6f)
+
+running 1 test
+test diagnose_h3_bulk_with_persistent_pairings ... H3 bulk diagnostic round 0, WARP h2
+H3 bulk diagnostic round 0, WARP h3
+H3 bulk diagnostic round 1, WARP h2
+H3 bulk diagnostic round 1, WARP h3
+H3 bulk diagnostic round 2, WARP h2
+H3 bulk diagnostic round 2, WARP h3
+H3 bulk diagnostic round 3, WARP h2
+H3 bulk diagnostic round 3, WARP h3
+H3 bulk diagnostic round 4, WARP h2
+H3 bulk diagnostic round 4, WARP h3
+H3 bulk diagnostic round 5, WARP h2
+H3 bulk diagnostic round 5, WARP h3
+H3 bulk diagnostic round 6, WARP h2
+H3 bulk diagnostic round 6, WARP h3
+H3 bulk diagnostic round 7, WARP h2
+H3 bulk diagnostic round 7, WARP h3
+H3 bulk diagnostic round 8, WARP h2
+H3 bulk diagnostic round 8, WARP h3
+H3 bulk diagnostic round 9, WARP h2
+H3 bulk diagnostic round 9, WARP h3
+H3 bulk diagnostic round 10, WARP h2
+H3 bulk diagnostic round 10, WARP h3
+H3 bulk diagnostic round 11, WARP h2
+H3 bulk diagnostic round 11, WARP h3
+H3 bulk diagnostic round 12, WARP h2
+H3 bulk diagnostic round 12, WARP h3
+H3 bulk diagnostic round 13, WARP h2
+H3 bulk diagnostic round 13, WARP h3
+H3 bulk diagnostic round 14, WARP h2
+H3 bulk diagnostic round 14, WARP h3
+H3 bulk diagnostic round 15, WARP h2
+H3 bulk diagnostic round 15, WARP h3
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 7 filtered out; finished in 434.01s
+

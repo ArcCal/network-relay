@@ -99,6 +99,59 @@ fn cancelling_initialization_exits_and_discards_late_input() {
 }
 
 #[test]
+fn immediate_stop_always_exits_cleanly() {
+    // A stop can interrupt the native LISTEN request before it is emitted.
+    // That remains a clean stop, whichever ready select branch is polled first.
+    for attempt in 0..1000 {
+        let core = Instance::start();
+        core.stop();
+        let exit = core.until(99);
+        assert_eq!(
+            (exit.2, String::from_utf8_lossy(&exit.3).into_owned()),
+            (0, String::new()),
+            "attempt {attempt}"
+        );
+    }
+}
+
+#[test]
+fn stop_after_the_listener_is_ready_exits_cleanly_and_releases_it() {
+    for _ in 0..50 {
+        let core = Instance::start();
+        let listener = core.until(8);
+        assert!(core.input(101, listener.1, 0, br#"{"local":"127.0.0.1:1080"}"#));
+        core.stop();
+        let exit = core.until(99);
+        assert_eq!((exit.2, exit.3.as_slice()), (0, b"".as_slice()));
+        assert!(!core.input(101, listener.1, 0, br#"{"local":"127.0.0.1:1080"}"#));
+
+        let again = Instance::start();
+        let relisten = again.until(8);
+        assert!(again.input(101, relisten.1, 0, br#"{"local":"127.0.0.1:1080"}"#));
+        again.stop();
+        assert_eq!(again.until(99).2, 0);
+    }
+}
+
+#[test]
+fn listener_failure_stays_fatal_even_when_a_stop_follows() {
+    for stop_after_failure in [false, true] {
+        let core = Instance::start();
+        let listener = core.until(8);
+        assert!(core.input(104, listener.1, 2, b"address already in use"));
+        if stop_after_failure {
+            core.stop();
+        }
+        let exit = core.until(99);
+        assert_eq!(
+            exit.2, 1,
+            "a failed listener must not look like a clean stop"
+        );
+        assert!(String::from_utf8_lossy(&exit.3).contains("address already in use"));
+    }
+}
+
+#[test]
 fn one_instance_cannot_stop_another_and_level_changes_do_not_relisten() {
     let old = Instance::start();
     let new = Instance::start();

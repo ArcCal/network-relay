@@ -1,6 +1,28 @@
 # Implementation status
 
-As of 2026-10-11, version 0.1.0 development. This status belongs only to Network
+## Client response update, 2026-10-14
+
+Classic CONNECT now accepts any 2xx across HTTP/1.1, HTTP/2 and HTTP/3.
+CONNECT-UDP retains its separate 101/Upgrade or permitted-2xx rules and content
+header restrictions, but no longer requires a literal `Capsule-Protocol: ?1`
+response. Its known protocol token already defines Capsule framing; unknown
+parameters and advisory field values cannot invalidate that agreement.
+
+HTTP/1.1 uses Hyper's supported manual connection handoff so legal classic
+CONNECT 204 responses establish real tunnels. It preserves read-ahead bytes,
+waits for outstanding native request-write acknowledgement, and keeps native
+transport failures. No dependency, server or QUIC transport option changed.
+[Validation and remaining limits](evidence/client-response-20261014.md).
+
+The previously reported periodic HTTP/3 disconnect was confirmed resolved by the
+user after earlier server idle-stream-0 and client probe-lifecycle fixes. Those
+fixes are retained. Older failures below describe older builds and must not be
+read as a new reproduction. The current response fix still needs a fresh Mac
+build and native retest; Linux rustls/Quinn fixtures do not run Network.framework.
+
+## Earlier implementation record
+
+Initial record dated 2026-10-11, version 0.1.0 development. This status belongs only to Network
 Relay NF. Historical Masque NF failures are evidence of an inherited risk, not
 proof that this new binary has failed or succeeded.
 
@@ -104,15 +126,20 @@ results above are separate from the checks executed in this environment.
   program now sees ECONNRESET on every transport with both servers. **The Swift
   change has not been compiled or run** (no Swift toolchain here).
 
-These are portable source repairs. No Mac retest establishes that the new binary
-runs them correctly or that they stop the unrelated native H3 EINVAL.
+These source-repair entries retain their original portable validation limits.
+The dated update above supersedes their earlier unresolved-H3 classification.
 
 ## Confirmed issues and limitations
 
-- **This new client's native H3 is unstable.** Several forced H3 connections are
-  admitted and then fail with native group EINVAL about ten seconds later.
-  Business-flow groups also fail. The trigger is not proven and is not repaired.
-  [Research and handoff](QUIC-RESEARCH.md).
+- **Historical native H3 periodic disconnect: user-confirmed resolved.** Earlier
+  builds reached admission then failed about ten seconds later. The old
+  [research](QUIC-RESEARCH.md) remains historical evidence; the server idle-stream-0
+  and client probe-lifecycle fixes must be preserved.
+- **HTTP/1.1 reset versus EOF remains under investigation.** An earlier NF/Caddy
+  pairing sometimes exposed a target reset as clean EOF. Current review has not
+  established a client defect: TLS close-notify can obscure a later TCP reset.
+  This response repair preserves observed errors but does not invent an error
+  for a valid EOF or claim to resolve that intermittent observation.
 - H1 logs include a control connection reset and individual flow timeouts; H2
   logs include individual flow resets. Their causes are unconfirmed. Do not
   declare all TCP transports stable for long sessions from the one positive H2

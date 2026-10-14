@@ -417,6 +417,13 @@ pub struct Io {
     failure: SharedFailure,
 }
 impl Io {
+    /// Return bytes read ahead by an HTTP parser to the front of the stream.
+    pub(crate) fn prepend(&mut self, bytes: Bytes) {
+        if !bytes.is_empty() {
+            let mut read = self.read.lock().unwrap();
+            read.bytes = [bytes.as_ref(), read.bytes.as_ref()].concat().into();
+        }
+    }
     pub fn id(&self) -> u64 {
         self.lease.id
     }

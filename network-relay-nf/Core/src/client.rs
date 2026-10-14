@@ -12,7 +12,9 @@ use http::{
 };
 use http_body_util::Empty;
 use hyper_util::rt::TokioIo;
-use std::{net::SocketAddr, sync::Arc, time::Duration};
+use std::{
+    error::Error as _, future::Future, net::SocketAddr, sync::Arc, task::Poll, time::Duration,
+};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     sync::watch,
@@ -213,17 +215,11 @@ impl Client {
         })
     }
     async fn open_h1(&self, io: native::Io, host: &str, port: u16, udp: bool) -> Result<Opened> {
-        let (mut sender, connection) = tokio::time::timeout(
+        let (mut sender, mut connection) = tokio::time::timeout(
             WAIT,
             hyper::client::conn::http1::handshake(TokioIo::new(io)),
         )
         .await??;
-        let mut keep = Keep::default();
-        keep.tasks.push(tokio::spawn(async move {
-            if let Err(e) = connection.with_upgrades().await {
-                tracing::debug!("HTTP/1.1 connection ended: {e}");
-            }
-        }));
         let request = if udp {
             Request::builder()
                 .method(Method::GET)
@@ -245,7 +241,37 @@ impl Client {
             request.headers_mut().insert(HOST, host_header);
             request
         };
-        let mut response = tokio::time::timeout(WAIT, sender.send_request(request)).await??;
+        // Take the connection back manually after the response. Hyper's
+        // automatic upgrade excludes 204 before checking the CONNECT method,
+        // even though every 2xx establishes a classic CONNECT tunnel.
+        let mut pending = std::pin::pin!(sender.send_request(request));
+        let mut driver_error = None;
+        let response = tokio::time::timeout(
+            WAIT,
+            std::future::poll_fn(|cx| {
+                if let Poll::Ready(result) = pending.as_mut().poll(cx) {
+                    return Poll::Ready(result.map_err(anyhow::Error::from));
+                }
+                let driven = connection.poll_without_shutdown(cx);
+                // Driving can deliver the response and then notice bytes of
+                // a 204 tunnel as unsolicited HTTP. The response determines
+                // the handoff; into_parts retains those buffered bytes.
+                if let Poll::Ready(result) = pending.as_mut().poll(cx) {
+                    if let Poll::Ready(Err(error)) = driven {
+                        driver_error = Some(error);
+                    }
+                    return Poll::Ready(result.map_err(anyhow::Error::from));
+                }
+                match driven {
+                    Poll::Ready(Err(error)) => Poll::Ready(Err(error.into())),
+                    Poll::Ready(Ok(())) => {
+                        Poll::Ready(Err(anyhow::anyhow!("HTTP/1.1 closed before response")))
+                    }
+                    Poll::Pending => Poll::Pending,
+                }
+            }),
+        )
+        .await??;
         let expected = if udp {
             StatusCode::SWITCHING_PROTOCOLS
         } else {
@@ -257,7 +283,8 @@ impl Client {
                 response
                     .headers()
                     .get(UPGRADE)
-                    .is_some_and(|v| v.as_bytes().eq_ignore_ascii_case(b"connect-udp")),
+                    .is_some_and(|v| v.as_bytes().eq_ignore_ascii_case(b"connect-udp"))
+                    && response.headers().get_all(UPGRADE).iter().count() == 1,
                 "missing CONNECT-UDP Upgrade response"
             );
             ensure!(
@@ -271,10 +298,27 @@ impl Client {
                 "missing Connection: Upgrade response"
             );
         }
-        let io = tokio::time::timeout(WAIT, hyper::upgrade::on(&mut response)).await??;
-        keep.sender = Some(Box::new(sender));
+        let parts = connection.into_parts();
+        if let Some(error) = driver_error {
+            // Only classic CONNECT 204 can reach Hyper's idle-HTTP check
+            // after a successful tunnel response. Its buffered payload is
+            // not an HTTP error. Preserve errors with a transport cause and
+            // errors from every other response instead of masking them.
+            if udp
+                || response.status() != StatusCode::NO_CONTENT
+                || parts.read_buf.is_empty()
+                || error.source().is_some()
+            {
+                return Err(error.into());
+            }
+        }
+        let mut io = parts.io.into_inner();
+        // A peer can respond before the bridge acknowledges the request
+        // write. Drain that acknowledgement before exposing tunnel writes.
+        tokio::time::timeout(WAIT, io.flush()).await??;
+        io.prepend(parts.read_buf);
         Ok(Opened {
-            stream: Stream::new(TokioIo::new(io), keep),
+            stream: Stream::new(io, Keep::default()),
             transport: "HTTP/1.1",
         })
     }
@@ -446,15 +490,29 @@ fn check(
     udp: bool,
     expected: StatusCode,
 ) -> Result<()> {
-    if status != expected {
+    // Classic CONNECT accepts every 2xx (RFC 9110 section 9.3.6), as does
+    // Extended CONNECT-UDP (RFC 9298 section 3.5). HTTP/1.1 CONNECT-UDP
+    // instead uses GET plus Upgrade and must receive 101 (section 3.3).
+    let successful = if expected == StatusCode::SWITCHING_PROTOCOLS {
+        status == expected
+    } else {
+        status.is_success()
+    };
+    if !successful {
         return Err(Rejected(status).into());
     }
     if udp {
+        // The connect-udp token defines capsule framing (RFC 9298 section
+        // 3). Capsule-Protocol is only recommended metadata for
+        // intermediaries, not another negotiation requirement (RFC 9297
+        // section 3.4). Ignore it, including unknown parameters and values
+        // that have the same semantics as an absent field.
         ensure!(
-            headers
-                .get(proto::CAPSULE_PROTOCOL_HEADER)
-                .is_some_and(|v| v.as_bytes() == b"?1"),
-            "relay did not negotiate Capsule Protocol"
+            !matches!(
+                status,
+                StatusCode::NO_CONTENT | StatusCode::RESET_CONTENT | StatusCode::PARTIAL_CONTENT
+            ),
+            "invalid status on CONNECT-UDP capsule response"
         );
         ensure!(
             proto::valid_capsule_headers(headers),
@@ -462,6 +520,95 @@ fn check(
         );
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod response_tests {
+    use super::*;
+
+    #[test]
+    fn connect_and_connect_udp_have_distinct_success_statuses() {
+        let headers = http::HeaderMap::new();
+        for code in 100..600 {
+            let status = StatusCode::from_u16(code).unwrap();
+            assert_eq!(
+                check(status, &headers, false, StatusCode::OK).is_ok(),
+                (200..300).contains(&code),
+                "classic CONNECT HTTP {code}"
+            );
+            assert_eq!(
+                check(status, &headers, true, StatusCode::OK).is_ok(),
+                (200..300).contains(&code) && ![204, 205, 206].contains(&code),
+                "Extended CONNECT-UDP HTTP {code}"
+            );
+            assert_eq!(
+                check(status, &headers, true, StatusCode::SWITCHING_PROTOCOLS).is_ok(),
+                code == 101,
+                "HTTP/1.1 CONNECT-UDP Upgrade HTTP {code}"
+            );
+        }
+    }
+
+    #[test]
+    fn connect_udp_capsule_protocol_field_does_not_select_framing() {
+        for values in [
+            vec![],
+            vec!["?1"],
+            vec!["?1;future=token;flag;quoted=\"a,b\""],
+            vec!["?0"],
+            vec!["token"],
+            vec!["?1junk"],
+            vec!["?1;broken=\""],
+            vec!["?1, ?1"],
+            vec!["?1", "?1"],
+            vec!["?0", "?1"],
+        ] {
+            let mut headers = http::HeaderMap::new();
+            for value in &values {
+                headers.append(proto::CAPSULE_PROTOCOL_HEADER, value.parse().unwrap());
+            }
+            for status in [StatusCode::OK, StatusCode::CREATED] {
+                assert!(
+                    check(status, &headers, true, StatusCode::OK).is_ok(),
+                    "{values:?}"
+                );
+            }
+            assert!(
+                check(
+                    StatusCode::SWITCHING_PROTOCOLS,
+                    &headers,
+                    true,
+                    StatusCode::SWITCHING_PROTOCOLS
+                )
+                .is_ok(),
+                "{values:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn connect_udp_rejects_content_metadata_even_without_capsule_protocol_field() {
+        for (name, value) in [
+            (http::header::CONTENT_LENGTH, "0"),
+            (http::header::CONTENT_TYPE, "application/octet-stream"),
+            (http::header::TRANSFER_ENCODING, "chunked"),
+        ] {
+            let mut headers = http::HeaderMap::new();
+            headers.insert(name, value.parse().unwrap());
+            for status in [StatusCode::OK, StatusCode::CREATED] {
+                assert!(check(status, &headers, true, StatusCode::OK).is_err());
+            }
+            assert!(
+                check(
+                    StatusCode::SWITCHING_PROTOCOLS,
+                    &headers,
+                    true,
+                    StatusCode::SWITCHING_PROTOCOLS
+                )
+                .is_err()
+            );
+        }
+    }
 }
 pub struct UdpFlow {
     pub stream: Stream,

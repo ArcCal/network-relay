@@ -1,5 +1,11 @@
 # Validation and reproducible evidence
 
+The 2026-10-14 client response repair and current portable regression results are
+recorded in [client-response-20261014.md](evidence/client-response-20261014.md).
+The earlier native HTTP/3 periodic disconnect described below has since been
+confirmed resolved by the user; the new response change preserves those fixes.
+Historical dates and validation limits below remain specific to their builds.
+
 Date: 2026-10-11. Results must identify whether the actual native transport ran.
 
 ## Executed here

@@ -1,0 +1,22 @@
+{
+  "observed_at_utc": "2026-10-14T22:25:22.122684+00:00",
+  "process_id": 128443,
+  "manifest": "target/test-runtime/soak-20261014T222452Z-125811/manifest.json",
+  "executable": "target/test-runtime/soak-20261014T222452Z-125811/runner",
+  "observed_proc_executable": "/workspace/network-relay/network-relay-cf-masque/target/test-runtime/soak-20261014T222452Z-125811/runner",
+  "observed_proc_cwd": "/workspace/network-relay/network-relay-cf-masque",
+  "observed_proc_command": [
+    "/workspace/network-relay/network-relay-cf-masque/target/test-runtime/soak-20261014T222452Z-125811/runner",
+    "one_hour_forced_h2_and_h3_soak_with_resource_metrics",
+    "--ignored",
+    "--nocapture",
+    "--test-threads=1"
+  ],
+  "binary_sha256": "8de5021935b9b0b4b75fd75ae8742338666539e19d5eacfe1976dfcfe43e22e1",
+  "running_process_binary_sha256": "8de5021935b9b0b4b75fd75ae8742338666539e19d5eacfe1976dfcfe43e22e1",
+  "observed_runtime_directories": [
+    "target/test-runtime/warp-matrix-h3-128443-1",
+    "target/test-runtime/warp-matrix-h2-128443-0"
+  ],
+  "live_cloudflare": false
+}

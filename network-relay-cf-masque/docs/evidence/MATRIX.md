@@ -1,0 +1,132 @@
+# Local WARP packet-backed acceptance matrix
+
+The peer in `tests/support/warp_peer.rs` emulates the observed Cloudflare WARP
+wire forms locally. It is **not Cloudflare**. These results establish local
+transport, packet routing, frontend interoperability and resource behavior;
+they do not establish live enrollment, a public Cloudflare exit identity, or
+reachability of Cloudflare's real endpoints.
+
+Only the relay ingress and the peer's outer H2/H3 transport use host loopback
+sockets. The peer's HTTP port 80, TCP port 7 echo, TCP port 9 reset, UDP port 7 echo, and DNS port 53 services
+run on its own userspace `NetStack`. Client business packets must cross the
+production `WarpEgress` packet pump before reaching those services. The peer
+checks assigned source/destination IPs, packet lengths, mTLS enrolled-client
+SPKI and CertificateVerify signatures, and independent framing; its byte,
+packet and DNS-query observations support the application assertions.
+
+| Coverage | Test / evidence |
+| --- | --- |
+| All six inbound H1/H2/H3 × fixed WARP H2/H3 pairings, TCP and UDP | `six_inbound_warp_transport_pairings_use_real_packet_egress`; seven unchanged standard `check::run` outcomes per WARP mode |
+| Frozen NF and Rust client cores against every frontend/egress pairing | `client_interop.rs`; source-hash-verified client fixtures prepared by `scripts/prepare-client-tests.py` |
+| Cloudflare H2 plain CONNECT + `cf-connect-proto` + bare-IP type-0 capsule | Peer request/header/packet assertions; `h2_capsules` counter |
+| Cloudflare H3 `cf-connect-ip`, quarter-stream/context 0 DATAGRAM, full-route capsule | Peer protocol/framing assertions; `h3_datagrams` and route-advertisement counters |
+| Server key pin and enrolled client key rejection on both transports | `server_pin_and_enrolled_client_key_mismatches_are_rejected` |
+| UDP source pinning, oversize rejection, valid traffic after oversize | `tunnel_dns_udp_peer_pinning_oversize_auth_and_terminal_failure` |
+| Client-facing UDP 1400 silently drops, then UDP 1200 echoes on the same flow in every pairing | `udp_mtu_frontend.rs`; peer counters prove only 1200 reached the service; H3 oversize uses request DATA, valid echo proves QUIC DATAGRAM |
+| DNS A/AAAA, NXDOMAIN, truncated UDP → TCP fallback, pending DNS wakes on WARP death | Same failure test; peer records DNS wire queries and TCP-query counter |
+| Wrong user/password, new-request rejection after revocation | Same failure test using all standard ingress checks |
+| Held H1/H2/H3 TCP and UDP flows stop after active revocation | `persistent_pairings_relay_inner_resets_and_active_revocation` |
+| Inner TCP RST produces H1 error and exact H2/H3 CONNECT_ERROR | `inner_rst_and_malformed_control_map_to_exact_inbound_codes` |
+| Malformed oversized capsule rejected from its header; illegal datagram on TCP | Same protocol failure test, exact H2 PROTOCOL_ERROR / H3 DATAGRAM_ERROR |
+| Nonboolean H3 DATAGRAM/extended-CONNECT settings reject with exact H3_SETTINGS_ERROR, while valid and unknown settings work | `h3_settings_validation.rs`; wire regressions and vendor frame tests distinguish published RFC rules from the legacy draft extension |
+| Repeated 64 MiB byte integrity, streaming memory, FIN/half-close | Two transfers per pairing, each 64 MiB in both directions, SHA-256 and exact peer TCP byte counters |
+| Actual HTTP GET of a known 64 MiB file on all six pairings | `http_file_matrix.rs`; Content-Length 67108864; SHA256 `6e337e4992fc84fc2744a38b784928aaaf460757861b749fcb01c066fbb80780` |
+| Truly idle outer WARP transport with keepalive, no business packets for 65 seconds | `idle_outer_keepalive_and_active_inner_flows_survive_two_idle_windows` |
+| Actual root CLI wiring, offline check, transport validation and terminal shutdown | `cli_warp_wiring.rs` launches the built `serve` binary on both transports |
+| At least one hour of held business connections, mixed traffic and metrics | Explicit ignored soak; requires `SOAK_SECONDS >= 3600`, recommended 3900 |
+
+Run the finite packet-backed acceptance suite from the project root with Rust/Cargo on PATH:
+
+```sh
+python3 scripts/test-matrix.py
+```
+
+Run a 65-minute soak only after that finite suite passes:
+
+```sh
+python3 scripts/test-matrix.py --soak-seconds 3900
+```
+
+The runner first exercises the evidence verifier's rejection guards, verifies and
+builds the frozen client fixtures through the visible `scripts/prepare-client-tests.py`
+script, then runs the seven packet-backed acceptance integration-test targets.
+It clears inherited `CARGO_BUILD_TARGET` so the clients run on the current machine.
+The runner uses project-local Cargo home, target and temporary directories,
+`--locked`, and a copied test executable for the soak. Its manifest contains the
+binary SHA-256 and source SHA-256 hashes across `src`, `crates`, `vendor` and
+`tests`. This makes a running snapshot distinguishable from subsequent edits
+and avoids holding the Cargo build lock for an hour.
+Completed manifests also bind the exact metric log path, process ID and SHA-256;
+the runner retains a copy under `docs/evidence/soak-manifest-*.json` and verifies
+that evidence independently before returning overall success. Summaries refer
+to the retained manifest, while its `binary_path` identifies the frozen local
+executable under the ignored runtime directory.
+
+Every WARP mode keeps one outer generation and three TCP plus three UDP
+business flows, one per ingress transport, open for the entire soak. Independent
+workers send deterministic sequence pings every 10 seconds, accumulating TCP SHA-256.
+The main loop records RSS, file descriptors, socket counts, workers, packet/byte
+counters, reported queue drops, held-flow ages and sequence counts every 30 seconds.
+It also runs fresh standard probes and periodic 64 MiB transfers. Final checks
+require each held flow to exceed 3600 seconds, no outer-session restart, and successful
+resource shutdown. Metrics are JSONL under `docs/evidence/soak-*.jsonl`;
+manifests are under `target/test-runtime/soak-*/manifest.json`.
+Resource gates require positive RSS and file-descriptor observations from Linux
+`/proc`. New samples include `metrics_available`; inaccessible or unsupported
+metrics fail the bulk/soak resource gates explicitly. Standalone functional probes
+can report unavailable metrics without asserting memory bounds. The independent
+`tests/support/verify_soak.py` checker rejects pending/failed manifests, missing
+resource measurements, changed production sources, retained-flow restarts and
+TCP digests that differ from its own Python sequence generator.
+
+The resource-availability guard was added after the earlier PID 91781 snapshot.
+Its targeted test, `resource_gates_reject_unavailable_and_nonpositive_observations`,
+passed separately, and `cargo clippy --locked --test warp_matrix -- -D warnings`
+passed. These follow-up checks are separate from the earlier 598-test workflow.
+That interrupted Linux log uses the earlier schema without `metrics_available`;
+the independent verifier requires every recorded RSS and FD value to be positive.
+The replacement snapshot includes the guard and explicit availability flag,
+and the complete 604-test workflow includes its regression. No production
+source changed for that test-only guard; the later H3 settings correction is
+separately documented and included before the replacement snapshot.
+The Python verifier regression suite also passed 29 checks: synthetic positive
+controls and rejection of pending/failed manifests, wrong log/PID/digest binding,
+zero/unavailable/missing resource metrics, stalled flows, bad TCP digests, outer
+restarts, production hash/file-set changes, and a wrong frozen executable hash.
+Every applicable rejection ran in both normal and evidence-only modes. Its
+project-local temporary fixtures were removed. Results are retained in
+`verifier-regressions-20261014.json`; these synthetic guard tests are not a soak.
+
+The initial preliminary run is retained as a **failed** run. It used 30 seconds between
+held-flow pings, matching the unchanged standard H3 client's default 30-second QUIC
+idle timeout. The failure was reproduced separately as exact
+`quinn::ConnectionError::TimedOut`, while WARP remained available. The corrected
+harness uses 10-second activity without changing or disabling the client's idle limit.
+The subsequent production frontend forced-shutdown correction also required a
+new binary snapshot. A preliminary partial log is never counted as a passed
+one-hour run.
+
+The subsequent PID 91781 run was interrupted by SIGKILL after 114 samples and
+3390.309663 measured seconds (56.5 minutes). Its original tool session was no
+longer available, and the launcher never wrote a completion result. The Linux
+zombie wait status was exactly 9, establishing SIGKILL; the origin is unknown.
+The timing is consistent with a bounded tool-session lifetime, but this is not
+proven. This is **not** a one-hour pass or a demonstrated transport assertion
+failure. The tracked manifest is `soak-manifest-20261014T205453Z-91781.json`;
+`soak-interruption-91781.json` records the diagnosis and explicit cleanup of
+the two owned ephemeral fixture directories. Graceful test cleanup was not
+observed. The verifier rejects this manifest even in evidence-only mode.
+
+A replacement run will use the corrected production H3 SETTINGS parser after
+its finite validation. In a cloud tool session with a bounded lifetime, use
+`python3 tests/support/start_detached_soak.py --seconds 3900` with the project
+environment already active. This launches the gated runner in a separate
+session and saves output plus worker/matrix PIDs under `target/test-runtime`.
+The launch record means acceptance is pending; final worker, soak-manifest and
+independent-summary results must all be checked after actual completion.
+
+Observed initial bulk evidence: 768 MiB sent and echoed in each direction across
+the six pairings. For the six repetitions on forced WARP H2, measured RSS growth
+was 5544 KiB; for forced WARP H3 it was 1604 KiB. Those initial artifacts preserve
+their dates and source context. The final runner creates fresh evidence for the
+final source; a pending soak is not a pass claim.

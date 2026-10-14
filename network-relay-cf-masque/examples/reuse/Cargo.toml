@@ -1,0 +1,12 @@
+[package]
+name = "independent-warp-consumer"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dependencies]
+warp-masque-egress = { path = "../../crates/warp-egress" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-util"] }
+anyhow = "1"

@@ -18,7 +18,7 @@ final class SettingsStorageTests: XCTestCase {
         let selected = Server(name: "Selected", domain: "second.example.com:8443", serverIP: "203.0.113.5", username: "second", password: "p\"a\\ss wörd 🔐", transport: .h3)
         return Configuration(
             servers: [first, selected], selectedServerID: selected.id, listenAddress: "::1", port: 1081,
-            connectOnLaunch: true, logLevel: .everything, gssapiKeytab: "/private/user.keytab", gssapiPrincipals: "client@EXAMPLE.COM")
+            connectOnLaunch: true, logLevel: .everything)
     }
 
     func testNoInstallationReturnsTheDefaults() {

@@ -1,84 +1,23 @@
 //! SOCKS5 CONNECT and UDP ASSOCIATE. Every local listener/socket belongs to
-//! Network.framework. Target names are resolved by the relay server. Clients
-//! authenticate with GSS-API (RFC 1961) when a keytab is configured, and
-//! need no authentication otherwise.
+//! Network.framework. Target names are resolved by the relay server. The
+//! local SOCKS listener supports the no-authentication method.
 use crate::{
     client::{Client, UdpFlow},
-    gssapi, native,
+    native,
 };
 use anyhow::{Context, Result, ensure};
 use bytes::Bytes;
 use std::{
     collections::HashMap,
-    io,
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
-    pin::Pin,
     sync::Arc,
-    task::{Context as TaskContext, Poll},
     time::Duration,
 };
 use tokio::{
-    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf},
+    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     sync::{Semaphore, mpsc},
     task::JoinSet,
 };
-
-/// A client connection after authentication: as it is, or encapsulated in
-/// GSS-API messages (RFC 1961 section 5).
-enum Conn {
-    Plain(native::Io),
-    Gss(gssapi::Stream<native::Io>),
-}
-impl Conn {
-    fn local_addr(&self) -> io::Result<SocketAddr> {
-        match self {
-            Conn::Plain(io) => io.local_addr(),
-            Conn::Gss(s) => s.get_ref().local_addr(),
-        }
-    }
-    fn abort(&self) {
-        match self {
-            Conn::Plain(io) => io.abort(),
-            Conn::Gss(s) => s.get_ref().abort(),
-        }
-    }
-}
-impl AsyncRead for Conn {
-    fn poll_read(
-        self: Pin<&mut Self>,
-        cx: &mut TaskContext<'_>,
-        buf: &mut ReadBuf<'_>,
-    ) -> Poll<io::Result<()>> {
-        match self.get_mut() {
-            Conn::Plain(s) => Pin::new(s).poll_read(cx, buf),
-            Conn::Gss(s) => Pin::new(s).poll_read(cx, buf),
-        }
-    }
-}
-impl AsyncWrite for Conn {
-    fn poll_write(
-        self: Pin<&mut Self>,
-        cx: &mut TaskContext<'_>,
-        buf: &[u8],
-    ) -> Poll<io::Result<usize>> {
-        match self.get_mut() {
-            Conn::Plain(s) => Pin::new(s).poll_write(cx, buf),
-            Conn::Gss(s) => Pin::new(s).poll_write(cx, buf),
-        }
-    }
-    fn poll_flush(self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<io::Result<()>> {
-        match self.get_mut() {
-            Conn::Plain(s) => Pin::new(s).poll_flush(cx),
-            Conn::Gss(s) => Pin::new(s).poll_flush(cx),
-        }
-    }
-    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<io::Result<()>> {
-        match self.get_mut() {
-            Conn::Plain(s) => Pin::new(s).poll_shutdown(cx),
-            Conn::Gss(s) => Pin::new(s).poll_shutdown(cx),
-        }
-    }
-}
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct Target {
@@ -114,13 +53,8 @@ impl Target {
     }
 }
 
-/// Runs the proxy on `listeners`; with `gssapi`, clients must authenticate
-/// with it.
-pub async fn run(
-    client: Arc<Client>,
-    listeners: Vec<native::TcpListener>,
-    gssapi: Option<Arc<dyn gssapi::Acceptor>>,
-) -> Result<()> {
+/// Runs the no-authentication SOCKS proxy on `listeners`.
+pub async fn run(client: Arc<Client>, listeners: Vec<native::TcpListener>) -> Result<()> {
     let limit = Arc::new(Semaphore::new(256));
     let mut workers = JoinSet::new();
     let monitor = client.clone();
@@ -128,7 +62,6 @@ pub async fn run(
     for listener in listeners {
         let client = client.clone();
         let limit = limit.clone();
-        let gssapi = gssapi.clone();
         workers.spawn(async move {
             let mut sessions = JoinSet::new();
             loop {
@@ -137,10 +70,9 @@ pub async fn run(
                         let (io, peer) = accepted?;
                         let Ok(permit) = limit.clone().try_acquire_owned() else { drop(io); continue; };
                         let client = client.clone();
-                        let gssapi = gssapi.clone();
                         sessions.spawn(async move {
                             let _permit = permit;
-                            if let Err(e) = session(client, io, peer, gssapi.as_deref()).await {
+                            if let Err(e) = session(client, io, peer).await {
                                 tracing::debug!(%peer, "SOCKS session ended: {e:#}");
                             }
                         });
@@ -157,40 +89,17 @@ pub async fn run(
     }
 }
 
-async fn session(
-    client: Arc<Client>,
-    mut io: native::Io,
-    peer: SocketAddr,
-    gssapi: Option<&dyn gssapi::Acceptor>,
-) -> Result<()> {
+async fn session(client: Arc<Client>, mut io: native::Io, peer: SocketAddr) -> Result<()> {
     let (mut io, command, target) = tokio::time::timeout(Duration::from_secs(10), async {
         ensure!(io.read_u8().await? == 5, "SOCKS version is not 5");
         let mut methods = vec![0; io.read_u8().await? as usize];
         io.read_exact(&mut methods).await?;
-        // RFC 1928 section 3: GSS-API when configured, else no authentication.
-        let method = if gssapi.is_some() { gssapi::METHOD } else { 0 };
-        if !methods.contains(&method) {
+        // RFC 1928 section 3: select no authentication only when offered.
+        if !methods.contains(&0) {
             io.write_all(&[5, 255]).await?;
             anyhow::bail!("SOCKS client does not offer the required authentication method");
         }
-        io.write_all(&[5, method]).await?;
-        let mut io = match gssapi {
-            Some(acceptor) => {
-                let (context, protection, principal) =
-                    match gssapi::authenticate(&mut io, acceptor).await {
-                        Ok(authenticated) => authenticated,
-                        Err(e) => {
-                            if e.kind() == std::io::ErrorKind::PermissionDenied {
-                                tracing::info!(%peer, "SOCKS GSS-API authentication failed: {e}");
-                            }
-                            return Err(e.into());
-                        }
-                    };
-                tracing::debug!(%peer, %principal, ?protection, "SOCKS GSS-API authentication");
-                Conn::Gss(gssapi::Stream::new(io, context, protection)?)
-            }
-            None => Conn::Plain(io),
-        };
+        io.write_all(&[5, 0]).await?;
         ensure!(io.read_u8().await? == 5, "invalid SOCKS request version");
         let command = io.read_u8().await?;
         ensure!(io.read_u8().await? == 0, "invalid SOCKS reserved field");
@@ -267,7 +176,6 @@ async fn reply<S: AsyncWrite + Unpin>(
     }
     .encode(&mut bytes);
     io.write_all(&bytes).await?;
-    // An encapsulating stream sends a message only when flushed.
     io.flush().await?;
     Ok(())
 }
@@ -301,7 +209,7 @@ fn packet(bytes: &[u8]) -> Option<(Target, &[u8])> {
 }
 async fn udp_association(
     client: Arc<Client>,
-    mut control: Conn,
+    mut control: native::Io,
     peer: SocketAddr,
     claim: Target,
 ) -> Result<()> {
@@ -316,11 +224,6 @@ async fn udp_association(
     let local = control.local_addr()?;
     let socket = client.bridge.udp(SocketAddr::new(local.ip(), 0)).await?;
     reply(&mut control, 0, Some(socket.local_addr()?)).await?;
-    // After GSS-API authentication, datagrams are encapsulated too.
-    let security = match &control {
-        Conn::Gss(s) => Some(s.security()),
-        Conn::Plain(_) => None,
-    };
     let mut source = if claim.port == 0 {
         None
     } else {
@@ -337,15 +240,7 @@ async fn udp_association(
             datagram = socket.recv_from(&mut buffer) => {
                 let (count, sender)=datagram?;
                 if sender.ip().to_canonical() != peer.ip().to_canonical() || source.is_some_and(|a| a != sender) { continue; }
-                let opened;
-                let datagram = match &security {
-                    Some((context, protection)) => {
-                        let Some(d) = gssapi::open_datagram(context, *protection, &buffer[..count]) else { continue; };
-                        opened = d;
-                        &opened[..]
-                    }
-                    None => &buffer[..count],
-                };
+                let datagram = &buffer[..count];
                 let Some((target, payload))=packet(datagram) else { continue; };
                 if payload.len() > 65507 { continue; }
                 source.get_or_insert(sender);
@@ -382,13 +277,6 @@ async fn udp_association(
             Some((target,payload))=incoming.recv() => {
                 if let Some(source)=source {
                     let mut packet=vec![0,0,0]; target.encode(&mut packet); packet.extend_from_slice(&payload);
-                    let packet = match &security {
-                        Some((context, protection)) => {
-                            let Some(sealed) = gssapi::seal_datagram(context, *protection, &packet) else { continue; };
-                            sealed
-                        }
-                        None => packet,
-                    };
                     socket.send_to(&packet,source).await?;
                 }
             }

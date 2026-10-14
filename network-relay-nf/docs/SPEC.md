@@ -1,19 +1,27 @@
 # Application and wire specification
 
-Revision: 0.1.0 development, 2026-10-11. Normative words describe the acceptance target;
+Revision: 0.1.0 development, 2026-10-14. Normative words describe the acceptance target;
 [STATUS.md](STATUS.md) says which requirements have actually been verified.
 
 ## Supported protocol profile
 
 | Transport | TCP forwarding | UDP forwarding | Required response |
 | --- | --- | --- | --- |
-| HTTP/1.1 over native TLS | Classic CONNECT, authority-form destination | GET + `Connection: Upgrade` + `Upgrade: connect-udp` at the UDP template | TCP 200; UDP 101 with Upgrade and Capsule negotiation |
-| HTTP/2 over native TLS | Classic CONNECT, `:authority` destination | Extended CONNECT, `:protocol = connect-udp`, expanded HTTPS template | 200; peer ENABLE_CONNECT_PROTOCOL; UDP `Capsule-Protocol: ?1` |
-| HTTP/3 over native QUIC | Classic CONNECT on a bidirectional request stream | Extended CONNECT, `:protocol = connect-udp`, expanded HTTPS template | 200; peer Extended CONNECT setting; UDP `Capsule-Protocol: ?1` |
+| HTTP/1.1 over native TLS | Classic CONNECT, authority-form destination | GET + `Connection: Upgrade` + `Upgrade: connect-udp` at the UDP template | TCP any 2xx; UDP 101 with one `Upgrade: connect-udp` and `Connection: Upgrade` |
+| HTTP/2 over native TLS | Classic CONNECT, `:authority` destination | Extended CONNECT, `:protocol = connect-udp`, expanded HTTPS template | TCP any 2xx; UDP permitted 2xx; peer ENABLE_CONNECT_PROTOCOL |
+| HTTP/3 over native QUIC | Classic CONNECT on a bidirectional request stream | Extended CONNECT, `:protocol = connect-udp`, expanded HTTPS template | TCP any 2xx; UDP permitted 2xx; peer Extended CONNECT setting |
 
 References: RFC 9110 §9.3.6, RFC 9113, RFC 9114, RFC 9220, RFC 9297 and RFC 9298.
 The `.well-known/masque` path is the standard URI namespace; its spelling does
 not imply this client uses CONNECT-IP or depends on the Masque NF repository.
+
+CONNECT-UDP success excludes 204, 205 and 206 and rejects forbidden content
+metadata (RFC 9297 §3.2). Its known `connect-udp` token defines Capsule framing
+(RFC 9298 §3); `Capsule-Protocol` is advisory metadata, not a second negotiation
+gate (RFC 9297 §3.4). Unknown field parameters must not reject a valid tunnel.
+An absent, false, malformed or repeated field does not change that known framing.
+The client still sends `Capsule-Protocol: ?1`. Classic CONNECT's any-2xx rule is
+separate from the Capsule status restrictions (RFC 9110 §9.3.6).
 
 The GUI generates the default UDP template only. The core supports the inherited
 restricted RFC 6570 template parser. The GUI currently rejects custom template
@@ -76,28 +84,24 @@ tested separately. Retry delay is exponential for short failures and resets
 after at least 30 seconds of admitted readiness; repeated ten-second failures
 must not be hidden by retry logs or reported as a stable session.
 
-The latest supplied older binary has one complete HTTP/3 admission-to-EINVAL
-cycle lasting 10.002560 seconds in run `16A52488`; its following SID 4 request
-ends awaiting a response. The same upload has separate HTTP/2 control-flow
-closures near 300 seconds, plus broken-pipe/timeouts with unproven causes.
-[Evidence](evidence/native-http3-20261011-1202.md) records the exact build and
-observation limits. Current probe/pump source repairs have portable tests but no
-Mac retest; native HTTP/3 stability is unresolved. Different Masque NF profile
-outcomes must not be treated as proof of this application's root cause or as
-identification of a server backend from a display label.
+The older ten-second HTTP/3 admission-to-EINVAL incident is historical; the user
+has since confirmed that periodic disconnects were resolved after the server
+idle-stream-0 fixes and client probe renewal. The old
+[evidence](evidence/native-http3-20261011-1202.md) retains its original build and
+observation limits. The response-compatibility repair does not alter those QUIC
+fixes or probe timing. Further native acceptance must use current builds of each
+server; a historical trace or another client's result does not establish a new
+failure or a complete acceptance matrix.
 
 ## SOCKS5 profile
 
-RFC 1928 version 5, CONNECT and UDP ASSOCIATE. Without a Kerberos keytab there
-is no local authentication. With one, GSS-API (RFC 1961), the method RFC 1928
-section 3 requires every implementation to support, is the only method offered:
-context establishment (an abort message on failure), the protection-level
-subnegotiation (integrity, or integrity and confidentiality where the context
-offers it), and per-message encapsulation of the request, the reply, the relayed
-bytes and every UDP datagram of the association. An optional list of client
-principals limits who is admitted. BIND and UDP fragmentation are unsupported.
-The default listener is loopback; users may explicitly select a non-loopback IP,
-which without a keytab exposes an unauthenticated SOCKS listener. Remote destination names remain names and are resolved by the server.
+SOCKS5 CONNECT and UDP ASSOCIATE use only method 0x00 (no authentication).
+Kerberos/GSS-API and its settings are removed. This is an intentionally limited
+local profile: RFC 1928 §3 requires GSS-API support, so the app does not claim
+full RFC 1928 conformance. BIND and UDP fragmentation are unsupported.
+The default listener is loopback; an explicitly selected non-loopback IP exposes
+the same unauthenticated proxy. Remote relay account authentication is unchanged.
+Remote destination names remain names and are resolved by the server.
 ASCII DNS names, IPv4 and IPv6 address syntax are accepted; raw internationalized
 SOCKS names are not normalized and must be supplied as ASCII/Punycode.
 

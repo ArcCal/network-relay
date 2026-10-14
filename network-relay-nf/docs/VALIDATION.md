@@ -1,5 +1,16 @@
 # Validation and reproducible evidence
 
+Kerberos/GSS-API and its feature-specific tests were removed on 2026-10-14.
+The current local profile supports only no authentication. The dated records
+and counts below, including GSS checks, apply to builds before that removal.
+Use the current build script for the remaining test suite and native smoke checks.
+
+The 2026-10-14 client response repair and its preceding portable regression results are
+recorded in [client-response-20261014.md](evidence/client-response-20261014.md).
+The earlier native HTTP/3 periodic disconnect described below has since been
+confirmed resolved by the user; the new response change preserves those fixes.
+Historical dates and validation limits below remain specific to their builds.
+
 Date: 2026-10-11. Results must identify whether the actual native transport ran.
 
 ## Executed here

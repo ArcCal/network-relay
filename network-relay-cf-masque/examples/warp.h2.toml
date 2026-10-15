@@ -1,10 +1,16 @@
 [warp]
-# An existing enrolled registration; not an API token or a WireGuard profile.
-registration = "../.secrets/warp-registration.json"
-# Required. There is no automatic fallback to HTTP/3 or direct egress.
+# WARP-only alternative for diagnostics/reuse. serve reads [warp] from relay.toml;
+# it does not require this second file. Replace the enrolled values below.
 transport = "h2"
-dns = ["1.1.1.1:53"]
-keepalive_secs = 15
-idle_timeout_secs = 30
-# Optional numeric endpoint override. Registration port 0 maps to 443.
+# Defaults use IPv4 endpoint 162.159.198.2:443 and tunneled DNS 1.1.1.1:53.
+# There is no automatic fallback to HTTP/3 or direct egress.
 # endpoint = "162.159.198.2:443"
+
+[warp.registration]
+private_key = "REPLACE_WITH_ENROLLED_BASE64_P256_PKCS8_PRIVATE_KEY"
+endpoint_public_key = """-----BEGIN PUBLIC KEY-----
+REPLACE_WITH_ENROLLED_PUBLIC_KEY_BASE64
+-----END PUBLIC KEY-----
+"""
+tunnel_ipv4 = "172.16.0.2"
+# IPv6 addresses and account metadata are optional; omitted for IPv4-only use.

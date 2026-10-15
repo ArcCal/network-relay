@@ -5,6 +5,30 @@ keys; user enrollment lives only in ignored `.secrets/` (0700 directory,
 0600 file). Tracked evidence excludes its token, license, private key and
 device identifier.
 
+## Configuration change
+
+The current one-file configuration, optional IPv6 and migration behavior are
+specified in [CONFIGURATION.md](CONFIGURATION.md) and [SPEC.md](SPEC.md).
+Historical test counts and frozen source hashes below predate this change;
+they must not be presented as its regression results. Configuration checks
+must cover inline credentials, IPv4-only H2/H3, explicit mode selection,
+legacy loading, unknown fields, redacted errors and private migration output.
+The [2026-10-15 regression record](evidence/single-config-regression-20261015.json)
+records 342 passing workspace tests, no failures and two intentionally ignored
+long-running tests. The final focused CLI suite passes both tests, including
+the additional IPv4 listener migration edges; these overlap the workspace
+run and must not be added as independent test counts. Strict Clippy, owned
+source formatting, the independent crate consumer and vendor provenance pass.
+
+The actual CLI runs with one TOML after both old WARP files are deleted,
+using IPv4-only credentials and both explicit WARP modes. It checks all three
+ingress protocols, offline validation, private/non-overwriting migration,
+password reload, rejected invalid reloads, restart-only WARP changes and
+failure-closed shutdown. The full regression also passes current/historical
+NF/RS core interoperability, 64 MiB file integrity, repeated bulk/half-close,
+idle keepalive and protocol/security checks. This is synthetic evidence, not
+a new live Cloudflare, native Apple or hour-long stability acceptance run.
+
 ## Executed evidence
 
 - `crates/warp-egress/test-evidence/results.json`: core tests, strict lint,

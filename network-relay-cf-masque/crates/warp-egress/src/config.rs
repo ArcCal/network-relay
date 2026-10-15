@@ -13,11 +13,13 @@ use x509_parser::prelude::FromDer;
 use crate::api;
 use crate::masque::{self, Auth, Options, Transport, Verify};
 
-/// Settings are loaded from `[warp]` in a separate TOML file. Relative
-/// registration paths are relative to that configuration file's directory.
+/// Settings are loaded from `[warp]` in the relay TOML, including an inline
+/// `[warp.registration]`. Legacy registration file paths remain supported and
+/// are relative to that configuration file's directory.
 #[derive(Clone)]
 pub struct WarpConfig {
-    pub registration: PathBuf,
+    /// Legacy registration file, or `None` for inline credentials.
+    pub registration: Option<PathBuf>,
     pub transport: Transport,
     pub endpoint: Option<SocketAddr>,
     pub port: u16,
@@ -53,7 +55,7 @@ impl fmt::Debug for WarpConfig {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawConfig {
-    registration: PathBuf,
+    registration: Registration,
     transport: Transport,
     endpoint: Option<String>,
     port: Option<u16>,
@@ -73,9 +75,10 @@ struct RawConfig {
 }
 
 #[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct WrappedConfig {
-    warp: RawConfig,
+#[serde(untagged)]
+enum Registration {
+    File(PathBuf),
+    Inline(Box<api::Config>),
 }
 
 impl<'de> Deserialize<'de> for Transport {
@@ -96,16 +99,27 @@ impl WarpConfig {
     pub fn load(path: &Path) -> Result<Self> {
         let text =
             std::fs::read_to_string(path).with_context(|| format!("reading WARP settings {}", path.display()))?;
-        let raw = parse_settings(&text).with_context(|| format!("loading WARP settings {}", path.display()))?;
-        ensure!(!raw.registration.as_os_str().is_empty(), "warp.registration is required");
+        Self::from_toml(&text, path)
+    }
+
+    /// Parse the same snapshot used by the relay frontend. Deserializer errors
+    /// never include input excerpts or credential values.
+    pub fn from_toml(text: &str, path: &Path) -> Result<Self> {
+        let raw = parse_settings(text).with_context(|| format!("loading WARP settings {}", path.display()))?;
         let parent = path.parent().unwrap_or_else(|| Path::new("."));
-        let registration =
-            if raw.registration.is_absolute() { raw.registration } else { parent.join(raw.registration) };
-        ensure!(!registration.as_os_str().is_empty(), "warp.registration is required");
+        let (registration, credentials) = match raw.registration {
+            Registration::File(file) => {
+                ensure!(!file.as_os_str().is_empty(), "warp.registration file path must not be empty");
+                let file = if file.is_absolute() { file } else { parent.join(file) };
+                let credentials = api::Config::load(&file)?;
+                (Some(file), credentials)
+            }
+            Registration::Inline(credentials) => (None, *credentials),
+        };
         let endpoint = raw.endpoint.as_deref().map(|value| parse_override(value, raw.port)).transpose()?;
         let port = raw.port.or_else(|| endpoint.map(|addr| addr.port())).unwrap_or(443);
         let config = Self {
-            credentials: Arc::new(api::Config::load(&registration)?),
+            credentials: Arc::new(credentials),
             registration,
             transport: raw.transport,
             endpoint,
@@ -141,7 +155,11 @@ impl WarpConfig {
             "warp.uri must be an absolute HTTPS URI"
         );
         self.selected_endpoint()?;
-        self.addresses()?;
+        let addresses = self.addresses()?;
+        ensure!(
+            self.dns.iter().all(|server| addresses.iter().any(|own| own.is_ipv4() == server.is_ipv4())),
+            "warp.dns contains a server whose address family has no configured tunnel address"
+        );
         let pkcs8 = self.credentials.private_key_der()?;
         rcgen::KeyPair::from_pkcs8_der_and_sign_algo(
             &rustls_pki_types::PrivatePkcs8KeyDer::from(pkcs8.as_slice()),
@@ -195,10 +213,12 @@ impl WarpConfig {
 fn parse_settings(text: &str) -> Result<RawConfig> {
     // Support a dedicated plain settings file as well as the documented
     // `[warp]` wrapper. No deserializer diagnostics include the input text.
-    let value: toml::Value = toml::from_str(text).map_err(|_| anyhow::anyhow!("invalid WARP settings TOML"))?;
-    if value.get("warp").is_some() {
-        value.try_into::<WrappedConfig>().map(|wrapped| wrapped.warp).map_err(|_| {
-            anyhow::anyhow!("invalid [warp] settings; registration and explicit h2/h3 transport are required")
+    let mut value: toml::Value = toml::from_str(text).map_err(|_| anyhow::anyhow!("invalid WARP settings TOML"))?;
+    if let Some(warp) = value.as_table_mut().and_then(|table| table.remove("warp")) {
+        warp.try_into::<RawConfig>().map_err(|_| {
+            anyhow::anyhow!(
+                "invalid [warp] settings; check field names, explicit h2/h3 transport and registration credentials"
+            )
         })
     } else {
         value.try_into::<RawConfig>().map_err(|_| {
@@ -261,6 +281,24 @@ mod tests {
             std::fs::write(&path, settings).unwrap();
             WarpConfig::load(&path)
         }
+
+        fn inline_settings(&self, transport: &str) -> String {
+            let json: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(self.0.join("registration.json")).unwrap()).unwrap();
+            let mut registration = toml::map::Map::new();
+            for name in ["private_key", "endpoint_public_key", "tunnel_ipv4"] {
+                registration.insert(name.into(), toml::Value::String(json[name].as_str().unwrap().into()));
+            }
+            if transport == "h3" {
+                registration.insert("endpoint_v4".into(), toml::Value::String("162.159.198.1:0".into()));
+            }
+            let mut warp = toml::map::Map::new();
+            warp.insert("transport".into(), toml::Value::String(transport.into()));
+            warp.insert("registration".into(), toml::Value::Table(registration));
+            let mut root = toml::map::Map::new();
+            root.insert("warp".into(), toml::Value::Table(warp));
+            toml::to_string(&toml::Value::Table(root)).unwrap()
+        }
     }
     impl Drop for Fixture {
         fn drop(&mut self) {
@@ -287,7 +325,7 @@ mod tests {
     fn config_relative_registration_port_zero_and_pinned_defaults() {
         let fixture = Fixture::new();
         let config = fixture.load("[warp]\nregistration='registration.json'\ntransport='h3'").unwrap();
-        assert_eq!(config.registration, fixture.0.join("registration.json"));
+        assert_eq!(config.registration, Some(fixture.0.join("registration.json")));
         assert_eq!(config.options().unwrap().endpoint, "162.159.198.1:443".parse().unwrap());
         assert_eq!(config.dns_servers(), ["1.1.1.1:53".parse().unwrap()]);
         assert_eq!((config.keepalive_secs, config.idle_timeout_secs), (15, 30));
@@ -332,5 +370,122 @@ mod tests {
             std::fs::write(&path, serde_json::to_string(&registration).unwrap()).unwrap();
             assert!(fixture.load("[warp]\nregistration='registration.json'\ntransport='h3'").is_err());
         }
+    }
+
+    #[test]
+    fn unified_inline_registration_supports_ipv4_only_h2_and_h3_without_metadata() {
+        let fixture = Fixture::new();
+        for transport in ["h2", "h3"] {
+            let settings = fixture.inline_settings(transport);
+            // The WARP loader accepts the rest of the standard relay config.
+            let settings = format!("listen='[::]:443'\n[tls]\ncert='certificate.pem'\nkey='key.pem'\n{settings}");
+            let config = fixture.load(&settings).unwrap();
+            assert!(config.registration.is_none());
+            assert_eq!(config.addresses().unwrap(), ["172.16.0.2".parse::<IpAddr>().unwrap()]);
+            assert!(!config.ipv6_endpoint);
+            assert_eq!(
+                config.options().unwrap().transport,
+                if transport == "h2" { Transport::H2 } else { Transport::H3 }
+            );
+            assert_eq!(
+                config.options().unwrap().endpoint,
+                if transport == "h2" { "162.159.198.2:443" } else { "162.159.198.1:443" }.parse().unwrap()
+            );
+            config.validate().unwrap();
+        }
+    }
+
+    #[test]
+    fn inline_endpoint_requirements_are_explicit_and_do_not_fall_back() {
+        let fixture = Fixture::new();
+        let minimal = fixture.inline_settings("h2");
+        let mut settings: toml::Value = toml::from_str(&minimal).unwrap();
+        settings["warp"]["transport"] = "h3".into();
+        assert!(fixture.load(&toml::to_string(&settings).unwrap()).is_err());
+        settings["warp"].as_table_mut().unwrap().insert("endpoint".into(), "192.0.2.1:8443".into());
+        let explicit = fixture.load(&toml::to_string(&settings).unwrap()).unwrap();
+        assert_eq!(explicit.options().unwrap().endpoint, "192.0.2.1:8443".parse().unwrap());
+
+        for transport in ["h2", "h3"] {
+            let mut settings: toml::Value = toml::from_str(&fixture.inline_settings(transport)).unwrap();
+            settings["warp"].as_table_mut().unwrap().insert("ipv6_endpoint".into(), true.into());
+            assert!(fixture.load(&toml::to_string(&settings).unwrap()).is_err());
+            let field = if transport == "h2" { "endpoint_h2_v6" } else { "endpoint_v6" };
+            settings["warp"]["registration"].as_table_mut().unwrap().insert(field.into(), "[2001:db8::1]:0".into());
+            let config = fixture.load(&toml::to_string(&settings).unwrap()).unwrap();
+            assert!(config.options().unwrap().endpoint.is_ipv6());
+            assert!(config.addresses().unwrap().iter().all(IpAddr::is_ipv4));
+        }
+    }
+
+    #[test]
+    fn unified_settings_reject_missing_credentials_unknown_fields_and_secret_type_errors() {
+        let fixture = Fixture::new();
+        let original: toml::Value = toml::from_str(&fixture.inline_settings("h2")).unwrap();
+        for field in ["private_key", "endpoint_public_key", "tunnel_ipv4"] {
+            let mut settings = original.clone();
+            settings["warp"]["registration"].as_table_mut().unwrap().remove(field);
+            assert!(fixture.load(&toml::to_string(&settings).unwrap()).is_err(), "missing {field} was accepted");
+        }
+        for (table, field) in [("warp", "tranpsort"), ("registration", "private_keey")] {
+            let mut settings = original.clone();
+            let target = if table == "warp" { &mut settings["warp"] } else { &mut settings["warp"]["registration"] };
+            target.as_table_mut().unwrap().insert(field.into(), "never-echo-this-secret".into());
+            let error = fixture.load(&toml::to_string(&settings).unwrap()).unwrap_err();
+            assert!(!format!("{error:#}").contains("never-echo-this-secret"));
+        }
+        for field in ["private_key", "endpoint_public_key", "tunnel_ipv4", "tunnel_ipv6", "access_token", "device_id"] {
+            let mut settings = original.clone();
+            settings["warp"]["registration"]
+                .as_table_mut()
+                .unwrap()
+                .insert(field.into(), toml::Value::Array(vec!["never-echo-this-secret".into()]));
+            let error = fixture.load(&toml::to_string(&settings).unwrap()).unwrap_err();
+            assert!(!format!("{error:#}").contains("never-echo-this-secret"));
+        }
+        let error = fixture.load("[warp]\nprivate_key = 'never-echo-this-secret\n").unwrap_err();
+        assert!(!format!("{error:#}").contains("never-echo-this-secret"));
+    }
+
+    #[test]
+    fn inline_ipv6_and_metadata_are_optional_but_validated_when_present() {
+        let fixture = Fixture::new();
+        let mut settings: toml::Value = toml::from_str(&fixture.inline_settings("h2")).unwrap();
+        for field in ["device_id", "access_token", "license"] {
+            settings["warp"]["registration"]
+                .as_table_mut()
+                .unwrap()
+                .insert(field.into(), "never-echo-this-secret".into());
+        }
+        settings["warp"]["registration"]
+            .as_table_mut()
+            .unwrap()
+            .insert("tunnel_ipv6".into(), "2606:4700:110:8000::1".into());
+        let config = fixture.load(&toml::to_string(&settings).unwrap()).unwrap();
+        assert_eq!(config.addresses().unwrap().len(), 2);
+        assert!(!format!("{config:?}").contains("never-echo-this-secret"));
+        for invalid in ["not-an-address", "::", "ff02::1", "::ffff:192.0.2.1"] {
+            settings["warp"]["registration"]["tunnel_ipv6"] = invalid.into();
+            assert!(fixture.load(&toml::to_string(&settings).unwrap()).is_err());
+        }
+    }
+
+    #[test]
+    fn dns_servers_require_a_configured_tunnel_address_of_their_family() {
+        let fixture = Fixture::new();
+        let mut settings: toml::Value = toml::from_str(&fixture.inline_settings("h2")).unwrap();
+        for servers in [vec!["[2606:4700:4700::1111]:53"], vec!["1.1.1.1:53", "[2606:4700:4700::1111]:53"]] {
+            settings["warp"]
+                .as_table_mut()
+                .unwrap()
+                .insert("dns".into(), toml::Value::Array(servers.into_iter().map(|server| server.into()).collect()));
+            let error = fixture.load(&toml::to_string(&settings).unwrap()).unwrap_err();
+            assert!(format!("{error:#}").contains("address family has no configured tunnel address"));
+        }
+        settings["warp"]["registration"]
+            .as_table_mut()
+            .unwrap()
+            .insert("tunnel_ipv6".into(), "2606:4700:110:8000::1".into());
+        assert!(fixture.load(&toml::to_string(&settings).unwrap()).is_ok());
     }
 }

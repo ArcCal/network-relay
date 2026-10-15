@@ -23,7 +23,9 @@ TCP half-close and abnormal reset are separate outcomes. The generic stream inte
 
 ## Configuration and independent reuse
 
-The existing relay TOML format remains usable. WARP settings and the enrolled registration are separate files. Registration files and in-memory credentials never appear in tracked examples, diagnostic dumps or logs. The user-provided live registration is stored only under ignored `.secrets/` with mode 0600.
+One application TOML contains the existing relay settings, users, `[warp]` and inline `[warp.registration]`. `serve --config` reads that file; a separate WARP settings file and enrollment JSON are not required. The explicit legacy `--warp-config` and external registration path remain optional migration compatibility. Cryptographic certificate/key assets remain files. Configurations containing the enrollment private key must be mode 0600 and excluded from version control; credentials never appear in diagnostic dumps or logs.
+
+The required WARP inputs are an explicitly selected H2/H3 mode, the enrolled P-256 private key, the endpoint SPKI pin and assigned inner IPv4 address. Device ID, access token and license are optional account metadata rather than tunnel inputs. H2 uses its existing numeric IPv4 endpoint default; H3 requires a registered IPv4 endpoint or an explicit numeric override. IPv6 is optional: omitting the assigned inner IPv6 address creates an IPv4-only stack, while the separate outer-endpoint selection defaults to IPv4. No omitted IPv6 field may cause an implicit IPv6 connection or direct VPS fallback. WARP changes take effect after a process restart; standard relay SIGHUP reload behavior is retained.
 
 Other Rust projects can depend on `warp-masque-egress`, construct the WARP implementation and use its resolver/TCP/UDP methods without depending on the frontend crate. Since the selected HTTP/3 upstream revision needs both existing server correctness patches and Cloudflare client extensions, the standalone workspace carries a documented, tested union in its own vendor directories.
 

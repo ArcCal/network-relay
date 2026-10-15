@@ -307,8 +307,35 @@ fn default_true() -> bool {
 impl Config {
     pub fn load(path: &Path) -> Result<Self> {
         let text = std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
-        let config: Self = toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
-        config.validate().with_context(|| format!("checking {}", path.display()))?;
+        Self::from_toml(&text).with_context(|| format!("checking {}", path.display()))
+    }
+
+    /// Read the relay section of a standalone or unified gateway file.
+    /// The gateway owns validation of the optional `[warp]` table. All other
+    /// fields retain the strict relay schema, including on SIGHUP and profile
+    /// publication. Parse errors must not reproduce embedded credentials.
+    pub fn from_toml(text: &str) -> Result<Self> {
+        let mut document: toml::Value = toml::from_str(text).map_err(|error: toml::de::Error| {
+            if let Some(span) = error.span() {
+                let mut offset = span.start.min(text.len());
+                while !text.is_char_boundary(offset) {
+                    offset -= 1;
+                }
+                let prefix = &text[..offset];
+                let line = prefix.bytes().filter(|byte| *byte == b'\n').count() + 1;
+                let column = prefix.rsplit('\n').next().unwrap_or("").chars().count() + 1;
+                anyhow::anyhow!("invalid TOML at line {line}, column {column}")
+            } else {
+                anyhow::anyhow!("invalid TOML configuration")
+            }
+        })?;
+        let table = document.as_table_mut().context("configuration must be a TOML table")?;
+        if let Some(warp) = table.remove("warp") {
+            ensure!(warp.is_table(), "warp must be a TOML table");
+        }
+        let config: Self =
+            document.try_into().map_err(|_| anyhow::anyhow!("invalid relay configuration fields or value types"))?;
+        config.validate()?;
         Ok(config)
     }
 
@@ -388,6 +415,43 @@ mod tests {
         let c: Config = toml::from_str(&text)?;
         c.validate()?;
         Ok(c)
+    }
+
+    #[test]
+    fn unified_config_preserves_relay_fields_and_ignores_only_warp_table() {
+        let text = "listen = '0.0.0.0:8443'\n\
+                    [tls]\ncert = '/fullchain.pem'\nkey = '/privkey.pem'\n\
+                    [warp]\ntransport = 'h2'\n\
+                    [warp.registration]\nprivate_key = 'embedded-secret'\n";
+        let config = Config::from_toml(text).unwrap();
+        assert_eq!(config.listen, "0.0.0.0:8443".parse().unwrap());
+        assert_eq!(config.tls.cert, PathBuf::from("/fullchain.pem"));
+        // Removing the known extension must not disable unknown-field checks.
+        assert!(Config::from_toml(&format!("unexpected = 1\n{text}")).is_err());
+        assert!(Config::from_toml(&format!("{text}\n[relay]\nunexpected = 1\n")).is_err());
+        assert!(Config::from_toml("warp = 1\n[tls]\ncert='/c'\nkey='/k'\n").is_err());
+    }
+
+    #[test]
+    fn unified_config_errors_do_not_echo_embedded_secrets() {
+        let secret = "DO_NOT_PRINT_THIS_PRIVATE_KEY";
+        let valid_tls = "[tls]\ncert='/c'\nkey='/k'\n";
+        let samples = [
+            // Syntax errors normally include the offending source line.
+            format!("{valid_tls}[warp]\nprivate_key = '{secret}' trailing\n"),
+            // Serde type errors normally include the invalid string value.
+            format!("listen = '{secret}'\n{valid_tls}[warp]\nprivate_key='{secret}'\n"),
+            // Unknown field names can themselves contain a secret value.
+            format!("'{secret}' = 1\n{valid_tls}[warp]\nprivate_key='{secret}'\n"),
+        ];
+        for text in samples {
+            let error = Config::from_toml(&text).unwrap_err();
+            for rendered in [format!("{error:#}"), format!("{error:?}")] {
+                assert!(!rendered.contains(secret), "configuration error exposed credentials");
+            }
+        }
+        let error = Config::from_toml(&format!("{valid_tls}[warp]\nprivate_key = '{secret}' trailing\n")).unwrap_err();
+        assert!(error.to_string().contains("line 5, column"));
     }
 
     #[test]

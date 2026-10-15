@@ -81,28 +81,51 @@ not currently claimed.
 
 ## Configure and run
 
-Supply an **existing WARP MASQUE enrollment JSON**. A WireGuard configuration
+Use **one TOML file** for the relay settings, users and WARP settings. Copy the
+existing WARP MASQUE enrollment values into `[warp.registration]` in that file;
+no separate WARP TOML or enrollment JSON is required. A WireGuard configuration
 or API access token alone is insufficient. This project does not enroll,
 replace or refresh the device. The account's P-256 private key produces the
 client identity; the registered endpoint public key pins the WARP server.
 
 ```bash
-mkdir -p .secrets config
-chmod 700 .secrets config
-# Copy your enrollment JSON to .secrets/warp-registration.json.
-chmod 600 .secrets/warp-registration.json
+mkdir -p config
+chmod 700 config
 cp examples/relay.toml config/relay.toml
-cp examples/warp.h2.toml config/warp.toml
+chmod 600 config/relay.toml
+# Edit config/relay.toml: set the relay paths/users and WARP enrollment values.
 ```
 
-The registration path in that example is relative to `config/warp.toml` and
-therefore resolves to `../.secrets/warp-registration.json`. Put your relay
-certificate/key at the paths in `config/relay.toml`, set the real listen
-address, and append existing `[[user]]` entries. The relay TOML schema and
-password/certificate authentication are the standard Network Relay formats.
+Put your relay certificate/key at the paths in `config/relay.toml`, set the
+real listen address, and append existing `[[user]]` entries. TLS certificate
+and key files remain ordinary cryptographic assets; they do not require
+additional application configuration files. The relay settings and
+password/certificate authentication use the standard Network Relay formats.
 Relative relay certificate, key and website paths resolve from the process's
 working directory, as in the standard server; use absolute paths for a
 deployment whose working directory differs from these examples.
+
+Only these WARP fields are required for the default IPv4-only H2 connection:
+
+| Field | Purpose |
+| --- | --- |
+| `warp.transport = "h2"` | Select the egress mode explicitly; there is no automatic downgrade. |
+| `warp.registration.private_key` | Existing enrollment's base64 P-256 PKCS#8 private key. |
+| `warp.registration.endpoint_public_key` | Existing enrollment's PEM public key used to verify the WARP endpoint. |
+| `warp.registration.tunnel_ipv4` | Existing enrollment's assigned inner IPv4 address. |
+
+`device_id`, `access_token` and `license` are optional account metadata; this
+server does not need them to establish the enrolled MASQUE tunnel. DNS defaults
+to `1.1.1.1:53` inside WARP, keepalive to 15 seconds, idle timeout to 30 seconds,
+and the H2 outer endpoint to `162.159.198.2:443`. Copy account-specific values
+from the existing enrollment rather than inventing a private key or server pin.
+
+The default example has **no IPv6 requirement**. Omit `tunnel_ipv6`,
+`endpoint_v6` and `endpoint_h2_v6`, leave `ipv6_endpoint` absent/false, and use
+an IPv4 `warp.endpoint` if overriding it. The server then uses IPv4 for its
+WARP transport and inner traffic. An IPv6 destination cannot fall back to the
+VPS network. To enable inner IPv6 later, add the enrollment's `tunnel_ipv6`;
+selecting an IPv6 outer endpoint is a separate option.
 
 To create a new user, this independent application's helper prints the
 password and configuration entry:
@@ -112,15 +135,19 @@ password and configuration entry:
 ```
 
 Choose WARP `transport = "h2"` or `"h3"` explicitly. Ingress protocols are
-independent: selecting WARP H2 does not disable client-facing H3. Registered
-endpoint port zero maps to 443; optional overrides must be numeric IPs.
+independent: selecting WARP H2 does not disable client-facing H3. H3 additionally
+needs the enrollment's `endpoint_v4` unless `warp.endpoint` is supplied.
+Registered endpoint port zero maps to 443; optional overrides must be numeric
+IPs. The minimal WARP-only examples in `examples/warp.h2.toml` and
+`examples/warp.h3.toml` document each mode; they are alternatives for library
+diagnostics, not additional files required by `serve`.
 
 ```bash
 ./target/release/network-relay-cf-masque serve \
-  --config config/relay.toml --warp-config config/warp.toml --check
+  --config config/relay.toml --check
 
 RUST_LOG=info ./target/release/network-relay-cf-masque serve \
-  --config config/relay.toml --warp-config config/warp.toml
+  --config config/relay.toml
 ```
 
 `--check` validates local configuration, cryptographic material, relay
@@ -130,6 +157,10 @@ flows and exits the process with failure. No implicit reconnect, transport
 downgrade, DNS fallback or direct egress occurs. A supervisor may start a fresh
 process using the same explicitly configured mode. SIGHUP reloads the standard
 relay configuration; changing WARP settings requires restarting this process.
+
+For an existing three-file deployment, see the [single-file migration](docs/CONFIGURATION.md).
+The explicit `--warp-config` option and `registration = "path.json"` remain
+available for old deployments; neither is required for a new configuration.
 
 The optional [systemd template](deploy/network-relay-cf-masque.service) uses a
 separate executable, user, service and configuration under
@@ -194,9 +225,12 @@ separately with the enrolled account:
 ```bash
 source scripts/env.sh
 cargo run --locked --example live-warp -- \
-  --warp-config examples/warp.h2.toml probe
+  --warp-config config/relay.toml probe
+# To test H3 separately, select transport = "h3" and add endpoint_v4 in that
+# same file before repeating this command. Do not change a running server's
+# WARP settings without restarting it.
 cargo run --locked --example live-warp -- \
-  --warp-config examples/warp.h3.toml probe
+  --warp-config config/relay.toml probe
 ```
 
 The probe resolves through WARP, sends UDP DNS inside it and verifies a
@@ -205,7 +239,7 @@ valid exit IP. It never retries the other egress mode. The real-download helper
 requires an independently obtained expected checksum and a minimum size:
 
 ```bash
-cargo run --locked --example live-warp -- --warp-config config/warp.toml \
+cargo run --locked --example live-warp -- --warp-config config/relay.toml \
   download --url 'https://your-origin.example/known-artifact.bin' \
   --sha256 REPLACE_WITH_VERIFIED_64_HEX_DIGIT_CHECKSUM --min-bytes 67108864
 ```

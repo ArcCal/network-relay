@@ -106,6 +106,18 @@ long-held connection tests. Native Apple execution, actual Cloudflare exit,
 live downloads and live stability are separate gates. A network-blocked test,
 ignored soak, preliminary failing run or compile-only check is never a pass.
 
+As of 2026-10-15 UTC, the final finite workflow passed 604 tests with zero
+failures and two intentionally ignored tests executed separately. Synthetic
+PID 138810 passed its 3900-second held-flow target and independent verification,
+recording 3925.266 measured seconds across all six pairings. This satisfies that
+local run's sustained-test gate. The earlier PID 128443 timeout remains
+unresolved, and the passed run does not establish its cause or correction.
+Actual Cloudflare account/exit verification, live large-download integrity,
+live held-flow stability, native Apple device/profile execution and deployment
+platform runtime checks remain separate outstanding gates.
+
 [STATUS.md](STATUS.md) identifies implemented, tested, known-limited and
 unverified capabilities. [VALIDATION.md](VALIDATION.md) links retained evidence
 and documents exact source/executable identity and failed attempts.
+The [timeout review](review/SOAK-TIMEOUT-REVIEW.md) records the unresolved
+failure and the limits of the later synthetic pass.

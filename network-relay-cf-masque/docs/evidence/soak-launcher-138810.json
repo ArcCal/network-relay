@@ -1,0 +1,17 @@
+{
+  "result": "passed",
+  "requested_soak_seconds": 3900,
+  "live_cloudflare": false,
+  "detached": true,
+  "finite_gate_required": true,
+  "launch_is_not_acceptance": true,
+  "output_log": "target/test-runtime/detached-soak-20261014T225128Z-136471/output.log",
+  "queued_at_utc": "2026-10-14T22:51:28.037284+00:00",
+  "launcher_pid": 136477,
+  "launcher_session": 136477,
+  "launcher_process_group": 136477,
+  "started_at_utc": "2026-10-14T22:51:28.068511+00:00",
+  "matrix_launcher_pid": 136478,
+  "exit_code": 0,
+  "ended_at_utc": "2026-10-15T00:01:47.919389+00:00"
+}

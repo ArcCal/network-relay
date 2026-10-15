@@ -33,7 +33,41 @@ packet and DNS-query observations support the application assertions.
 | Actual HTTP GET of a known 64 MiB file on all six pairings | `http_file_matrix.rs`; Content-Length 67108864; SHA256 `6e337e4992fc84fc2744a38b784928aaaf460757861b749fcb01c066fbb80780` |
 | Truly idle outer WARP transport with keepalive, no business packets for 65 seconds | `idle_outer_keepalive_and_active_inner_flows_survive_two_idle_windows` |
 | Actual root CLI wiring, offline check, transport validation and terminal shutdown | `cli_warp_wiring.rs` launches the built `serve` binary on both transports |
-| At least one hour of held business connections, mixed traffic and metrics | Explicit ignored soak; requires `SOAK_SECONDS >= 3600`, recommended 3900 |
+| At least one hour of held business connections, mixed traffic and metrics | PID 138810 passed its 3900-second target; ignored by the finite runner and executed explicitly with frozen-binary/source verification |
+
+## Completed synthetic soak
+
+PID 138810 finished on 2026-10-15T00:01:47Z with actual test exit 0 and
+independent verification passed. Its [manifest](soak-manifest-20261014T225555Z-138810.json),
+[metric log](soak-1792018581928-138810.jsonl) and
+[independent summary](soak-summary-20261014T225555Z-138810.json) bind the exact
+frozen executable and source to the completed 3900-second target.
+
+| Observation | Completed result |
+| --- | --- |
+| Metric samples / measured time | 131 / 3925.266063896 seconds |
+| Held business flows | Six TCP and six UDP, covering all six pairings |
+| Minimum held-flow age / activity | 3920.017192809 seconds / 394 pings |
+| Outer generations | One per WARP transport |
+| Reported production packet/queue drops | Zero |
+| Process RSS | 118632–130004 KiB |
+| Process file descriptors | 40–43 |
+
+The independent verifier checked the frozen binary, matching production source,
+metric-log binding and its independently generated expected TCP hash at every
+sample. These observed resource bounds apply to this workload and duration.
+The [final audit](soak-final-audit-138810.json) reran the verifier and checked
+all 398 frozen source hashes. Its late cleanup observation found the test
+runner, matrix launcher, captured socket identities/endpoints and two fixture
+directories absent. The detached Python wrapper remained a PID-1-adopted zombie
+with reported `FDSize: 0`; immediate post-exit external cleanup timing was not
+observed. This is not a claim that every process was reaped.
+The earlier PID 128443 timeout remains unresolved; this pass and the separate
+diagnostic stress do not prove it was corrected. The [bounded timeout review](../review/SOAK-TIMEOUT-REVIEW.md)
+records that distinction. This remains synthetic evidence; live Cloudflare
+exit/download/stability and native Apple execution are outstanding gates.
+
+## Reproduction and retained earlier outcomes
 
 Run the finite packet-backed acceptance suite from the project root with Rust/Cargo on PATH:
 
@@ -117,12 +151,12 @@ failure. The tracked manifest is `soak-manifest-20261014T205453Z-91781.json`;
 the two owned ephemeral fixture directories. Graceful test cleanup was not
 observed. The verifier rejects this manifest even in evidence-only mode.
 
-A replacement run will use the corrected production H3 SETTINGS parser after
-its finite validation. In a cloud tool session with a bounded lifetime, use
+The completed replacement uses the corrected production H3 SETTINGS parser
+after finite validation. For future runs in a cloud tool session with a bounded lifetime, use
 `python3 tests/support/start_detached_soak.py --seconds 3900` with the project
 environment already active. This launches the gated runner in a separate
 session and saves output plus worker/matrix PIDs under `target/test-runtime`.
-The launch record means acceptance is pending; final worker, soak-manifest and
+Any launch record alone means acceptance is pending; final worker, soak-manifest and
 independent-summary results must all be checked after actual completion.
 
 The detached replacement PID 128443 passed all seven finite preflight targets,
@@ -148,12 +182,14 @@ test output and evidence links are retained in
 After moving the diagnostic's passed-evidence write after successful cleanup,
 a one-round follow-up also passed with exact exit 0 in 27.23 seconds (two
 64 MiB transfers, one per WARP mode). Its result is retained in
-`h3-bulk-cleanup-order-summary.json`. The new detached candidate keeps all
-timeouts unchanged and runs all seven finite preflight targets before its
-3900-second held-flow clock; its result remains pending until actual completion.
+`h3-bulk-cleanup-order-summary.json`. The completed detached PID 138810 run
+kept all timeouts unchanged and passed all seven finite preflight targets
+before its 3900-second held-flow clock. Its passed result and exact metrics
+are recorded above; they do not resolve PID 128443's earlier failure.
 
 Observed initial bulk evidence: 768 MiB sent and echoed in each direction across
 the six pairings. For the six repetitions on forced WARP H2, measured RSS growth
 was 5544 KiB; for forced WARP H3 it was 1604 KiB. Those initial artifacts preserve
-their dates and source context. The final runner creates fresh evidence for the
-final source; a pending soak is not a pass claim.
+their dates and source context. The completed final runner retained fresh
+evidence for its frozen source; failed, interrupted and merely launched runs
+remain distinct from the completed pass.

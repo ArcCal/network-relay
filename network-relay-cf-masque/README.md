@@ -11,11 +11,14 @@ its clients and Caddy Network Relay are not modified. The frontend is a private
 source snapshot; it is not a path dependency on the parent project.
 
 This is experimental software, not a claim of completed live deployment
-validation. Local H1/H2/H3 × WARP H2/H3 tests and repeated 64 MiB integrity
-checks passed. Live Cloudflare setup in the development cloud environment
-failed before any exit-IP check: H2 returned connection refused and H3 timed
-out. See [STATUS.md](docs/STATUS.md) and the actual JSON evidence before relying
-on any capability or stability claim.
+validation. Local H1/H2/H3 × WARP H2/H3 tests, repeated 64 MiB integrity
+checks and a synthetic held-flow soak passed. The soak recorded 3925.266
+measured seconds with six TCP and six UDP flows; an earlier ten-minute H3
+timeout remains unresolved. Retained live Cloudflare attempts failed before
+any exit-IP check: H2 returned connection refused and H3 timed out. See
+[STATUS.md](docs/STATUS.md), the [soak summary](docs/evidence/soak-summary-20261014T225555Z-138810.json)
+and the [timeout review](docs/review/SOAK-TIMEOUT-REVIEW.md) before relying on
+any capability or stability claim.
 
 ## Architecture
 
@@ -174,6 +177,17 @@ bulk tests to pass, then runs at least one hour of real elapsed time with held
 TCP/UDP flows and metrics. Test evidence records the exact executable/source
 snapshot; failed and preliminary runs are not called passed.
 
+NF interoperability fixtures run the pinned client core with a Linux bridge
+for native hooks. They do not execute Apple Network.framework, the NF GUI or
+a device profile; those remain native-device validation gates.
+
+The final finite workflow passed 604 tests with zero failures; its two ignored
+tests, the long soak and H3 diagnostic stress, were executed separately. PID
+138810's 3900-second synthetic target finished with test exit 0 and independent
+verification passed on 2026-10-15 UTC. That result establishes this run's local
+acceptance, while the prior PID 128443 timeout still needs diagnosis. The
+[evidence matrix](docs/evidence/MATRIX.md) records exact metrics and run identity.
+
 On a machine with usable WARP TCP/UDP connectivity, run each egress mode
 separately with the enrolled account:
 
@@ -206,6 +220,8 @@ client behavior. See [VALIDATION.md](docs/VALIDATION.md) for outstanding gates.
 
 - [Design](docs/DESIGN.md) and [specification](docs/SPEC.md).
 - [Implementation/known limitations](docs/STATUS.md).
+- [Independent source review](docs/review/INDEPENDENT-FINAL-REVIEW.md) and
+  [unresolved soak timeout review](docs/review/SOAK-TIMEOUT-REVIEW.md).
 - Four source-pinned [research reports](docs/RESEARCH-CF-EGRESS.md), including
   [relay contract](docs/RESEARCH-RELAY-CONTRACT.md),
   [usque/mihomo](docs/RESEARCH-USQUE-MIHOMO.md), and

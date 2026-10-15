@@ -1,0 +1,11 @@
+{
+  "observed_at_utc": "2026-10-15T05:26:59.849253+00:00",
+  "release_manifest": "docs/evidence/release-build.json",
+  "passed_soak_manifest": "docs/evidence/soak-manifest-20261014T225555Z-138810.json",
+  "production_files_compared": 112,
+  "release_and_passed_soak_source_identical": true,
+  "current_production_matches": true,
+  "release_binary_matches": true,
+  "release_binary_sha256": "787ecdd7a7291ec11ceb2cc6d1d633d614f2909d7b485c63ebb764ebfaac5ea8",
+  "live_cloudflare": false
+}

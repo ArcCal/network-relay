@@ -1,0 +1,219 @@
+{
+  "result": "failed",
+  "test_exit_code": 101,
+  "live_cloudflare": false,
+  "one_hour_acceptance": false,
+  "process_id": 128443,
+  "manifest": "docs/evidence/soak-manifest-20261014T222452Z-128443.json",
+  "metric_log": "docs/evidence/soak-1792016720226-128443.jsonl",
+  "output_log": "docs/evidence/soak-failed-128443-output.txt",
+  "last_recorded_cycle": 19,
+  "recorded_samples": 20,
+  "last_recorded_elapsed_seconds": 570.216822894,
+  "ended_at_utc": "2026-10-14T22:35:59.879342+00:00",
+  "observed_error": "Connection error: Timeout",
+  "identified_boundary": "h3 StreamError::ConnectionError(Timeout), mapped from inbound client quinn::ConnectionError::TimedOut",
+  "failing_operation": "not yet known; cycle20 periodic inbound H3 bulk awaits both WARP modes serially",
+  "root_cause": "unresolved",
+  "graceful_success_cleanup_observed": false,
+  "owned_fixture_directories_remaining": [],
+  "live_process_binding": "docs/evidence/soak-run-binding-128443.json",
+  "final_recorded_modes": [
+    {
+      "egress": {
+        "available": true,
+        "dropped_packets": 0,
+        "failure": null,
+        "generation": 1,
+        "inbound_queue_drops": 0,
+        "ipv4": true,
+        "ipv6": true,
+        "mtu": 1280,
+        "received_ip_bytes": 139680116,
+        "received_packets": 115598,
+        "sent_ip_bytes": 139622084,
+        "sent_packets": 113946,
+        "socket_limit": 64,
+        "sockets": 6,
+        "stack_queue_drops": 0,
+        "tcp_buffer_bytes_per_socket": 393216,
+        "transport": "HTTP/2",
+        "tunnel_addresses": [
+          "198.18.0.1",
+          "fd00::1"
+        ],
+        "workers": 2
+      },
+      "peer": {
+        "authenticated_clients": 1,
+        "dns_queries": 207,
+        "dns_tcp_queries": 0,
+        "h2_capsules": 113946,
+        "h3_datagrams": 0,
+        "h3_route_advertisements": 0,
+        "http_file_bytes_sent": 0,
+        "http_file_requests": 0,
+        "http_requests": 63,
+        "ip_bytes_from_client": 139622084,
+        "ip_bytes_to_client": 139680116,
+        "ip_packets_from_client": 113946,
+        "ip_packets_to_client": 115598,
+        "tcp_bytes_received": 134955008,
+        "tcp_bytes_sent": 134955008,
+        "tcp_connections": 68,
+        "tunnels": 1,
+        "udp_bytes_received": 92160,
+        "udp_bytes_sent": 92160,
+        "udp_datagrams_received": 180,
+        "udp_datagrams_sent": 180
+      },
+      "persistent_tcp": [
+        {
+          "age_seconds": 580.048084641,
+          "echo_bytes": 245760,
+          "inbound": "h1",
+          "pings": 60,
+          "sha256": "b3dfff8cb54b1091efc3300a241416955108788f4d5795669eca6f5ed6c87a00"
+        },
+        {
+          "age_seconds": 580.048036774,
+          "echo_bytes": 245760,
+          "inbound": "h2",
+          "pings": 60,
+          "sha256": "b3dfff8cb54b1091efc3300a241416955108788f4d5795669eca6f5ed6c87a00"
+        },
+        {
+          "age_seconds": 580.050824052,
+          "echo_bytes": 245760,
+          "inbound": "h3",
+          "pings": 60,
+          "sha256": "b3dfff8cb54b1091efc3300a241416955108788f4d5795669eca6f5ed6c87a00"
+        }
+      ],
+      "persistent_udp": [
+        {
+          "age_seconds": 580.003113459,
+          "echo_bytes": 30720,
+          "inbound": "h1",
+          "pings": 60
+        },
+        {
+          "age_seconds": 580.00465394,
+          "echo_bytes": 30720,
+          "inbound": "h2",
+          "pings": 60
+        },
+        {
+          "age_seconds": 580.004682371,
+          "echo_bytes": 30720,
+          "inbound": "h3",
+          "pings": 60
+        }
+      ],
+      "relay_connections": 6,
+      "relay_tunnels": 6,
+      "warp_transport": "h2"
+    },
+    {
+      "egress": {
+        "available": true,
+        "dropped_packets": 0,
+        "failure": null,
+        "generation": 1,
+        "inbound_queue_drops": 0,
+        "ipv4": true,
+        "ipv6": true,
+        "mtu": 1280,
+        "received_ip_bytes": 139603730,
+        "received_packets": 113918,
+        "sent_ip_bytes": 139602811,
+        "sent_packets": 113814,
+        "socket_limit": 64,
+        "sockets": 6,
+        "stack_queue_drops": 0,
+        "tcp_buffer_bytes_per_socket": 393216,
+        "transport": "HTTP/3",
+        "tunnel_addresses": [
+          "198.18.0.1",
+          "fd00::1"
+        ],
+        "workers": 2
+      },
+      "peer": {
+        "authenticated_clients": 1,
+        "dns_queries": 206,
+        "dns_tcp_queries": 0,
+        "h2_capsules": 0,
+        "h3_datagrams": 113814,
+        "h3_route_advertisements": 1,
+        "http_file_bytes_sent": 0,
+        "http_file_requests": 0,
+        "http_requests": 63,
+        "ip_bytes_from_client": 139602811,
+        "ip_bytes_to_client": 139603730,
+        "ip_packets_from_client": 113814,
+        "ip_packets_to_client": 113918,
+        "tcp_bytes_received": 134942720,
+        "tcp_bytes_sent": 134942720,
+        "tcp_connections": 68,
+        "tunnels": 1,
+        "udp_bytes_received": 90624,
+        "udp_bytes_sent": 90624,
+        "udp_datagrams_received": 177,
+        "udp_datagrams_sent": 177
+      },
+      "persistent_tcp": [
+        {
+          "age_seconds": 570.007020764,
+          "echo_bytes": 241664,
+          "inbound": "h1",
+          "pings": 59,
+          "sha256": "1ea27e8086c21735127f99cf85d39a4c0dd08747dcd6df3c42ab343d7985b601"
+        },
+        {
+          "age_seconds": 570.006694259,
+          "echo_bytes": 241664,
+          "inbound": "h2",
+          "pings": 59,
+          "sha256": "1ea27e8086c21735127f99cf85d39a4c0dd08747dcd6df3c42ab343d7985b601"
+        },
+        {
+          "age_seconds": 570.007407732,
+          "echo_bytes": 241664,
+          "inbound": "h3",
+          "pings": 59,
+          "sha256": "1ea27e8086c21735127f99cf85d39a4c0dd08747dcd6df3c42ab343d7985b601"
+        }
+      ],
+      "persistent_udp": [
+        {
+          "age_seconds": 570.003058083,
+          "echo_bytes": 30208,
+          "inbound": "h1",
+          "pings": 59
+        },
+        {
+          "age_seconds": 570.026476013,
+          "echo_bytes": 30208,
+          "inbound": "h2",
+          "pings": 59
+        },
+        {
+          "age_seconds": 570.003321875,
+          "echo_bytes": 30208,
+          "inbound": "h3",
+          "pings": 59
+        }
+      ],
+      "relay_connections": 6,
+      "relay_tunnels": 6,
+      "warp_transport": "h3"
+    }
+  ],
+  "final_recorded_process_metrics": {
+    "fd_count": 43,
+    "metrics_available": true,
+    "metrics_source": "linux_proc",
+    "rss_kib": 124708
+  }
+}

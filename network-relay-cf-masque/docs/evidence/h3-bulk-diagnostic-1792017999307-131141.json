@@ -1,0 +1,3976 @@
+{
+  "live_cloudflare": false,
+  "one_hour_soak": false,
+  "result": "passed",
+  "results": [
+    {
+      "bulk": {
+        "bytes_each_direction": 67108864,
+        "elapsed_ms": 15940,
+        "half_close": true,
+        "inbound": "h3",
+        "sha256": "6c6f8309a1c9260f2ca2209fdba4fe646fb9064f3ab1cecc11d7a9ebc7f0e473"
+      },
+      "egress": {
+        "available": true,
+        "dropped_packets": 0,
+        "failure": null,
+        "generation": 1,
+        "inbound_queue_drops": 0,
+        "ipv4": true,
+        "ipv6": true,
+        "mtu": 1280,
+        "received_ip_bytes": 69458052,
+        "received_packets": 57574,
+        "sent_ip_bytes": 69419868,
+        "sent_packets": 56614,
+        "socket_limit": 64,
+        "sockets": 6,
+        "stack_queue_drops": 0,
+        "tcp_buffer_bytes_per_socket": 393216,
+        "transport": "HTTP/2",
+        "tunnel_addresses": [
+          "198.18.0.1",
+          "fd00::1"
+        ],
+        "workers": 2
+      },
+      "peer_after": {
+        "authenticated_clients": 1,
+        "dns_queries": 26,
+        "dns_tcp_queries": 0,
+        "h2_capsules": 56614,
+        "h3_datagrams": 0,
+        "h3_route_advertisements": 0,
+        "http_file_bytes_sent": 0,
+        "http_file_requests": 0,
+        "http_requests": 6,
+        "ip_bytes_from_client": 69419868,
+        "ip_bytes_to_client": 69458052,
+        "ip_packets_from_client": 56614,
+        "ip_packets_to_client": 57574,
+        "tcp_bytes_received": 67145728,
+        "tcp_bytes_sent": 67145728,
+        "tcp_connections": 10,
+        "tunnels": 1,
+        "udp_bytes_received": 4608,
+        "udp_bytes_sent": 4608,
+        "udp_datagrams_received": 9,
+        "udp_datagrams_sent": 9
+      },
+      "peer_before": {
+        "authenticated_clients": 1,
+        "dns_queries": 25,
+        "dns_tcp_queries": 0,
+        "h2_capsules": 94,
+        "h3_datagrams": 0,
+        "h3_route_advertisements": 0,
+        "http_file_bytes_sent": 0,
+        "http_file_requests": 0,
+        "http_requests": 6,
+        "ip_bytes_from_client": 32643,
+        "ip_bytes_to_client": 31762,
+        "ip_packets_from_client": 94,
+        "ip_packets_to_client": 81,
+        "tcp_bytes_received": 24576,
+        "tcp_bytes_sent": 24576,
+        "tcp_connections": 9,
+        "tunnels": 1,
+        "udp_bytes_received": 3072,
+        "udp_bytes_sent": 3072,
+        "udp_datagrams_received": 6,
+        "udp_datagrams_sent": 6
+      },
+      "persistent_tcp": [
+        {
+          "age_seconds": 10.034556656,
+          "echo_bytes": 12288,
+          "inbound": "h1",
+          "pings": 3,
+          "sha256": "c9a0c465f894b978a721897ffa2f8203cee59cc2d0ff6c19d6d82451aeecdc45"
+        },
+        {
+          "age_seconds": 10.035484098,
+          "echo_bytes": 12288,
+          "inbound": "h2",
+          "pings": 3,
+          "sha256": "c9a0c465f894b978a721897ffa2f8203cee59cc2d0ff6c19d6d82451aeecdc45"
+        },
+        {
+          "age_seconds": 10.017046825,
+          "echo_bytes": 12288,
+          "inbound": "h3",
+          "pings": 3,
+          "sha256": "c9a0c465f894b978a721897ffa2f8203cee59cc2d0ff6c19d6d82451aeecdc45"
+        }
+      ],
+      "persistent_udp": [
+        {
+          "age_seconds": 10.01604805,
+          "echo_bytes": 1536,
+          "inbound": "h1",
+          "pings": 3
+        },
+        {
+          "age_seconds": 10.020929209,
+          "echo_bytes": 1536,
+          "inbound": "h2",
+          "pings": 3
+        },
+        {
+          "age_seconds": 10.017654146,
+          "echo_bytes": 1536,
+          "inbound": "h3",
+          "pings": 3
+        }
+      ],
+      "round": 0,
+      "warp_transport": "h2"
+    },
+    {
+      "bulk": {
+        "bytes_each_direction": 67108864,
+        "elapsed_ms": 10476,
+        "half_close": true,
+        "inbound": "h3",
+        "sha256": "6c6f8309a1c9260f2ca2209fdba4fe646fb9064f3ab1cecc11d7a9ebc7f0e473"
+      },
+      "egress": {
+        "available": true,
+        "dropped_packets": 0,
+        "failure": null,
+        "generation": 1,
+        "inbound_queue_drops": 0,
+        "ipv4": true,
+        "ipv6": true,
+        "mtu": 1280,
+        "received_ip_bytes": 69418648,
+        "received_packets": 56309,
+        "sent_ip_bytes": 69418324,
+        "sent_packets": 56262,
+        "socket_limit": 64,
+        "sockets": 6,
+        "stack_queue_drops": 0,
+        "tcp_buffer_bytes_per_socket": 393216,
+        "transport": "HTTP/3",
+        "tunnel_addresses": [
+          "198.18.0.1",
+          "fd00::1"
+        ],
+        "workers": 2
+      },
+      "peer_after": {
+        "authenticated_clients": 1,
+        "dns_queries": 26,
+        "dns_tcp_queries": 0,
+        "h2_capsules": 0,
+        "h3_datagrams": 56262,
+        "h3_route_advertisements": 1,
+        "http_file_bytes_sent": 0,
+        "http_file_requests": 0,
+        "http_requests": 6,
+        "ip_bytes_from_client": 69418324,
+        "ip_bytes_to_client": 69418648,
+        "ip_packets_from_client": 56262,
+        "ip_packets_to_client": 56309,
+        "tcp_bytes_received": 67158016,
+        "tcp_bytes_sent": 67158016,
+        "tcp_connections": 10,
+        "tunnels": 1,
+        "udp_bytes_received": 6144,
+        "udp_bytes_sent": 6144,
+        "udp_datagrams_received": 12,
+        "udp_datagrams_sent": 12
+      },
+      "peer_before": {
+        "authenticated_clients": 1,
+        "dns_queries": 25,
+        "dns_tcp_queries": 0,
+        "h2_capsules": 0,
+        "h3_datagrams": 112,
+        "h3_route_advertisements": 1,
+        "http_file_bytes_sent": 0,
+        "http_file_requests": 0,
+        "http_requests": 6,
+        "ip_bytes_from_client": 47151,
+        "ip_bytes_to_client": 46350,
+        "ip_packets_from_client": 112,
+        "ip_packets_to_client": 101,
+        "tcp_bytes_received": 36864,
+        "tcp_bytes_sent": 36864,
+        "tcp_connections": 9,
+        "tunnels": 1,
+        "udp_bytes_received": 4608,
+        "udp_bytes_sent": 4608,
+        "udp_datagrams_received": 9,
+        "udp_datagrams_sent": 9
+      },
+      "persistent_tcp": [
+        {
+          "age_seconds": 20.015540125,
+          "echo_bytes": 16384,
+          "inbound": "h1",
+          "pings": 4,
+          "sha256": "02194317965c7ea71d42604d86b97ae8d09366925a3e240dcfa07e2cf878c4a1"
+        },
+        {
+          "age_seconds": 20.036829488,
+          "echo_bytes": 16384,
+          "inbound": "h2",
+          "pings": 4,
+          "sha256": "02194317965c7ea71d42604d86b97ae8d09366925a3e240dcfa07e2cf878c4a1"
+        },
+        {
+          "age_seconds": 20.022439703,
+          "echo_bytes": 16384,
+          "inbound": "h3",
+          "pings": 4,
+          "sha256": "02194317965c7ea71d42604d86b97ae8d09366925a3e240dcfa07e2cf878c4a1"
+        }
+      ],
+      "persistent_udp": [
+        {
+          "age_seconds": 20.008790073,
+          "echo_bytes": 2048,
+          "inbound": "h1",
+          "pings": 4
+        },
+        {
+          "age_seconds": 20.022560775,
+          "echo_bytes": 2048,
+          "inbound": "h2",
+          "pings": 4
+        },
+        {
+          "age_seconds": 20.020720042,
+          "echo_bytes": 2048,
+          "inbound": "h3",
+          "pings": 4
+        }
+      ],
+      "round": 0,
+      "warp_transport": "h3"
+    },
+    {
+      "bulk": {
+        "bytes_each_direction": 67108864,
+        "elapsed_ms": 15629,
+        "half_close": true,
+        "inbound": "h3",
+        "sha256": "6c6f8309a1c9260f2ca2209fdba4fe646fb9064f3ab1cecc11d7a9ebc7f0e473"
+      },
+      "egress": {
+        "available": true,
+        "dropped_packets": 0,
+        "failure": null,
+        "generation": 1,
+        "inbound_queue_drops": 0,
+        "ipv4": true,
+        "ipv6": true,
+        "mtu": 1280,
+        "received_ip_bytes": 138908602,
+        "received_packets": 115018,
+        "sent_ip_bytes": 138836311,
+        "sent_packets": 113131,
+        "socket_limit": 64,
+        "sockets": 6,
+        "stack_queue_drops": 0,
+        "tcp_buffer_bytes_per_socket": 393216,
+        "transport": "HTTP/2",
+        "tunnel_addresses": [
+          "198.18.0.1",
+          "fd00::1"
+        ],
+        "workers": 2
+      },
+      "peer_after": {
+        "authenticated_clients": 1,
+        "dns_queries": 36,
+        "dns_tcp_queries": 0,
+        "h2_capsules": 113131,
+        "h3_datagrams": 0,
+        "h3_route_advertisements": 0,
+        "http_file_bytes_sent": 0,
+        "http_file_requests": 0,
+        "http_requests": 9,
+        "ip_bytes_from_client": 138836311,
+        "ip_bytes_to_client": 138908602,
+        "ip_packets_from_client": 113131,
+        "ip_packets_to_client": 115018,
+        "tcp_bytes_received": 134291456,
+        "tcp_bytes_sent": 134291456,
+        "tcp_connections": 14,
+        "tunnels": 1,
+        "udp_bytes_received": 9216,
+        "udp_bytes_sent": 9216,
+        "udp_datagrams_received": 18,
+        "udp_datagrams_sent": 18
+      },
+      "peer_before": {
+        "authenticated_clients": 1,
+        "dns_queries": 35,
+        "dns_tcp_queries": 0,
+        "h2_capsules": 56653,
+        "h3_datagrams": 0,
+        "h3_route_advertisements": 0,
+        "http_file_bytes_sent": 0,
+        "http_file_requests": 0,
+        "http_requests": 9,
+        "ip_bytes_from_client": 69435750,
+        "ip_bytes_to_client": 69473584,
+        "ip_packets_from_client": 56653,
+        "ip_packets_to_client": 57608,
+        "tcp_bytes_received": 67158016,
+        "tcp_bytes_sent": 67158016,
+        "tcp_connections": 13,
+        "tunnels": 1,
+        "udp_bytes_received": 6144,
+        "udp_bytes_sent": 6144,
+        "udp_datagrams_received": 12,
+        "udp_datagrams_sent": 12
+      },
+      "persistent_tcp": [
+        {
+          "age_seconds": 40.054737233,
+          "echo_bytes": 24576,
+          "inbound": "h1",
+          "pings": 6,
+          "sha256": "c536e6aaede93c224d6dc5d8b091c67ae446d1ea75093b1d2f782751fe51f0da"
+        },
+        {
+          "age_seconds": 40.038994768,
+          "echo_bytes": 24576,
+          "inbound": "h2",
+          "pings": 6,
+          "sha256": "c536e6aaede93c224d6dc5d8b091c67ae446d1ea75093b1d2f782751fe51f0da"
+        },
+        {
+          "age_seconds": 40.02670909,
+          "echo_bytes": 24576,
+          "inbound": "h3",
+          "pings": 6,
+          "sha256": "c536e6aaede93c224d6dc5d8b091c67ae446d1ea75093b1d2f782751fe51f0da"
+        }
+      ],
+      "persistent_udp": [
+        {
+          "age_seconds": 40.036371838,
+          "echo_bytes": 3072,
+          "inbound": "h1",
+          "pings": 6
+        },
+        {
+          "age_seconds": 40.043796206,
+          "echo_bytes": 3072,
+          "inbound": "h2",
+          "pings": 6
+        },
+        {
+          "age_seconds": 40.014814154,
+          "echo_bytes": 3072,
+          "inbound": "h3",
+          "pings": 6
+        }
+      ],
+      "round": 1,
+      "warp_transport": "h2"
+    },
+    {
+      "bulk": {
+        "bytes_each_direction": 67108864,
+        "elapsed_ms": 9624,
+        "half_close": true,
+        "inbound": "h3",
+        "sha256": "6c6f8309a1c9260f2ca2209fdba4fe646fb9064f3ab1cecc11d7a9ebc7f0e473"
+      },
+      "egress": {
+        "available": true,
+        "dropped_packets": 0,
+        "failure": null,
+        "generation": 1,
+        "inbound_queue_drops": 0,
+        "ipv4": true,
+        "ipv6": true,
+        "mtu": 1280,
+        "received_ip_bytes": 138821735,
+        "received_packets": 112557,
+        "sent_ip_bytes": 138823972,
+        "sent_packets": 112539,
+        "socket_limit": 64,
+        "sockets": 6,
+        "stack_queue_drops": 0,
+        "tcp_buffer_bytes_per_socket": 393216,
+        "transport": "HTTP/3",
+        "tunnel_addresses": [
+          "198.18.0.1",
+          "fd00::1"
+        ],
+        "workers": 2
+      },
+      "peer_after": {
+        "authenticated_clients": 1,
+        "dns_queries": 36,
+        "dns_tcp_queries": 0,
+        "h2_capsules": 0,
+        "h3_datagrams": 112539,
+        "h3_route_advertisements": 1,
+        "http_file_bytes_sent": 0,
+        "http_file_requests": 0,
+        "http_requests": 9,
+        "ip_bytes_from_client": 138823972,
+        "ip_bytes_to_client": 138821735,
+        "ip_packets_from_client": 112539,
+        "ip_packets_to_client": 112557,
+        "tcp_bytes_received": 134303744,
+        "tcp_bytes_sent": 134303744,
+        "tcp_connections": 14,
+        "tunnels": 1,
+        "udp_bytes_received": 10752,
+        "udp_bytes_sent": 10752,
+        "udp_datagrams_received": 21,
+        "udp_datagrams_sent": 21
+      },
+      "peer_before": {
+        "authenticated_clients": 1,
+        "dns_queries": 35,
+        "dns_tcp_queries": 0,
+        "h2_capsules": 0,
+        "h3_datagrams": 56319,
+        "h3_route_advertisements": 1,
+        "http_file_bytes_sent": 0,
+        "http_file_requests": 0,
+        "http_requests": 9,
+        "ip_bytes_from_client": 69448714,
+        "ip_bytes_to_client": 69448728,
+        "ip_packets_from_client": 56319,
+        "ip_packets_to_client": 56362,
+        "tcp_bytes_received": 67182592,
+        "tcp_bytes_sent": 67182592,
+        "tcp_connections": 13,
+        "tunnels": 1,
+        "udp_bytes_received": 9216,
+        "udp_bytes_sent": 9216,
+        "udp_datagrams_received": 18,
+        "udp_datagrams_sent": 18
+      },
+      "persistent_tcp": [
+        {
+          "age_seconds": 50.012064472,
+          "echo_bytes": 28672,
+          "inbound": "h1",
+          "pings": 7,
+          "sha256": "8603ee68fcf3e019de3940c55280871895a6cb5da98a0b079617db58f5132141"
+        },
+        {
+          "age_seconds": 50.019679049,
+          "echo_bytes": 28672,
+          "inbound": "h2",
+          "pings": 7,
+          "sha256": "8603ee68fcf3e019de3940c55280871895a6cb5da98a0b079617db58f5132141"
+        },
+        {
+          "age_seconds": 50.018301972,
+          "echo_bytes": 28672,
+          "inbound": "h3",
+          "pings": 7,
+          "sha256": "8603ee68fcf3e019de3940c55280871895a6cb5da98a0b079617db58f5132141"
+        }
+      ],
+      "persistent_udp": [
+        {
+          "age_seconds": 50.017521087,
+          "echo_bytes": 3584,
+          "inbound": "h1",
+          "pings": 7
+        },
+        {
+          "age_seconds": 50.008486139,
+          "echo_bytes": 3584,
+          "inbound": "h2",
+          "pings": 7
+        },
+        {
+          "age_seconds": 50.026749659,
+          "echo_bytes": 3584,
+          "inbound": "h3",
+          "pings": 7
+        }
+      ],
+      "round": 1,
+      "warp_transport": "h3"
+    },
+    {
+      "bulk": {
+        "bytes_each_direction": 67108864,
+        "elapsed_ms": 16101,
+        "half_close": true,
+        "inbound": "h3",
+        "sha256": "6c6f8309a1c9260f2ca2209fdba4fe646fb9064f3ab1cecc11d7a9ebc7f0e473"
+      },
+      "egress": {
+        "available": true,
+        "dropped_packets": 0,
+        "failure": null,
+        "generation": 1,
+        "inbound_queue_drops": 0,
+        "ipv4": true,
+        "ipv6": true,
+        "mtu": 1280,
+        "received_ip_bytes": 208340088,
+        "received_packets": 172352,
+        "sent_ip_bytes": 208237486,
+        "sent_packets": 169704,
+        "socket_limit": 64,
+        "sockets": 6,
+        "stack_queue_drops": 0,
+        "tcp_buffer_bytes_per_socket": 393216,
+        "transport": "HTTP/2",
+        "tunnel_addresses": [
+          "198.18.0.1",
+          "fd00::1"
+        ],
+        "workers": 2
+      },
+      "peer_after": {
+        "authenticated_clients": 1,
+        "dns_queries": 46,
+        "dns_tcp_queries": 0,
+        "h2_capsules": 169704,
+        "h3_datagrams": 0,
+        "h3_route_advertisements": 0,
+        "http_file_bytes_sent": 0,
+        "http_file_requests": 0,
+        "http_requests": 12,
+        "ip_bytes_from_client": 208237486,
+        "ip_bytes_to_client": 208340088,
+        "ip_packets_from_client": 169704,
+        "ip_packets_to_client": 172352,
+        "tcp_bytes_received": 201424896,
+        "tcp_bytes_sent": 201424896,
+        "tcp_connections": 18,
+        "tunnels": 1,
+        "udp_bytes_received": 12288,
+        "udp_bytes_sent": 12288,
+        "udp_datagrams_received": 24,
+        "udp_datagrams_sent": 24
+      },
+      "peer_before": {
+        "authenticated_clients": 1,
+        "dns_queries": 45,
+        "dns_tcp_queries": 0,
+        "h2_capsules": 113170,
+        "h3_datagrams": 0,
+        "h3_route_advertisements": 0,
+        "http_file_bytes_sent": 0,
+        "http_file_requests": 0,
+        "http_requests": 12,
+        "ip_bytes_from_client": 138852193,
+        "ip_bytes_to_client": 138924174,
+        "ip_packets_from_client": 113170,
+        "ip_packets_to_client": 115053,
+        "tcp_bytes_received": 134303744,
+        "tcp_bytes_sent": 134303744,
+        "tcp_connections": 17,
+        "tunnels": 1,
+        "udp_bytes_received": 10752,
+        "udp_bytes_sent": 10752,
+        "udp_datagrams_received": 21,
+        "udp_datagrams_sent": 21
+      },
+      "persistent_tcp": [
+        {
+          "age_seconds": 60.047248812,
+          "echo_bytes": 32768,
+          "inbound": "h1",
+          "pings": 8,
+          "sha256": "a75f5349496cfc932e28ba74f60129c7a98534bc7d734836f9a5d7fa67770057"
+        },
+        {
+          "age_seconds": 60.067880166,
+          "echo_bytes": 32768,
+          "inbound": "h2",
+          "pings": 8,
+          "sha256": "a75f5349496cfc932e28ba74f60129c7a98534bc7d734836f9a5d7fa67770057"
+        },
+        {
+          "age_seconds": 60.05122555,
+          "echo_bytes": 32768,
+          "inbound": "h3",
+          "pings": 8,
+          "sha256": "a75f5349496cfc932e28ba74f60129c7a98534bc7d734836f9a5d7fa67770057"
+        }
+      ],
+      "persistent_udp": [
+        {
+          "age_seconds": 60.028637291,
+          "echo_bytes": 4096,
+          "inbound": "h1",
+          "pings": 8
+        },
+        {
+          "age_seconds": 60.053642472,
+          "echo_bytes": 4096,
+          "inbound": "h2",
+          "pings": 8
+        },
+        {
+          "age_seconds": 60.039265025,
+          "echo_bytes": 4096,
+          "inbound": "h3",
+          "pings": 8
+        }
+      ],
+      "round": 2,
+      "warp_transport": "h2"
+    },
+    {
+      "bulk": {
+        "bytes_each_direction": 67108864,
+        "elapsed_ms": 9988,
+        "half_close": true,
+        "inbound": "h3",
+        "sha256": "6c6f8309a1c9260f2ca2209fdba4fe646fb9064f3ab1cecc11d7a9ebc7f0e473"
+      },
+      "egress": {
+        "available": true,
+        "dropped_packets": 0,
+        "failure": null,
+        "generation": 1,
+        "inbound_queue_drops": 0,
+        "ipv4": true,
+        "ipv6": true,
+        "mtu": 1280,
+        "received_ip_bytes": 208202583,
+        "received_packets": 168656,
+        "sent_ip_bytes": 208207377,
+        "sent_packets": 168698,
+        "socket_limit": 64,
+        "sockets": 6,
+        "stack_queue_drops": 0,
+        "tcp_buffer_bytes_per_socket": 393216,
+        "transport": "HTTP/3",
+        "tunnel_addresses": [
+          "198.18.0.1",
+          "fd00::1"
+        ],
+        "workers": 2
+      },
+      "peer_after": {
+        "authenticated_clients": 1,
+        "dns_queries": 47,
+        "dns_tcp_queries": 0,
+        "h2_capsules": 0,
+        "h3_datagrams": 168698,
+        "h3_route_advertisements": 1,
+        "http_file_bytes_sent": 0,
+        "http_file_requests": 0,
+        "http_requests": 12,
+        "ip_bytes_from_client": 208207377,
+        "ip_bytes_to_client": 208202583,
+        "ip_packets_from_client": 168698,
+        "ip_packets_to_client": 168656,
+        "tcp_bytes_received": 201437184,
+        "tcp_bytes_sent": 201437184,
+        "tcp_connections": 18,
+        "tunnels": 1,
+        "udp_bytes_received": 13824,
+        "udp_bytes_sent": 13824,
+        "udp_datagrams_received": 27,
+        "udp_datagrams_sent": 27
+      },
+      "peer_before": {
+        "authenticated_clients": 1,
+        "dns_queries": 46,
+        "dns_tcp_queries": 0,
+        "h2_capsules": 0,
+        "h3_datagrams": 112579,
+        "h3_route_advertisements": 1,
+        "http_file_bytes_sent": 0,
+        "http_file_requests": 0,
+        "http_requests": 12,
+        "ip_bytes_from_client": 138839923,
+        "ip_bytes_to_client": 138837381,
+        "ip_packets_from_client": 112579,
+        "ip_packets_to_client": 112593,
+        "tcp_bytes_received": 134316032,
+        "tcp_bytes_sent": 134316032,
+        "tcp_connections": 17,
+        "tunnels": 1,
+        "udp_bytes_received": 12288,
+        "udp_bytes_sent": 12288,
+        "udp_datagrams_received": 24,
+        "udp_datagrams_sent": 24
+      },
+      "persistent_tcp": [
+        {
+          "age_seconds": 70.006642666,
+          "echo_bytes": 36864,
+          "inbound": "h1",
+          "pings": 9,
+          "sha256": "183419b90ff4aec71162308a2717063e358b9e9f96b75d5ac863b9d798c93926"
+        },
+        {
+          "age_seconds": 70.009752389,
+          "echo_bytes": 36864,
+          "inbound": "h2",
+          "pings": 9,
+          "sha256": "183419b90ff4aec71162308a2717063e358b9e9f96b75d5ac863b9d798c93926"
+        },
+        {
+          "age_seconds": 70.009500584,
+          "echo_bytes": 36864,
+          "inbound": "h3",
+          "pings": 9,
+          "sha256": "183419b90ff4aec71162308a2717063e358b9e9f96b75d5ac863b9d798c93926"
+        }
+      ],
+      "persistent_udp": [
+        {
+          "age_seconds": 70.00318262,
+          "echo_bytes": 4608,
+          "inbound": "h1",
+          "pings": 9
+        },
+        {
+          "age_seconds": 70.00349716,
+          "echo_bytes": 4608,
+          "inbound": "h2",
+          "pings": 9
+        },
+        {
+          "age_seconds": 70.003228213,
+          "echo_bytes": 4608,
+          "inbound": "h3",
+          "pings": 9
+        }
+      ],
+      "round": 2,
+      "warp_transport": "h3"
+    },
+    {
+      "bulk": {
+        "bytes_each_direction": 67108864,
+        "elapsed_ms": 14857,
+        "half_close": true,
+        "inbound": "h3",
+        "sha256": "6c6f8309a1c9260f2ca2209fdba4fe646fb9064f3ab1cecc11d7a9ebc7f0e473"
+      },
+      "egress": {
+        "available": true,
+        "dropped_packets": 0,
+        "failure": null,
+        "generation": 1,
+        "inbound_queue_drops": 0,
+        "ipv4": true,
+        "ipv6": true,
+        "mtu": 1280,
+        "received_ip_bytes": 277782448,
+        "received_packets": 229612,
+        "sent_ip_bytes": 277647798,
+        "sent_packets": 226129,
+        "socket_limit": 64,
+        "sockets": 6,
+        "stack_queue_drops": 0,
+        "tcp_buffer_bytes_per_socket": 393216,
+        "transport": "HTTP/2",
+        "tunnel_addresses": [
+          "198.18.0.1",
+          "fd00::1"
+        ],
+        "workers": 2
+      },
+      "peer_after": {
+        "authenticated_clients": 1,
+        "dns_queries": 57,
+        "dns_tcp_queries": 0,
+        "h2_capsules": 226129,
+        "h3_datagrams": 0,
+        "h3_route_advertisements": 0,
+        "http_file_bytes_sent": 0,
+        "http_file_requests": 0,
+        "http_requests": 15,
+        "ip_bytes_from_client": 277647798,
+        "ip_bytes_to_client": 277782448,
+        "ip_packets_from_client": 226129,
+        "ip_packets_to_client": 229612,
+        "tcp_bytes_received": 268570624,
+        "tcp_bytes_sent": 268570624,
+        "tcp_connections": 22,
+        "tunnels": 1,
+        "udp_bytes_received": 16896,
+        "udp_bytes_sent": 16896,
+        "udp_datagrams_received": 33,
+        "udp_datagrams_sent": 33
+      },
+      "peer_before": {
+        "authenticated_clients": 1,
+        "dns_queries": 56,
+        "dns_tcp_queries": 0,
+        "h2_capsules": 169744,
+        "h3_datagrams": 0,
+        "h3_route_advertisements": 0,
+        "http_file_bytes_sent": 0,
+        "http_file_requests": 0,
+        "http_requests": 15,
+        "ip_bytes_from_client": 208253437,
+        "ip_bytes_to_client": 208355734,
+        "ip_packets_from_client": 169744,
+        "ip_packets_to_client": 172388,
+        "tcp_bytes_received": 201437184,
+        "tcp_bytes_sent": 201437184,
+        "tcp_connections": 21,
+        "tunnels": 1,
+        "udp_bytes_received": 13824,
+        "udp_bytes_sent": 13824,
+        "udp_datagrams_received": 27,
+        "udp_datagrams_sent": 27
+      },
+      "persistent_tcp": [
+        {
+          "age_seconds": 90.022487301,
+          "echo_bytes": 45056,
+          "inbound": "h1",
+          "pings": 11,
+          "sha256": "d0ff14370aae128bfd44bb6d1ccfea554215c94be3c49248753c2a294eff7670"
+        },
+        {
+          "age_seconds": 90.032173449,
+          "echo_bytes": 45056,
+          "inbound": "h2",
+          "pings": 11,
+          "sha256": "d0ff14370aae128bfd44bb6d1ccfea554215c94be3c49248753c2a294eff7670"
+        },
+        {
+          "age_seconds": 90.034605873,
+          "echo_bytes": 45056,
+          "inbound": "h3",
+          "pings": 11,
+          "sha256": "d0ff14370aae128bfd44bb6d1ccfea554215c94be3c49248753c2a294eff7670"
+        }
+      ],
+      "persistent_udp": [
+        {
+          "age_seconds": 90.020699724,
+          "echo_bytes": 5632,
+          "inbound": "h1",
+          "pings": 11
+        },
+        {
+          "age_seconds": 90.051704932,
+          "echo_bytes": 5632,
+          "inbound": "h2",
+          "pings": 11
+        },
+        {
+          "age_seconds": 90.02247108,
+          "echo_bytes": 5632,
+          "inbound": "h3",
+          "pings": 11
+        }
+      ],
+      "round": 3,
+      "warp_transport": "h2"
+    },
+    {
+      "bulk": {
+        "bytes_each_direction": 67108864,
+        "elapsed_ms": 9935,
+        "half_close": true,
+        "inbound": "h3",
+        "sha256": "6c6f8309a1c9260f2ca2209fdba4fe646fb9064f3ab1cecc11d7a9ebc7f0e473"
+      },
+      "egress": {
+        "available": true,
+        "dropped_packets": 0,
+        "failure": null,
+        "generation": 1,
+        "inbound_queue_drops": 0,
+        "ipv4": true,
+        "ipv6": true,
+        "mtu": 1280,
+        "received_ip_bytes": 277602265,
+        "received_packets": 224858,
+        "sent_ip_bytes": 277609580,
+        "sent_packets": 224921,
+        "socket_limit": 64,
+        "sockets": 6,
+        "stack_queue_drops": 0,
+        "tcp_buffer_bytes_per_socket": 393216,
+        "transport": "HTTP/3",
+        "tunnel_addresses": [
+          "198.18.0.1",
+          "fd00::1"
+        ],
+        "workers": 2
+      },
+      "peer_after": {
+        "authenticated_clients": 1,
+        "dns_queries": 57,
+        "dns_tcp_queries": 0,
+        "h2_capsules": 0,
+        "h3_datagrams": 224921,
+        "h3_route_advertisements": 1,
+        "http_file_bytes_sent": 0,
+        "http_file_requests": 0,
+        "http_requests": 15,
+        "ip_bytes_from_client": 277609580,
+        "ip_bytes_to_client": 277602265,
+        "ip_packets_from_client": 224921,
+        "ip_packets_to_client": 224858,
+        "tcp_bytes_received": 268582912,
+        "tcp_bytes_sent": 268582912,
+        "tcp_connections": 22,
+        "tunnels": 1,
+        "udp_bytes_received": 18432,
+        "udp_bytes_sent": 18432,
+        "udp_datagrams_received": 36,
+        "udp_datagrams_sent": 36
+      },
+      "peer_before": {
+        "authenticated_clients": 1,
+        "dns_queries": 56,
+        "dns_tcp_queries": 0,
+        "h2_capsules": 0,
+        "h3_datagrams": 168755,
+        "h3_route_advertisements": 1,
+        "http_file_bytes_sent": 0,
+        "http_file_requests": 0,
+        "http_requests": 15,
+        "ip_bytes_from_client": 208237767,
+        "ip_bytes_to_client": 208232663,
+        "ip_packets_from_client": 168755,
+        "ip_packets_to_client": 168709,
+        "tcp_bytes_received": 201461760,
+        "tcp_bytes_sent": 201461760,
+        "tcp_connections": 21,
+        "tunnels": 1,
+        "udp_bytes_received": 16896,
+        "udp_bytes_sent": 16896,
+        "udp_datagrams_received": 33,
+        "udp_datagrams_sent": 33
+      },
+      "persistent_tcp": [
+        {
+          "age_seconds": 100.014267251,
+          "echo_bytes": 49152,
+          "inbound": "h1",
+          "pings": 12,
+          "sha256": "b6c38b17725f983aa16c7d928f49182321330c7fb34e0eae11e63d2371b3d042"
+        },
+        {
+          "age_seconds": 100.022081178,
+          "echo_bytes": 49152,
+          "inbound": "h2",
+          "pings": 12,
+          "sha256": "b6c38b17725f983aa16c7d928f49182321330c7fb34e0eae11e63d2371b3d042"
+        },
+        {
+          "age_seconds": 100.031193095,
+          "echo_bytes": 49152,
+          "inbound": "h3",
+          "pings": 12,
+          "sha256": "b6c38b17725f983aa16c7d928f49182321330c7fb34e0eae11e63d2371b3d042"
+        }
+      ],
+      "persistent_udp": [
+        {
+          "age_seconds": 100.029484781,
+          "echo_bytes": 6144,
+          "inbound": "h1",
+          "pings": 12
+        },
+        {
+          "age_seconds": 100.02288353,
+          "echo_bytes": 6144,
+          "inbound": "h2",
+          "pings": 12
+        },
+        {
+          "age_seconds": 100.020371669,
+          "echo_bytes": 6144,
+          "inbound": "h3",
+          "pings": 12
+        }
+      ],
+      "round": 3,
+      "warp_transport": "h3"
+    },
+    {
+      "bulk": {
+        "bytes_each_direction": 67108864,
+        "elapsed_ms": 15464,
+        "half_close": true,
+        "inbound": "h3",
+        "sha256": "6c6f8309a1c9260f2ca2209fdba4fe646fb9064f3ab1cecc11d7a9ebc7f0e473"
+      },
+      "egress": {
+        "available": true,
+        "dropped_packets": 0,
+        "failure": null,
+        "generation": 1,
+        "inbound_queue_drops": 0,
+        "ipv4": true,
+        "ipv6": true,
+        "mtu": 1280,
+        "received_ip_bytes": 347217391,
+        "received_packets": 287000,
+        "sent_ip_bytes": 347060137,
+        "sent_packets": 282825,
+        "socket_limit": 64,
+        "sockets": 6,
+        "stack_queue_drops": 0,
+        "tcp_buffer_bytes_per_socket": 393216,
+        "transport": "HTTP/2",
+        "tunnel_addresses": [
+          "198.18.0.1",
+          "fd00::1"
+        ],
+        "workers": 2
+      },
+      "peer_after": {
+        "authenticated_clients": 1,
+        "dns_queries": 67,
+        "dns_tcp_queries": 0,
+        "h2_capsules": 282825,
+        "h3_datagrams": 0,
+        "h3_route_advertisements": 0,
+        "http_file_bytes_sent": 0,
+        "http_file_requests": 0,
+        "http_requests": 18,
+        "ip_bytes_from_client": 347060137,
+        "ip_bytes_to_client": 347217391,
+        "ip_packets_from_client": 282825,
+        "ip_packets_to_client": 287000,
+        "tcp_bytes_received": 335704064,
+        "tcp_bytes_sent": 335704064,
+        "tcp_connections": 26,
+        "tunnels": 1,
+        "udp_bytes_received": 19968,
+        "udp_bytes_sent": 19968,
+        "udp_datagrams_received": 39,
+        "udp_datagrams_sent": 39
+      },
+      "peer_before": {
+        "authenticated_clients": 1,
+        "dns_queries": 66,
+        "dns_tcp_queries": 0,
+        "h2_capsules": 226168,
+        "h3_datagrams": 0,
+        "h3_route_advertisements": 0,
+        "http_file_bytes_sent": 0,
+        "http_file_requests": 0,
+        "http_requests": 18,
+        "ip_bytes_from_client": 277663680,
+        "ip_bytes_to_client": 277798020,
+        "ip_packets_from_client": 226168,
+        "ip_packets_to_client": 229647,
+        "tcp_bytes_received": 268582912,
+        "tcp_bytes_sent": 268582912,
+        "tcp_connections": 25,
+        "tunnels": 1,
+        "udp_bytes_received": 18432,
+        "udp_bytes_sent": 18432,
+        "udp_datagrams_received": 36,
+        "udp_datagrams_sent": 36
+      },
+      "persistent_tcp": [
+        {
+          "age_seconds": 110.022907713,
+          "echo_bytes": 53248,
+          "inbound": "h1",
+          "pings": 13,
+          "sha256": "43a438980a67e897f744599786f4deb0d5a2c8e4f5e0bcf5c81a9ecca65662f4"
+        },
+        {
+          "age_seconds": 110.068056166,
+          "echo_bytes": 53248,
+          "inbound": "h2",
+          "pings": 13,
+          "sha256": "43a438980a67e897f744599786f4deb0d5a2c8e4f5e0bcf5c81a9ecca65662f4"
+        },
+        {
+          "age_seconds": 110.045809837,
+          "echo_bytes": 53248,
+          "inbound": "h3",
+          "pings": 13,
+          "sha256": "43a438980a67e897f744599786f4deb0d5a2c8e4f5e0bcf5c81a9ecca65662f4"
+        }
+      ],
+      "persistent_udp": [
+        {
+          "age_seconds": 110.01380079,
+          "echo_bytes": 6656,
+          "inbound": "h1",
+          "pings": 13
+        },
+        {
+          "age_seconds": 110.01159854,
+          "echo_bytes": 6656,
+          "inbound": "h2",
+          "pings": 13
+        },
+        {
+          "age_seconds": 110.033904861,
+          "echo_bytes": 6656,
+          "inbound": "h3",
+          "pings": 13
+        }
+      ],
+      "round": 4,
+      "warp_transport": "h2"
+    },
+    {
+      "bulk": {
+        "bytes_each_direction": 67108864,
+        "elapsed_ms": 9655,
+        "half_close": true,
+        "inbound": "h3",
+        "sha256": "6c6f8309a1c9260f2ca2209fdba4fe646fb9064f3ab1cecc11d7a9ebc7f0e473"
+      },
+      "egress": {
+        "available": true,
+        "dropped_packets": 0,
+        "failure": null,
+        "generation": 1,
+        "inbound_queue_drops": 0,
+        "ipv4": true,
+        "ipv6": true,
+        "mtu": 1280,
+        "received_ip_bytes": 347015778,
+        "received_packets": 281648,
+        "sent_ip_bytes": 347029771,
+        "sent_packets": 281802,
+        "socket_limit": 64,
+        "sockets": 6,
+        "stack_queue_drops": 0,
+        "tcp_buffer_bytes_per_socket": 393216,
+        "transport": "HTTP/3",
+        "tunnel_addresses": [
+          "198.18.0.1",
+          "fd00::1"
+        ],
+        "workers": 2
+      },
+      "peer_after": {
+        "authenticated_clients": 1,
+        "dns_queries": 67,
+        "dns_tcp_queries": 0,
+        "h2_capsules": 0,
+        "h3_datagrams": 281802,
+        "h3_route_advertisements": 1,
+        "http_file_bytes_sent": 0,
+        "http_file_requests": 0,
+        "http_requests": 18,
+        "ip_bytes_from_client": 347029771,
+        "ip_bytes_to_client": 347015778,
+        "ip_packets_from_client": 281802,
+        "ip_packets_to_client": 281648,
+        "tcp_bytes_received": 335716352,
+        "tcp_bytes_sent": 335716352,
+        "tcp_connections": 26,
+        "tunnels": 1,
+        "udp_bytes_received": 21504,
+        "udp_bytes_sent": 21504,
+        "udp_datagrams_received": 42,
+        "udp_datagrams_sent": 42
+      },
+      "peer_before": {
+        "authenticated_clients": 1,
+        "dns_queries": 66,
+        "dns_tcp_queries": 0,
+        "h2_capsules": 0,
+        "h3_datagrams": 224961,
+        "h3_route_advertisements": 1,
+        "http_file_bytes_sent": 0,
+        "http_file_requests": 0,
+        "http_requests": 18,
+        "ip_bytes_from_client": 277625502,
+        "ip_bytes_to_client": 277617837,
+        "ip_packets_from_client": 224961,
+        "ip_packets_to_client": 224893,
+        "tcp_bytes_received": 268595200,
+        "tcp_bytes_sent": 268595200,
+        "tcp_connections": 25,
+        "tunnels": 1,
+        "udp_bytes_received": 19968,
+        "udp_bytes_sent": 19968,
+        "udp_datagrams_received": 39,
+        "udp_datagrams_sent": 39
+      },
+      "persistent_tcp": [
+        {
+          "age_seconds": 120.006084134,
+          "echo_bytes": 57344,
+          "inbound": "h1",
+          "pings": 14,
+          "sha256": "9d222502072b6b70946cd033f79eed9b62942f61e9aa2a82f604d9fb27489323"
+        },
+        {
+          "age_seconds": 120.007477617,
+          "echo_bytes": 57344,
+          "inbound": "h2",
+          "pings": 14,
+          "sha256": "9d222502072b6b70946cd033f79eed9b62942f61e9aa2a82f604d9fb27489323"
+        },
+        {
+          "age_seconds": 120.006607836,
+          "echo_bytes": 57344,
+          "inbound": "h3",
+          "pings": 14,
+          "sha256": "9d222502072b6b70946cd033f79eed9b62942f61e9aa2a82f604d9fb27489323"
+        }
+      ],
+      "persistent_udp": [
+        {
+          "age_seconds": 120.003497661,
+          "echo_bytes": 7168,
+          "inbound": "h1",
+          "pings": 14
+        },
+        {
+          "age_seconds": 120.046245241,
+          "echo_bytes": 7168,
+          "inbound": "h2",
+          "pings": 14
+        },
+        {
+          "age_seconds": 120.002863199,
+          "echo_bytes": 7168,
+          "inbound": "h3",
+          "pings": 14
+        }
+      ],
+      "round": 4,
+      "warp_transport": "h3"
+    },
+    {
+      "bulk": {
+        "bytes_each_direction": 67108864,
+        "elapsed_ms": 16580,
+        "half_close": true,
+        "inbound": "h3",
+        "sha256": "6c6f8309a1c9260f2ca2209fdba4fe646fb9064f3ab1cecc11d7a9ebc7f0e473"
+      },
+      "egress": {
+        "available": true,
+        "dropped_packets": 0,
+        "failure": null,
+        "generation": 1,
+        "inbound_queue_drops": 0,
+        "ipv4": true,
+        "ipv6": true,
+        "mtu": 1280,
+        "received_ip_bytes": 416664397,
+        "received_packets": 344353,
+        "sent_ip_bytes": 416476340,
+        "sent_packets": 339367,
+        "socket_limit": 64,
+        "sockets": 6,
+        "stack_queue_drops": 0,
+        "tcp_buffer_bytes_per_socket": 393216,
+        "transport": "HTTP/2",
+        "tunnel_addresses": [
+          "198.18.0.1",
+          "fd00::1"
+        ],
+        "workers": 2
+      },
+      "peer_after": {
+        "authenticated_clients": 1,
+        "dns_queries": 77,
+        "dns_tcp_queries": 0,
+        "h2_capsules": 339367,
+        "h3_datagrams": 0,
+        "h3_route_advertisements": 0,
+        "http_file_bytes_sent": 0,
+        "http_file_requests": 0,
+        "http_requests": 21,
+        "ip_bytes_from_client": 416476340,
+        "ip_bytes_to_client": 416664397,
+        "ip_packets_from_client": 339367,
+        "ip_packets_to_client": 344353,
+        "tcp_bytes_received": 402849792,
+        "tcp_bytes_sent": 402849792,
+        "tcp_connections": 30,
+        "tunnels": 1,
+        "udp_bytes_received": 24576,
+        "udp_bytes_sent": 24576,
+        "udp_datagrams_received": 48,
+        "udp_datagrams_sent": 48
+      },
+      "peer_before": {
+        "authenticated_clients": 1,
+        "dns_queries": 76,
+        "dns_tcp_queries": 0,
+        "h2_capsules": 282864,
+        "h3_datagrams": 0,
+        "h3_route_advertisements": 0,
+        "http_file_bytes_sent": 0,
+        "http_file_requests": 0,
+        "http_requests": 21,
+        "ip_bytes_from_client": 347076019,
+        "ip_bytes_to_client": 347232963,
+        "ip_packets_from_client": 282864,
+        "ip_packets_to_client": 287035,
+        "tcp_bytes_received": 335716352,
+        "tcp_bytes_sent": 335716352,
+        "tcp_connections": 29,
+        "tunnels": 1,
+        "udp_bytes_received": 21504,
+        "udp_bytes_sent": 21504,
+        "udp_datagrams_received": 42,
+        "udp_datagrams_sent": 42
+      },
+      "persistent_tcp": [
+        {
+          "age_seconds": 140.073860865,
+          "echo_bytes": 65536,
+          "inbound": "h1",
+          "pings": 16,
+          "sha256": "caf453b60409757581eb7383beac2c47414f25f3f3f53f2cdc783ce3b449a283"
+        },
+        {
+          "age_seconds": 140.033079623,
+          "echo_bytes": 65536,
+          "inbound": "h2",
+          "pings": 16,
+          "sha256": "caf453b60409757581eb7383beac2c47414f25f3f3f53f2cdc783ce3b449a283"
+        },
+        {
+          "age_seconds": 140.059901903,
+          "echo_bytes": 65536,
+          "inbound": "h3",
+          "pings": 16,
+          "sha256": "caf453b60409757581eb7383beac2c47414f25f3f3f53f2cdc783ce3b449a283"
+        }
+      ],
+      "persistent_udp": [
+        {
+          "age_seconds": 140.0682617,
+          "echo_bytes": 8192,
+          "inbound": "h1",
+          "pings": 16
+        },
+        {
+          "age_seconds": 140.016956205,
+          "echo_bytes": 8192,
+          "inbound": "h2",
+          "pings": 16
+        },
+        {
+          "age_seconds": 140.044915131,
+          "echo_bytes": 8192,
+          "inbound": "h3",
+          "pings": 16
+        }
+      ],
+      "round": 5,
+      "warp_transport": "h2"
+    },
+    {
+      "bulk": {
+        "bytes_each_direction": 67108864,
+        "elapsed_ms": 9980,
+        "half_close": true,
+        "inbound": "h3",
+        "sha256": "6c6f8309a1c9260f2ca2209fdba4fe646fb9064f3ab1cecc11d7a9ebc7f0e473"
+      },
+      "egress": {
+        "available": true,
+        "dropped_packets": 0,
+        "failure": null,
+        "generation": 1,
+        "inbound_queue_drops": 0,
+        "ipv4": true,
+        "ipv6": true,
+        "mtu": 1280,
+        "received_ip_bytes": 416410381,
+        "received_packets": 337746,
+        "sent_ip_bytes": 416432807,
+        "sent_packets": 338075,
+        "socket_limit": 64,
+        "sockets": 6,
+        "stack_queue_drops": 0,
+        "tcp_buffer_bytes_per_socket": 393216,
+        "transport": "HTTP/3",
+        "tunnel_addresses": [
+          "198.18.0.1",
+          "fd00::1"
+        ],
+        "workers": 2
+      },
+      "peer_after": {
+        "authenticated_clients": 1,
+        "dns_queries": 78,
+        "dns_tcp_queries": 0,
+        "h2_capsules": 0,
+        "h3_datagrams": 338075,
+        "h3_route_advertisements": 1,
+        "http_file_bytes_sent": 0,
+        "http_file_requests": 0,
+        "http_requests": 21,
+        "ip_bytes_from_client": 416432807,
+        "ip_bytes_to_client": 416410381,
+        "ip_packets_from_client": 338075,
+        "ip_packets_to_client": 337746,
+        "tcp_bytes_received": 402862080,
+        "tcp_bytes_sent": 402862080,
+        "tcp_connections": 30,
+        "tunnels": 1,
+        "udp_bytes_received": 26112,
+        "udp_bytes_sent": 26112,
+        "udp_datagrams_received": 51,
+        "udp_datagrams_sent": 51
+      },
+      "peer_before": {
+        "authenticated_clients": 1,
+        "dns_queries": 77,
+        "dns_tcp_queries": 0,
+        "h2_capsules": 0,
+        "h3_datagrams": 281860,
+        "h3_route_advertisements": 1,
+        "http_file_bytes_sent": 0,
+        "http_file_requests": 0,
+        "http_requests": 21,
+        "ip_bytes_from_client": 347060230,
+        "ip_bytes_to_client": 347045932,
+        "ip_packets_from_client": 281860,
+        "ip_packets_to_client": 281702,
+        "tcp_bytes_received": 335740928,
+        "tcp_bytes_sent": 335740928,
+        "tcp_connections": 29,
+        "tunnels": 1,
+        "udp_bytes_received": 24576,
+        "udp_bytes_sent": 24576,
+        "udp_datagrams_received": 48,
+        "udp_datagrams_sent": 48
+      },
+      "persistent_tcp": [
+        {
+          "age_seconds": 150.019444593,
+          "echo_bytes": 69632,
+          "inbound": "h1",
+          "pings": 17,
+          "sha256": "dfdcb8ceda6f0a9738d6ef3dbef6a97479c838f3362af651bb02558764c61102"
+        },
+        {
+          "age_seconds": 150.029240857,
+          "echo_bytes": 69632,
+          "inbound": "h2",
+          "pings": 17,
+          "sha256": "dfdcb8ceda6f0a9738d6ef3dbef6a97479c838f3362af651bb02558764c61102"
+        },
+        {
+          "age_seconds": 150.020426181,
+          "echo_bytes": 69632,
+          "inbound": "h3",
+          "pings": 17,
+          "sha256": "dfdcb8ceda6f0a9738d6ef3dbef6a97479c838f3362af651bb02558764c61102"
+        }
+      ],
+      "persistent_udp": [
+        {
+          "age_seconds": 150.008778888,
+          "echo_bytes": 8704,
+          "inbound": "h1",
+          "pings": 17
+        },
+        {
+          "age_seconds": 150.02145939,
+          "echo_bytes": 8704,
+          "inbound": "h2",
+          "pings": 17
+        },
+        {
+          "age_seconds": 150.009994007,
+          "echo_bytes": 8704,
+          "inbound": "h3",
+          "pings": 17
+        }
+      ],
+      "round": 5,
+      "warp_transport": "h3"
+    },
+    {
+      "bulk": {
+        "bytes_each_direction": 67108864,
+        "elapsed_ms": 16010,
+        "half_close": true,
+        "inbound": "h3",
+        "sha256": "6c6f8309a1c9260f2ca2209fdba4fe646fb9064f3ab1cecc11d7a9ebc7f0e473"
+      },
+      "egress": {
+        "available": true,
+        "dropped_packets": 0,
+        "failure": null,
+        "generation": 1,
+        "inbound_queue_drops": 0,
+        "ipv4": true,
+        "ipv6": true,
+        "mtu": 1280,
+        "received_ip_bytes": 486106757,
+        "received_packets": 401613,
+        "sent_ip_bytes": 485893172,
+        "sent_packets": 395955,
+        "socket_limit": 64,
+        "sockets": 6,
+        "stack_queue_drops": 0,
+        "tcp_buffer_bytes_per_socket": 393216,
+        "transport": "HTTP/2",
+        "tunnel_addresses": [
+          "198.18.0.1",
+          "fd00::1"
+        ],
+        "workers": 2
+      },
+      "peer_after": {
+        "authenticated_clients": 1,
+        "dns_queries": 88,
+        "dns_tcp_queries": 0,
+        "h2_capsules": 395955,
+        "h3_datagrams": 0,
+        "h3_route_advertisements": 0,
+        "http_file_bytes_sent": 0,
+        "http_file_requests": 0,
+        "http_requests": 24,
+        "ip_bytes_from_client": 485893172,
+        "ip_bytes_to_client": 486106757,
+        "ip_packets_from_client": 395955,
+        "ip_packets_to_client": 401613,
+        "tcp_bytes_received": 469995520,
+        "tcp_bytes_sent": 469995520,
+        "tcp_connections": 34,
+        "tunnels": 1,
+        "udp_bytes_received": 29184,
+        "udp_bytes_sent": 29184,
+        "udp_datagrams_received": 57,
+        "udp_datagrams_sent": 57
+      },
+      "peer_before": {
+        "authenticated_clients": 1,
+        "dns_queries": 87,
+        "dns_tcp_queries": 0,
+        "h2_capsules": 339408,
+        "h3_datagrams": 0,
+        "h3_route_advertisements": 0,
+        "http_file_bytes_sent": 0,
+        "http_file_requests": 0,
+        "http_requests": 24,
+        "ip_bytes_from_client": 416492331,
+        "ip_bytes_to_client": 416680043,
+        "ip_packets_from_client": 339408,
+        "ip_packets_to_client": 344389,
+        "tcp_bytes_received": 402862080,
+        "tcp_bytes_sent": 402862080,
+        "tcp_connections": 33,
+        "tunnels": 1,
+        "udp_bytes_received": 26112,
+        "udp_bytes_sent": 26112,
+        "udp_datagrams_received": 51,
+        "udp_datagrams_sent": 51
+      },
+      "persistent_tcp": [
+        {
+          "age_seconds": 170.043271406,
+          "echo_bytes": 77824,
+          "inbound": "h1",
+          "pings": 19,
+          "sha256": "f92e44a56b698c74775850134d3377d33302ac7c6a73db340809ec5cc0d46e77"
+        },
+        {
+          "age_seconds": 170.033122634,
+          "echo_bytes": 77824,
+          "inbound": "h2",
+          "pings": 19,
+          "sha256": "f92e44a56b698c74775850134d3377d33302ac7c6a73db340809ec5cc0d46e77"
+        },
+        {
+          "age_seconds": 170.022494009,
+          "echo_bytes": 77824,
+          "inbound": "h3",
+          "pings": 19,
+          "sha256": "f92e44a56b698c74775850134d3377d33302ac7c6a73db340809ec5cc0d46e77"
+        }
+      ],
+      "persistent_udp": [
+        {
+          "age_seconds": 170.024760918,
+          "echo_bytes": 9728,
+          "inbound": "h1",
+          "pings": 19
+        },
+        {
+          "age_seconds": 170.023409405,
+          "echo_bytes": 9728,
+          "inbound": "h2",
+          "pings": 19
+        },
+        {
+          "age_seconds": 170.022158762,
+          "echo_bytes": 9728,
+          "inbound": "h3",
+          "pings": 19
+        }
+      ],
+      "round": 6,
+      "warp_transport": "h2"
+    },
+    {
+      "bulk": {
+        "bytes_each_direction": 67108864,
+        "elapsed_ms": 10097,
+        "half_close": true,
+        "inbound": "h3",
+        "sha256": "6c6f8309a1c9260f2ca2209fdba4fe646fb9064f3ab1cecc11d7a9ebc7f0e473"
+      },
+      "egress": {
+        "available": true,
+        "dropped_packets": 0,
+        "failure": null,
+        "generation": 1,
+        "inbound_queue_drops": 0,
+        "ipv4": true,
+        "ipv6": true,
+        "mtu": 1280,
+        "received_ip_bytes": 485853700,
+        "received_packets": 394912,
+        "sent_ip_bytes": 485871986,
+        "sent_packets": 394990,
+        "socket_limit": 64,
+        "sockets": 6,
+        "stack_queue_drops": 0,
+        "tcp_buffer_bytes_per_socket": 393216,
+        "transport": "HTTP/3",
+        "tunnel_addresses": [
+          "198.18.0.1",
+          "fd00::1"
+        ],
+        "workers": 2
+      },
+      "peer_after": {
+        "authenticated_clients": 1,
+        "dns_queries": 88,
+        "dns_tcp_queries": 0,
+        "h2_capsules": 0,
+        "h3_datagrams": 394990,
+        "h3_route_advertisements": 1,
+        "http_file_bytes_sent": 0,
+        "http_file_requests": 0,
+        "http_requests": 24,
+        "ip_bytes_from_client": 485871986,
+        "ip_bytes_to_client": 485853700,
+        "ip_packets_from_client": 394990,
+        "ip_packets_to_client": 394912,
+        "tcp_bytes_received": 470007808,
+        "tcp_bytes_sent": 470007808,
+        "tcp_connections": 34,
+        "tunnels": 1,
+        "udp_bytes_received": 30720,
+        "udp_bytes_sent": 30720,
+        "udp_datagrams_received": 60,
+        "udp_datagrams_sent": 60
+      },
+      "peer_before": {
+        "authenticated_clients": 1,
+        "dns_queries": 87,
+        "dns_tcp_queries": 0,
+        "h2_capsules": 0,
+        "h3_datagrams": 338132,
+        "h3_route_advertisements": 1,
+        "http_file_bytes_sent": 0,
+        "http_file_requests": 0,
+        "http_requests": 24,
+        "ip_bytes_from_client": 416463197,
+        "ip_bytes_to_client": 416440461,
+        "ip_packets_from_client": 338132,
+        "ip_packets_to_client": 337799,
+        "tcp_bytes_received": 402886656,
+        "tcp_bytes_sent": 402886656,
+        "tcp_connections": 33,
+        "tunnels": 1,
+        "udp_bytes_received": 29184,
+        "udp_bytes_sent": 29184,
+        "udp_datagrams_received": 57,
+        "udp_datagrams_sent": 57
+      },
+      "persistent_tcp": [
+        {
+          "age_seconds": 180.017281536,
+          "echo_bytes": 81920,
+          "inbound": "h1",
+          "pings": 20,
+          "sha256": "3b4b19ac035425b773be970da64518a92cdfa463d26f3fdcd2e2d720f867143b"
+        },
+        {
+          "age_seconds": 180.026330778,
+          "echo_bytes": 81920,
+          "inbound": "h2",
+          "pings": 20,
+          "sha256": "3b4b19ac035425b773be970da64518a92cdfa463d26f3fdcd2e2d720f867143b"
+        },
+        {
+          "age_seconds": 180.02124598,
+          "echo_bytes": 81920,
+          "inbound": "h3",
+          "pings": 20,
+          "sha256": "3b4b19ac035425b773be970da64518a92cdfa463d26f3fdcd2e2d720f867143b"
+        }
+      ],
+      "persistent_udp": [
+        {
+          "age_seconds": 180.008900168,
+          "echo_bytes": 10240,
+          "inbound": "h1",
+          "pings": 20
+        },
+        {
+          "age_seconds": 180.008918281,
+          "echo_bytes": 10240,
+          "inbound": "h2",
+          "pings": 20
+        },
+        {
+          "age_seconds": 180.013517687,
+          "echo_bytes": 10240,
+          "inbound": "h3",
+          "pings": 20
+        }
+      ],
+      "round": 6,
+      "warp_transport": "h3"
+    },
+    {
+      "bulk": {
+        "bytes_each_direction": 67108864,
+        "elapsed_ms": 15482,
+        "half_close": true,
+        "inbound": "h3",
+        "sha256": "6c6f8309a1c9260f2ca2209fdba4fe646fb9064f3ab1cecc11d7a9ebc7f0e473"
+      },
+      "egress": {
+        "available": true,
+        "dropped_packets": 0,
+        "failure": null,
+        "generation": 1,
+        "inbound_queue_drops": 0,
+        "ipv4": true,
+        "ipv6": true,
+        "mtu": 1280,
+        "received_ip_bytes": 555543415,
+        "received_packets": 459076,
+        "sent_ip_bytes": 555293628,
+        "sent_packets": 452510,
+        "socket_limit": 64,
+        "sockets": 6,
+        "stack_queue_drops": 0,
+        "tcp_buffer_bytes_per_socket": 393216,
+        "transport": "HTTP/2",
+        "tunnel_addresses": [
+          "198.18.0.1",
+          "fd00::1"
+        ],
+        "workers": 2
+      },
+      "peer_after": {
+        "authenticated_clients": 1,
+        "dns_queries": 98,
+        "dns_tcp_queries": 0,
+        "h2_capsules": 452510,
+        "h3_datagrams": 0,
+        "h3_route_advertisements": 0,
+        "http_file_bytes_sent": 0,
+        "http_file_requests": 0,
+        "http_requests": 27,
+        "ip_bytes_from_client": 555293628,
+        "ip_bytes_to_client": 555543415,
+        "ip_packets_from_client": 452510,
+        "ip_packets_to_client": 459076,
+        "tcp_bytes_received": 537128960,
+        "tcp_bytes_sent": 537128960,
+        "tcp_connections": 38,
+        "tunnels": 1,
+        "udp_bytes_received": 32256,
+        "udp_bytes_sent": 32256,
+        "udp_datagrams_received": 63,
+        "udp_datagrams_sent": 63
+      },
+      "peer_before": {
+        "authenticated_clients": 1,
+        "dns_queries": 97,
+        "dns_tcp_queries": 0,
+        "h2_capsules": 395994,
+        "h3_datagrams": 0,
+        "h3_route_advertisements": 0,
+        "http_file_bytes_sent": 0,
+        "http_file_requests": 0,
+        "http_requests": 27,
+        "ip_bytes_from_client": 485909054,
+        "ip_bytes_to_client": 486122329,
+        "ip_packets_from_client": 395994,
+        "ip_packets_to_client": 401648,
+        "tcp_bytes_received": 470007808,
+        "tcp_bytes_sent": 470007808,
+        "tcp_connections": 37,
+        "tunnels": 1,
+        "udp_bytes_received": 30720,
+        "udp_bytes_sent": 30720,
+        "udp_datagrams_received": 60,
+        "udp_datagrams_sent": 60
+      },
+      "persistent_tcp": [
+        {
+          "age_seconds": 190.048669678,
+          "echo_bytes": 86016,
+          "inbound": "h1",
+          "pings": 21,
+          "sha256": "bf44ac7c126c8b3145a01838e7d4d6920ee33e5a338b4d2030331861d84e2a20"
+        },
+        {
+          "age_seconds": 190.074243011,
+          "echo_bytes": 86016,
+          "inbound": "h2",
+          "pings": 21,
+          "sha256": "bf44ac7c126c8b3145a01838e7d4d6920ee33e5a338b4d2030331861d84e2a20"
+        },
+        {
+          "age_seconds": 190.059304446,
+          "echo_bytes": 86016,
+          "inbound": "h3",
+          "pings": 21,
+          "sha256": "bf44ac7c126c8b3145a01838e7d4d6920ee33e5a338b4d2030331861d84e2a20"
+        }
+      ],
+      "persistent_udp": [
+        {
+          "age_seconds": 190.030023404,
+          "echo_bytes": 10752,
+          "inbound": "h1",
+          "pings": 21
+        },
+        {
+          "age_seconds": 190.076420425,
+          "echo_bytes": 10752,
+          "inbound": "h2",
+          "pings": 21
+        },
+        {
+          "age_seconds": 190.047493972,
+          "echo_bytes": 10752,
+          "inbound": "h3",
+          "pings": 21
+        }
+      ],
+      "round": 7,
+      "warp_transport": "h2"
+    },
+    {
+      "bulk": {
+        "bytes_each_direction": 67108864,
+        "elapsed_ms": 9925,
+        "half_close": true,
+        "inbound": "h3",
+        "sha256": "6c6f8309a1c9260f2ca2209fdba4fe646fb9064f3ab1cecc11d7a9ebc7f0e473"
+      },
+      "egress": {
+        "available": true,
+        "dropped_packets": 0,
+        "failure": null,
+        "generation": 1,
+        "inbound_queue_drops": 0,
+        "ipv4": true,
+        "ipv6": true,
+        "mtu": 1280,
+        "received_ip_bytes": 555240707,
+        "received_packets": 451134,
+        "sent_ip_bytes": 555259441,
+        "sent_packets": 451189,
+        "socket_limit": 64,
+        "sockets": 6,
+        "stack_queue_drops": 0,
+        "tcp_buffer_bytes_per_socket": 393216,
+        "transport": "HTTP/3",
+        "tunnel_addresses": [
+          "198.18.0.1",
+          "fd00::1"
+        ],
+        "workers": 2
+      },
+      "peer_after": {
+        "authenticated_clients": 1,
+        "dns_queries": 98,
+        "dns_tcp_queries": 0,
+        "h2_capsules": 0,
+        "h3_datagrams": 451189,
+        "h3_route_advertisements": 1,
+        "http_file_bytes_sent": 0,
+        "http_file_requests": 0,
+        "http_requests": 27,
+        "ip_bytes_from_client": 555259441,
+        "ip_bytes_to_client": 555240707,
+        "ip_packets_from_client": 451189,
+        "ip_packets_to_client": 451134,
+        "tcp_bytes_received": 537141248,
+        "tcp_bytes_sent": 537141248,
+        "tcp_connections": 38,
+        "tunnels": 1,
+        "udp_bytes_received": 33792,
+        "udp_bytes_sent": 33792,
+        "udp_datagrams_received": 66,
+        "udp_datagrams_sent": 66
+      },
+      "peer_before": {
+        "authenticated_clients": 1,
+        "dns_queries": 97,
+        "dns_tcp_queries": 0,
+        "h2_capsules": 0,
+        "h3_datagrams": 395029,
+        "h3_route_advertisements": 1,
+        "http_file_bytes_sent": 0,
+        "http_file_requests": 0,
+        "http_requests": 27,
+        "ip_bytes_from_client": 485887868,
+        "ip_bytes_to_client": 485869272,
+        "ip_packets_from_client": 395029,
+        "ip_packets_to_client": 394947,
+        "tcp_bytes_received": 470020096,
+        "tcp_bytes_sent": 470020096,
+        "tcp_connections": 37,
+        "tunnels": 1,
+        "udp_bytes_received": 32256,
+        "udp_bytes_sent": 32256,
+        "udp_datagrams_received": 63,
+        "udp_datagrams_sent": 63
+      },
+      "persistent_tcp": [
+        {
+          "age_seconds": 200.007324404,
+          "echo_bytes": 90112,
+          "inbound": "h1",
+          "pings": 22,
+          "sha256": "7567f913a6e6d6e95c1577156e026bc204f3327103f03dc0e4ed4d15f88beaff"
+        },
+        {
+          "age_seconds": 200.007491748,
+          "echo_bytes": 90112,
+          "inbound": "h2",
+          "pings": 22,
+          "sha256": "7567f913a6e6d6e95c1577156e026bc204f3327103f03dc0e4ed4d15f88beaff"
+        },
+        {
+          "age_seconds": 200.006651991,
+          "echo_bytes": 90112,
+          "inbound": "h3",
+          "pings": 22,
+          "sha256": "7567f913a6e6d6e95c1577156e026bc204f3327103f03dc0e4ed4d15f88beaff"
+        }
+      ],
+      "persistent_udp": [
+        {
+          "age_seconds": 200.004128452,
+          "echo_bytes": 11264,
+          "inbound": "h1",
+          "pings": 22
+        },
+        {
+          "age_seconds": 200.003589829,
+          "echo_bytes": 11264,
+          "inbound": "h2",
+          "pings": 22
+        },
+        {
+          "age_seconds": 200.004074161,
+          "echo_bytes": 11264,
+          "inbound": "h3",
+          "pings": 22
+        }
+      ],
+      "round": 7,
+      "warp_transport": "h3"
+    },
+    {
+      "bulk": {
+        "bytes_each_direction": 67108864,
+        "elapsed_ms": 15866,
+        "half_close": true,
+        "inbound": "h3",
+        "sha256": "6c6f8309a1c9260f2ca2209fdba4fe646fb9064f3ab1cecc11d7a9ebc7f0e473"
+      },
+      "egress": {
+        "available": true,
+        "dropped_packets": 0,
+        "failure": null,
+        "generation": 1,
+        "inbound_queue_drops": 0,
+        "ipv4": true,
+        "ipv6": true,
+        "mtu": 1280,
+        "received_ip_bytes": 624982507,
+        "received_packets": 516287,
+        "sent_ip_bytes": 624714263,
+        "sent_packets": 509224,
+        "socket_limit": 64,
+        "sockets": 6,
+        "stack_queue_drops": 0,
+        "tcp_buffer_bytes_per_socket": 393216,
+        "transport": "HTTP/2",
+        "tunnel_addresses": [
+          "198.18.0.1",
+          "fd00::1"
+        ],
+        "workers": 2
+      },
+      "peer_after": {
+        "authenticated_clients": 1,
+        "dns_queries": 108,
+        "dns_tcp_queries": 0,
+        "h2_capsules": 509224,
+        "h3_datagrams": 0,
+        "h3_route_advertisements": 0,
+        "http_file_bytes_sent": 0,
+        "http_file_requests": 0,
+        "http_requests": 30,
+        "ip_bytes_from_client": 624714263,
+        "ip_bytes_to_client": 624982507,
+        "ip_packets_from_client": 509224,
+        "ip_packets_to_client": 516287,
+        "tcp_bytes_received": 604274688,
+        "tcp_bytes_sent": 604274688,
+        "tcp_connections": 42,
+        "tunnels": 1,
+        "udp_bytes_received": 36864,
+        "udp_bytes_sent": 36864,
+        "udp_datagrams_received": 72,
+        "udp_datagrams_sent": 72
+      },
+      "peer_before": {
+        "authenticated_clients": 1,
+        "dns_queries": 107,
+        "dns_tcp_queries": 0,
+        "h2_capsules": 452550,
+        "h3_datagrams": 0,
+        "h3_route_advertisements": 0,
+        "http_file_bytes_sent": 0,
+        "http_file_requests": 0,
+        "http_requests": 30,
+        "ip_bytes_from_client": 555309550,
+        "ip_bytes_to_client": 555558987,
+        "ip_packets_from_client": 452550,
+        "ip_packets_to_client": 459111,
+        "tcp_bytes_received": 537141248,
+        "tcp_bytes_sent": 537141248,
+        "tcp_connections": 41,
+        "tunnels": 1,
+        "udp_bytes_received": 33792,
+        "udp_bytes_sent": 33792,
+        "udp_datagrams_received": 66,
+        "udp_datagrams_sent": 66
+      },
+      "persistent_tcp": [
+        {
+          "age_seconds": 220.068555268,
+          "echo_bytes": 98304,
+          "inbound": "h1",
+          "pings": 24,
+          "sha256": "c5b3d4b3750dd4e2b0b640e8f02b4475e3436fd46e2cc367b981a252b2840789"
+        },
+        {
+          "age_seconds": 220.107962681,
+          "echo_bytes": 98304,
+          "inbound": "h2",
+          "pings": 24,
+          "sha256": "c5b3d4b3750dd4e2b0b640e8f02b4475e3436fd46e2cc367b981a252b2840789"
+        },
+        {
+          "age_seconds": 220.038383408,
+          "echo_bytes": 98304,
+          "inbound": "h3",
+          "pings": 24,
+          "sha256": "c5b3d4b3750dd4e2b0b640e8f02b4475e3436fd46e2cc367b981a252b2840789"
+        }
+      ],
+      "persistent_udp": [
+        {
+          "age_seconds": 220.050939128,
+          "echo_bytes": 12288,
+          "inbound": "h1",
+          "pings": 24
+        },
+        {
+          "age_seconds": 220.055919656,
+          "echo_bytes": 12288,
+          "inbound": "h2",
+          "pings": 24
+        },
+        {
+          "age_seconds": 220.026645393,
+          "echo_bytes": 12288,
+          "inbound": "h3",
+          "pings": 24
+        }
+      ],
+      "round": 8,
+      "warp_transport": "h2"
+    },
+    {
+      "bulk": {
+        "bytes_each_direction": 67108864,
+        "elapsed_ms": 9874,
+        "half_close": true,
+        "inbound": "h3",
+        "sha256": "6c6f8309a1c9260f2ca2209fdba4fe646fb9064f3ab1cecc11d7a9ebc7f0e473"
+      },
+      "egress": {
+        "available": true,
+        "dropped_packets": 0,
+        "failure": null,
+        "generation": 1,
+        "inbound_queue_drops": 0,
+        "ipv4": true,
+        "ipv6": true,
+        "mtu": 1280,
+        "received_ip_bytes": 624652779,
+        "received_packets": 507605,
+        "sent_ip_bytes": 624664998,
+        "sent_packets": 507526,
+        "socket_limit": 64,
+        "sockets": 6,
+        "stack_queue_drops": 0,
+        "tcp_buffer_bytes_per_socket": 393216,
+        "transport": "HTTP/3",
+        "tunnel_addresses": [
+          "198.18.0.1",
+          "fd00::1"
+        ],
+        "workers": 2
+      },
+      "peer_after": {
+        "authenticated_clients": 1,
+        "dns_queries": 109,
+        "dns_tcp_queries": 0,
+        "h2_capsules": 0,
+        "h3_datagrams": 507526,
+        "h3_route_advertisements": 1,
+        "http_file_bytes_sent": 0,
+        "http_file_requests": 0,
+        "http_requests": 30,
+        "ip_bytes_from_client": 624664998,
+        "ip_bytes_to_client": 624652779,
+        "ip_packets_from_client": 507526,
+        "ip_packets_to_client": 507605,
+        "tcp_bytes_received": 604286976,
+        "tcp_bytes_sent": 604286976,
+        "tcp_connections": 42,
+        "tunnels": 1,
+        "udp_bytes_received": 38400,
+        "udp_bytes_sent": 38400,
+        "udp_datagrams_received": 75,
+        "udp_datagrams_sent": 75
+      },
+      "peer_before": {
+        "authenticated_clients": 1,
+        "dns_queries": 108,
+        "dns_tcp_queries": 0,
+        "h2_capsules": 0,
+        "h3_datagrams": 451247,
+        "h3_route_advertisements": 1,
+        "http_file_bytes_sent": 0,
+        "http_file_requests": 0,
+        "http_requests": 30,
+        "ip_bytes_from_client": 555289900,
+        "ip_bytes_to_client": 555270861,
+        "ip_packets_from_client": 451247,
+        "ip_packets_to_client": 451188,
+        "tcp_bytes_received": 537165824,
+        "tcp_bytes_sent": 537165824,
+        "tcp_connections": 41,
+        "tunnels": 1,
+        "udp_bytes_received": 36864,
+        "udp_bytes_sent": 36864,
+        "udp_datagrams_received": 72,
+        "udp_datagrams_sent": 72
+      },
+      "persistent_tcp": [
+        {
+          "age_seconds": 230.008354317,
+          "echo_bytes": 102400,
+          "inbound": "h1",
+          "pings": 25,
+          "sha256": "40b1e87bd75e1f90de3645c8e347f62bb328a9878154a03500d050f44699f0fb"
+        },
+        {
+          "age_seconds": 230.019466883,
+          "echo_bytes": 102400,
+          "inbound": "h2",
+          "pings": 25,
+          "sha256": "40b1e87bd75e1f90de3645c8e347f62bb328a9878154a03500d050f44699f0fb"
+        },
+        {
+          "age_seconds": 230.015456541,
+          "echo_bytes": 102400,
+          "inbound": "h3",
+          "pings": 25,
+          "sha256": "40b1e87bd75e1f90de3645c8e347f62bb328a9878154a03500d050f44699f0fb"
+        }
+      ],
+      "persistent_udp": [
+        {
+          "age_seconds": 230.024855028,
+          "echo_bytes": 12800,
+          "inbound": "h1",
+          "pings": 25
+        },
+        {
+          "age_seconds": 230.018419217,
+          "echo_bytes": 12800,
+          "inbound": "h2",
+          "pings": 25
+        },
+        {
+          "age_seconds": 230.01564794,
+          "echo_bytes": 12800,
+          "inbound": "h3",
+          "pings": 25
+        }
+      ],
+      "round": 8,
+      "warp_transport": "h3"
+    },
+    {
+      "bulk": {
+        "bytes_each_direction": 67108864,
+        "elapsed_ms": 16538,
+        "half_close": true,
+        "inbound": "h3",
+        "sha256": "6c6f8309a1c9260f2ca2209fdba4fe646fb9064f3ab1cecc11d7a9ebc7f0e473"
+      },
+      "egress": {
+        "available": true,
+        "dropped_packets": 0,
+        "failure": null,
+        "generation": 1,
+        "inbound_queue_drops": 0,
+        "ipv4": true,
+        "ipv6": true,
+        "mtu": 1280,
+        "received_ip_bytes": 694424615,
+        "received_packets": 573541,
+        "sent_ip_bytes": 694126935,
+        "sent_packets": 565708,
+        "socket_limit": 64,
+        "sockets": 6,
+        "stack_queue_drops": 0,
+        "tcp_buffer_bytes_per_socket": 393216,
+        "transport": "HTTP/2",
+        "tunnel_addresses": [
+          "198.18.0.1",
+          "fd00::1"
+        ],
+        "workers": 2
+      },
+      "peer_after": {
+        "authenticated_clients": 1,
+        "dns_queries": 119,
+        "dns_tcp_queries": 0,
+        "h2_capsules": 565708,
+        "h3_datagrams": 0,
+        "h3_route_advertisements": 0,
+        "http_file_bytes_sent": 0,
+        "http_file_requests": 0,
+        "http_requests": 33,
+        "ip_bytes_from_client": 694126935,
+        "ip_bytes_to_client": 694424615,
+        "ip_packets_from_client": 565708,
+        "ip_packets_to_client": 573541,
+        "tcp_bytes_received": 671420416,
+        "tcp_bytes_sent": 671420416,
+        "tcp_connections": 46,
+        "tunnels": 1,
+        "udp_bytes_received": 41472,
+        "udp_bytes_sent": 41472,
+        "udp_datagrams_received": 81,
+        "udp_datagrams_sent": 81
+      },
+      "peer_before": {
+        "authenticated_clients": 1,
+        "dns_queries": 118,
+        "dns_tcp_queries": 0,
+        "h2_capsules": 509264,
+        "h3_datagrams": 0,
+        "h3_route_advertisements": 0,
+        "http_file_bytes_sent": 0,
+        "http_file_requests": 0,
+        "http_requests": 33,
+        "ip_bytes_from_client": 624730214,
+        "ip_bytes_to_client": 624998153,
+        "ip_packets_from_client": 509264,
+        "ip_packets_to_client": 516323,
+        "tcp_bytes_received": 604286976,
+        "tcp_bytes_sent": 604286976,
+        "tcp_connections": 45,
+        "tunnels": 1,
+        "udp_bytes_received": 38400,
+        "udp_bytes_sent": 38400,
+        "udp_datagrams_received": 75,
+        "udp_datagrams_sent": 75
+      },
+      "persistent_tcp": [
+        {
+          "age_seconds": 250.026410144,
+          "echo_bytes": 110592,
+          "inbound": "h1",
+          "pings": 27,
+          "sha256": "751e5da545b7f4528e0aff4d0f1a8c751bebbbff9a1fae8eb053a8451e3cd185"
+        },
+        {
+          "age_seconds": 250.042272443,
+          "echo_bytes": 110592,
+          "inbound": "h2",
+          "pings": 27,
+          "sha256": "751e5da545b7f4528e0aff4d0f1a8c751bebbbff9a1fae8eb053a8451e3cd185"
+        },
+        {
+          "age_seconds": 250.019488021,
+          "echo_bytes": 110592,
+          "inbound": "h3",
+          "pings": 27,
+          "sha256": "751e5da545b7f4528e0aff4d0f1a8c751bebbbff9a1fae8eb053a8451e3cd185"
+        }
+      ],
+      "persistent_udp": [
+        {
+          "age_seconds": 250.014332519,
+          "echo_bytes": 13824,
+          "inbound": "h1",
+          "pings": 27
+        },
+        {
+          "age_seconds": 250.037196881,
+          "echo_bytes": 13824,
+          "inbound": "h2",
+          "pings": 27
+        },
+        {
+          "age_seconds": 250.007701699,
+          "echo_bytes": 13824,
+          "inbound": "h3",
+          "pings": 27
+        }
+      ],
+      "round": 9,
+      "warp_transport": "h2"
+    },
+    {
+      "bulk": {
+        "bytes_each_direction": 67108864,
+        "elapsed_ms": 9828,
+        "half_close": true,
+        "inbound": "h3",
+        "sha256": "6c6f8309a1c9260f2ca2209fdba4fe646fb9064f3ab1cecc11d7a9ebc7f0e473"
+      },
+      "egress": {
+        "available": true,
+        "dropped_packets": 0,
+        "failure": null,
+        "generation": 1,
+        "inbound_queue_drops": 0,
+        "ipv4": true,
+        "ipv6": true,
+        "mtu": 1280,
+        "received_ip_bytes": 694054438,
+        "received_packets": 563848,
+        "sent_ip_bytes": 694073405,
+        "sent_packets": 563872,
+        "socket_limit": 64,
+        "sockets": 6,
+        "stack_queue_drops": 0,
+        "tcp_buffer_bytes_per_socket": 393216,
+        "transport": "HTTP/3",
+        "tunnel_addresses": [
+          "198.18.0.1",
+          "fd00::1"
+        ],
+        "workers": 2
+      },
+      "peer_after": {
+        "authenticated_clients": 1,
+        "dns_queries": 119,
+        "dns_tcp_queries": 0,
+        "h2_capsules": 0,
+        "h3_datagrams": 563872,
+        "h3_route_advertisements": 1,
+        "http_file_bytes_sent": 0,
+        "http_file_requests": 0,
+        "http_requests": 33,
+        "ip_bytes_from_client": 694073405,
+        "ip_bytes_to_client": 694054438,
+        "ip_packets_from_client": 563872,
+        "ip_packets_to_client": 563848,
+        "tcp_bytes_received": 671432704,
+        "tcp_bytes_sent": 671432704,
+        "tcp_connections": 46,
+        "tunnels": 1,
+        "udp_bytes_received": 43008,
+        "udp_bytes_sent": 43008,
+        "udp_datagrams_received": 84,
+        "udp_datagrams_sent": 84
+      },
+      "peer_before": {
+        "authenticated_clients": 1,
+        "dns_queries": 118,
+        "dns_tcp_queries": 0,
+        "h2_capsules": 0,
+        "h3_datagrams": 507583,
+        "h3_route_advertisements": 1,
+        "http_file_bytes_sent": 0,
+        "http_file_requests": 0,
+        "http_requests": 33,
+        "ip_bytes_from_client": 624695388,
+        "ip_bytes_to_client": 624682859,
+        "ip_packets_from_client": 507583,
+        "ip_packets_to_client": 507658,
+        "tcp_bytes_received": 604311552,
+        "tcp_bytes_sent": 604311552,
+        "tcp_connections": 45,
+        "tunnels": 1,
+        "udp_bytes_received": 41472,
+        "udp_bytes_sent": 41472,
+        "udp_datagrams_received": 81,
+        "udp_datagrams_sent": 81
+      },
+      "persistent_tcp": [
+        {
+          "age_seconds": 260.018985573,
+          "echo_bytes": 114688,
+          "inbound": "h1",
+          "pings": 28,
+          "sha256": "554a3525bff215849dfdfe8fb1dcd5bbf4d13daf689bb103ee4ee487ddca68ac"
+        },
+        {
+          "age_seconds": 260.015785544,
+          "echo_bytes": 114688,
+          "inbound": "h2",
+          "pings": 28,
+          "sha256": "554a3525bff215849dfdfe8fb1dcd5bbf4d13daf689bb103ee4ee487ddca68ac"
+        },
+        {
+          "age_seconds": 260.018542976,
+          "echo_bytes": 114688,
+          "inbound": "h3",
+          "pings": 28,
+          "sha256": "554a3525bff215849dfdfe8fb1dcd5bbf4d13daf689bb103ee4ee487ddca68ac"
+        }
+      ],
+      "persistent_udp": [
+        {
+          "age_seconds": 260.024951185,
+          "echo_bytes": 14336,
+          "inbound": "h1",
+          "pings": 28
+        },
+        {
+          "age_seconds": 260.026872195,
+          "echo_bytes": 14336,
+          "inbound": "h2",
+          "pings": 28
+        },
+        {
+          "age_seconds": 260.011401813,
+          "echo_bytes": 14336,
+          "inbound": "h3",
+          "pings": 28
+        }
+      ],
+      "round": 9,
+      "warp_transport": "h3"
+    },
+    {
+      "bulk": {
+        "bytes_each_direction": 67108864,
+        "elapsed_ms": 15947,
+        "half_close": true,
+        "inbound": "h3",
+        "sha256": "6c6f8309a1c9260f2ca2209fdba4fe646fb9064f3ab1cecc11d7a9ebc7f0e473"
+      },
+      "egress": {
+        "available": true,
+        "dropped_packets": 0,
+        "failure": null,
+        "generation": 1,
+        "inbound_queue_drops": 0,
+        "ipv4": true,
+        "ipv6": true,
+        "mtu": 1280,
+        "received_ip_bytes": 763855673,
+        "received_packets": 630864,
+        "sent_ip_bytes": 763532950,
+        "sent_packets": 622371,
+        "socket_limit": 64,
+        "sockets": 6,
+        "stack_queue_drops": 0,
+        "tcp_buffer_bytes_per_socket": 393216,
+        "transport": "HTTP/2",
+        "tunnel_addresses": [
+          "198.18.0.1",
+          "fd00::1"
+        ],
+        "workers": 2
+      },
+      "peer_after": {
+        "authenticated_clients": 1,
+        "dns_queries": 129,
+        "dns_tcp_queries": 0,
+        "h2_capsules": 622371,
+        "h3_datagrams": 0,
+        "h3_route_advertisements": 0,
+        "http_file_bytes_sent": 0,
+        "http_file_requests": 0,
+        "http_requests": 36,
+        "ip_bytes_from_client": 763532950,
+        "ip_bytes_to_client": 763855673,
+        "ip_packets_from_client": 622371,
+        "ip_packets_to_client": 630864,
+        "tcp_bytes_received": 738553856,
+        "tcp_bytes_sent": 738553856,
+        "tcp_connections": 50,
+        "tunnels": 1,
+        "udp_bytes_received": 44544,
+        "udp_bytes_sent": 44544,
+        "udp_datagrams_received": 87,
+        "udp_datagrams_sent": 87
+      },
+      "peer_before": {
+        "authenticated_clients": 1,
+        "dns_queries": 128,
+        "dns_tcp_queries": 0,
+        "h2_capsules": 565748,
+        "h3_datagrams": 0,
+        "h3_route_advertisements": 0,
+        "http_file_bytes_sent": 0,
+        "http_file_requests": 0,
+        "http_requests": 36,
+        "ip_bytes_from_client": 694142857,
+        "ip_bytes_to_client": 694440187,
+        "ip_packets_from_client": 565748,
+        "ip_packets_to_client": 573576,
+        "tcp_bytes_received": 671432704,
+        "tcp_bytes_sent": 671432704,
+        "tcp_connections": 49,
+        "tunnels": 1,
+        "udp_bytes_received": 43008,
+        "udp_bytes_sent": 43008,
+        "udp_datagrams_received": 84,
+        "udp_datagrams_sent": 84
+      },
+      "persistent_tcp": [
+        {
+          "age_seconds": 270.051733625,
+          "echo_bytes": 118784,
+          "inbound": "h1",
+          "pings": 29,
+          "sha256": "9f35e5f2bffca48f15a2fdf7fed079fa20365c7d8a32bd857decfbf9aa67279c"
+        },
+        {
+          "age_seconds": 270.033305731,
+          "echo_bytes": 118784,
+          "inbound": "h2",
+          "pings": 29,
+          "sha256": "9f35e5f2bffca48f15a2fdf7fed079fa20365c7d8a32bd857decfbf9aa67279c"
+        },
+        {
+          "age_seconds": 270.017062274,
+          "echo_bytes": 118784,
+          "inbound": "h3",
+          "pings": 29,
+          "sha256": "9f35e5f2bffca48f15a2fdf7fed079fa20365c7d8a32bd857decfbf9aa67279c"
+        }
+      ],
+      "persistent_udp": [
+        {
+          "age_seconds": 270.033069615,
+          "echo_bytes": 14848,
+          "inbound": "h1",
+          "pings": 29
+        },
+        {
+          "age_seconds": 270.034340058,
+          "echo_bytes": 14848,
+          "inbound": "h2",
+          "pings": 29
+        },
+        {
+          "age_seconds": 270.106896357,
+          "echo_bytes": 14848,
+          "inbound": "h3",
+          "pings": 29
+        }
+      ],
+      "round": 10,
+      "warp_transport": "h2"
+    },
+    {
+      "bulk": {
+        "bytes_each_direction": 67108864,
+        "elapsed_ms": 9916,
+        "half_close": true,
+        "inbound": "h3",
+        "sha256": "6c6f8309a1c9260f2ca2209fdba4fe646fb9064f3ab1cecc11d7a9ebc7f0e473"
+      },
+      "egress": {
+        "available": true,
+        "dropped_packets": 0,
+        "failure": null,
+        "generation": 1,
+        "inbound_queue_drops": 0,
+        "ipv4": true,
+        "ipv6": true,
+        "mtu": 1280,
+        "received_ip_bytes": 763440828,
+        "received_packets": 620010,
+        "sent_ip_bytes": 763462037,
+        "sent_packets": 620099,
+        "socket_limit": 64,
+        "sockets": 6,
+        "stack_queue_drops": 0,
+        "tcp_buffer_bytes_per_socket": 393216,
+        "transport": "HTTP/3",
+        "tunnel_addresses": [
+          "198.18.0.1",
+          "fd00::1"
+        ],
+        "workers": 2
+      },
+      "peer_after": {
+        "authenticated_clients": 1,
+        "dns_queries": 129,
+        "dns_tcp_queries": 0,
+        "h2_capsules": 0,
+        "h3_datagrams": 620099,
+        "h3_route_advertisements": 1,
+        "http_file_bytes_sent": 0,
+        "http_file_requests": 0,
+        "http_requests": 36,
+        "ip_bytes_from_client": 763462037,
+        "ip_bytes_to_client": 763440828,
+        "ip_packets_from_client": 620099,
+        "ip_packets_to_client": 620010,
+        "tcp_bytes_received": 738566144,
+        "tcp_bytes_sent": 738566144,
+        "tcp_connections": 50,
+        "tunnels": 1,
+        "udp_bytes_received": 46080,
+        "udp_bytes_sent": 46080,
+        "udp_datagrams_received": 90,
+        "udp_datagrams_sent": 90
+      },
+      "peer_before": {
+        "authenticated_clients": 1,
+        "dns_queries": 128,
+        "dns_tcp_queries": 0,
+        "h2_capsules": 0,
+        "h3_datagrams": 563911,
+        "h3_route_advertisements": 1,
+        "http_file_bytes_sent": 0,
+        "http_file_requests": 0,
+        "http_requests": 36,
+        "ip_bytes_from_client": 694089287,
+        "ip_bytes_to_client": 694070010,
+        "ip_packets_from_client": 563911,
+        "ip_packets_to_client": 563883,
+        "tcp_bytes_received": 671444992,
+        "tcp_bytes_sent": 671444992,
+        "tcp_connections": 49,
+        "tunnels": 1,
+        "udp_bytes_received": 44544,
+        "udp_bytes_sent": 44544,
+        "udp_datagrams_received": 87,
+        "udp_datagrams_sent": 87
+      },
+      "persistent_tcp": [
+        {
+          "age_seconds": 280.010425664,
+          "echo_bytes": 122880,
+          "inbound": "h1",
+          "pings": 30,
+          "sha256": "44dfc276d2601102a0b452d38c87e851d09b51d92ffb473a0ab69c8a4086b383"
+        },
+        {
+          "age_seconds": 280.019902322,
+          "echo_bytes": 122880,
+          "inbound": "h2",
+          "pings": 30,
+          "sha256": "44dfc276d2601102a0b452d38c87e851d09b51d92ffb473a0ab69c8a4086b383"
+        },
+        {
+          "age_seconds": 280.020255369,
+          "echo_bytes": 122880,
+          "inbound": "h3",
+          "pings": 30,
+          "sha256": "44dfc276d2601102a0b452d38c87e851d09b51d92ffb473a0ab69c8a4086b383"
+        }
+      ],
+      "persistent_udp": [
+        {
+          "age_seconds": 280.014102643,
+          "echo_bytes": 15360,
+          "inbound": "h1",
+          "pings": 30
+        },
+        {
+          "age_seconds": 280.028590738,
+          "echo_bytes": 15360,
+          "inbound": "h2",
+          "pings": 30
+        },
+        {
+          "age_seconds": 280.02276431,
+          "echo_bytes": 15360,
+          "inbound": "h3",
+          "pings": 30
+        }
+      ],
+      "round": 10,
+      "warp_transport": "h3"
+    },
+    {
+      "bulk": {
+        "bytes_each_direction": 67108864,
+        "elapsed_ms": 16756,
+        "half_close": true,
+        "inbound": "h3",
+        "sha256": "6c6f8309a1c9260f2ca2209fdba4fe646fb9064f3ab1cecc11d7a9ebc7f0e473"
+      },
+      "egress": {
+        "available": true,
+        "dropped_packets": 0,
+        "failure": null,
+        "generation": 1,
+        "inbound_queue_drops": 0,
+        "ipv4": true,
+        "ipv6": true,
+        "mtu": 1280,
+        "received_ip_bytes": 833304027,
+        "received_packets": 688211,
+        "sent_ip_bytes": 832957037,
+        "sent_packets": 679047,
+        "socket_limit": 64,
+        "sockets": 6,
+        "stack_queue_drops": 0,
+        "tcp_buffer_bytes_per_socket": 393216,
+        "transport": "HTTP/2",
+        "tunnel_addresses": [
+          "198.18.0.1",
+          "fd00::1"
+        ],
+        "workers": 2
+      },
+      "peer_after": {
+        "authenticated_clients": 1,
+        "dns_queries": 139,
+        "dns_tcp_queries": 0,
+        "h2_capsules": 679047,
+        "h3_datagrams": 0,
+        "h3_route_advertisements": 0,
+        "http_file_bytes_sent": 0,
+        "http_file_requests": 0,
+        "http_requests": 39,
+        "ip_bytes_from_client": 832957037,
+        "ip_bytes_to_client": 833304027,
+        "ip_packets_from_client": 679047,
+        "ip_packets_to_client": 688211,
+        "tcp_bytes_received": 805699584,
+        "tcp_bytes_sent": 805699584,
+        "tcp_connections": 54,
+        "tunnels": 1,
+        "udp_bytes_received": 49152,
+        "udp_bytes_sent": 49152,
+        "udp_datagrams_received": 96,
+        "udp_datagrams_sent": 96
+      },
+      "peer_before": {
+        "authenticated_clients": 1,
+        "dns_queries": 138,
+        "dns_tcp_queries": 0,
+        "h2_capsules": 622410,
+        "h3_datagrams": 0,
+        "h3_route_advertisements": 0,
+        "http_file_bytes_sent": 0,
+        "http_file_requests": 0,
+        "http_requests": 39,
+        "ip_bytes_from_client": 763548832,
+        "ip_bytes_to_client": 763871245,
+        "ip_packets_from_client": 622410,
+        "ip_packets_to_client": 630899,
+        "tcp_bytes_received": 738566144,
+        "tcp_bytes_sent": 738566144,
+        "tcp_connections": 53,
+        "tunnels": 1,
+        "udp_bytes_received": 46080,
+        "udp_bytes_sent": 46080,
+        "udp_datagrams_received": 90,
+        "udp_datagrams_sent": 90
+      },
+      "persistent_tcp": [
+        {
+          "age_seconds": 300.05154404,
+          "echo_bytes": 131072,
+          "inbound": "h1",
+          "pings": 32,
+          "sha256": "91a24a75888b1b0f3363efb829b576757d84b94f39c9713a59b4fb9cce07707e"
+        },
+        {
+          "age_seconds": 300.035234894,
+          "echo_bytes": 131072,
+          "inbound": "h2",
+          "pings": 32,
+          "sha256": "91a24a75888b1b0f3363efb829b576757d84b94f39c9713a59b4fb9cce07707e"
+        },
+        {
+          "age_seconds": 300.034397497,
+          "echo_bytes": 131072,
+          "inbound": "h3",
+          "pings": 32,
+          "sha256": "91a24a75888b1b0f3363efb829b576757d84b94f39c9713a59b4fb9cce07707e"
+        }
+      ],
+      "persistent_udp": [
+        {
+          "age_seconds": 300.031979932,
+          "echo_bytes": 16384,
+          "inbound": "h1",
+          "pings": 32
+        },
+        {
+          "age_seconds": 300.051588075,
+          "echo_bytes": 16384,
+          "inbound": "h2",
+          "pings": 32
+        },
+        {
+          "age_seconds": 300.022553173,
+          "echo_bytes": 16384,
+          "inbound": "h3",
+          "pings": 32
+        }
+      ],
+      "round": 11,
+      "warp_transport": "h2"
+    },
+    {
+      "bulk": {
+        "bytes_each_direction": 67108864,
+        "elapsed_ms": 14581,
+        "half_close": true,
+        "inbound": "h3",
+        "sha256": "6c6f8309a1c9260f2ca2209fdba4fe646fb9064f3ab1cecc11d7a9ebc7f0e473"
+      },
+      "egress": {
+        "available": true,
+        "dropped_packets": 0,
+        "failure": null,
+        "generation": 1,
+        "inbound_queue_drops": 0,
+        "ipv4": true,
+        "ipv6": true,
+        "mtu": 1280,
+        "received_ip_bytes": 832834389,
+        "received_packets": 676074,
+        "sent_ip_bytes": 832848797,
+        "sent_packets": 675997,
+        "socket_limit": 64,
+        "sockets": 6,
+        "stack_queue_drops": 0,
+        "tcp_buffer_bytes_per_socket": 393216,
+        "transport": "HTTP/3",
+        "tunnel_addresses": [
+          "198.18.0.1",
+          "fd00::1"
+        ],
+        "workers": 2
+      },
+      "peer_after": {
+        "authenticated_clients": 1,
+        "dns_queries": 140,
+        "dns_tcp_queries": 0,
+        "h2_capsules": 0,
+        "h3_datagrams": 675997,
+        "h3_route_advertisements": 1,
+        "http_file_bytes_sent": 0,
+        "http_file_requests": 0,
+        "http_requests": 39,
+        "ip_bytes_from_client": 832848797,
+        "ip_bytes_to_client": 832834389,
+        "ip_packets_from_client": 675997,
+        "ip_packets_to_client": 676074,
+        "tcp_bytes_received": 805711872,
+        "tcp_bytes_sent": 805711872,
+        "tcp_connections": 54,
+        "tunnels": 1,
+        "udp_bytes_received": 50688,
+        "udp_bytes_sent": 50688,
+        "udp_datagrams_received": 99,
+        "udp_datagrams_sent": 99
+      },
+      "peer_before": {
+        "authenticated_clients": 1,
+        "dns_queries": 139,
+        "dns_tcp_queries": 0,
+        "h2_capsules": 0,
+        "h3_datagrams": 620158,
+        "h3_route_advertisements": 1,
+        "http_file_bytes_sent": 0,
+        "http_file_requests": 0,
+        "http_requests": 39,
+        "ip_bytes_from_client": 763492536,
+        "ip_bytes_to_client": 763470982,
+        "ip_packets_from_client": 620158,
+        "ip_packets_to_client": 620064,
+        "tcp_bytes_received": 738590720,
+        "tcp_bytes_sent": 738590720,
+        "tcp_connections": 53,
+        "tunnels": 1,
+        "udp_bytes_received": 49152,
+        "udp_bytes_sent": 49152,
+        "udp_datagrams_received": 96,
+        "udp_datagrams_sent": 96
+      },
+      "persistent_tcp": [
+        {
+          "age_seconds": 310.029377985,
+          "echo_bytes": 135168,
+          "inbound": "h1",
+          "pings": 33,
+          "sha256": "73072ad07f951291175aa9638f6503ed7f1f1091c0a562f827a56cfaf7a4de1a"
+        },
+        {
+          "age_seconds": 310.01843724,
+          "echo_bytes": 135168,
+          "inbound": "h2",
+          "pings": 33,
+          "sha256": "73072ad07f951291175aa9638f6503ed7f1f1091c0a562f827a56cfaf7a4de1a"
+        },
+        {
+          "age_seconds": 310.026618091,
+          "echo_bytes": 135168,
+          "inbound": "h3",
+          "pings": 33,
+          "sha256": "73072ad07f951291175aa9638f6503ed7f1f1091c0a562f827a56cfaf7a4de1a"
+        }
+      ],
+      "persistent_udp": [
+        {
+          "age_seconds": 310.041151702,
+          "echo_bytes": 16896,
+          "inbound": "h1",
+          "pings": 33
+        },
+        {
+          "age_seconds": 310.032940201,
+          "echo_bytes": 16896,
+          "inbound": "h2",
+          "pings": 33
+        },
+        {
+          "age_seconds": 310.013120577,
+          "echo_bytes": 16896,
+          "inbound": "h3",
+          "pings": 33
+        }
+      ],
+      "round": 11,
+      "warp_transport": "h3"
+    },
+    {
+      "bulk": {
+        "bytes_each_direction": 67108864,
+        "elapsed_ms": 18447,
+        "half_close": true,
+        "inbound": "h3",
+        "sha256": "6c6f8309a1c9260f2ca2209fdba4fe646fb9064f3ab1cecc11d7a9ebc7f0e473"
+      },
+      "egress": {
+        "available": true,
+        "dropped_packets": 0,
+        "failure": null,
+        "generation": 1,
+        "inbound_queue_drops": 0,
+        "ipv4": true,
+        "ipv6": true,
+        "mtu": 1280,
+        "received_ip_bytes": 902733983,
+        "received_packets": 745193,
+        "sent_ip_bytes": 902367309,
+        "sent_packets": 735533,
+        "socket_limit": 64,
+        "sockets": 6,
+        "stack_queue_drops": 0,
+        "tcp_buffer_bytes_per_socket": 393216,
+        "transport": "HTTP/2",
+        "tunnel_addresses": [
+          "198.18.0.1",
+          "fd00::1"
+        ],
+        "workers": 2
+      },
+      "peer_after": {
+        "authenticated_clients": 1,
+        "dns_queries": 150,
+        "dns_tcp_queries": 0,
+        "h2_capsules": 735533,
+        "h3_datagrams": 0,
+        "h3_route_advertisements": 0,
+        "http_file_bytes_sent": 0,
+        "http_file_requests": 0,
+        "http_requests": 42,
+        "ip_bytes_from_client": 902367309,
+        "ip_bytes_to_client": 902733983,
+        "ip_packets_from_client": 735533,
+        "ip_packets_to_client": 745193,
+        "tcp_bytes_received": 872845312,
+        "tcp_bytes_sent": 872845312,
+        "tcp_connections": 58,
+        "tunnels": 1,
+        "udp_bytes_received": 53760,
+        "udp_bytes_sent": 53760,
+        "udp_datagrams_received": 105,
+        "udp_datagrams_sent": 105
+      },
+      "peer_before": {
+        "authenticated_clients": 1,
+        "dns_queries": 149,
+        "dns_tcp_queries": 0,
+        "h2_capsules": 679089,
+        "h3_datagrams": 0,
+        "h3_route_advertisements": 0,
+        "http_file_bytes_sent": 0,
+        "http_file_requests": 0,
+        "http_requests": 42,
+        "ip_bytes_from_client": 832973068,
+        "ip_bytes_to_client": 833319673,
+        "ip_packets_from_client": 679089,
+        "ip_packets_to_client": 688247,
+        "tcp_bytes_received": 805711872,
+        "tcp_bytes_sent": 805711872,
+        "tcp_connections": 57,
+        "tunnels": 1,
+        "udp_bytes_received": 50688,
+        "udp_bytes_sent": 50688,
+        "udp_datagrams_received": 99,
+        "udp_datagrams_sent": 99
+      },
+      "persistent_tcp": [
+        {
+          "age_seconds": 330.027470155,
+          "echo_bytes": 143360,
+          "inbound": "h1",
+          "pings": 35,
+          "sha256": "7e2e86695cd643ffc11390e17dfb56a134e4cef0d2ad2e31eb4c6c4567301829"
+        },
+        {
+          "age_seconds": 330.032234015,
+          "echo_bytes": 143360,
+          "inbound": "h2",
+          "pings": 35,
+          "sha256": "7e2e86695cd643ffc11390e17dfb56a134e4cef0d2ad2e31eb4c6c4567301829"
+        },
+        {
+          "age_seconds": 330.071928573,
+          "echo_bytes": 143360,
+          "inbound": "h3",
+          "pings": 35,
+          "sha256": "7e2e86695cd643ffc11390e17dfb56a134e4cef0d2ad2e31eb4c6c4567301829"
+        }
+      ],
+      "persistent_udp": [
+        {
+          "age_seconds": 330.019152643,
+          "echo_bytes": 17920,
+          "inbound": "h1",
+          "pings": 35
+        },
+        {
+          "age_seconds": 330.089368222,
+          "echo_bytes": 17920,
+          "inbound": "h2",
+          "pings": 35
+        },
+        {
+          "age_seconds": 330.060062861,
+          "echo_bytes": 17920,
+          "inbound": "h3",
+          "pings": 35
+        }
+      ],
+      "round": 12,
+      "warp_transport": "h2"
+    },
+    {
+      "bulk": {
+        "bytes_each_direction": 67108864,
+        "elapsed_ms": 12127,
+        "half_close": true,
+        "inbound": "h3",
+        "sha256": "6c6f8309a1c9260f2ca2209fdba4fe646fb9064f3ab1cecc11d7a9ebc7f0e473"
+      },
+      "egress": {
+        "available": true,
+        "dropped_packets": 0,
+        "failure": null,
+        "generation": 1,
+        "inbound_queue_drops": 0,
+        "ipv4": true,
+        "ipv6": true,
+        "mtu": 1280,
+        "received_ip_bytes": 902223952,
+        "received_packets": 732047,
+        "sent_ip_bytes": 902234200,
+        "sent_packets": 731862,
+        "socket_limit": 64,
+        "sockets": 6,
+        "stack_queue_drops": 0,
+        "tcp_buffer_bytes_per_socket": 393216,
+        "transport": "HTTP/3",
+        "tunnel_addresses": [
+          "198.18.0.1",
+          "fd00::1"
+        ],
+        "workers": 2
+      },
+      "peer_after": {
+        "authenticated_clients": 1,
+        "dns_queries": 150,
+        "dns_tcp_queries": 0,
+        "h2_capsules": 0,
+        "h3_datagrams": 731862,
+        "h3_route_advertisements": 1,
+        "http_file_bytes_sent": 0,
+        "http_file_requests": 0,
+        "http_requests": 42,
+        "ip_bytes_from_client": 902234200,
+        "ip_bytes_to_client": 902223952,
+        "ip_packets_from_client": 731862,
+        "ip_packets_to_client": 732047,
+        "tcp_bytes_received": 872857600,
+        "tcp_bytes_sent": 872857600,
+        "tcp_connections": 58,
+        "tunnels": 1,
+        "udp_bytes_received": 55296,
+        "udp_bytes_sent": 55296,
+        "udp_datagrams_received": 108,
+        "udp_datagrams_sent": 108
+      },
+      "peer_before": {
+        "authenticated_clients": 1,
+        "dns_queries": 149,
+        "dns_tcp_queries": 0,
+        "h2_capsules": 0,
+        "h3_datagrams": 676054,
+        "h3_route_advertisements": 1,
+        "http_file_bytes_sent": 0,
+        "http_file_requests": 0,
+        "http_requests": 42,
+        "ip_bytes_from_client": 832879187,
+        "ip_bytes_to_client": 832864469,
+        "ip_packets_from_client": 676054,
+        "ip_packets_to_client": 676127,
+        "tcp_bytes_received": 805736448,
+        "tcp_bytes_sent": 805736448,
+        "tcp_connections": 57,
+        "tunnels": 1,
+        "udp_bytes_received": 53760,
+        "udp_bytes_sent": 53760,
+        "udp_datagrams_received": 105,
+        "udp_datagrams_sent": 105
+      },
+      "persistent_tcp": [
+        {
+          "age_seconds": 340.007981722,
+          "echo_bytes": 147456,
+          "inbound": "h1",
+          "pings": 36,
+          "sha256": "523dac837c2bfe1c7e91ec94dd114b69f0e9c1ca80f49cff9698cad24c0f7ffb"
+        },
+        {
+          "age_seconds": 340.009812155,
+          "echo_bytes": 147456,
+          "inbound": "h2",
+          "pings": 36,
+          "sha256": "523dac837c2bfe1c7e91ec94dd114b69f0e9c1ca80f49cff9698cad24c0f7ffb"
+        },
+        {
+          "age_seconds": 340.010388506,
+          "echo_bytes": 147456,
+          "inbound": "h3",
+          "pings": 36,
+          "sha256": "523dac837c2bfe1c7e91ec94dd114b69f0e9c1ca80f49cff9698cad24c0f7ffb"
+        }
+      ],
+      "persistent_udp": [
+        {
+          "age_seconds": 340.004610591,
+          "echo_bytes": 18432,
+          "inbound": "h1",
+          "pings": 36
+        },
+        {
+          "age_seconds": 340.003379338,
+          "echo_bytes": 18432,
+          "inbound": "h2",
+          "pings": 36
+        },
+        {
+          "age_seconds": 340.004979833,
+          "echo_bytes": 18432,
+          "inbound": "h3",
+          "pings": 36
+        }
+      ],
+      "round": 12,
+      "warp_transport": "h3"
+    },
+    {
+      "bulk": {
+        "bytes_each_direction": 67108864,
+        "elapsed_ms": 19778,
+        "half_close": true,
+        "inbound": "h3",
+        "sha256": "6c6f8309a1c9260f2ca2209fdba4fe646fb9064f3ab1cecc11d7a9ebc7f0e473"
+      },
+      "egress": {
+        "available": true,
+        "dropped_packets": 0,
+        "failure": null,
+        "generation": 1,
+        "inbound_queue_drops": 0,
+        "ipv4": true,
+        "ipv6": true,
+        "mtu": 1280,
+        "received_ip_bytes": 972152665,
+        "received_packets": 801894,
+        "sent_ip_bytes": 971767072,
+        "sent_packets": 791757,
+        "socket_limit": 64,
+        "sockets": 6,
+        "stack_queue_drops": 0,
+        "tcp_buffer_bytes_per_socket": 393216,
+        "transport": "HTTP/2",
+        "tunnel_addresses": [
+          "198.18.0.1",
+          "fd00::1"
+        ],
+        "workers": 2
+      },
+      "peer_after": {
+        "authenticated_clients": 1,
+        "dns_queries": 160,
+        "dns_tcp_queries": 0,
+        "h2_capsules": 791757,
+        "h3_datagrams": 0,
+        "h3_route_advertisements": 0,
+        "http_file_bytes_sent": 0,
+        "http_file_requests": 0,
+        "http_requests": 45,
+        "ip_bytes_from_client": 971767072,
+        "ip_bytes_to_client": 972152665,
+        "ip_packets_from_client": 791757,
+        "ip_packets_to_client": 801894,
+        "tcp_bytes_received": 939991040,
+        "tcp_bytes_sent": 939991040,
+        "tcp_connections": 62,
+        "tunnels": 1,
+        "udp_bytes_received": 58368,
+        "udp_bytes_sent": 58368,
+        "udp_datagrams_received": 114,
+        "udp_datagrams_sent": 114
+      },
+      "peer_before": {
+        "authenticated_clients": 1,
+        "dns_queries": 159,
+        "dns_tcp_queries": 0,
+        "h2_capsules": 735572,
+        "h3_datagrams": 0,
+        "h3_route_advertisements": 0,
+        "http_file_bytes_sent": 0,
+        "http_file_requests": 0,
+        "http_requests": 45,
+        "ip_bytes_from_client": 902383191,
+        "ip_bytes_to_client": 902749515,
+        "ip_packets_from_client": 735572,
+        "ip_packets_to_client": 745227,
+        "tcp_bytes_received": 872857600,
+        "tcp_bytes_sent": 872857600,
+        "tcp_connections": 61,
+        "tunnels": 1,
+        "udp_bytes_received": 55296,
+        "udp_bytes_sent": 55296,
+        "udp_datagrams_received": 108,
+        "udp_datagrams_sent": 108
+      },
+      "persistent_tcp": [
+        {
+          "age_seconds": 360.062979086,
+          "echo_bytes": 155648,
+          "inbound": "h1",
+          "pings": 38,
+          "sha256": "b862977dccc4b4c7b4526f991ae60f36ade4fbb81f766ca3ee76602cd0818fd6"
+        },
+        {
+          "age_seconds": 360.098206489,
+          "echo_bytes": 155648,
+          "inbound": "h2",
+          "pings": 38,
+          "sha256": "b862977dccc4b4c7b4526f991ae60f36ade4fbb81f766ca3ee76602cd0818fd6"
+        },
+        {
+          "age_seconds": 360.033751234,
+          "echo_bytes": 155648,
+          "inbound": "h3",
+          "pings": 38,
+          "sha256": "b862977dccc4b4c7b4526f991ae60f36ade4fbb81f766ca3ee76602cd0818fd6"
+        }
+      ],
+      "persistent_udp": [
+        {
+          "age_seconds": 360.054142386,
+          "echo_bytes": 19456,
+          "inbound": "h1",
+          "pings": 38
+        },
+        {
+          "age_seconds": 360.033790759,
+          "echo_bytes": 19456,
+          "inbound": "h2",
+          "pings": 38
+        },
+        {
+          "age_seconds": 360.065403965,
+          "echo_bytes": 19456,
+          "inbound": "h3",
+          "pings": 38
+        }
+      ],
+      "round": 13,
+      "warp_transport": "h2"
+    },
+    {
+      "bulk": {
+        "bytes_each_direction": 67108864,
+        "elapsed_ms": 10894,
+        "half_close": true,
+        "inbound": "h3",
+        "sha256": "6c6f8309a1c9260f2ca2209fdba4fe646fb9064f3ab1cecc11d7a9ebc7f0e473"
+      },
+      "egress": {
+        "available": true,
+        "dropped_packets": 0,
+        "failure": null,
+        "generation": 1,
+        "inbound_queue_drops": 0,
+        "ipv4": true,
+        "ipv6": true,
+        "mtu": 1280,
+        "received_ip_bytes": 971652000,
+        "received_packets": 788606,
+        "sent_ip_bytes": 971658820,
+        "sent_packets": 788300,
+        "socket_limit": 64,
+        "sockets": 6,
+        "stack_queue_drops": 0,
+        "tcp_buffer_bytes_per_socket": 393216,
+        "transport": "HTTP/3",
+        "tunnel_addresses": [
+          "198.18.0.1",
+          "fd00::1"
+        ],
+        "workers": 2
+      },
+      "peer_after": {
+        "authenticated_clients": 1,
+        "dns_queries": 161,
+        "dns_tcp_queries": 0,
+        "h2_capsules": 0,
+        "h3_datagrams": 788300,
+        "h3_route_advertisements": 1,
+        "http_file_bytes_sent": 0,
+        "http_file_requests": 0,
+        "http_requests": 45,
+        "ip_bytes_from_client": 971658820,
+        "ip_bytes_to_client": 971652000,
+        "ip_packets_from_client": 788300,
+        "ip_packets_to_client": 788606,
+        "tcp_bytes_received": 940015616,
+        "tcp_bytes_sent": 940015616,
+        "tcp_connections": 62,
+        "tunnels": 1,
+        "udp_bytes_received": 61440,
+        "udp_bytes_sent": 61440,
+        "udp_datagrams_received": 120,
+        "udp_datagrams_sent": 120
+      },
+      "peer_before": {
+        "authenticated_clients": 1,
+        "dns_queries": 160,
+        "dns_tcp_queries": 0,
+        "h2_capsules": 0,
+        "h3_datagrams": 731921,
+        "h3_route_advertisements": 1,
+        "http_file_bytes_sent": 0,
+        "http_file_requests": 0,
+        "http_requests": 45,
+        "ip_bytes_from_client": 902264699,
+        "ip_bytes_to_client": 902254106,
+        "ip_packets_from_client": 731921,
+        "ip_packets_to_client": 732101,
+        "tcp_bytes_received": 872882176,
+        "tcp_bytes_sent": 872882176,
+        "tcp_connections": 61,
+        "tunnels": 1,
+        "udp_bytes_received": 58368,
+        "udp_bytes_sent": 58368,
+        "udp_datagrams_received": 114,
+        "udp_datagrams_sent": 114
+      },
+      "persistent_tcp": [
+        {
+          "age_seconds": 380.020777099,
+          "echo_bytes": 163840,
+          "inbound": "h1",
+          "pings": 40,
+          "sha256": "2a6d60c9bcdbb8dba58f2612735581531fcb5abe078569c1229e1cec1576eb45"
+        },
+        {
+          "age_seconds": 380.013361629,
+          "echo_bytes": 163840,
+          "inbound": "h2",
+          "pings": 40,
+          "sha256": "2a6d60c9bcdbb8dba58f2612735581531fcb5abe078569c1229e1cec1576eb45"
+        },
+        {
+          "age_seconds": 380.037416049,
+          "echo_bytes": 163840,
+          "inbound": "h3",
+          "pings": 40,
+          "sha256": "2a6d60c9bcdbb8dba58f2612735581531fcb5abe078569c1229e1cec1576eb45"
+        }
+      ],
+      "persistent_udp": [
+        {
+          "age_seconds": 380.013888724,
+          "echo_bytes": 20480,
+          "inbound": "h1",
+          "pings": 40
+        },
+        {
+          "age_seconds": 380.020142041,
+          "echo_bytes": 20480,
+          "inbound": "h2",
+          "pings": 40
+        },
+        {
+          "age_seconds": 380.026566781,
+          "echo_bytes": 20480,
+          "inbound": "h3",
+          "pings": 40
+        }
+      ],
+      "round": 13,
+      "warp_transport": "h3"
+    },
+    {
+      "bulk": {
+        "bytes_each_direction": 67108864,
+        "elapsed_ms": 16193,
+        "half_close": true,
+        "inbound": "h3",
+        "sha256": "6c6f8309a1c9260f2ca2209fdba4fe646fb9064f3ab1cecc11d7a9ebc7f0e473"
+      },
+      "egress": {
+        "available": true,
+        "dropped_packets": 0,
+        "failure": null,
+        "generation": 1,
+        "inbound_queue_drops": 0,
+        "ipv4": true,
+        "ipv6": true,
+        "mtu": 1280,
+        "received_ip_bytes": 1041595777,
+        "received_packets": 859147,
+        "sent_ip_bytes": 1041180624,
+        "sent_packets": 848263,
+        "socket_limit": 64,
+        "sockets": 6,
+        "stack_queue_drops": 0,
+        "tcp_buffer_bytes_per_socket": 393216,
+        "transport": "HTTP/2",
+        "tunnel_addresses": [
+          "198.18.0.1",
+          "fd00::1"
+        ],
+        "workers": 2
+      },
+      "peer_after": {
+        "authenticated_clients": 1,
+        "dns_queries": 171,
+        "dns_tcp_queries": 0,
+        "h2_capsules": 848263,
+        "h3_datagrams": 0,
+        "h3_route_advertisements": 0,
+        "http_file_bytes_sent": 0,
+        "http_file_requests": 0,
+        "http_requests": 48,
+        "ip_bytes_from_client": 1041180624,
+        "ip_bytes_to_client": 1041595777,
+        "ip_packets_from_client": 848263,
+        "ip_packets_to_client": 859147,
+        "tcp_bytes_received": 1007136768,
+        "tcp_bytes_sent": 1007136768,
+        "tcp_connections": 66,
+        "tunnels": 1,
+        "udp_bytes_received": 62976,
+        "udp_bytes_sent": 62976,
+        "udp_datagrams_received": 123,
+        "udp_datagrams_sent": 123
+      },
+      "peer_before": {
+        "authenticated_clients": 1,
+        "dns_queries": 170,
+        "dns_tcp_queries": 0,
+        "h2_capsules": 791816,
+        "h3_datagrams": 0,
+        "h3_route_advertisements": 0,
+        "http_file_bytes_sent": 0,
+        "http_file_requests": 0,
+        "http_requests": 48,
+        "ip_bytes_from_client": 971797571,
+        "ip_bytes_to_client": 972183891,
+        "ip_packets_from_client": 791816,
+        "ip_packets_to_client": 801949,
+        "tcp_bytes_received": 940015616,
+        "tcp_bytes_sent": 940015616,
+        "tcp_connections": 65,
+        "tunnels": 1,
+        "udp_bytes_received": 61440,
+        "udp_bytes_sent": 61440,
+        "udp_datagrams_received": 120,
+        "udp_datagrams_sent": 120
+      },
+      "persistent_tcp": [
+        {
+          "age_seconds": 390.043733993,
+          "echo_bytes": 167936,
+          "inbound": "h1",
+          "pings": 41,
+          "sha256": "2c24a97b003830399ac742d51bc51959690587c18a36b74c0dfaf5bf82debd91"
+        },
+        {
+          "age_seconds": 390.03501341,
+          "echo_bytes": 167936,
+          "inbound": "h2",
+          "pings": 41,
+          "sha256": "2c24a97b003830399ac742d51bc51959690587c18a36b74c0dfaf5bf82debd91"
+        },
+        {
+          "age_seconds": 390.048699421,
+          "echo_bytes": 167936,
+          "inbound": "h3",
+          "pings": 41,
+          "sha256": "2c24a97b003830399ac742d51bc51959690587c18a36b74c0dfaf5bf82debd91"
+        }
+      ],
+      "persistent_udp": [
+        {
+          "age_seconds": 390.025247421,
+          "echo_bytes": 20992,
+          "inbound": "h1",
+          "pings": 41
+        },
+        {
+          "age_seconds": 390.072870111,
+          "echo_bytes": 20992,
+          "inbound": "h2",
+          "pings": 41
+        },
+        {
+          "age_seconds": 390.043578872,
+          "echo_bytes": 20992,
+          "inbound": "h3",
+          "pings": 41
+        }
+      ],
+      "round": 14,
+      "warp_transport": "h2"
+    },
+    {
+      "bulk": {
+        "bytes_each_direction": 67108864,
+        "elapsed_ms": 9936,
+        "half_close": true,
+        "inbound": "h3",
+        "sha256": "6c6f8309a1c9260f2ca2209fdba4fe646fb9064f3ab1cecc11d7a9ebc7f0e473"
+      },
+      "egress": {
+        "available": true,
+        "dropped_packets": 0,
+        "failure": null,
+        "generation": 1,
+        "inbound_queue_drops": 0,
+        "ipv4": true,
+        "ipv6": true,
+        "mtu": 1280,
+        "received_ip_bytes": 1041037327,
+        "received_packets": 844786,
+        "sent_ip_bytes": 1041039198,
+        "sent_packets": 844384,
+        "socket_limit": 64,
+        "sockets": 6,
+        "stack_queue_drops": 0,
+        "tcp_buffer_bytes_per_socket": 393216,
+        "transport": "HTTP/3",
+        "tunnel_addresses": [
+          "198.18.0.1",
+          "fd00::1"
+        ],
+        "workers": 2
+      },
+      "peer_after": {
+        "authenticated_clients": 1,
+        "dns_queries": 171,
+        "dns_tcp_queries": 0,
+        "h2_capsules": 0,
+        "h3_datagrams": 844384,
+        "h3_route_advertisements": 1,
+        "http_file_bytes_sent": 0,
+        "http_file_requests": 0,
+        "http_requests": 48,
+        "ip_bytes_from_client": 1041039198,
+        "ip_bytes_to_client": 1041037327,
+        "ip_packets_from_client": 844384,
+        "ip_packets_to_client": 844786,
+        "tcp_bytes_received": 1007149056,
+        "tcp_bytes_sent": 1007149056,
+        "tcp_connections": 66,
+        "tunnels": 1,
+        "udp_bytes_received": 64512,
+        "udp_bytes_sent": 64512,
+        "udp_datagrams_received": 126,
+        "udp_datagrams_sent": 126
+      },
+      "peer_before": {
+        "authenticated_clients": 1,
+        "dns_queries": 170,
+        "dns_tcp_queries": 0,
+        "h2_capsules": 0,
+        "h3_datagrams": 788339,
+        "h3_route_advertisements": 1,
+        "http_file_bytes_sent": 0,
+        "http_file_requests": 0,
+        "http_requests": 48,
+        "ip_bytes_from_client": 971674702,
+        "ip_bytes_to_client": 971667572,
+        "ip_packets_from_client": 788339,
+        "ip_packets_to_client": 788641,
+        "tcp_bytes_received": 940027904,
+        "tcp_bytes_sent": 940027904,
+        "tcp_connections": 65,
+        "tunnels": 1,
+        "udp_bytes_received": 62976,
+        "udp_bytes_sent": 62976,
+        "udp_datagrams_received": 123,
+        "udp_datagrams_sent": 123
+      },
+      "persistent_tcp": [
+        {
+          "age_seconds": 400.02202289,
+          "echo_bytes": 172032,
+          "inbound": "h1",
+          "pings": 42,
+          "sha256": "5161c76946880c23c4ef087fd4f333c213e5f193d6f5e826f283eb0689219b1a"
+        },
+        {
+          "age_seconds": 400.014308438,
+          "echo_bytes": 172032,
+          "inbound": "h2",
+          "pings": 42,
+          "sha256": "5161c76946880c23c4ef087fd4f333c213e5f193d6f5e826f283eb0689219b1a"
+        },
+        {
+          "age_seconds": 400.017766622,
+          "echo_bytes": 172032,
+          "inbound": "h3",
+          "pings": 42,
+          "sha256": "5161c76946880c23c4ef087fd4f333c213e5f193d6f5e826f283eb0689219b1a"
+        }
+      ],
+      "persistent_udp": [
+        {
+          "age_seconds": 400.015795427,
+          "echo_bytes": 21504,
+          "inbound": "h1",
+          "pings": 42
+        },
+        {
+          "age_seconds": 400.031990416,
+          "echo_bytes": 21504,
+          "inbound": "h2",
+          "pings": 42
+        },
+        {
+          "age_seconds": 400.022461897,
+          "echo_bytes": 21504,
+          "inbound": "h3",
+          "pings": 42
+        }
+      ],
+      "round": 14,
+      "warp_transport": "h3"
+    },
+    {
+      "bulk": {
+        "bytes_each_direction": 67108864,
+        "elapsed_ms": 16538,
+        "half_close": true,
+        "inbound": "h3",
+        "sha256": "6c6f8309a1c9260f2ca2209fdba4fe646fb9064f3ab1cecc11d7a9ebc7f0e473"
+      },
+      "egress": {
+        "available": true,
+        "dropped_packets": 0,
+        "failure": null,
+        "generation": 1,
+        "inbound_queue_drops": 0,
+        "ipv4": true,
+        "ipv6": true,
+        "mtu": 1280,
+        "received_ip_bytes": 1111034059,
+        "received_packets": 916338,
+        "sent_ip_bytes": 1110594307,
+        "sent_packets": 904835,
+        "socket_limit": 64,
+        "sockets": 6,
+        "stack_queue_drops": 0,
+        "tcp_buffer_bytes_per_socket": 393216,
+        "transport": "HTTP/2",
+        "tunnel_addresses": [
+          "198.18.0.1",
+          "fd00::1"
+        ],
+        "workers": 2
+      },
+      "peer_after": {
+        "authenticated_clients": 1,
+        "dns_queries": 181,
+        "dns_tcp_queries": 0,
+        "h2_capsules": 904835,
+        "h3_datagrams": 0,
+        "h3_route_advertisements": 0,
+        "http_file_bytes_sent": 0,
+        "http_file_requests": 0,
+        "http_requests": 51,
+        "ip_bytes_from_client": 1110594307,
+        "ip_bytes_to_client": 1111034059,
+        "ip_packets_from_client": 904835,
+        "ip_packets_to_client": 916338,
+        "tcp_bytes_received": 1074282496,
+        "tcp_bytes_sent": 1074282496,
+        "tcp_connections": 70,
+        "tunnels": 1,
+        "udp_bytes_received": 67584,
+        "udp_bytes_sent": 67584,
+        "udp_datagrams_received": 132,
+        "udp_datagrams_sent": 132
+      },
+      "peer_before": {
+        "authenticated_clients": 1,
+        "dns_queries": 180,
+        "dns_tcp_queries": 0,
+        "h2_capsules": 848302,
+        "h3_datagrams": 0,
+        "h3_route_advertisements": 0,
+        "http_file_bytes_sent": 0,
+        "http_file_requests": 0,
+        "http_requests": 51,
+        "ip_bytes_from_client": 1041196506,
+        "ip_bytes_to_client": 1041611349,
+        "ip_packets_from_client": 848302,
+        "ip_packets_to_client": 859182,
+        "tcp_bytes_received": 1007149056,
+        "tcp_bytes_sent": 1007149056,
+        "tcp_connections": 69,
+        "tunnels": 1,
+        "udp_bytes_received": 64512,
+        "udp_bytes_sent": 64512,
+        "udp_datagrams_received": 126,
+        "udp_datagrams_sent": 126
+      },
+      "persistent_tcp": [
+        {
+          "age_seconds": 420.038880503,
+          "echo_bytes": 180224,
+          "inbound": "h1",
+          "pings": 44,
+          "sha256": "832f5faff266f91a64a308648d82abdba113d4bf4555425e715983759b98cec4"
+        },
+        {
+          "age_seconds": 420.065289623,
+          "echo_bytes": 180224,
+          "inbound": "h2",
+          "pings": 44,
+          "sha256": "832f5faff266f91a64a308648d82abdba113d4bf4555425e715983759b98cec4"
+        },
+        {
+          "age_seconds": 420.053085228,
+          "echo_bytes": 180224,
+          "inbound": "h3",
+          "pings": 44,
+          "sha256": "832f5faff266f91a64a308648d82abdba113d4bf4555425e715983759b98cec4"
+        }
+      ],
+      "persistent_udp": [
+        {
+          "age_seconds": 420.024341207,
+          "echo_bytes": 22528,
+          "inbound": "h1",
+          "pings": 44
+        },
+        {
+          "age_seconds": 420.067350926,
+          "echo_bytes": 22528,
+          "inbound": "h2",
+          "pings": 44
+        },
+        {
+          "age_seconds": 420.038145271,
+          "echo_bytes": 22528,
+          "inbound": "h3",
+          "pings": 44
+        }
+      ],
+      "round": 15,
+      "warp_transport": "h2"
+    },
+    {
+      "bulk": {
+        "bytes_each_direction": 67108864,
+        "elapsed_ms": 9666,
+        "half_close": true,
+        "inbound": "h3",
+        "sha256": "6c6f8309a1c9260f2ca2209fdba4fe646fb9064f3ab1cecc11d7a9ebc7f0e473"
+      },
+      "egress": {
+        "available": true,
+        "dropped_packets": 0,
+        "failure": null,
+        "generation": 1,
+        "inbound_queue_drops": 0,
+        "ipv4": true,
+        "ipv6": true,
+        "mtu": 1280,
+        "received_ip_bytes": 1110454434,
+        "received_packets": 901351,
+        "sent_ip_bytes": 1110445761,
+        "sent_packets": 900623,
+        "socket_limit": 64,
+        "sockets": 6,
+        "stack_queue_drops": 0,
+        "tcp_buffer_bytes_per_socket": 393216,
+        "transport": "HTTP/3",
+        "tunnel_addresses": [
+          "198.18.0.1",
+          "fd00::1"
+        ],
+        "workers": 2
+      },
+      "peer_after": {
+        "authenticated_clients": 1,
+        "dns_queries": 181,
+        "dns_tcp_queries": 0,
+        "h2_capsules": 0,
+        "h3_datagrams": 900623,
+        "h3_route_advertisements": 1,
+        "http_file_bytes_sent": 0,
+        "http_file_requests": 0,
+        "http_requests": 51,
+        "ip_bytes_from_client": 1110445761,
+        "ip_bytes_to_client": 1110454434,
+        "ip_packets_from_client": 900623,
+        "ip_packets_to_client": 901351,
+        "tcp_bytes_received": 1074294784,
+        "tcp_bytes_sent": 1074294784,
+        "tcp_connections": 70,
+        "tunnels": 1,
+        "udp_bytes_received": 69120,
+        "udp_bytes_sent": 69120,
+        "udp_datagrams_received": 135,
+        "udp_datagrams_sent": 135
+      },
+      "peer_before": {
+        "authenticated_clients": 1,
+        "dns_queries": 180,
+        "dns_tcp_queries": 0,
+        "h2_capsules": 0,
+        "h3_datagrams": 844441,
+        "h3_route_advertisements": 1,
+        "http_file_bytes_sent": 0,
+        "http_file_requests": 0,
+        "http_requests": 51,
+        "ip_bytes_from_client": 1041069588,
+        "ip_bytes_to_client": 1041067407,
+        "ip_packets_from_client": 844441,
+        "ip_packets_to_client": 844839,
+        "tcp_bytes_received": 1007173632,
+        "tcp_bytes_sent": 1007173632,
+        "tcp_connections": 69,
+        "tunnels": 1,
+        "udp_bytes_received": 67584,
+        "udp_bytes_sent": 67584,
+        "udp_datagrams_received": 132,
+        "udp_datagrams_sent": 132
+      },
+      "persistent_tcp": [
+        {
+          "age_seconds": 430.026518895,
+          "echo_bytes": 184320,
+          "inbound": "h1",
+          "pings": 45,
+          "sha256": "08c32aca694289f958b2d57f706748d290226e180601d9adfb2386b7234cada6"
+        },
+        {
+          "age_seconds": 430.035037911,
+          "echo_bytes": 184320,
+          "inbound": "h2",
+          "pings": 45,
+          "sha256": "08c32aca694289f958b2d57f706748d290226e180601d9adfb2386b7234cada6"
+        },
+        {
+          "age_seconds": 430.029427745,
+          "echo_bytes": 184320,
+          "inbound": "h3",
+          "pings": 45,
+          "sha256": "08c32aca694289f958b2d57f706748d290226e180601d9adfb2386b7234cada6"
+        }
+      ],
+      "persistent_udp": [
+        {
+          "age_seconds": 430.024909296,
+          "echo_bytes": 23040,
+          "inbound": "h1",
+          "pings": 45
+        },
+        {
+          "age_seconds": 430.022636767,
+          "echo_bytes": 23040,
+          "inbound": "h2",
+          "pings": 45
+        },
+        {
+          "age_seconds": 430.019033834,
+          "echo_bytes": 23040,
+          "inbound": "h3",
+          "pings": 45
+        }
+      ],
+      "round": 15,
+      "warp_transport": "h3"
+    }
+  ],
+  "rounds": 16
+}

@@ -1,0 +1,98 @@
+Evidence verifier guard checks passed: 29 synthetic checks
+Verified nf: 68 unchanged source files; SHA-256 194560cff41357eaaf0bb0d6650a54983d33df991f1f8ead962c4d93793957d4
+Verified nf: 68 unchanged source files; SHA-256 194560cff41357eaaf0bb0d6650a54983d33df991f1f8ead962c4d93793957d4
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.05s
+Verified rs: 68 unchanged source files; SHA-256 5d7bd7d8248411a903d79f0158fda1cff679865a5d5952db3864a412800a24db
+Verified rs: 68 unchanged source files; SHA-256 5d7bd7d8248411a903d79f0158fda1cff679865a5d5952db3864a412800a24db
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.06s
+Verified nf-current: 68 unchanged source files; SHA-256 a497375c5d845a841c3b9acc0e26cb1d265c81d1bba78bc0dc5a3c845b0c85aa
+Verified nf-current: 68 unchanged source files; SHA-256 a497375c5d845a841c3b9acc0e26cb1d265c81d1bba78bc0dc5a3c845b0c85aa
+warning: variable does not need to be mutable
+   --> src/../core/tests/support/mod.rs:219:46
+    |
+219 | ...                   let (mut send, mut recv) =
+    |                            ----^^^^
+    |                            |
+    |                            help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: `client-interop-nf-current` (bin "client-interop-nf-current") generated 1 warning (run `cargo fix --bin "client-interop-nf-current" -p client-interop-nf-current` to apply 1 suggestion)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.06s
+Verified rs-current: 68 unchanged source files; SHA-256 cb9a647f4fbb6aa50798429c8c11518dfed24b6e357f46fd10b434a9257d4088
+Verified rs-current: 68 unchanged source files; SHA-256 cb9a647f4fbb6aa50798429c8c11518dfed24b6e357f46fd10b434a9257d4088
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.06s
+Four unchanged client harnesses prepared; source verification /workspace/network-relay/network-relay-cf-masque/target/client-interop-cache/SOURCE-VERIFICATION.json
+   Compiling network-relay-cf-masque v0.1.0 (/workspace/network-relay/network-relay-cf-masque)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 11.51s
+     Running tests/cli_warp_wiring.rs (target/debug/deps/cli_warp_wiring-21ef2f141ce24ec6)
+
+running 1 test
+test root_cli_offline_check_real_serve_and_tunnel_death_are_fail_closed ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.53s
+
+     Running tests/client_interop.rs (target/debug/deps/client_interop-4c6eea075a60b013)
+
+running 1 test
+test unchanged_nf_rs_cores_use_each_ingress_and_warp_transport ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 17.24s
+
+     Running tests/h3_settings_validation.rs (target/debug/deps/h3_settings_validation-cb6652d28c8f81c8)
+
+running 2 tests
+test invalid_boolean_settings_close_with_settings_error ... ok
+test legal_boolean_and_unknown_settings_still_serve_the_standard_cover_site ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s
+
+     Running tests/http_file_matrix.rs (target/debug/deps/http_file_matrix-4a469d624c5cda70)
+
+running 1 test
+test known_64mib_http_file_streams_across_all_six_pairings ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 37.58s
+
+     Running tests/udp_mtu_frontend.rs (target/debug/deps/udp_mtu_frontend-b40ac8f7857e12e1)
+
+running 1 test
+test standard_connect_udp_silently_drops_mtu_oversize_across_six_transport_pairings ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.16s
+
+     Running tests/warp_matrix.rs (target/debug/deps/warp_matrix-b38850e40f540d6f)
+
+running 7 tests
+test idle_outer_keepalive_and_active_inner_flows_survive_two_idle_windows ... ok
+test one_hour_forced_h2_and_h3_soak_with_resource_metrics ... ignored, requires SOAK_SECONDS >= 3600 after functional tests pass
+test persistent_pairings_relay_inner_resets_and_active_revocation ... ok
+test repeated_64mib_bulk_hash_and_half_close_across_six_pairings ... ok
+test resource_gates_reject_unavailable_and_nonpositive_observations ... ok
+test six_inbound_warp_transport_pairings_use_real_packet_egress ... ok
+test tunnel_dns_udp_peer_pinning_oversize_auth_and_terminal_failure ... ok
+
+test result: ok. 6 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 208.70s
+
+     Running tests/warp_protocol_failures.rs (target/debug/deps/warp_protocol_failures-bdd7a9505c570199)
+
+running 2 tests
+test inner_rst_and_malformed_control_map_to_exact_inbound_codes ... ok
+test server_pin_and_enrolled_client_key_mismatches_are_rejected ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.55s
+
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.09s
+Starting fixed-binary soak; manifest: /workspace/network-relay/network-relay-cf-masque/target/test-runtime/soak-20261014T222452Z-125811/manifest.json
+
+running 1 test
+test one_hour_forced_h2_and_h3_soak_with_resource_metrics ... Error: Connection error: Timeout
+FAILED
+
+failures:
+
+failures:
+    one_hour_forced_h2_and_h3_soak_with_resource_metrics
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 6 filtered out; finished in 666.63s
+

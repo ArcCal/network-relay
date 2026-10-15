@@ -1,0 +1,156 @@
+{
+  "verifier_selfcheck": "passed",
+  "synthetic_fixtures_only": true,
+  "checked_at_utc": "2026-10-14T21:48:18.459672+00:00",
+  "verifier_sha256": "ce52f282a6eb8fb31cbd9e7de4fb995068799472f01758eecf9fd4a40b6de842",
+  "selfcheck_sha256": "43021b0dda2d7085f6d1afd1f8d17981c623182778e2e31e47c8da8daabf4868",
+  "checks": 29,
+  "temporary_fixtures_removed": true,
+  "cases": [
+    {
+      "case": "synthetic_positive_control",
+      "evidence_only": false,
+      "outcome": "expected_control_accepted"
+    },
+    {
+      "case": "synthetic_positive_control",
+      "evidence_only": true,
+      "outcome": "expected_control_accepted"
+    },
+    {
+      "case": "pending_manifest",
+      "evidence_only": false,
+      "outcome": "rejected"
+    },
+    {
+      "case": "pending_manifest",
+      "evidence_only": true,
+      "outcome": "rejected"
+    },
+    {
+      "case": "failed_manifest",
+      "evidence_only": false,
+      "outcome": "rejected"
+    },
+    {
+      "case": "failed_manifest",
+      "evidence_only": true,
+      "outcome": "rejected"
+    },
+    {
+      "case": "wrong_log_path",
+      "evidence_only": false,
+      "outcome": "rejected"
+    },
+    {
+      "case": "wrong_log_path",
+      "evidence_only": true,
+      "outcome": "rejected"
+    },
+    {
+      "case": "wrong_process_id",
+      "evidence_only": false,
+      "outcome": "rejected"
+    },
+    {
+      "case": "wrong_process_id",
+      "evidence_only": true,
+      "outcome": "rejected"
+    },
+    {
+      "case": "wrong_log_digest",
+      "evidence_only": false,
+      "outcome": "rejected"
+    },
+    {
+      "case": "wrong_log_digest",
+      "evidence_only": true,
+      "outcome": "rejected"
+    },
+    {
+      "case": "zero_rss",
+      "evidence_only": false,
+      "outcome": "rejected"
+    },
+    {
+      "case": "zero_rss",
+      "evidence_only": true,
+      "outcome": "rejected"
+    },
+    {
+      "case": "unavailable_metrics",
+      "evidence_only": false,
+      "outcome": "rejected"
+    },
+    {
+      "case": "unavailable_metrics",
+      "evidence_only": true,
+      "outcome": "rejected"
+    },
+    {
+      "case": "missing_fd",
+      "evidence_only": false,
+      "outcome": "rejected"
+    },
+    {
+      "case": "missing_fd",
+      "evidence_only": true,
+      "outcome": "rejected"
+    },
+    {
+      "case": "stalled_flow",
+      "evidence_only": false,
+      "outcome": "rejected"
+    },
+    {
+      "case": "stalled_flow",
+      "evidence_only": true,
+      "outcome": "rejected"
+    },
+    {
+      "case": "bad_tcp_digest",
+      "evidence_only": false,
+      "outcome": "rejected"
+    },
+    {
+      "case": "bad_tcp_digest",
+      "evidence_only": true,
+      "outcome": "rejected"
+    },
+    {
+      "case": "outer_restart",
+      "evidence_only": false,
+      "outcome": "rejected"
+    },
+    {
+      "case": "outer_restart",
+      "evidence_only": true,
+      "outcome": "rejected"
+    },
+    {
+      "case": "bad_production_hash",
+      "evidence_only": false,
+      "outcome": "rejected"
+    },
+    {
+      "case": "bad_production_hash",
+      "evidence_only": true,
+      "outcome": "rejected"
+    },
+    {
+      "case": "changed_production_file_set",
+      "evidence_only": false,
+      "outcome": "rejected"
+    },
+    {
+      "case": "changed_production_file_set",
+      "evidence_only": true,
+      "outcome": "rejected"
+    },
+    {
+      "case": "bad_frozen_binary_hash",
+      "evidence_only": false,
+      "outcome": "rejected"
+    }
+  ]
+}

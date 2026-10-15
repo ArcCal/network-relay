@@ -1,0 +1,247 @@
+{
+  "cases": [
+    {
+      "case": "outer_idle_with_keepalive",
+      "egress": {
+        "available": true,
+        "dropped_packets": 0,
+        "failure": null,
+        "generation": 1,
+        "inbound_queue_drops": 0,
+        "ipv4": true,
+        "ipv6": true,
+        "mtu": 1280,
+        "received_ip_bytes": 0,
+        "received_packets": 0,
+        "sent_ip_bytes": 0,
+        "sent_packets": 0,
+        "socket_limit": 64,
+        "sockets": 0,
+        "stack_queue_drops": 0,
+        "tcp_buffer_bytes_per_socket": 393216,
+        "transport": "HTTP/2",
+        "tunnel_addresses": [
+          "198.18.0.1",
+          "fd00::1"
+        ],
+        "workers": 2
+      },
+      "peer": {
+        "authenticated_clients": 1,
+        "dns_queries": 0,
+        "dns_tcp_queries": 0,
+        "h2_capsules": 0,
+        "h3_datagrams": 0,
+        "h3_route_advertisements": 0,
+        "http_file_bytes_sent": 0,
+        "http_file_requests": 0,
+        "http_requests": 0,
+        "ip_bytes_from_client": 0,
+        "ip_bytes_to_client": 0,
+        "ip_packets_from_client": 0,
+        "ip_packets_to_client": 0,
+        "tcp_bytes_received": 0,
+        "tcp_bytes_sent": 0,
+        "tcp_connections": 0,
+        "tunnels": 1,
+        "udp_bytes_received": 0,
+        "udp_bytes_sent": 0,
+        "udp_datagrams_received": 0,
+        "udp_datagrams_sent": 0
+      },
+      "seconds": 65
+    },
+    {
+      "case": "outer_idle_with_keepalive",
+      "egress": {
+        "available": true,
+        "dropped_packets": 0,
+        "failure": null,
+        "generation": 1,
+        "inbound_queue_drops": 0,
+        "ipv4": true,
+        "ipv6": true,
+        "mtu": 1280,
+        "received_ip_bytes": 0,
+        "received_packets": 0,
+        "sent_ip_bytes": 0,
+        "sent_packets": 0,
+        "socket_limit": 64,
+        "sockets": 0,
+        "stack_queue_drops": 0,
+        "tcp_buffer_bytes_per_socket": 393216,
+        "transport": "HTTP/3",
+        "tunnel_addresses": [
+          "198.18.0.1",
+          "fd00::1"
+        ],
+        "workers": 2
+      },
+      "peer": {
+        "authenticated_clients": 1,
+        "dns_queries": 0,
+        "dns_tcp_queries": 0,
+        "h2_capsules": 0,
+        "h3_datagrams": 0,
+        "h3_route_advertisements": 1,
+        "http_file_bytes_sent": 0,
+        "http_file_requests": 0,
+        "http_requests": 0,
+        "ip_bytes_from_client": 0,
+        "ip_bytes_to_client": 0,
+        "ip_packets_from_client": 0,
+        "ip_packets_to_client": 0,
+        "tcp_bytes_received": 0,
+        "tcp_bytes_sent": 0,
+        "tcp_connections": 0,
+        "tunnels": 1,
+        "udp_bytes_received": 0,
+        "udp_bytes_sent": 0,
+        "udp_datagrams_received": 0,
+        "udp_datagrams_sent": 0
+      },
+      "seconds": 65
+    },
+    {
+      "case": "active_business_with_10s_ping",
+      "egress": {
+        "available": true,
+        "dropped_packets": 0,
+        "failure": null,
+        "generation": 1,
+        "inbound_queue_drops": 0,
+        "ipv4": true,
+        "ipv6": true,
+        "mtu": 1280,
+        "received_ip_bytes": 116912,
+        "received_packets": 160,
+        "sent_ip_bytes": 117264,
+        "sent_packets": 167,
+        "socket_limit": 64,
+        "sockets": 6,
+        "stack_queue_drops": 0,
+        "tcp_buffer_bytes_per_socket": 393216,
+        "transport": "HTTP/2",
+        "tunnel_addresses": [
+          "198.18.0.1",
+          "fd00::1"
+        ],
+        "workers": 2
+      },
+      "tcp": [
+        {
+          "age_seconds": 60.055146932,
+          "echo_bytes": 32768,
+          "inbound": "h1",
+          "pings": 8,
+          "sha256": "a75f5349496cfc932e28ba74f60129c7a98534bc7d734836f9a5d7fa67770057"
+        },
+        {
+          "age_seconds": 60.048230966,
+          "echo_bytes": 32768,
+          "inbound": "h2",
+          "pings": 8,
+          "sha256": "a75f5349496cfc932e28ba74f60129c7a98534bc7d734836f9a5d7fa67770057"
+        },
+        {
+          "age_seconds": 60.0989353,
+          "echo_bytes": 32768,
+          "inbound": "h3",
+          "pings": 8,
+          "sha256": "a75f5349496cfc932e28ba74f60129c7a98534bc7d734836f9a5d7fa67770057"
+        }
+      ],
+      "udp": [
+        {
+          "age_seconds": 60.004298843,
+          "echo_bytes": 4096,
+          "inbound": "h1",
+          "pings": 8
+        },
+        {
+          "age_seconds": 60.006570745,
+          "echo_bytes": 4096,
+          "inbound": "h2",
+          "pings": 8
+        },
+        {
+          "age_seconds": 60.004726161,
+          "echo_bytes": 4096,
+          "inbound": "h3",
+          "pings": 8
+        }
+      ]
+    },
+    {
+      "case": "active_business_with_10s_ping",
+      "egress": {
+        "available": true,
+        "dropped_packets": 0,
+        "failure": null,
+        "generation": 1,
+        "inbound_queue_drops": 0,
+        "ipv4": true,
+        "ipv6": true,
+        "mtu": 1280,
+        "received_ip_bytes": 116832,
+        "received_packets": 158,
+        "sent_ip_bytes": 117144,
+        "sent_packets": 164,
+        "socket_limit": 64,
+        "sockets": 6,
+        "stack_queue_drops": 0,
+        "tcp_buffer_bytes_per_socket": 393216,
+        "transport": "HTTP/3",
+        "tunnel_addresses": [
+          "198.18.0.1",
+          "fd00::1"
+        ],
+        "workers": 2
+      },
+      "tcp": [
+        {
+          "age_seconds": 60.008203736,
+          "echo_bytes": 32768,
+          "inbound": "h1",
+          "pings": 8,
+          "sha256": "a75f5349496cfc932e28ba74f60129c7a98534bc7d734836f9a5d7fa67770057"
+        },
+        {
+          "age_seconds": 60.008502137,
+          "echo_bytes": 32768,
+          "inbound": "h2",
+          "pings": 8,
+          "sha256": "a75f5349496cfc932e28ba74f60129c7a98534bc7d734836f9a5d7fa67770057"
+        },
+        {
+          "age_seconds": 60.009042316,
+          "echo_bytes": 32768,
+          "inbound": "h3",
+          "pings": 8,
+          "sha256": "a75f5349496cfc932e28ba74f60129c7a98534bc7d734836f9a5d7fa67770057"
+        }
+      ],
+      "udp": [
+        {
+          "age_seconds": 60.005694891,
+          "echo_bytes": 4096,
+          "inbound": "h1",
+          "pings": 8
+        },
+        {
+          "age_seconds": 60.007080903,
+          "echo_bytes": 4096,
+          "inbound": "h2",
+          "pings": 8
+        },
+        {
+          "age_seconds": 60.006248071,
+          "echo_bytes": 4096,
+          "inbound": "h3",
+          "pings": 8
+        }
+      ]
+    }
+  ],
+  "live_cloudflare": false
+}

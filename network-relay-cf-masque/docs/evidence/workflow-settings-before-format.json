@@ -1,0 +1,8 @@
+{
+  "exit_code": 1,
+  "failure_stage": "owned-package formatting",
+  "test_runner_passes": 334,
+  "test_runner_failures": 0,
+  "strict_clippy_passed": true,
+  "note": "Only test import ordering changed after earlier workflow; fix formatting and repeat complete workflow."
+}

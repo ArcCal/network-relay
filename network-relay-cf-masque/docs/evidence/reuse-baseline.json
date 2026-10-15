@@ -1,0 +1,46 @@
+{
+  "network-relay": {
+    "revision": "cc7ea4df2924d0454ab5075e089cbb53d94b178e",
+    "source": "https://github.com/ArcCal/network-relay",
+    "role": "copied ingress, policy, auth and library helpers"
+  },
+  "cf-masque": {
+    "revision": "a65c600494cd50fed2c621b8538be7abda5e7fa4",
+    "source": "https://github.com/ArcCal/cf-masque",
+    "role": "copied reusable userspace IP stack, DNS, packet handling and WARP transport"
+  },
+  "copied_files": {
+    "crates/relay-frontend/src/auth.rs": "25af828ea3f0efaf48af1c3edbe4e8aafc60fda59a8cd0b18b958eda1bcaa991",
+    "crates/relay-frontend/src/certs.rs": "b7954ac2f2442987a21d3efe974edc6e73a75512087adc676c4db03a3905cad0",
+    "crates/relay-frontend/src/check.rs": "39ad52d52cb5be64c6c8ee438d3e95269ad24f01f879e10afc5a5b4851d4bdba",
+    "crates/relay-frontend/src/config.rs": "cf3a8c1a3c7d63026f424b6f6051e5ca1e9a8455a27e51192ca2617f88ae54ba",
+    "crates/relay-frontend/src/connect.rs": "39b487df20be87509fdd05c53bcd8c09fb0425888365c801fd62f6d632547399",
+    "crates/relay-frontend/src/identity.rs": "a4bc6296f6871e5b478904329964d07ad320f2cfc189873468db824fa4a0a85d",
+    "crates/relay-frontend/src/lib.rs": "f0f996db97a585265e644d5b5f1c6d3153a8a1afae338007a38f1830d2fffd0f",
+    "crates/relay-frontend/src/limits.rs": "c6331673fc0ce605ef000c27b0ac5d9b5faa5bc7de9647b10eef9ba4c5292caa",
+    "crates/relay-frontend/src/logging.rs": "55fb8f5a69e5e16e19ae8d7a4964aaada45f88f759b6a863c7d916ad46352bff",
+    "crates/relay-frontend/src/policy.rs": "de57919152fde9da11345cb142233d396c018f42d1c0c9a3be52da3f3e4adcfc",
+    "crates/relay-frontend/src/private_file.rs": "0fffbe25e07ff7fa0b6cfc454711df7e1b247544e9383e978bd035f39a3c14d6",
+    "crates/relay-frontend/src/profile.rs": "44d523945bf3d48b8d585537403dd474b34ebdf9e1010ea104696fcb1d125f5a",
+    "crates/relay-frontend/src/proto/capsule.rs": "4d371beb245451707bb46efe9d5e4e662cfdb224b712bfb7436844761b44fd8f",
+    "crates/relay-frontend/src/proto/datagram.rs": "cde47b6f8c10c6f8cb826ed490e0d516c3063b5d823fc18d21851285cd941e9f",
+    "crates/relay-frontend/src/proto/mod.rs": "0078c62a46bdca1005b30594825096aacec135d26b005570bb4b7b1cf51d0af6",
+    "crates/relay-frontend/src/proto/uri_template.rs": "8ad2d6244c55d0682f29f60656405b9fd39463d1baff6e01c5994cc5219e3f6f",
+    "crates/relay-frontend/src/proto/varint.rs": "efbb9f4575ceddd33c8add7cca84263efbc2cf2d4d8b759d8176583ccc760a85",
+    "crates/relay-frontend/src/server/h2_stream.rs": "ddff1395f44bc39fa2f8eeb5769f9b2ca871d516df68e480074e9e91fab41638",
+    "crates/relay-frontend/src/server/mod.rs": "c6cf134ec015cef6e4b05ac99f2a3071fc8988804db95964739b997cf900914d",
+    "crates/relay-frontend/src/server/over_h3.rs": "67a15d8973ab0471103218022cd47f5a0aea78738e086600c39e34077f7cb05d",
+    "crates/relay-frontend/src/server/over_tcp.rs": "f68fe6f56a5c6ec014dc6e747110be567d55e818d10682cfa7cd21a8bbdc7a2a",
+    "crates/relay-frontend/src/server/pump.rs": "a7c6bea53c4695bdcffd942b09bedc713c13b151f623f5bb1a1e46cfc813c255",
+    "crates/relay-frontend/src/sys.rs": "0e2e889e537f329535ae318e3cd70bfcb2020e3d76b71481511b35660b409d67",
+    "crates/relay-frontend/src/tls.rs": "3987496051cfc3d7c5b0a631421f292d14d60da0fb7d1559cafbea5fdab659a1",
+    "crates/relay-frontend/src/tunnel.rs": "c8360126e7ae7715eccba65d5302302ccbe23551bae3eb5ec4c390d370a010ea",
+    "crates/relay-frontend/src/web.rs": "d7a94395ef1e1c8d3e4ee66ee8d164d54a0c4a55cee32d23ed476976c30552d7",
+    "crates/warp-egress/src/dns.rs": "fed461f4efc5a15e25d5ab34a12d0d1b9bacce29dab14110eb377b7d141ef8bf",
+    "crates/warp-egress/src/ip.rs": "037fa9d649c42e1da48d802b0fc5b92ef40700e1bd4ba99c108f3a8d7b24e244",
+    "crates/warp-egress/src/masque.rs": "5665c7b9a8de217be6bcd5d3e45cc7d79449d43dd39dff44d41db7a95639590d",
+    "crates/warp-egress/src/netstack.rs": "4ad4d3d77da17ac31b17bbfa1ab135f4f890e04ea8a37b5571a3cbae602136d4",
+    "crates/warp-egress/src/shutdown.rs": "dc3052ea8072ad6cc1061b44ff4ba60d5bb9be820a448c1d5f0dff480d016289",
+    "crates/warp-egress/src/varint.rs": "82c907d810fce15fd113030a16f66fa76d170dfe98e40995838deed788e8cae5"
+  }
+}

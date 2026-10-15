@@ -1,0 +1,186 @@
+{
+  "cases": [
+    {
+      "checks": [
+        {
+          "check": "HTTP/3 TCP (CONNECT)",
+          "elapsed_ms": 28,
+          "result": "fixture.test:80 answered \"HTTP/1.1 204 No Content\""
+        },
+        {
+          "check": "HTTP/3 UDP (CONNECT-UDP)",
+          "elapsed_ms": 3,
+          "result": "DNS server fixture.test:53 answered (rcode 0, 1 records)"
+        },
+        {
+          "check": "HTTP/2 TCP (CONNECT)",
+          "elapsed_ms": 49,
+          "result": "fixture.test:80 answered \"HTTP/1.1 204 No Content\""
+        },
+        {
+          "check": "HTTP/2 UDP (CONNECT-UDP)",
+          "elapsed_ms": 12,
+          "result": "DNS server fixture.test:53 answered (rcode 0, 1 records)"
+        },
+        {
+          "check": "HTTP/1.1 TCP (CONNECT)",
+          "elapsed_ms": 5,
+          "result": "fixture.test:80 answered \"HTTP/1.1 204 No Content\""
+        },
+        {
+          "check": "HTTP/1.1 UDP (Upgrade: connect-udp)",
+          "elapsed_ms": 5,
+          "result": "DNS server fixture.test:53 answered (rcode 0, 1 records)"
+        },
+        {
+          "check": "hidden without password",
+          "elapsed_ms": 46,
+          "result": "a CONNECT without credentials gets 404 like any missing page"
+        }
+      ],
+      "egress": {
+        "available": true,
+        "dropped_packets": 0,
+        "failure": null,
+        "generation": 1,
+        "inbound_queue_drops": 0,
+        "ipv4": true,
+        "ipv6": true,
+        "mtu": 1280,
+        "received_ip_bytes": 1138,
+        "received_packets": 18,
+        "sent_ip_bytes": 1443,
+        "sent_packets": 22,
+        "socket_limit": 64,
+        "sockets": 0,
+        "stack_queue_drops": 0,
+        "tcp_buffer_bytes_per_socket": 393216,
+        "transport": "HTTP/2",
+        "tunnel_addresses": [
+          "198.18.0.1",
+          "fd00::1"
+        ],
+        "workers": 2
+      },
+      "peer": {
+        "authenticated_clients": 1,
+        "dns_queries": 10,
+        "dns_tcp_queries": 0,
+        "h2_capsules": 22,
+        "h3_datagrams": 0,
+        "h3_route_advertisements": 0,
+        "http_requests": 3,
+        "ip_bytes_from_client": 1443,
+        "ip_bytes_to_client": 1138,
+        "ip_packets_from_client": 22,
+        "ip_packets_to_client": 18,
+        "tcp_bytes_received": 0,
+        "tcp_bytes_sent": 0,
+        "tcp_connections": 3,
+        "tunnels": 1,
+        "udp_bytes_received": 0,
+        "udp_bytes_sent": 0,
+        "udp_datagrams_received": 0,
+        "udp_datagrams_sent": 0
+      },
+      "process": {
+        "fd_count": 16,
+        "rss_kib": 65692
+      },
+      "service": "local fake WARP protocol peer",
+      "warp_transport": "h2"
+    },
+    {
+      "checks": [
+        {
+          "check": "HTTP/3 TCP (CONNECT)",
+          "elapsed_ms": 21,
+          "result": "fixture.test:80 answered \"HTTP/1.1 204 No Content\""
+        },
+        {
+          "check": "HTTP/3 UDP (CONNECT-UDP)",
+          "elapsed_ms": 3,
+          "result": "DNS server fixture.test:53 answered (rcode 0, 1 records)"
+        },
+        {
+          "check": "HTTP/2 TCP (CONNECT)",
+          "elapsed_ms": 13,
+          "result": "fixture.test:80 answered \"HTTP/1.1 204 No Content\""
+        },
+        {
+          "check": "HTTP/2 UDP (CONNECT-UDP)",
+          "elapsed_ms": 50,
+          "result": "DNS server fixture.test:53 answered (rcode 0, 1 records)"
+        },
+        {
+          "check": "HTTP/1.1 TCP (CONNECT)",
+          "elapsed_ms": 5,
+          "result": "fixture.test:80 answered \"HTTP/1.1 204 No Content\""
+        },
+        {
+          "check": "HTTP/1.1 UDP (Upgrade: connect-udp)",
+          "elapsed_ms": 4,
+          "result": "DNS server fixture.test:53 answered (rcode 0, 1 records)"
+        },
+        {
+          "check": "hidden without password",
+          "elapsed_ms": 9,
+          "result": "a CONNECT without credentials gets 404 like any missing page"
+        }
+      ],
+      "egress": {
+        "available": true,
+        "dropped_packets": 0,
+        "failure": null,
+        "generation": 1,
+        "inbound_queue_drops": 0,
+        "ipv4": true,
+        "ipv6": true,
+        "mtu": 1280,
+        "received_ip_bytes": 1138,
+        "received_packets": 18,
+        "sent_ip_bytes": 1443,
+        "sent_packets": 22,
+        "socket_limit": 64,
+        "sockets": 0,
+        "stack_queue_drops": 0,
+        "tcp_buffer_bytes_per_socket": 393216,
+        "transport": "HTTP/3",
+        "tunnel_addresses": [
+          "198.18.0.1",
+          "fd00::1"
+        ],
+        "workers": 2
+      },
+      "peer": {
+        "authenticated_clients": 1,
+        "dns_queries": 10,
+        "dns_tcp_queries": 0,
+        "h2_capsules": 0,
+        "h3_datagrams": 22,
+        "h3_route_advertisements": 1,
+        "http_requests": 3,
+        "ip_bytes_from_client": 1443,
+        "ip_bytes_to_client": 1138,
+        "ip_packets_from_client": 22,
+        "ip_packets_to_client": 18,
+        "tcp_bytes_received": 0,
+        "tcp_bytes_sent": 0,
+        "tcp_connections": 3,
+        "tunnels": 1,
+        "udp_bytes_received": 0,
+        "udp_bytes_sent": 0,
+        "udp_datagrams_received": 0,
+        "udp_datagrams_sent": 0
+      },
+      "process": {
+        "fd_count": 17,
+        "rss_kib": 82588
+      },
+      "service": "local fake WARP protocol peer",
+      "warp_transport": "h3"
+    }
+  ],
+  "live_cloudflare": false,
+  "pairings": 6
+}

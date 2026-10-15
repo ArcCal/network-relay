@@ -1,0 +1,86 @@
+# network-relay configuration: /etc/network-relay/relay.toml
+#
+# After editing: sudo systemctl reload network-relay
+# (users, destination rules, timeouts, the website and the certificate are
+# reloaded; `listen`, `[tls] client_certificates` and the `[relay]` limits
+# `max_tunnels`, `max_connections` and `max_connections_per_ip` need
+# `sudo systemctl restart network-relay`).
+
+# UDP for HTTP/3 and TCP for HTTP/2 and HTTP/1.1, both on this port.
+listen = "[::]:443"
+
+# Log files in addition to the journal (one per hour, kept for 24 hours).
+# log_dir = "/var/log/network-relay"
+
+[tls]
+# The relay runs as user network-relay, which cannot read certbot's files;
+# deploy/certbot-hook.sh keeps a copy here that it can (see the README).
+cert = "/etc/network-relay/tls/fullchain.pem"
+key = "/etc/network-relay/tls/privkey.pem"
+# The files are read again every day at 03:00, so renewed certificates
+# are picked up without a restart.
+# Let devices authenticate with a client certificate (`network-relay
+# identity`) instead of a password. Off by default.
+# client_certificates = false
+
+# What visitors without a password see: an ordinary website.
+[web]
+root = "/var/www/relay"
+
+[relay]
+# Path of the CONNECT-UDP URI template (RFC 9298). The device profile must
+# use the same one; `network-relay profile` does by default.
+udp_template = "/.well-known/masque/udp/{target_host}/{target_port}/"
+
+# Destinations devices may not reach through the relay: private networks
+# and other special ranges. Every address a domain resolves to is checked,
+# and IPv6 addresses that carry an IPv4 address (NAT64, 6to4, Teredo) are
+# checked by that IPv4 address too.
+blocked_destinations = [
+    "0.0.0.0/8", "10.0.0.0/8", "100.64.0.0/10", "127.0.0.0/8", "169.254.0.0/16",
+    "172.16.0.0/12", "192.0.0.0/24", "192.0.2.0/24", "192.168.0.0/16", "198.18.0.0/15",
+    "198.51.100.0/24", "203.0.113.0/24", "192.88.99.0/24", "224.0.0.0/4", "240.0.0.0/4",
+    "::/127", "::ffff:0:0/96", "64:ff9b:1::/48", "100::/64", "100:0:0:1::/64", "2001:2::/48", "2001:10::/28",
+    "2001:20::/28", "2001:db8::/32", "3fff::/20", "5f00::/16", "fc00::/7", "fe80::/10", "ff00::/8",
+]
+# Also block every address of this server's own network interfaces, its
+# public addresses included (the list above cannot know them).
+block_own_addresses = true
+# Port 25 (mail) is blocked so the relay cannot be used to send spam.
+blocked_ports = [25]
+
+connect_timeout_secs = 10
+udp_idle_timeout_secs = 300
+
+# Limits. A device with stolen credentials, or a flood of connections, can
+# use only a share of the server.
+# Most TCP connections and UDP flows at once, over all users. Without it,
+# a quarter of available host/container memory at 512 KiB per tunnel
+# (1-20000; 512 at 1 GiB).
+# max_tunnels = 4096
+max_tunnels_per_user = 512
+# Per-user traffic, both directions together; 0 is unlimited.
+max_bytes_per_second_per_user = 0
+max_udp_packets_per_second_per_user = 0
+# Client connections (TCP and QUIC), overall and per IPv4 address or IPv6 /64.
+# Without max_connections, available memory at 512 KiB per connection
+# (256-16384; 2048 at 1 GiB).
+# max_connections = 16384
+max_connections_per_ip = 64
+# Close a connection after this long without a request (unauthenticated
+# connections: 30 seconds).
+idle_timeout_secs = 300
+
+[debug]
+# Log every proxy request with its headers (passwords hidden). Handy to see
+# what a device sends; noisy, so turn it off again afterwards.
+log_requests = false
+
+# Users: one per device. Create with `network-relay passwd --name iphone`
+# (or `network-relay identity --name iphone` for a client certificate) and
+# paste its [[user]] lines here.
+# [[user]]
+# name = "iphone"
+# password_hash = "$pbkdf2-sha256$i=1000,l=32$..."
+# certificate_sha256 = "..."         # with [tls] client_certificates = true
+# expires = 2027-01-31T00:00:00Z     # the account stops working then

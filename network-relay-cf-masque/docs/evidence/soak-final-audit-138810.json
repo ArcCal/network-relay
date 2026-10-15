@@ -1,0 +1,233 @@
+{
+  "schema_version": 1,
+  "result": "completed_synthetic_soak_evidence_and_late_cleanup_audited",
+  "audited_at_utc": "2026-10-15T05:27:38.553283+00:00",
+  "project_root": "/workspace/network-relay/network-relay-cf-masque",
+  "write_scope": "docs/evidence only; no production, test, dependency, or parent-project files edited by this audit.",
+  "live_cloudflare": false,
+  "run": {
+    "process_id": 138810,
+    "requested_seconds": 3900,
+    "launched_at_utc": "2026-10-14T22:55:55.837320+00:00",
+    "test_ended_at_utc": "2026-10-15T00:01:47.338179+00:00",
+    "test_exit_code": 0,
+    "manifest_exit_code": 0,
+    "manifest_result": "passed",
+    "initial_independent_verification": "passed",
+    "detached_worker_result": "passed",
+    "detached_worker_exit_code": 0,
+    "detached_worker_ended_at_utc": "2026-10-15T00:01:47.919389+00:00",
+    "actual_soak_test_output": "1 passed; 0 failed; 0 ignored; 0 measured; 7 filtered out; finished in 3951.26s",
+    "test_output_caveat": "The earlier ignored soak line belongs to the preceding functional suite. The final invocation ran and passed the one soak test. Numeric exit codes are recorded by the run manifest and detached launcher."
+  },
+  "independent_verifier_rerun": {
+    "command": [
+      "python3",
+      "tests/support/verify_soak.py",
+      "docs/evidence/soak-1792018581928-138810.jsonl",
+      "docs/evidence/soak-manifest-20261014T225555Z-138810.json",
+      "--output",
+      "docs/evidence/soak-final-verification-138810.json"
+    ],
+    "exit_code": 0,
+    "result": "passed",
+    "evidence_only": false,
+    "frozen_binary_checked": true,
+    "binary_sha256": "e2e544368e2f16b847ba73e32aeb809b9baaae04c7705ea1868c99d59a36b3d7",
+    "verifier_sha256": "ce52f282a6eb8fb31cbd9e7de4fb995068799472f01758eecf9fd4a40b6de842",
+    "production_source_matches_frozen_build": true,
+    "all_frozen_source_files_also_checked": 398,
+    "all_frozen_source_file_hashes_match": true,
+    "source_mismatches": [],
+    "independent_expected_tcp_sha256_matches_every_sample": true,
+    "summary": "docs/evidence/soak-final-verification-138810.json"
+  },
+  "metrics": {
+    "samples": 131,
+    "measured_seconds": 3925.266063896,
+    "minimum_held_flow_age_seconds": 3920.017192809,
+    "minimum_held_flow_pings": 394,
+    "held_tcp_flows": 6,
+    "held_udp_flows": 6,
+    "outer_generations_per_transport": 1,
+    "reported_packet_queue_drops": 0,
+    "rss_kib": {
+      "first": 118632,
+      "minimum": 118632,
+      "maximum": 130004,
+      "last": 130004
+    },
+    "fd_count": {
+      "first": 42,
+      "minimum": 40,
+      "maximum": 43,
+      "last": 42
+    }
+  },
+  "all_rows_additional_peer_audit": {
+    "rows_checked": 131,
+    "mode_observations_checked": 262,
+    "exact_mode_set_each_row": [
+      "h2",
+      "h3"
+    ],
+    "cycles_first": 0,
+    "cycles_last": 130,
+    "cycles_contiguous": true,
+    "peer_stack_queue_drops_values": [
+      0
+    ],
+    "peer_stack_queue_drop_observations_zero": 262,
+    "egress_drop_counter_values": {
+      "dropped_packets": [
+        0
+      ],
+      "inbound_queue_drops": [
+        0
+      ],
+      "stack_queue_drops": [
+        0
+      ]
+    },
+    "peer_stack_failure_values": [
+      null
+    ],
+    "outer_generations_by_mode": {
+      "h2": [
+        1
+      ],
+      "h3": [
+        1
+      ]
+    },
+    "all_peer_stack_failures_null": true,
+    "all_rows_contain_exact_mode_set": true
+  },
+  "retained_worker_output": {
+    "original_output": "target/test-runtime/detached-soak-20261014T225128Z-136471/output.log",
+    "retained_output": "docs/evidence/soak-output-138810.txt",
+    "byte_count": 5346,
+    "line_count": 93,
+    "sha256": "3162d9d8a0050bf53fa05d4b9e3d99f46b441aae55bf09cb2c12c178ef766652",
+    "exact_copy": true,
+    "review": "Independent reviewer read the full 93-line output and scanned all bytes for private-key PEM blocks, credential assignments, authentication headers/schemes, URL userinfo, JWTs, common provider-token formats, URLs, and unexpected control bytes; no matches were found. Long hexadecimal strings are labeled source SHA-256 hashes.",
+    "review_limit": "A pattern scan cannot exclude every conceivable credential format. No secret files or environment-variable values were read.",
+    "original_launcher": "target/test-runtime/detached-soak-20261014T225128Z-136471/launcher.json",
+    "retained_launcher": "docs/evidence/soak-launcher-138810.json",
+    "launcher_exact_copy": true
+  },
+  "lifecycle_evidence": "docs/evidence/soak-lifecycle-138810.json",
+  "late_cleanup_observation": {
+    "observed_at_utc": "2026-10-15T05:27:38.553283+00:00",
+    "seconds_after_test_recorded_end": 19551.215104,
+    "timing": "Observed hours after test exit; no immediate post-exit process/socket/filesystem observation was retained.",
+    "processes": [
+      {
+        "role": "frozen_test_runner",
+        "process_id": 138810,
+        "proc_directory_exists": false
+      },
+      {
+        "role": "matrix_launcher",
+        "process_id": 136478,
+        "proc_directory_exists": false
+      },
+      {
+        "role": "detached_worker",
+        "process_id": 136477,
+        "proc_directory_exists": true,
+        "status_fields": {
+          "Name": "python3",
+          "State": "Z (zombie)",
+          "PPid": "1",
+          "FDSize": "0",
+          "Threads": "1"
+        },
+        "fd_inspection_error": {
+          "type": "PermissionError",
+          "errno": 13
+        }
+      }
+    ],
+    "socket_tables_read": [
+      "/proc/net/tcp",
+      "/proc/net/tcp6",
+      "/proc/net/udp",
+      "/proc/net/udp6",
+      "/proc/net/raw",
+      "/proc/net/raw6",
+      "/proc/net/unix",
+      "/proc/net/netlink",
+      "/proc/net/packet"
+    ],
+    "during_run_unique_socket_inodes_checked": 33,
+    "matching_socket_inodes_now": [],
+    "during_run_endpoint_tuples_checked": 31,
+    "matching_endpoint_tuples_now": [],
+    "runtime_fixture_directories": [
+      {
+        "path": "target/test-runtime/warp-matrix-h2-138810-0",
+        "exists": false,
+        "is_symlink": false
+      },
+      {
+        "path": "target/test-runtime/warp-matrix-h3-138810-1",
+        "exists": false,
+        "is_symlink": false
+      }
+    ],
+    "limitations": [
+      "This is a late point-in-time observation and cannot establish how quickly resources were released after test exit.",
+      "The detached worker remains an unreaped zombie adopted by PID 1. Its status reports FDSize 0; direct fd-directory enumeration is denied with EACCES.",
+      "Socket-table checks compare recorded inode identities and endpoint tuples in the current network namespace; they do not reconstruct the interval since exit."
+    ]
+  },
+  "limitations": [
+    "This validates the local synthetic Cloudflare-shaped protocol peer; it does not validate live Cloudflare WARP enrollment, service interoperability, performance, or long-run egress.",
+    "The earlier local timeout in run PID 128443 remains unexplained. The later 32-bulk stress result and this completed 65-minute synthetic soak do not establish its cause or resolution.",
+    "The successful current hash verification binds this evidence to unchanged frozen sources and executable; it is not a new execution of the soak.",
+    "Immediate external cleanup timing was not observed. The detached worker still has a zombie process-table entry."
+  ],
+  "retained_evidence": [
+    {
+      "path": "docs/evidence/soak-manifest-20261014T225555Z-138810.json",
+      "sha256": "f65d5a27e796dc0e94bed4a28824bf13b09d6c3de15d0d37cdb27b981a679397",
+      "bytes": 51209
+    },
+    {
+      "path": "docs/evidence/soak-summary-20261014T225555Z-138810.json",
+      "sha256": "33b92f799fb75e9c76be33e9ec3121d774e8331491b3f0c88448ac9317328b44",
+      "bytes": 6787
+    },
+    {
+      "path": "docs/evidence/soak-final-verification-138810.json",
+      "sha256": "33b92f799fb75e9c76be33e9ec3121d774e8331491b3f0c88448ac9317328b44",
+      "bytes": 6787
+    },
+    {
+      "path": "docs/evidence/soak-lifecycle-138810.json",
+      "sha256": "6066a43c34d24a3246510c7dfb7704080f23bad462b8b52cf50b25ccfa19e392",
+      "bytes": 12696
+    },
+    {
+      "path": "docs/evidence/soak-1792018581928-138810.jsonl",
+      "sha256": "ce106b75bdd0c4a4107ef2c919fb620fd2d2f158d29a2685684fa172a258efa4",
+      "bytes": 509263
+    },
+    {
+      "path": "docs/evidence/soak-run-binding-138810.json",
+      "sha256": "adb432ba8efa230c4be2191f68c4a16a4b013a774b84c4ef3c28ced479f7013b",
+      "bytes": 1077
+    },
+    {
+      "path": "docs/evidence/soak-launcher-138810.json",
+      "sha256": "9cec2a8e0970107f7cabd33e6522ded378e198915412ce2ab2c4fc46ddd84ff1",
+      "bytes": 571
+    },
+    {
+      "path": "docs/evidence/soak-output-138810.txt",
+      "sha256": "3162d9d8a0050bf53fa05d4b9e3d99f46b441aae55bf09cb2c12c178ef766652",
+      "bytes": 5346
+    }
+  ]
+}

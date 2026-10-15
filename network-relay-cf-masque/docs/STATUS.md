@@ -2,6 +2,17 @@
 
 Updated on 2026-10-15 UTC; retained evidence is in [VALIDATION.md](VALIDATION.md).
 
+The current configuration design uses one TOML file with inline WARP
+registration values and optional IPv6. `serve --config` needs no additional
+WARP file; `migrate-config` converts an existing three-file setup without
+printing credentials or overwriting the originals. See
+[configuration and migration](CONFIGURATION.md). The historical test counts
+below describe their retained snapshots, not new validation of this change.
+For this change, the [new regression record](evidence/single-config-regression-20261015.json)
+records a passing 342-test workspace run, a final two-test configuration CLI
+suite, strict lint and the independent module consumer. Both existing long
+tests remain intentionally ignored in this configuration-only run.
+
 | Requirement | Implementation | Validation |
 | --- | --- | --- |
 | Standalone project, parent unchanged | Implemented | All 387 parent baseline files unchanged in final verification |

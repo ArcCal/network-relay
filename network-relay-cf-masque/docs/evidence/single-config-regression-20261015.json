@@ -1,0 +1,327 @@
+{
+  "observed_at_utc": "2026-10-15T10:29:03.614733+00:00",
+  "base_commit": "f1b63838bbddc0c5e9708d59e81866c050d251b0",
+  "scope": "Only network-relay-cf-masque; unified configuration, optional IPv6, migration and reload validation",
+  "workspace_tests": {
+    "passed": 342,
+    "failed": 0,
+    "ignored": 2,
+    "command": "cargo test --offline --locked --workspace --all-features -- --test-threads=1",
+    "note": "This run includes the original CLI integration case. The final focused run below also adds listener edge coverage; do not sum overlapping counts."
+  },
+  "final_configuration_tests": {
+    "passed": 2,
+    "failed": 0,
+    "cases": [
+      "root_cli_offline_check_real_serve_and_tunnel_death_are_fail_closed",
+      "ipv4_migration_converts_wildcard_listeners_and_rejects_specific_ipv6"
+    ]
+  },
+  "other_checks": {
+    "strict_clippy": "passed; workspace, all targets/features, -D warnings",
+    "owned_source_formatting": "passed",
+    "independent_crate_consumer": "passed; offline locked cargo check",
+    "vendored_source_provenance": "passed; no source hash mismatches",
+    "examples_toml": "all three parsed"
+  },
+  "root_cli_packet_evidence": [
+    {
+      "actual_serve_checks": 7,
+      "bad_transport": "rejected_without_tunnel",
+      "listener_closed": true,
+      "live_cloudflare": false,
+      "offline_check": "passed_without_tunnel",
+      "peer": {
+        "authenticated_clients": 1,
+        "dns_queries": 7,
+        "dns_tcp_queries": 0,
+        "h2_capsules": 33,
+        "h3_datagrams": 0,
+        "h3_route_advertisements": 0,
+        "http_file_bytes_sent": 0,
+        "http_file_requests": 0,
+        "http_requests": 6,
+        "ip_bytes_from_client": 2069,
+        "ip_bytes_to_client": 1586,
+        "ip_packets_from_client": 33,
+        "ip_packets_to_client": 25,
+        "tcp_bytes_received": 0,
+        "tcp_bytes_sent": 0,
+        "tcp_connections": 6,
+        "tunnels": 1,
+        "udp_bytes_received": 0,
+        "udp_bytes_sent": 0,
+        "udp_datagrams_received": 0,
+        "udp_datagrams_sent": 0
+      },
+      "terminal_exit": 1,
+      "warp_transport": "H2"
+    },
+    {
+      "actual_serve_checks": 7,
+      "bad_transport": "rejected_without_tunnel",
+      "listener_closed": true,
+      "live_cloudflare": false,
+      "offline_check": "passed_without_tunnel",
+      "peer": {
+        "authenticated_clients": 1,
+        "dns_queries": 7,
+        "dns_tcp_queries": 0,
+        "h2_capsules": 0,
+        "h3_datagrams": 31,
+        "h3_route_advertisements": 1,
+        "http_file_bytes_sent": 0,
+        "http_file_requests": 0,
+        "http_requests": 6,
+        "ip_bytes_from_client": 1989,
+        "ip_bytes_to_client": 1506,
+        "ip_packets_from_client": 31,
+        "ip_packets_to_client": 23,
+        "tcp_bytes_received": 0,
+        "tcp_bytes_sent": 0,
+        "tcp_connections": 6,
+        "tunnels": 1,
+        "udp_bytes_received": 0,
+        "udp_bytes_sent": 0,
+        "udp_datagrams_received": 0,
+        "udp_datagrams_sent": 0
+      },
+      "terminal_exit": 1,
+      "warp_transport": "H3"
+    }
+  ],
+  "bulk_packet_evidence": {
+    "cases": [
+      {
+        "egress": {
+          "available": true,
+          "dropped_packets": 0,
+          "failure": null,
+          "generation": 1,
+          "inbound_queue_drops": 0,
+          "ipv4": true,
+          "ipv6": true,
+          "mtu": 1280,
+          "received_ip_bytes": 416312760,
+          "received_packets": 341422,
+          "sent_ip_bytes": 416113982,
+          "sent_packets": 336437,
+          "socket_limit": 64,
+          "sockets": 0,
+          "stack_queue_drops": 0,
+          "tcp_buffer_bytes_per_socket": 393216,
+          "transport": "HTTP/2",
+          "tunnel_addresses": [
+            "198.18.0.1",
+            "fd00::1"
+          ],
+          "workers": 2
+        },
+        "peer": {
+          "authenticated_clients": 1,
+          "dns_queries": 17,
+          "dns_tcp_queries": 0,
+          "h2_capsules": 336437,
+          "h3_datagrams": 0,
+          "h3_route_advertisements": 0,
+          "http_file_bytes_sent": 0,
+          "http_file_requests": 0,
+          "http_requests": 3,
+          "ip_bytes_from_client": 416113982,
+          "ip_bytes_to_client": 416312760,
+          "ip_packets_from_client": 336437,
+          "ip_packets_to_client": 341422,
+          "tcp_bytes_received": 402653184,
+          "tcp_bytes_sent": 402653184,
+          "tcp_connections": 9,
+          "tunnels": 1,
+          "udp_bytes_received": 0,
+          "udp_bytes_sent": 0,
+          "udp_datagrams_received": 0,
+          "udp_datagrams_sent": 0
+        },
+        "process": {
+          "fd_count": 16,
+          "metrics_available": true,
+          "metrics_source": "linux_proc",
+          "rss_kib": 204616
+        },
+        "rounds": [
+          {
+            "bytes_each_direction": 67108864,
+            "elapsed_ms": 13715,
+            "half_close": true,
+            "inbound": "h1",
+            "round": 0,
+            "sha256": "6c6f8309a1c9260f2ca2209fdba4fe646fb9064f3ab1cecc11d7a9ebc7f0e473"
+          },
+          {
+            "bytes_each_direction": 67108864,
+            "elapsed_ms": 14787,
+            "half_close": true,
+            "inbound": "h1",
+            "round": 1,
+            "sha256": "6c6f8309a1c9260f2ca2209fdba4fe646fb9064f3ab1cecc11d7a9ebc7f0e473"
+          },
+          {
+            "bytes_each_direction": 67108864,
+            "elapsed_ms": 17367,
+            "half_close": true,
+            "inbound": "h2",
+            "round": 0,
+            "sha256": "6c6f8309a1c9260f2ca2209fdba4fe646fb9064f3ab1cecc11d7a9ebc7f0e473"
+          },
+          {
+            "bytes_each_direction": 67108864,
+            "elapsed_ms": 16540,
+            "half_close": true,
+            "inbound": "h2",
+            "round": 1,
+            "sha256": "6c6f8309a1c9260f2ca2209fdba4fe646fb9064f3ab1cecc11d7a9ebc7f0e473"
+          },
+          {
+            "bytes_each_direction": 67108864,
+            "elapsed_ms": 15098,
+            "half_close": true,
+            "inbound": "h3",
+            "round": 0,
+            "sha256": "6c6f8309a1c9260f2ca2209fdba4fe646fb9064f3ab1cecc11d7a9ebc7f0e473"
+          },
+          {
+            "bytes_each_direction": 67108864,
+            "elapsed_ms": 15551,
+            "half_close": true,
+            "inbound": "h3",
+            "round": 1,
+            "sha256": "6c6f8309a1c9260f2ca2209fdba4fe646fb9064f3ab1cecc11d7a9ebc7f0e473"
+          }
+        ],
+        "rss_growth_kib": 2384,
+        "warp_transport": "h2"
+      },
+      {
+        "egress": {
+          "available": true,
+          "dropped_packets": 0,
+          "failure": null,
+          "generation": 1,
+          "inbound_queue_drops": 0,
+          "ipv4": true,
+          "ipv6": true,
+          "mtu": 1280,
+          "received_ip_bytes": 416086503,
+          "received_packets": 335818,
+          "sent_ip_bytes": 416068274,
+          "sent_packets": 335357,
+          "socket_limit": 64,
+          "sockets": 0,
+          "stack_queue_drops": 0,
+          "tcp_buffer_bytes_per_socket": 393216,
+          "transport": "HTTP/3",
+          "tunnel_addresses": [
+            "198.18.0.1",
+            "fd00::1"
+          ],
+          "workers": 2
+        },
+        "peer": {
+          "authenticated_clients": 1,
+          "dns_queries": 16,
+          "dns_tcp_queries": 0,
+          "h2_capsules": 0,
+          "h3_datagrams": 335357,
+          "h3_route_advertisements": 1,
+          "http_file_bytes_sent": 0,
+          "http_file_requests": 0,
+          "http_requests": 3,
+          "ip_bytes_from_client": 416068274,
+          "ip_bytes_to_client": 416086503,
+          "ip_packets_from_client": 335357,
+          "ip_packets_to_client": 335818,
+          "tcp_bytes_received": 402653184,
+          "tcp_bytes_sent": 402653184,
+          "tcp_connections": 9,
+          "tunnels": 1,
+          "udp_bytes_received": 0,
+          "udp_bytes_sent": 0,
+          "udp_datagrams_received": 0,
+          "udp_datagrams_sent": 0
+        },
+        "process": {
+          "fd_count": 15,
+          "metrics_available": true,
+          "metrics_source": "linux_proc",
+          "rss_kib": 204664
+        },
+        "rounds": [
+          {
+            "bytes_each_direction": 67108864,
+            "elapsed_ms": 8984,
+            "half_close": true,
+            "inbound": "h1",
+            "round": 0,
+            "sha256": "6c6f8309a1c9260f2ca2209fdba4fe646fb9064f3ab1cecc11d7a9ebc7f0e473"
+          },
+          {
+            "bytes_each_direction": 67108864,
+            "elapsed_ms": 8814,
+            "half_close": true,
+            "inbound": "h1",
+            "round": 1,
+            "sha256": "6c6f8309a1c9260f2ca2209fdba4fe646fb9064f3ab1cecc11d7a9ebc7f0e473"
+          },
+          {
+            "bytes_each_direction": 67108864,
+            "elapsed_ms": 8883,
+            "half_close": true,
+            "inbound": "h2",
+            "round": 0,
+            "sha256": "6c6f8309a1c9260f2ca2209fdba4fe646fb9064f3ab1cecc11d7a9ebc7f0e473"
+          },
+          {
+            "bytes_each_direction": 67108864,
+            "elapsed_ms": 8974,
+            "half_close": true,
+            "inbound": "h2",
+            "round": 1,
+            "sha256": "6c6f8309a1c9260f2ca2209fdba4fe646fb9064f3ab1cecc11d7a9ebc7f0e473"
+          },
+          {
+            "bytes_each_direction": 67108864,
+            "elapsed_ms": 9226,
+            "half_close": true,
+            "inbound": "h3",
+            "round": 0,
+            "sha256": "6c6f8309a1c9260f2ca2209fdba4fe646fb9064f3ab1cecc11d7a9ebc7f0e473"
+          },
+          {
+            "bytes_each_direction": 67108864,
+            "elapsed_ms": 8857,
+            "half_close": true,
+            "inbound": "h3",
+            "round": 1,
+            "sha256": "6c6f8309a1c9260f2ca2209fdba4fe646fb9064f3ab1cecc11d7a9ebc7f0e473"
+          }
+        ],
+        "rss_growth_kib": 0,
+        "warp_transport": "h3"
+      }
+    ],
+    "live_cloudflare": false
+  },
+  "logs_sha256": {
+    "target-regression.log": "9f01f6235901d6cf870b0a1c4e36ab7b4bdd8419316d8b1f317aa691fbe6ceef",
+    "target-config-final.log": "640762887c07976c59792a5f25dc843100d737aa3bac111fd049fd5c8e2ff3cb",
+    "target-clippy.log": "141daed55658feb128e33683cef2efa1ad4ced2e1e7d132a93df2d527cd1d5e7",
+    "target-reuse.log": "988d289284634f7d472a97123c7bc277bcf9fd6689faa62bac289249d57ab8be"
+  },
+  "execution_notes": [
+    "Initial full-build attempt exhausted local disk; removed regenerable incremental cache and reran successfully.",
+    "Logging assertions set RUST_LOG=info explicitly; an initial harness run inherited an error-only filter."
+  ],
+  "not_claimed": [
+    "No live Cloudflare or native Apple runtime acceptance in this change.",
+    "The existing hour-long soak and H3 stress tests were not rerun for this configuration-only change.",
+    "This does not claim to fix HTTP/3 disconnections or HTTP503 capacity failures."
+  ]
+}

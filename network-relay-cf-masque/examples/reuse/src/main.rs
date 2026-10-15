@@ -4,7 +4,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use warp_masque_egress::{Egress, WarpConfig, WarpEgress};
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let settings = std::env::args().nth(1).unwrap_or_else(|| "warp.toml".into());
+    let settings = std::env::args().nth(1).unwrap_or_else(|| "relay.toml".into());
     let config = WarpConfig::load(Path::new(&settings))?;
     let warp = WarpEgress::connect(&config).await?;
     let result = async {

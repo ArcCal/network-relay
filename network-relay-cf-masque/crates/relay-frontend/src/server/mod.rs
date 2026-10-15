@@ -14,7 +14,7 @@ mod pump;
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::time::{Duration, Instant};
@@ -911,6 +911,20 @@ impl Drop for ServerTasks {
 /// Runs the server until SIGINT or SIGTERM. `config` was loaded from
 /// `config_path`, which SIGHUP reads again.
 pub async fn run(config_path: PathBuf, config: Config, egress: Arc<dyn Egress>) -> Result<()> {
+    run_with_config_loader(config_path, config, egress, Arc::new(Config::load)).await
+}
+
+/// Read and validate reloads in the owning application's configuration format.
+/// The loader must leave startup-only egress settings unchanged; only the
+/// returned relay settings are applied to existing listeners and sessions.
+pub type ConfigLoader = Arc<dyn Fn(&Path) -> Result<Config> + Send + Sync>;
+
+pub async fn run_with_config_loader(
+    config_path: PathBuf,
+    config: Config,
+    egress: Arc<dyn Egress>,
+    load_config: ConfigLoader,
+) -> Result<()> {
     sys::raise_open_file_limit(
         config.relay.max_tunnels().saturating_mul(2).saturating_add(config.relay.max_connections()).saturating_add(1024)
             as _,
@@ -965,7 +979,7 @@ pub async fn run(config_path: PathBuf, config: Config, egress: Arc<dyn Egress>) 
     // the process running without a listener: fail and let systemd restart it.
     let failed = loop {
         tokio::select! {
-            _ = sighup.recv() => match Config::load(&config_path) {
+            _ = sighup.recv() => match load_config(&config_path) {
                 Ok(c) => {
                     match relay.reload(&c) {
                         Ok(()) => info!(users = c.users.len(), "reloaded users, destination rules, timeouts and website"),

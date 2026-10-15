@@ -5,7 +5,7 @@ existing Cloudflare WARP MASQUE registration and a userspace TCP/IP stack. It
 requires no TUN device or host routing changes. The frontend supplies an
 `Egress`; this crate's `WarpEgress` implements that interface.
 
-Load a separate TOML file with `WarpConfig::load`, then connect with
+Load the application's TOML file with `WarpConfig::load`, then connect with
 `WarpEgress::connect(&config)`. Loading and `config.validate()` check the enrolled
 P-256 key, pinned endpoint public key, assigned addresses, and configuration
 without opening a socket. Device registration is an explicit external step;
@@ -13,16 +13,28 @@ there is no registration REST client or automatic enrollment in this crate.
 
 ```toml
 [warp]
-registration = ".secrets/warp-registration.json"
 transport = "h2"
-dns = ["1.1.1.1:53"]
-keepalive_secs = 15
-idle_timeout_secs = 30
+
+[warp.registration]
+private_key = "REPLACE_WITH_ENROLLED_BASE64_P256_PKCS8_PRIVATE_KEY"
+endpoint_public_key = """-----BEGIN PUBLIC KEY-----
+REPLACE_WITH_ENROLLED_PUBLIC_KEY_BASE64
+-----END PUBLIC KEY-----
+"""
+tunnel_ipv4 = "172.16.0.2"
 ```
 
-Both `registration` and `transport` are required. Select `h2` or `h3` explicitly.
-The registration path is relative to this TOML file's directory. The loader
-accepts the pinned cf-masque JSON format and usque aliases (`id`, `ipv4`, `ipv6`,
+This IPv4-only example needs no JSON file. Replace its credential placeholders
+and assigned address with the existing enrollment values. A combined relay
+TOML or a WARP-only TOML is accepted. Select `h2` or `h3` explicitly. Inline
+registration requires the private key, endpoint public key and assigned IPv4
+address; IPv6 fields and account metadata (`device_id`, `access_token`,
+`license`) are optional. H3 needs an enrolled `endpoint_v4` or explicit numeric
+endpoint override. Protect the configuration with mode 0600.
+
+For legacy callers, `registration = "path.json"` remains supported instead of
+the inline table; its path is relative to the TOML file's directory. The loader
+accepts the pinned cf-masque format and usque aliases (`id`, `ipv4`, `ipv6`,
 `endpoint_pub_key`); it converts usque's SEC1 P-256 private keys to PKCS#8.
 Registration contents are redacted from `Debug` and parse errors.
 
@@ -36,6 +48,9 @@ is supplied. Default `sni` is `consumer-masque.cloudflareclient.com` and default
 `uri` is `https://cloudflareaccess.com/`.
 
 DNS servers must be numeric socket addresses; the default is `1.1.1.1:53`.
+Each configured DNS server's address family must have an assigned tunnel
+address; an IPv4-only registration must use IPv4 DNS servers. With no
+`tunnel_ipv6`, DNS skips AAAA queries and IPv6 destinations cannot be dialed.
 Queries, including TCP fallback after truncated UDP answers, use the userspace
 stack. A terminal tunnel failure immediately rejects DNS requests, including
 cached answers, literals, and shared pending queries. The transport never falls

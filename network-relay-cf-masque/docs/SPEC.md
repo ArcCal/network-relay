@@ -33,6 +33,36 @@ certificate of compliance with every applicable document.
 
 ## WARP contract and explicit modes
 
+### Single-file configuration
+
+`serve --config relay.toml` loads relay settings/users and WARP settings from
+one TOML document. `[warp.registration]` holds the enrolled credentials
+inline. New deployments do not require `--warp-config` or a registration JSON.
+Both legacy forms remain optional compatibility inputs. Existing relay TLS,
+authentication and destination-policy formats do not change. Certificate/key
+assets are separate files, not extra application configuration documents.
+
+`warp.transport` is required and must be `h2` or `h3`. Within
+`[warp.registration]`, `private_key`, `endpoint_public_key` and `tunnel_ipv4`
+are required. `device_id`, `access_token` and `license` are optional metadata
+and are not needed for tunnel establishment. Endpoint overrides, DNS servers,
+keepalive and idle limits retain their existing defaults and validation. H2
+defaults to the numeric IPv4 endpoint `162.159.198.2:443`; H3 needs
+`registration.endpoint_v4` unless an explicit `warp.endpoint` replaces it.
+
+All IPv6 registration fields are optional. With no `tunnel_ipv6`, the inner
+stack supports IPv4 only; IPv6 traffic is never redirected through the host.
+Outer WARP addressing is independently selected: it defaults to IPv4 unless
+`ipv6_endpoint = true` or an explicit IPv6 `endpoint` is configured. IPv6
+operations require both an assigned address and the necessary tunnel MTU.
+An IPv4-only deployment omits the IPv6 fields and retains the IPv4 defaults.
+
+Config files containing inline private keys require private filesystem
+permissions. WARP configuration is fixed for the process generation; changing
+it requires a restart. SIGHUP preserves standard relay reload semantics.
+
+### Transport behavior
+
 WARP uses Cloudflare's private MASQUE dialect, not an assertion that its
 `cf-connect-ip` wire format is standard RFC 9484 CONNECT-IP. Each mode is
 explicitly selected and separately tested:

@@ -30,12 +30,7 @@ fn unused_ingress() -> Result<std::net::SocketAddr> {
 }
 fn serve_command(env: &TestEnv) -> Command {
     let mut command = Command::new(BIN);
-    command
-        .arg("serve")
-        .arg("--config")
-        .arg(env.path.join("relay.toml"))
-        .arg("--warp-config")
-        .arg(env.path.join("warp.toml"));
+    command.env("RUST_LOG", "info").arg("serve").arg("--config").arg(env.path.join("relay.toml"));
     command
 }
 
@@ -46,12 +41,19 @@ async fn root_cli_offline_check_real_serve_and_tunnel_death_are_fail_closed() ->
         let env = TestEnv::new("root-cli")?;
         let mut peer = WarpPeer::start(mode).await?;
         peer.config(&env.path)?;
+        let registration_path = env.path.join("registration.json");
+        let mut old_registration: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&registration_path)?)?;
+        let ipv6 = old_registration.as_object_mut().unwrap().remove("tunnel_ipv6").unwrap();
+        old_registration["ipv6"] = ipv6; // Also exercise the supported usque alias.
+        std::fs::write(&registration_path, serde_json::to_vec(&old_registration)?)?;
         let addr = unused_ingress()?;
         static HASH: OnceLock<String> = OnceLock::new();
         let hash = HASH.get_or_init(|| auth::hash_password(PASSWORD).unwrap());
         let config = format!("listen = \"{addr}\"\n[tls]\ncert = {:?}\nkey = {:?}\n[web]\nroot = {:?}\n[relay]\nblocked_destinations = []\nblocked_ports = []\nblock_own_addresses = false\n[[user]]\nname = \"{USER}\"\npassword_hash = \"{hash}\"\n", env.path.join("fullchain.pem"), env.path.join("privkey.pem"), env.path.join("site"));
         std::fs::write(env.path.join("relay.toml"), config)?;
-        let offline = serve_command(&env).arg("--check").output()?;
+        let offline =
+            serve_command(&env).arg("--warp-config").arg(env.path.join("warp.toml")).arg("--check").output()?;
         ensure!(
             offline.status.success(),
             "offline configuration check failed: {}",
@@ -62,18 +64,69 @@ async fn root_cli_offline_check_real_serve_and_tunnel_death_are_fail_closed() ->
             "offline --check opened a tunnel"
         );
 
-        let original = std::fs::read_to_string(env.path.join("warp.toml"))?;
+        // Migrate the actual legacy fixture, then remove both extra files. All
+        // following checks and the real server must work with this one TOML.
+        let combined = env.path.join("combined.toml");
+        let migration = Command::new(BIN)
+            .arg("migrate-config")
+            .arg("--config")
+            .arg(env.path.join("relay.toml"))
+            .arg("--warp-config")
+            .arg(env.path.join("warp.toml"))
+            .arg("--out")
+            .arg(&combined)
+            .arg("--ipv4-only")
+            .output()?;
+        ensure!(migration.status.success(), "migration failed: {}", String::from_utf8_lossy(&migration.stderr));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            ensure!(std::fs::metadata(&combined)?.permissions().mode() & 0o777 == 0o600, "migration permissions");
+        }
+        let original = std::fs::read_to_string(&combined)?;
+        let parsed: toml::Value = toml::from_str(&original)?;
+        let registration = &parsed["warp"]["registration"];
+        ensure!(
+            registration.get("tunnel_ipv6").is_none() && registration.get("ipv6").is_none(),
+            "IPv4 migration retained IPv6"
+        );
+        let secret = registration["private_key"].as_str().unwrap();
+        ensure!(!String::from_utf8_lossy(&migration.stdout).contains(secret), "migration printed a key");
+        // Refusing an existing output must leave its contents intact.
+        let duplicate = Command::new(BIN)
+            .arg("migrate-config")
+            .arg("--config")
+            .arg(env.path.join("relay.toml"))
+            .arg("--warp-config")
+            .arg(env.path.join("warp.toml"))
+            .arg("--out")
+            .arg(&combined)
+            .output()?;
+        ensure!(
+            !duplicate.status.success() && std::fs::read_to_string(&combined)? == original,
+            "migration overwrote output"
+        );
+        std::fs::write(env.path.join("relay.toml"), &original)?;
+        std::fs::remove_file(env.path.join("warp.toml"))?;
+        std::fs::remove_file(env.path.join("registration.json"))?;
+        let offline = serve_command(&env).arg("--check").output()?;
+        ensure!(
+            offline.status.success(),
+            "single-file offline check failed: {}",
+            String::from_utf8_lossy(&offline.stderr)
+        );
         let invalid = original
             .replace("transport = \"h2\"", "transport = \"automatic\"")
             .replace("transport = \"h3\"", "transport = \"automatic\"");
-        std::fs::write(env.path.join("warp.toml"), invalid)?;
+        std::fs::write(env.path.join("relay.toml"), invalid)?;
         let invalid = serve_command(&env).arg("--check").output()?;
         ensure!(!invalid.status.success(), "invalid/implicit transport was accepted");
         ensure!(
             peer.snapshot().authenticated_clients == 0 && peer.snapshot().tunnels == 0,
             "bad transport opened underlay"
         );
-        std::fs::write(env.path.join("warp.toml"), original)?;
+        ensure!(!String::from_utf8_lossy(&invalid.stderr).contains(secret), "configuration error printed a key");
+        std::fs::write(env.path.join("relay.toml"), &original)?;
 
         let logfile = std::fs::File::create(env.path.join("server.log"))?;
         let stderr = logfile.try_clone()?;
@@ -110,6 +163,27 @@ async fn root_cli_offline_check_real_serve_and_tunnel_death_are_fail_closed() ->
         for result in &results {
             result.result.as_ref().map_err(|error| anyhow::anyhow!("{}: {error:#}", result.name))?;
         }
+        // SIGHUP validates the combined file, reloads ordinary relay settings,
+        // and keeps the existing WARP session until a requested restart.
+        let mut changed: toml::Value = toml::from_str(&original)?;
+        changed["warp"]["keepalive_secs"] = toml::Value::Integer(2);
+        let reloaded_password = "new-ephemeral-matrix-password-2026";
+        changed["user"][0]["password_hash"] = toml::Value::String(auth::hash_password(reloaded_password)?);
+        std::fs::write(env.path.join("relay.toml"), toml::to_string(&changed)?)?;
+        hup(&server)?;
+        wait_log(&env, "[warp] changes require a restart").await?;
+        ensure!(peer.snapshot().authenticated_clients == 1, "SIGHUP replaced the WARP session");
+        let mut reloaded_options = options.clone();
+        reloaded_options.password = reloaded_password.into();
+        changed["warp"]["transport"] = toml::Value::String("invalid-transport".into());
+        std::fs::write(env.path.join("relay.toml"), toml::to_string(&changed)?)?;
+        hup(&server)?;
+        wait_log(&env, "not reloading, configuration is invalid").await?;
+        ensure!(server.0.try_wait()?.is_none(), "bad reload stopped the active server");
+        for result in check::run(&reloaded_options).await {
+            result.result.map_err(|error| anyhow::anyhow!("after reload {}: {error:#}", result.name))?;
+        }
+        ensure!(!std::fs::read_to_string(env.path.join("server.log"))?.contains(secret), "reload logged a private key");
         let snapshot = peer.snapshot();
         ensure!(
             snapshot.http_requests >= 3 && snapshot.dns_queries >= 4 && snapshot.ip_packets_from_client > 0,
@@ -141,5 +215,54 @@ async fn root_cli_offline_check_real_serve_and_tunnel_death_are_fail_closed() ->
         dir.join(format!("root-cli-warp-{stamp}-{}.json", std::process::id())),
         serde_json::to_vec_pretty(&rows)?,
     )?;
+    Ok(())
+}
+
+fn hup(server: &Server) -> Result<()> {
+    ensure!(Command::new("kill").arg("-HUP").arg(server.0.id().to_string()).status()?.success(), "SIGHUP failed");
+    Ok(())
+}
+
+async fn wait_log(env: &TestEnv, needle: &str) -> Result<()> {
+    let started = Instant::now();
+    while !std::fs::read_to_string(env.path.join("server.log"))?.contains(needle) {
+        ensure!(started.elapsed() < WAIT, "expected server log missing: {needle}");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn ipv4_migration_converts_wildcard_listeners_and_rejects_specific_ipv6() -> Result<()> {
+    let mut peer = WarpPeer::start(Transport::H2).await?;
+    for (listen, expected) in
+        [(None, Some("0.0.0.0:443")), (Some("[::]:8443"), Some("0.0.0.0:8443")), (Some("[::1]:8443"), None)]
+    {
+        let env = TestEnv::new("ipv4-migration")?;
+        peer.config(&env.path)?;
+        let prefix = listen.map(|listen| format!("listen = \"{listen}\"\n")).unwrap_or_default();
+        let input = format!("{prefix}[tls]\ncert = \"fullchain.pem\"\nkey = \"privkey.pem\"\n");
+        std::fs::write(env.path.join("relay.toml"), &input)?;
+        let out = env.path.join("single.toml");
+        let result = Command::new(BIN)
+            .arg("migrate-config")
+            .arg("--config")
+            .arg(env.path.join("relay.toml"))
+            .arg("--warp-config")
+            .arg(env.path.join("warp.toml"))
+            .arg("--out")
+            .arg(&out)
+            .arg("--ipv4-only")
+            .output()?;
+        if let Some(expected) = expected {
+            ensure!(result.status.success(), "listener migration failed: {}", String::from_utf8_lossy(&result.stderr));
+            let output: toml::Value = toml::from_str(&std::fs::read_to_string(out)?)?;
+            ensure!(output["listen"].as_str() == Some(expected), "wrong IPv4 listener");
+        } else {
+            ensure!(!result.status.success() && !out.exists(), "specific IPv6 listener accepted");
+        }
+        ensure!(std::fs::read_to_string(env.path.join("relay.toml"))? == input, "migration modified input");
+    }
+    peer.shutdown().await;
     Ok(())
 }

@@ -4,7 +4,7 @@
 //! use std::{net::SocketAddr, path::Path};
 //! use warp_masque_egress::{Egress, WarpConfig, WarpEgress};
 //! # async fn run() -> anyhow::Result<()> {
-//! let config = WarpConfig::load(Path::new("warp.toml"))?;
+//! let config = WarpConfig::load(Path::new("relay.toml"))?;
 //! let egress = WarpEgress::connect(&config).await?;
 //! let addresses = egress.resolve("example.com").await?;
 //! let stream = egress.connect_tcp(SocketAddr::new(addresses[0], 443)).await?;

@@ -15,6 +15,8 @@ use relay_frontend::profile::{self, IdentityPayload, ProfileOptions};
 use relay_frontend::proto::DEFAULT_UDP_PATH_TEMPLATE;
 use relay_frontend::{auth, check, logging, server};
 
+mod gateway_config;
+
 #[derive(Parser)]
 #[command(
     version,
@@ -35,9 +37,22 @@ enum Command {
         /// Only check the configuration, certificate and website, then exit.
         #[arg(long)]
         check: bool,
-        /// Separate WARP settings; transport must be explicit h2 or h3.
-        #[arg(long, default_value = "warp.toml")]
+        /// Legacy separate WARP settings. Omit when [warp] is in --config.
+        #[arg(long)]
+        warp_config: Option<PathBuf>,
+    },
+    /// Merge legacy relay/WARP/registration files into one private TOML file.
+    MigrateConfig {
+        #[arg(long)]
+        config: PathBuf,
+        #[arg(long)]
         warp_config: PathBuf,
+        /// New output file; an existing file is never overwritten.
+        #[arg(long)]
+        out: PathBuf,
+        /// Omit IPv6 enrollment fields and use an IPv4 outer endpoint.
+        #[arg(long)]
+        ipv4_only: bool,
     },
     /// Create a user: a random password and the lines for the configuration file.
     Passwd {
@@ -188,6 +203,9 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
     let result = match cli.command {
         Command::Serve { config, check, warp_config } => return serve(config, check, warp_config),
+        Command::MigrateConfig { config, warp_config, out, ipv4_only } => {
+            gateway_config::migrate(&config, &warp_config, &out, ipv4_only).map(|()| true)
+        }
         Command::Passwd { name, stdin, fast_hash, expires } => passwd(&name, stdin, fast_hash, expires.as_deref()),
         Command::Identity { name, days, out } => identity(&name, days, out),
         Command::Profile {
@@ -314,20 +332,17 @@ fn runtime() -> Result<tokio::runtime::Runtime> {
     Ok(tokio::runtime::Builder::new_multi_thread().enable_all().build()?)
 }
 
-fn serve(path: PathBuf, check_only: bool, warp_path: PathBuf) -> ExitCode {
+fn serve(path: PathBuf, check_only: bool, warp_path: Option<PathBuf>) -> ExitCode {
     // Until logging is set up, errors can only go to stderr.
     let fail = |e: anyhow::Error| {
         eprintln!("network-relay-cf-masque: {e:#}");
         ExitCode::FAILURE
     };
-    let config = match Config::load(&path) {
+    let settings = match gateway_config::GatewayConfig::load(&path, warp_path.as_deref()) {
         Ok(c) => c,
         Err(e) => return fail(e),
     };
-    let warp_config = match warp_masque_egress::WarpConfig::load(&warp_path) {
-        Ok(c) => c,
-        Err(e) => return fail(e),
-    };
+    let gateway_config::GatewayConfig { relay: config, warp: warp_config, warp_settings } = settings;
     if check_only {
         let checked = (|| {
             relay_frontend::certs::CertStore::check_files(&config.tls.cert, &config.tls.key)?;
@@ -358,8 +373,15 @@ fn serve(path: PathBuf, check_only: bool, warp_path: PathBuf) -> ExitCode {
     let result = rt.block_on(async {
         let warp = std::sync::Arc::new(warp_masque_egress::WarpEgress::connect(&warp_config).await?);
         tracing::info!(transport = %warp.status().transport, "WARP egress ready; no direct fallback");
+        let reload = move |path: &std::path::Path| {
+            let next = gateway_config::GatewayConfig::load(path, warp_path.as_deref())?;
+            if next.warp_settings != warp_settings {
+                tracing::warn!("[warp] changes require a restart; keeping the active WARP settings");
+            }
+            Ok(next.relay)
+        };
         let outcome = tokio::select! {
-            result = server::run(path, config, warp.clone()) => result,
+            result = server::run_with_config_loader(path, config, warp.clone(), std::sync::Arc::new(reload)) => result,
             reason = warp.closed() => Err(anyhow::anyhow!("WARP egress closed: {reason}")),
         };
         warp.shutdown().await;

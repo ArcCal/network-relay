@@ -16,17 +16,21 @@ pub const DEFAULT_H2_ENDPOINT_V4: &str = "162.159.198.2";
 /// Access tokens and licenses are accepted for compatibility, but are never
 /// used by the data plane.
 #[derive(Deserialize, Clone, Default)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
-    #[serde(alias = "id")]
+    #[serde(default, alias = "id")]
     #[allow(dead_code)] // accepted registration metadata; never used by data plane
     pub device_id: String,
+    #[serde(default)]
     #[allow(dead_code)]
     pub access_token: String,
     #[serde(default)]
     #[allow(dead_code)]
     pub license: String,
     pub private_key: String,
+    #[serde(default)]
     pub endpoint_v4: String,
+    #[serde(default)]
     pub endpoint_v6: String,
     #[serde(default)]
     pub endpoint_h2_v4: String,
@@ -36,7 +40,7 @@ pub struct Config {
     pub endpoint_public_key: String,
     #[serde(alias = "ipv4")]
     pub tunnel_ipv4: String,
-    #[serde(alias = "ipv6")]
+    #[serde(default, alias = "ipv6")]
     pub tunnel_ipv6: String,
 }
 
@@ -89,6 +93,9 @@ impl Config {
             }
             (true, true) => self.endpoint_h2_v6.as_str(),
         };
+        if endpoint.trim().is_empty() {
+            bail!("no endpoint is configured for the selected WARP transport and address family; set warp.endpoint or the matching registration endpoint");
+        }
         let ip = parse_endpoint(endpoint)?;
         if ip.is_ipv6() != ipv6 {
             bail!("the selected registration endpoint has the wrong address family");
@@ -98,16 +105,20 @@ impl Config {
 
     pub fn addresses(&self) -> Result<Vec<IpAddr>> {
         let ipv4 = self.tunnel_ipv4.parse::<Ipv4Addr>().context("invalid tunnel_ipv4")?;
-        let ipv6 = self.tunnel_ipv6.parse::<Ipv6Addr>().context("invalid tunnel_ipv6")?;
         anyhow::ensure!(
             !ipv4.is_unspecified() && !ipv4.is_multicast() && !ipv4.is_broadcast(),
             "tunnel_ipv4 must be a unicast source address"
         );
-        anyhow::ensure!(
-            !ipv6.is_unspecified() && !ipv6.is_multicast() && ipv6.to_ipv4_mapped().is_none(),
-            "tunnel_ipv6 must be an IPv6 unicast source address"
-        );
-        Ok(vec![IpAddr::V4(ipv4), IpAddr::V6(ipv6)])
+        let mut addresses = vec![IpAddr::V4(ipv4)];
+        if !self.tunnel_ipv6.is_empty() {
+            let ipv6 = self.tunnel_ipv6.parse::<Ipv6Addr>().context("invalid tunnel_ipv6")?;
+            anyhow::ensure!(
+                !ipv6.is_unspecified() && !ipv6.is_multicast() && ipv6.to_ipv4_mapped().is_none(),
+                "tunnel_ipv6 must be an IPv6 unicast source address"
+            );
+            addresses.push(IpAddr::V6(ipv6));
+        }
+        Ok(addresses)
     }
 }
 
@@ -220,5 +231,29 @@ mod tests {
         assert_eq!(cfg.private_key_der().unwrap(), key.pkcs8_der);
         let error = Config::parse(r#"{"access_token":["do-not-log-me"]}"#).unwrap_err();
         assert!(!format!("{error:#}").contains("do-not-log-me"));
+    }
+
+    #[test]
+    fn ipv4_only_registration_omits_control_plane_metadata_and_ipv6_fields() {
+        let cfg = Config::parse(
+            r#"{
+            "private_key":"AQID", "endpoint_public_key":"AQID", "tunnel_ipv4":"172.16.0.2"
+        }"#,
+        )
+        .unwrap();
+        assert!(cfg.device_id.is_empty() && cfg.access_token.is_empty() && cfg.license.is_empty());
+        assert_eq!(cfg.addresses().unwrap(), ["172.16.0.2".parse::<IpAddr>().unwrap()]);
+        assert_eq!(cfg.endpoint(true, false, 443).unwrap(), "162.159.198.2:443".parse().unwrap());
+        assert!(cfg.endpoint(false, false, 443).is_err());
+        assert!(cfg.endpoint(false, true, 443).is_err());
+        assert!(cfg.endpoint(true, true, 443).is_err());
+        let error = Config::parse(
+            r#"{
+            "private_key":"AQID", "endpoint_public_key":"AQID", "tunnel_ipv4":"172.16.0.2",
+            "private_keey":"never-echo-this-secret"
+        }"#,
+        )
+        .unwrap_err();
+        assert!(!format!("{error:#}").contains("never-echo-this-secret"));
     }
 }

@@ -175,6 +175,12 @@ where
             .await
             .map_err(|e| self.handle_quic_stream_error(e))?;
 
+        // Capacity may become available after GOAWAY. Do not initiate a new
+        // request on that connection (RFC 9114 section 5.2).
+        if let Some(error) = self.check_peer_connection_closing() {
+            return Err(error);
+        }
+
         //= https://www.rfc-editor.org/rfc/rfc9114#section-4.2
         //= type=TODO
         //# Characters in field names MUST be

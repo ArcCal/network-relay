@@ -17,6 +17,8 @@ public struct Settings: Codable, Equatable {
     public var connectOnLaunch: Bool
     /// Which HTTP version carries the tunnel.
     public var transport: Transport
+    /// An allowed numeric UDP target used only to check relay admission.
+    public var probeTarget: String
 
     public init(
         serverIP: String = "",
@@ -25,7 +27,8 @@ public struct Settings: Codable, Equatable {
         listenAddress: String = "127.0.0.1",
         port: Int = 1080,
         connectOnLaunch: Bool = false,
-        transport: Transport = .auto
+        transport: Transport = .auto,
+        probeTarget: String = "1.1.1.1:53"
     ) {
         self.serverIP = serverIP
         self.domain = domain
@@ -34,10 +37,11 @@ public struct Settings: Codable, Equatable {
         self.port = port
         self.connectOnLaunch = connectOnLaunch
         self.transport = transport
+        self.probeTarget = probeTarget
     }
 
     private enum CodingKeys: String, CodingKey {
-        case serverIP, domain, username, listenAddress, port, connectOnLaunch, transport
+        case serverIP, domain, username, listenAddress, port, connectOnLaunch, transport, probeTarget
     }
 
     /// A field that is missing or unreadable, because another version of
@@ -61,6 +65,7 @@ public struct Settings: Codable, Equatable {
         port = value(.port, defaults.port)
         connectOnLaunch = value(.connectOnLaunch, defaults.connectOnLaunch)
         transport = value(.transport, defaults.transport)
+        probeTarget = value(.probeTarget, defaults.probeTarget)
     }
 
     /// The SOCKS5 address programs are set to use, such as `127.0.0.1:1080`.
@@ -106,6 +111,7 @@ public enum SettingsError: Error, Equatable, LocalizedError {
     case invalidPassword
     case invalidListenAddress
     case invalidPort
+    case invalidProbeTarget
 
     public var errorDescription: String? {
         switch self {
@@ -118,6 +124,7 @@ public enum SettingsError: Error, Equatable, LocalizedError {
         case .invalidPassword: return "The password must not contain control characters such as line breaks."
         case .invalidListenAddress: return "The listen address must be an IP address, such as 127.0.0.1."
         case .invalidPort: return "The port must be between 1 and 65535."
+        case .invalidProbeTarget: return "The admission probe target must be an IP address and port, such as 1.1.1.1:53 or [2606:4700:4700::1111]:53."
         }
     }
 }
@@ -148,6 +155,7 @@ public func clientConfiguration(_ settings: Settings, password: String) throws -
         throw SettingsError.invalidPassword
     }
     let listen = try listenAddress(settings)
+    let probe = try admissionProbeTarget(settings.probeTarget)
 
     // With an IP, connect to it and check the certificate against the domain.
     let authority = socketAddress(ip.isEmpty ? host : ip, serverPort)
@@ -166,6 +174,9 @@ public func clientConfiguration(_ settings: Settings, password: String) throws -
     if settings.transport != .auto {
         lines.append("transport = \(tomlString(settings.transport.rawValue))")
     }
+    if probe != Settings().probeTarget {
+        lines.append("probe_target = \(tomlString(probe))")
+    }
     lines += [
         "mode = \"socks\"",
         "",
@@ -173,6 +184,25 @@ public func clientConfiguration(_ settings: Settings, password: String) throws -
         "listen = [\(tomlString(listen))]",
     ]
     return lines.joined(separator: "\n") + "\n"
+}
+
+/// Canonical numeric socket syntax; never resolve a probe name outside the relay.
+func admissionProbeTarget(_ text: String) throws -> String {
+    let text = text.trimmed
+    guard let colon = text.lastIndex(of: ":"),
+          let port = Int(text[text.index(after: colon)...]), (1...65535).contains(port) else {
+        throw SettingsError.invalidProbeTarget
+    }
+    let hostPart = String(text[..<colon])
+    let host: String
+    if hostPart.hasPrefix("["), hostPart.hasSuffix("]") {
+        host = String(hostPart.dropFirst().dropLast())
+        guard host.contains(":"), isIPAddress(host) else { throw SettingsError.invalidProbeTarget }
+    } else {
+        host = hostPart
+        guard !host.contains(":"), isIPAddress(host) else { throw SettingsError.invalidProbeTarget }
+    }
+    return socketAddress(host, port)
 }
 
 /// The checked `host:port` the SOCKS5 proxy listens on.

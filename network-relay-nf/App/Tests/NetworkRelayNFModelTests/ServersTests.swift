@@ -76,11 +76,13 @@ final class ServersTests: XCTestCase {
         // What the client runs with.
         XCTAssertEqual(change { $0.servers[0].password = "new" }, .reconnect)
         XCTAssertEqual(change { $0.servers[0].transport = .h3 }, .reconnect)
+        XCTAssertEqual(change { $0.servers[0].probeTarget = "9.9.9.9:53" }, .reconnect)
         XCTAssertEqual(change { $0.port = 1081 }, .reconnect)
         XCTAssertEqual(change { $0.listenAddress = "0.0.0.0" }, .reconnect)
         // What it does not run with.
         XCTAssertEqual(change { $0.servers[0].name = "Japan" }, .none)
         XCTAssertEqual(change { $0.servers[1].password = "new" }, .none, "another server")
+        XCTAssertEqual(change { $0.servers[1].probeTarget = "9.9.9.9:53" }, .none, "another server's probe")
         XCTAssertEqual(change { $0.servers.append(Server(domain: "third.example.com")) }, .none)
         XCTAssertEqual(change { $0.connectOnLaunch = true }, .none)
         // The server connected to removed: on to the next one.
@@ -91,6 +93,42 @@ final class ServersTests: XCTestCase {
         XCTAssertEqual(change { $0.logLevel = .warnings }, .none)
         XCTAssertEqual(change { $0.logLevel = .detailed }, .none)
         XCTAssertEqual(change { $0.logLevel = .everything }, .none)
+    }
+
+    func testProbeTargetSurvivesStorageExportAndCoreImport() throws {
+        var configuration = both
+        configuration.servers[0].probeTarget = "[2606:4700:4700::1111]:53"
+        let stored = try JSONDecoder().decode(Configuration.self, from: JSONEncoder().encode(configuration))
+        XCTAssertEqual(stored, configuration)
+        XCTAssertEqual(stored.settings.probeTarget, configuration.servers[0].probeTarget)
+        let core = try clientConfiguration(stored.settings, password: stored.password)
+        XCTAssertTrue(core.contains("probe_target = \"[2606:4700:4700::1111]:53\""))
+        XCTAssertEqual(try Configuration.importing(core).selectedServer?.probeTarget, configuration.servers[0].probeTarget)
+        let exported = try Configuration.importing(configuration.exportedTOML(withPasswords: true))
+        XCTAssertEqual(exported.servers, configuration.servers)
+    }
+
+    func testProbeTargetRejectsNamesZonesMissingPortsAndInvalidNumbers() throws {
+        for target in ["example.com:53", "1.1.1.1", "1.1.1.1:0", "1.1.1.1:65536", "::1:53", "[fe80::1%en0]:53", "[1.1.1.1]:53", "[::1]", ""] {
+            var settings = both.settings
+            settings.probeTarget = target
+            XCTAssertThrowsError(try clientConfiguration(settings, password: both.password), target) {
+                XCTAssertEqual($0 as? SettingsError, .invalidProbeTarget)
+            }
+            XCTAssertThrowsError(try Configuration.importing("""
+            [[server]]
+            domain = "vpn.example.com"
+            probe_target = \(tomlString(target))
+            """), target)
+        }
+    }
+
+    func testOlderSettingsKeepTheirProbeDefaultAndCredentials() throws {
+        let old = try JSONDecoder().decode(Configuration.self, from: Data(#"{"settings":{"domain":"vpn.example.com","username":"macbook"},"password":"keep"}"#.utf8))
+        XCTAssertEqual(old.selectedServer?.probeTarget, "1.1.1.1:53")
+        XCTAssertEqual(old.password, "keep")
+        let core = try clientConfiguration(old.settings, password: old.password)
+        XCTAssertFalse(core.contains("probe_target"), "Default core configuration stays unchanged")
     }
 
 }

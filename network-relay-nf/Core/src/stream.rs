@@ -15,12 +15,25 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> Duplex for T {}
 #[derive(Default)]
 pub struct Keep {
     pub tasks: Vec<tokio::task::JoinHandle<()>>,
-    pub sender: Option<Box<dyn Send>>,
+    // A flow owns only its pumps. Its shared connection survives until both
+    // the client cache and every flow using it have been dropped.
+    pub connection: Option<Arc<dyn Send + Sync>>,
+}
+#[derive(Default)]
+pub struct ConnectionKeep {
+    pub tasks: Vec<tokio::task::JoinHandle<()>>,
     pub lease: Option<Arc<crate::native::Lease>>,
     pub h3_driver: Option<Arc<H3Driver>>,
 }
 pub type H3Driver = Mutex<h3::client::Connection<crate::quic::Connection, Bytes>>;
 impl Drop for Keep {
+    fn drop(&mut self) {
+        for task in &self.tasks {
+            task.abort();
+        }
+    }
+}
+impl Drop for ConnectionKeep {
     fn drop(&mut self) {
         if let Some(driver) = &self.h3_driver {
             send_h3_connection_error(driver);

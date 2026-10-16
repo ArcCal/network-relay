@@ -1,6 +1,6 @@
 # Application and wire specification
 
-Revision: 0.1.0 development, 2026-10-14. Normative words describe the acceptance target;
+Revision: 0.1.0 development, 2026-10-16. Normative words describe the acceptance target;
 [STATUS.md](STATUS.md) says which requirements have actually been verified.
 
 ## Supported protocol profile
@@ -53,14 +53,21 @@ as in the copied adapter. Test emulator trust is restricted to its fixture CA.
   Full IPv6 UDP maximum size is not implemented.
 - HTTP/2/3 stream pumps use a 64 KiB bounded duplex buffer and 16 KiB write
   chunks. HTTP/2 returns receive credit after the consumer accepts bytes.
-- Dropping an unfinished stream resets/cancels it and aborts owned pumps/drivers.
+- Dropping an unfinished stream resets/cancels it and aborts its own pumps,
+  while preserving any shared connection driver used by other tunnels.
   Dropping the last native lease releases its resources. Late events for another
   app generation must not revive a cancelled connection.
-- A SOCKS CONNECT whose tunnel fails (the relay resets the stream, as both servers
-  do when the destination resets, or the TLS/QUIC connection fails) resets the
+- HTTP/2 and HTTP/3 reuse outer connections for independent request streams.
+  Cancelling one tunnel must not cancel unrelated streams or the shared driver;
+  a failed shared connection must be replaced for subsequent requests. HTTP/1.1
+  retains one connection per tunnel. Relay tunnel/stream quotas still apply.
+- A SOCKS CONNECT whose tunnel reports failure (the relay resets the outer
+  stream, or the TLS/QUIC connection fails) resets the
   program's TCP connection instead of finishing it with FIN, so a cut-off download
-  does not look complete (the relays do the same towards destinations: RFC 9113
-  §8.5, RFC 9114 §4.4). A clean end of the tunnel still ends with FIN.
+  does not look complete (RFC 9113 §8.5, RFC 9114 §4.4). A clean end of the
+  tunnel still ends with FIN. HTTP/1.1 cannot expose a destination reset hidden
+  behind the relay's authenticated TLS EOF; see the
+  [Caddy boundary investigation](evidence/h1-reset-boundary-20261016.md).
 
 ## Readiness and failure classification
 
@@ -72,6 +79,24 @@ reporting a relay failure. Independent SOCKS flows retain their own lifetimes.
 Malformed Capsules and native I/O errors remain failures. A failure in either
 HTTP stream pump must wake pending I/O in the opposite direction while preserving
 buffered response bytes and normal half-close semantics.
+
+The UI labels this state **Relay Connected** and explicitly says Internet access
+is unverified. Its per-server **Admission probe target** is a numeric IP and UDP
+port, default `1.1.1.1:53`, that must be allowed by the relay's existing policy.
+It persists through storage/import/export and changing the active value takes
+effect on Save with a restart. It never sends application probe datagrams or
+silently substitutes another target after a policy rejection.
+
+Transport initialization retains a bounded wait. CONNECT response waiting has a
+separate 20-second budget to cover the Rust relay's default 5-second DNS plus
+10-second connect budget, within a 30-second overall open deadline. A
+slow/rejected request must not be replayed over another transport once its
+HEADERS were sent. Auto fallback is limited to outer setup and capability
+negotiation. One fresh HTTP/3 attempt is allowed only for a typed native
+bidirectional-stream creation failure proving that no request HEADERS were
+submitted; security errors, deadlines, observed GOAWAY and post-open failures
+are excluded. A queued request must recheck GOAWAY after waiting for stream
+capacity (RFC 9114 section 5.2), before writing its HEADERS.
 
 Rejected credentials, rejected requests (4xx, 500, 501) and TLS security
 failures are terminal. Gateway failures and a full relay (502, 503, 504, which
@@ -110,7 +135,8 @@ that TCP peer; an advertised nonzero port is enforced, otherwise the first valid
 UDP sender port is pinned. Other sources and fragments are dropped. Each
 association has at most 32 destination flows, a 16-packet outgoing queue per flow,
 a 32-packet response queue and a 120-second inactive-flow timeout. Queue overflow
-is dropped; per-drop user-visible counters are not implemented. The app caps
+drops the newest packet, increments a direction-specific total and emits bounded
+warnings plus final association totals. A closed queue is not overflow. The app caps
 concurrent SOCKS TCP sessions at 256.
 
 Closing the control TCP connection cancels all destination flows and closes the
@@ -168,6 +194,9 @@ application payload or certificate/private-key contents. Capture actual QUIC
 stream IDs, direction, parent/group, request/response phases and reset/close codes;
 bridge resource handles alone must not be interpreted as stream IDs. Correlate
 the first native error with server events before assigning a root cause.
+The opt-in [native checklist](NATIVE-ACCEPTANCE.md) and observation script keep
+unexecuted checks explicit; repeated short requests cannot certify a held
+long-lived connection, sleep/wake or network migration.
 
 A Linux emulator pass, QUIC `.ready`, local HEADERS completion, a listener opening,
 or one successful CONNECT does not establish this acceptance matrix. Until the

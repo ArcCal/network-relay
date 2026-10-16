@@ -377,6 +377,9 @@ struct SettingsForm: View {
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
+                        TextField("Admission probe target", text: field(\.probeTarget), prompt: Text("1.1.1.1:53"))
+                        Text("Choose an IP address and UDP port allowed by this relay. The admission check sends no target data and does not verify Internet access.")
+                            .font(.caption).foregroundStyle(.secondary)
                     } else {
                         Text("No servers. Click + to add one, or import a settings file.")
                             .foregroundStyle(.secondary)

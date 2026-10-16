@@ -1,0 +1,237 @@
+{
+  "date": "2026-10-16",
+  "base_commit": "a51b0965a391ebb93fc919452032aee704b7dbe3",
+  "scope": "Network Relay NF only; real local servers, test-only rustls/Quinn native bridge emulator",
+  "ordinary_core_tests": {
+    "passed": 95,
+    "failed": 0,
+    "external_fixture_ignored": 4
+  },
+  "swift_model_tests": {
+    "toolchain": "Swift 6.1.2 x86_64 Linux",
+    "passed": 53,
+    "failed": 0
+  },
+  "formatting": "PASS",
+  "project_only_clippy_warnings_denied": "PASS",
+  "native_network_framework": "NOT RUN",
+  "external_runs": [
+    {
+      "case": "forced_six_pairing_and_80_concurrent_streams",
+      "result": {
+        "scope": "production protocol core over test-only rustls/Quinn native bridge emulator",
+        "executed_at_utc": "2026-10-16T00:17:58.951876+00:00",
+        "client_core_source": {
+          "sha256": "6965d77ef62c30db8b1870d16d88081c5a607811d72d9ac194dd6919cd6ef7a1",
+          "rust_files": 11,
+          "method": "sorted relative path + NUL + file SHA-256 bytes"
+        },
+        "client_h3_source": {
+          "sha256": "ed84ce7e59fd7798a6d03779e1d43ee3185b57010d094b5d034c4c3477d19378",
+          "rust_files": 51,
+          "method": "sorted relative path + NUL + file SHA-256 bytes"
+        },
+        "client_manifest_sha256": "ffe6395f651d566b8a0dd95785d39e6316cc1d5a1b57f5269554617e6a009fcb",
+        "client_lockfile_sha256": "f0d6009da29291d8b5d08fb5c8a0a7070ec66cab6dc8f0a162df7ecb39d686f4",
+        "native_network_framework": "NOT RUN",
+        "servers": [
+          {
+            "kind": "network-relay",
+            "binary_sha256": "a916de7037488e9a6c2f75d00ed5ef910787427c6e63f21d413c0ae198658878",
+            "outcome": "PASS",
+            "test": "real_server_matrix",
+            "output": "\nrunning 1 test\nUDP test transport=http/1.1 size=0\nUDP test transport=http/1.1 size=1\nUDP test transport=http/1.1 size=1200\nUDP test transport=http/1.1 size=32768\nUDP test transport=http/1.1 size=65000\nnetwork-relay http/1.1: TCP remote DNS + 2 MiB half-close, UDP Capsules (0..65000 bytes), wrong password, certificate-name rejection, SOCKS CONNECT/UDP, source pinning, fragment drop and resource cleanup passed\nUDP test transport=h2 size=0\nUDP test transport=h2 size=1\nUDP test transport=h2 size=1200\nUDP test transport=h2 size=32768\nUDP test transport=h2 size=65000\nnetwork-relay h2: 80 simultaneous tunnels used one outer connection; cancellation preserved siblings\nnetwork-relay h2: TCP remote DNS + 2 MiB half-close, UDP Capsules (0..65000 bytes), wrong password, certificate-name rejection, SOCKS CONNECT/UDP, source pinning, fragment drop and resource cleanup passed\nUDP test transport=h3 size=0\nUDP test transport=h3 size=1\nUDP test transport=h3 size=1200\nUDP test transport=h3 size=32768\nUDP test transport=h3 size=65000\nnetwork-relay h3: 80 simultaneous tunnels used one outer connection; cancellation preserved siblings\nnetwork-relay h3: TCP remote DNS + 2 MiB half-close, UDP Capsules (0..65000 bytes), wrong password, certificate-name rejection, SOCKS CONNECT/UDP, source pinning, fragment drop and resource cleanup passed\ntest real_server_matrix ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.46s\n\n"
+          },
+          {
+            "kind": "caddy-network-relay",
+            "binary_sha256": "b309743bdc76c37330aada6b53f29afbf432ebcb34dbd18192af0fd2ea6a53e7",
+            "outcome": "PASS",
+            "test": "real_server_matrix",
+            "output": "\nrunning 1 test\nUDP test transport=http/1.1 size=0\nUDP test transport=http/1.1 size=1\nUDP test transport=http/1.1 size=1200\nUDP test transport=http/1.1 size=32768\nUDP test transport=http/1.1 size=65000\ncaddy-network-relay http/1.1: TCP remote DNS + 2 MiB half-close, UDP Capsules (0..65000 bytes), wrong password, certificate-name rejection, SOCKS CONNECT/UDP, source pinning, fragment drop and resource cleanup passed\nUDP test transport=h2 size=0\nUDP test transport=h2 size=1\nUDP test transport=h2 size=1200\nUDP test transport=h2 size=32768\nUDP test transport=h2 size=65000\ncaddy-network-relay h2: 80 simultaneous tunnels used one outer connection; cancellation preserved siblings\ncaddy-network-relay h2: TCP remote DNS + 2 MiB half-close, UDP Capsules (0..65000 bytes), wrong password, certificate-name rejection, SOCKS CONNECT/UDP, source pinning, fragment drop and resource cleanup passed\nUDP test transport=h3 size=0\nUDP test transport=h3 size=1\nUDP test transport=h3 size=1200\nUDP test transport=h3 size=32768\nUDP test transport=h3 size=65000\ncaddy-network-relay h3: 80 simultaneous tunnels used one outer connection; cancellation preserved siblings\ncaddy-network-relay h3: TCP remote DNS + 2 MiB half-close, UDP Capsules (0..65000 bytes), wrong password, certificate-name rejection, SOCKS CONNECT/UDP, source pinning, fragment drop and resource cleanup passed\ntest real_server_matrix ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.24s\n\n"
+          }
+        ]
+      }
+    },
+    {
+      "case": "idle_group_stream_zero",
+      "result": {
+        "scope": "production protocol core over test-only rustls/Quinn native bridge emulator",
+        "executed_at_utc": "2026-10-16T00:16:58.440605+00:00",
+        "client_core_source": {
+          "sha256": "6965d77ef62c30db8b1870d16d88081c5a607811d72d9ac194dd6919cd6ef7a1",
+          "rust_files": 11,
+          "method": "sorted relative path + NUL + file SHA-256 bytes"
+        },
+        "client_h3_source": {
+          "sha256": "ed84ce7e59fd7798a6d03779e1d43ee3185b57010d094b5d034c4c3477d19378",
+          "rust_files": 51,
+          "method": "sorted relative path + NUL + file SHA-256 bytes"
+        },
+        "client_manifest_sha256": "ffe6395f651d566b8a0dd95785d39e6316cc1d5a1b57f5269554617e6a009fcb",
+        "client_lockfile_sha256": "f0d6009da29291d8b5d08fb5c8a0a7070ec66cab6dc8f0a162df7ecb39d686f4",
+        "native_network_framework": "NOT RUN",
+        "servers": [
+          {
+            "kind": "network-relay",
+            "binary_sha256": "a916de7037488e9a6c2f75d00ed5ef910787427c6e63f21d413c0ae198658878",
+            "outcome": "PASS",
+            "test": "idle_stream_zero",
+            "output": "\nrunning 1 test\nOBSERVATION server=network-relay admission-to-check=13.00400608s stream0=[]\ntest idle_group_stream_zero ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 13.03s\n\n"
+          },
+          {
+            "kind": "caddy-network-relay",
+            "binary_sha256": "b309743bdc76c37330aada6b53f29afbf432ebcb34dbd18192af0fd2ea6a53e7",
+            "outcome": "PASS",
+            "test": "idle_stream_zero",
+            "output": "\nrunning 1 test\nOBSERVATION server=caddy-network-relay admission-to-check=13.003224042s stream0=[]\ntest idle_group_stream_zero ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 13.02s\n\n"
+          }
+        ]
+      }
+    },
+    {
+      "case": "http2_bulk_and_abort",
+      "result": {
+        "scope": "production protocol core over test-only rustls/Quinn native bridge emulator",
+        "executed_at_utc": "2026-10-16T00:18:28.863323+00:00",
+        "client_core_source": {
+          "sha256": "6965d77ef62c30db8b1870d16d88081c5a607811d72d9ac194dd6919cd6ef7a1",
+          "rust_files": 11,
+          "method": "sorted relative path + NUL + file SHA-256 bytes"
+        },
+        "client_h3_source": {
+          "sha256": "ed84ce7e59fd7798a6d03779e1d43ee3185b57010d094b5d034c4c3477d19378",
+          "rust_files": 51,
+          "method": "sorted relative path + NUL + file SHA-256 bytes"
+        },
+        "client_manifest_sha256": "ffe6395f651d566b8a0dd95785d39e6316cc1d5a1b57f5269554617e6a009fcb",
+        "client_lockfile_sha256": "f0d6009da29291d8b5d08fb5c8a0a7070ec66cab6dc8f0a162df7ecb39d686f4",
+        "native_network_framework": "NOT RUN",
+        "servers": [
+          {
+            "kind": "network-relay",
+            "binary_sha256": "a916de7037488e9a6c2f75d00ed5ef910787427c6e63f21d413c0ae198658878",
+            "outcome": "PASS",
+            "test": "large_transfer",
+            "output": "\nrunning 1 test\nnetwork-relay h2: 64 MiB download in 1.01s (63.4 MiB/s)\nnetwork-relay h2: destination reset after 8 MiB -> Err((8323072, \"stream error received: connection established in response to a CONNECT request was reset or abnormally closed\"))\nnetwork-relay h2: 64 MiB SOCKS download in 0.89s (72.0 MiB/s)\nnetwork-relay h2: destination reset after 8 MiB, SOCKS program sees Err((4974308, \"Connection reset by peer (os error 104)\"))\ntest large_downloads ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 7.72s\n\n"
+          },
+          {
+            "kind": "caddy-network-relay",
+            "binary_sha256": "b309743bdc76c37330aada6b53f29afbf432ebcb34dbd18192af0fd2ea6a53e7",
+            "outcome": "PASS",
+            "test": "large_transfer",
+            "output": "\nrunning 1 test\ncaddy-network-relay h2: 64 MiB download in 0.75s (84.8 MiB/s)\ncaddy-network-relay h2: destination reset after 8 MiB -> Err((5109900, \"stream error received: connection established in response to a CONNECT request was reset or abnormally closed\"))\ncaddy-network-relay h2: 64 MiB SOCKS download in 1.08s (59.2 MiB/s)\ncaddy-network-relay h2: destination reset after 8 MiB, SOCKS program sees Err((8167371, \"Connection reset by peer (os error 104)\"))\ntest large_downloads ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 7.88s\n\n"
+          }
+        ]
+      }
+    },
+    {
+      "case": "http3_bulk_and_abort",
+      "result": {
+        "scope": "production protocol core over test-only rustls/Quinn native bridge emulator",
+        "executed_at_utc": "2026-10-16T00:18:46.062188+00:00",
+        "client_core_source": {
+          "sha256": "6965d77ef62c30db8b1870d16d88081c5a607811d72d9ac194dd6919cd6ef7a1",
+          "rust_files": 11,
+          "method": "sorted relative path + NUL + file SHA-256 bytes"
+        },
+        "client_h3_source": {
+          "sha256": "ed84ce7e59fd7798a6d03779e1d43ee3185b57010d094b5d034c4c3477d19378",
+          "rust_files": 51,
+          "method": "sorted relative path + NUL + file SHA-256 bytes"
+        },
+        "client_manifest_sha256": "ffe6395f651d566b8a0dd95785d39e6316cc1d5a1b57f5269554617e6a009fcb",
+        "client_lockfile_sha256": "f0d6009da29291d8b5d08fb5c8a0a7070ec66cab6dc8f0a162df7ecb39d686f4",
+        "native_network_framework": "NOT RUN",
+        "servers": [
+          {
+            "kind": "network-relay",
+            "binary_sha256": "a916de7037488e9a6c2f75d00ed5ef910787427c6e63f21d413c0ae198658878",
+            "outcome": "PASS",
+            "test": "large_transfer",
+            "output": "\nrunning 1 test\nnetwork-relay h3: 64 MiB download in 1.14s (56.4 MiB/s)\nnetwork-relay h3: destination reset after 8 MiB -> Err((4838999, \"Undefined error: stream reset by peer: error 271\"))\nnetwork-relay h3: 64 MiB SOCKS download in 1.19s (53.9 MiB/s)\nnetwork-relay h3: destination reset after 8 MiB, SOCKS program sees Err((4773062, \"Connection reset by peer (os error 104)\"))\ntest large_downloads ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 8.32s\n\n"
+          },
+          {
+            "kind": "caddy-network-relay",
+            "binary_sha256": "b309743bdc76c37330aada6b53f29afbf432ebcb34dbd18192af0fd2ea6a53e7",
+            "outcome": "PASS",
+            "test": "large_transfer",
+            "output": "\nrunning 1 test\ncaddy-network-relay h3: 64 MiB download in 0.85s (75.2 MiB/s)\ncaddy-network-relay h3: destination reset after 8 MiB -> Err((5884205, \"Undefined error: stream reset by peer: error 271\"))\ncaddy-network-relay h3: 64 MiB SOCKS download in 1.01s (63.6 MiB/s)\ncaddy-network-relay h3: destination reset after 8 MiB, SOCKS program sees Err((5315238, \"Connection reset by peer (os error 104)\"))\ntest large_downloads ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 7.60s\n\n"
+          }
+        ]
+      }
+    },
+    {
+      "case": "persistent_flows_across_two_probe_renewals",
+      "result": {
+        "scope": "production protocol core over test-only rustls/Quinn native bridge emulator",
+        "executed_at_utc": "2026-10-16T00:18:44.080770+00:00",
+        "client_core_source": {
+          "sha256": "6965d77ef62c30db8b1870d16d88081c5a607811d72d9ac194dd6919cd6ef7a1",
+          "rust_files": 11,
+          "method": "sorted relative path + NUL + file SHA-256 bytes"
+        },
+        "client_h3_source": {
+          "sha256": "ed84ce7e59fd7798a6d03779e1d43ee3185b57010d094b5d034c4c3477d19378",
+          "rust_files": 51,
+          "method": "sorted relative path + NUL + file SHA-256 bytes"
+        },
+        "client_manifest_sha256": "ffe6395f651d566b8a0dd95785d39e6316cc1d5a1b57f5269554617e6a009fcb",
+        "client_lockfile_sha256": "f0d6009da29291d8b5d08fb5c8a0a7070ec66cab6dc8f0a162df7ecb39d686f4",
+        "native_network_framework": "NOT RUN",
+        "servers": [
+          {
+            "kind": "network-relay",
+            "binary_sha256": "a916de7037488e9a6c2f75d00ed5ef910787427c6e63f21d413c0ae198658878",
+            "outcome": "PASS",
+            "test": "pooled_renewal",
+            "output": "\nrunning 1 test\ntest persistent_flows_survive_two_pooled_probe_renewals has been running for over 60 seconds\nnetwork-relay h2: 60 verified TCP/UDP exchanges across 125.35s; one outer connection; zero retained resources\nnetwork-relay h3: 63 verified TCP/UDP exchanges across 126.33s; one outer connection; zero retained resources\ntest persistent_flows_survive_two_pooled_probe_renewals ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 126.36s\n\n"
+          },
+          {
+            "kind": "caddy-network-relay",
+            "binary_sha256": "b309743bdc76c37330aada6b53f29afbf432ebcb34dbd18192af0fd2ea6a53e7",
+            "outcome": "PASS",
+            "test": "pooled_renewal",
+            "output": "\nrunning 1 test\ntest persistent_flows_survive_two_pooled_probe_renewals has been running for over 60 seconds\ncaddy-network-relay h2: 60 verified TCP/UDP exchanges across 125.30s; one outer connection; zero retained resources\ncaddy-network-relay h3: 63 verified TCP/UDP exchanges across 126.26s; one outer connection; zero retained resources\ntest persistent_flows_survive_two_pooled_probe_renewals ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 126.28s\n\n"
+          }
+        ]
+      }
+    },
+    {
+      "case": "earlier_unfiltered_bulk_reproduces_retained_caddy_http1_tls_boundary",
+      "note": "Earlier source fingerprints retained. Caddy HTTP/1.1 assertion failed and was not weakened. Subsequent final H2/H3 runs are recorded separately.",
+      "result": {
+        "scope": "production protocol core over test-only rustls/Quinn native bridge emulator",
+        "executed_at_utc": "2026-10-16T00:10:51.884423+00:00",
+        "client_core_source": {
+          "sha256": "12eec05e7171d1ac2639dce98ae8957352815783e81f5e2f2e98011e0322a9f4",
+          "rust_files": 11,
+          "method": "sorted relative path + NUL + file SHA-256 bytes"
+        },
+        "client_h3_source": {
+          "sha256": "701ab91f822bcb2243b039382e6772f8ea98ceabd7dab585fb8f147cfbe90f98",
+          "rust_files": 51,
+          "method": "sorted relative path + NUL + file SHA-256 bytes"
+        },
+        "client_manifest_sha256": "ffe6395f651d566b8a0dd95785d39e6316cc1d5a1b57f5269554617e6a009fcb",
+        "client_lockfile_sha256": "f0d6009da29291d8b5d08fb5c8a0a7070ec66cab6dc8f0a162df7ecb39d686f4",
+        "native_network_framework": "NOT RUN",
+        "servers": [
+          {
+            "kind": "network-relay",
+            "binary_sha256": "a916de7037488e9a6c2f75d00ed5ef910787427c6e63f21d413c0ae198658878",
+            "outcome": "PASS",
+            "test": "large_transfer",
+            "output": "\nrunning 1 test\nnetwork-relay http/1.1: 64 MiB download in 0.97s (66.1 MiB/s)\nnetwork-relay http/1.1: destination reset after 8 MiB -> Err((8388608, \"peer closed connection without sending TLS close_notify: https://docs.rs/rustls/latest/rustls/manual/_03_howto/index.html#unexpected-eof\"))\nnetwork-relay http/1.1: 64 MiB SOCKS download in 0.86s (74.7 MiB/s)\nnetwork-relay http/1.1: destination reset after 8 MiB, SOCKS program sees Err((8388608, \"Connection reset by peer (os error 104)\"))\nnetwork-relay h2: 64 MiB download in 0.92s (69.4 MiB/s)\nnetwork-relay h2: destination reset after 8 MiB -> Err((7258112, \"stream error received: connection established in response to a CONNECT request was reset or abnormally closed\"))\nnetwork-relay h2: 64 MiB SOCKS download in 0.77s (82.8 MiB/s)\nnetwork-relay h2: destination reset after 8 MiB, SOCKS program sees Err((4003927, \"Connection reset by peer (os error 104)\"))\nnetwork-relay h3: 64 MiB download in 1.15s (55.8 MiB/s)\nnetwork-relay h3: destination reset after 8 MiB -> Err((4861184, \"Undefined error: stream reset by peer: error 271\"))\nnetwork-relay h3: 64 MiB SOCKS download in 1.10s (58.3 MiB/s)\nnetwork-relay h3: destination reset after 8 MiB, SOCKS program sees Err((4249129, \"Connection reset by peer (os error 104)\"))\ntest large_downloads ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 23.34s\n\n"
+          },
+          {
+            "kind": "caddy-network-relay",
+            "binary_sha256": "b309743bdc76c37330aada6b53f29afbf432ebcb34dbd18192af0fd2ea6a53e7",
+            "outcome": "FAIL",
+            "test": "large_transfer",
+            "output": "\nrunning 1 test\ncaddy-network-relay http/1.1: 64 MiB download in 0.88s (72.5 MiB/s)\ncaddy-network-relay http/1.1: destination reset after 8 MiB -> Err((2883584, \"Connection reset by peer (os error 104)\"))\ncaddy-network-relay http/1.1: 64 MiB SOCKS download in 0.81s (79.4 MiB/s)\ncaddy-network-relay http/1.1: destination reset after 8 MiB, SOCKS program sees Ok(8388608)\ntest large_downloads ... FAILED\n\nfailures:\n\nfailures:\n    large_downloads\n\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 7.78s\n\n"
+          }
+        ]
+      }
+    }
+  ]
+}

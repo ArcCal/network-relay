@@ -34,7 +34,7 @@ async fn real_server_matrix() {
             },
         };
         let backend = support::Backend::start(ca.into());
-        let client = Client::new(&settings, backend.bridge.clone()).unwrap();
+        let client = Arc::new(Client::new(&settings, backend.bridge.clone()).unwrap());
         let mut tcp_flow = client
             .open("localhost", tcp.port(), false)
             .await
@@ -79,6 +79,39 @@ async fn real_server_matrix() {
             "client advertised an unsupported native QUIC DATAGRAM path"
         );
         drop(flow);
+        if transport != "http/1.1" {
+            // Exceed the Rust relay's default 64-outer-connection limit while
+            // retaining every tunnel: only HTTP streams should multiply.
+            let mut opening = tokio::task::JoinSet::new();
+            for _ in 0..80 {
+                let client = client.clone();
+                opening.spawn(async move { client.open("127.0.0.1", tcp.port(), false).await });
+            }
+            let mut concurrent = Vec::new();
+            while let Some(result) = opening.join_next().await {
+                concurrent.push(result.unwrap().expect("80 concurrent tunnels"));
+            }
+            assert_eq!(backend.opened.lock().unwrap().len(), 1);
+            concurrent.drain(..40);
+            for (index, opened) in concurrent.iter_mut().enumerate() {
+                let payload = format!("survives-sibling-cancellation-{index}");
+                opened.stream.write_all(payload.as_bytes()).await.unwrap();
+                let mut echoed = vec![0; payload.len()];
+                tokio::time::timeout(
+                    Duration::from_secs(5),
+                    opened.stream.read_exact(&mut echoed),
+                )
+                .await
+                .unwrap()
+                .unwrap();
+                assert_eq!(echoed, payload.as_bytes());
+            }
+            drop(concurrent);
+            println!(
+                "{} {transport}: 80 simultaneous tunnels used one outer connection; cancellation preserved siblings",
+                config["kind"].as_str().unwrap()
+            );
+        }
         let mut wrong = settings.clone();
         wrong.password = "wrong-disposable-fixture-password".into();
         let bad = Client::new(&wrong, backend.bridge.clone()).unwrap();
@@ -96,7 +129,10 @@ async fn real_server_matrix() {
                 .is_err(),
             "certificate name mismatch accepted"
         );
-        let client = Arc::new(client);
+        // Clients retain their idle multiplexed connection until dropped.
+        // Retire the negative-test accounts before checking final cleanup.
+        drop(bad);
+        drop(bad_certificate);
         let listener = backend
             .bridge
             .listen("127.0.0.1:0".parse().unwrap())

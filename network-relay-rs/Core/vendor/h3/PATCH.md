@@ -4,6 +4,8 @@ Source: https://github.com/hyperium/h3/tree/43745ad87e95b0c035ac9c547aad46730321
 
 Original source and MIT license retained. Changes are confined to:
 
+- `client/connection.rs`: recheck GOAWAY after waiting for request-stream
+  capacity, before writing HEADERS (RFC 9114 section 5.2).
 - `frame.rs`: a FIN with outstanding DATA bytes is a truncated frame, including
   when no payload bytes arrived.
 - `connection.rs`, `client/stream.rs`, `server/stream.rs`: an opt-in

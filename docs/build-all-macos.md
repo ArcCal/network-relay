@@ -128,6 +128,8 @@ its intended VPS. The other binaries retain their own program names.
 The script prints the exact output location and opens it in Finder after
 all jobs pass. App bundles use the original recipes' ad-hoc signing and are
 not notarized releases.
+The build directory is printed before compiler-version checks; their output
+is displayed in Terminal and saved in `TOOL-VERSIONS.txt`, including errors.
 
 Check the collected files without relying on a shell variable from an old
 Terminal tab:

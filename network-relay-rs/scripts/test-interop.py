@@ -275,14 +275,23 @@ def main():
                         print(f"Running {kind}: " + ("real QUIC failure and automatic HTTP/2 fallback" if tcp_only else "HTTP/1.1, HTTP/2, HTTP/3, auto, security and " + ("protocol matrix" if args.skip_soak else "125-second HTTP/3 stability soak")), flush=True)
                         started=time.monotonic()
                         tested=subprocess.run(test_command,cwd=root,env=environment,capture_output=True,text=True,timeout=480)
+                        completed_tests = [selected_test]
+                        if tested.returncode == 0 and not tcp_only:
+                            ensure_same_inputs()
+                            print(f'{kind}: checking 80 concurrent HTTP/3 streams and cancellation', flush=True)
+                            reuse_command = test_command[:-1] + ['http3_concurrent_streams_share_one_connection']
+                            reused = subprocess.run(reuse_command, cwd=root, env=environment, capture_output=True, text=True, timeout=90)
+                            tested = subprocess.CompletedProcess(test_command, reused.returncode, tested.stdout + reused.stdout, tested.stderr + reused.stderr)
+                            completed_tests.append('http3_concurrent_streams_share_one_connection')
                         if tested.returncode == 0 and not args.skip_soak and not tcp_only:
                             ensure_same_inputs()
                             print(f'{kind}: fast matrix passed; starting the 125-second HTTP/3 soak', flush=True)
                             soak_command=test_command[:-1]+['http3_stability_soak']
                             soak=subprocess.run(soak_command,cwd=root,env=environment,capture_output=True,text=True,timeout=220)
+                            completed_tests.append('http3_stability_soak')
                             tested=subprocess.CompletedProcess(test_command,soak.returncode,tested.stdout+soak.stdout,tested.stderr+soak.stderr)
                         print(tested.stdout);print(tested.stderr)
-                        result['servers'].append({'kind':kind,'source_revision':args.caddy_source if kind.startswith('caddy') else args.rust_source,'binary_sha256':hashlib.sha256(binary.read_bytes()).hexdigest(),'version':run(str(binary),*(['version'] if kind.startswith('caddy') else ['--version']),timeout=15).stdout.strip(),'duration_seconds':round(time.monotonic()-started,3),'outcome':'PASS' if tested.returncode==0 else 'FAIL','tests':[selected_test] if args.skip_soak or tcp_only else [selected_test,'http3_stability_soak'],'output':tested.stdout,'stderr':tested.stderr})
+                        result['servers'].append({'kind':kind,'source_revision':args.caddy_source if kind.startswith('caddy') else args.rust_source,'binary_sha256':hashlib.sha256(binary.read_bytes()).hexdigest(),'version':run(str(binary),*(['version'] if kind.startswith('caddy') else ['--version']),timeout=15).stdout.strip(),'duration_seconds':round(time.monotonic()-started,3),'outcome':'PASS' if tested.returncode==0 else 'FAIL','tests':completed_tests,'output':tested.stdout,'stderr':tested.stderr})
                         if args.client and tested.returncode == 0:
                             ensure_same_inputs()
                             result['servers'][-1]['app_smoke'] = cli_smoke(args.client.resolve(), directory, fixture_data, environment, ('auto',) if tcp_only else ('http/1.1','h2','h3','auto'))

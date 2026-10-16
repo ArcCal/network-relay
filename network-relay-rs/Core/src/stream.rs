@@ -17,6 +17,23 @@ pub struct Keep {
     pub tasks: Vec<tokio::task::JoinHandle<()>>,
     pub sender: Option<Box<dyn Send>>,
     pub lease: Option<Arc<crate::native::Lease>>,
+    // HTTP/3 flows retain their shared connection, but own only their pumps.
+    pub connection: Option<Arc<dyn Send + Sync>>,
+}
+pub struct H3Keep {
+    pub task: tokio::task::JoinHandle<()>,
+    pub lease: Arc<crate::native::Lease>,
+    pub driver: Arc<Mutex<h3::client::Connection<crate::quic::Connection, Bytes>>>,
+}
+impl Drop for H3Keep {
+    fn drop(&mut self) {
+        // A request may have reported a connection-level protocol error.
+        // Let the driver send that error before releasing the parent group.
+        if let Ok(mut driver) = self.driver.lock() {
+            let _ = driver.poll_close(&mut Context::from_waker(Waker::noop()));
+        }
+        self.task.abort();
+    }
 }
 impl Drop for Keep {
     fn drop(&mut self) {

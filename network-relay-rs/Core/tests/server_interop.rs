@@ -129,6 +129,9 @@ async fn real_server_matrix() {
             drop(untrusted);
             untrusted_backend.shutdown().await;
         }
+        // A client now owns its cached HTTP/3 session until it is dropped.
+        drop(bad);
+        drop(bad_certificate);
         let client = Arc::new(client);
         let listener = backend
             .bridge
@@ -226,6 +229,141 @@ async fn real_server_matrix() {
     }
 }
 
+/// More business streams than Caddy's default 64 outer connections per
+/// client address must share one HTTP/3 session, including the idle probe.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires scripts/test-interop.py fixture"]
+async fn http3_concurrent_streams_share_one_connection() {
+    let fixture: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(std::env::var("RELAY_RS_FIXTURE").unwrap()).unwrap())
+            .unwrap();
+    let tcp: std::net::SocketAddr = fixture["tcp"].as_str().unwrap().parse().unwrap();
+    let udp: std::net::SocketAddr = fixture["udp"].as_str().unwrap().parse().unwrap();
+    let settings = Config {
+        uri_template: format!(
+            "https://{}/.well-known/masque/udp/{{target_host}}/{{target_port}}/",
+            fixture["server"].as_str().unwrap()
+        ),
+        username: "alice".into(),
+        password: fixture["password"].as_str().unwrap().into(),
+        server_name: Some("relay.test".into()),
+        transport: "h3".into(),
+        probe_target: udp,
+        mode: "socks".into(),
+        socks: network_relay_rs_core::Socks {
+            listen: vec!["127.0.0.1:0".parse().unwrap()],
+        },
+    };
+    let mut backend = Backend::start(BackendOptions {
+        ca_file: Some(fixture["ca"].as_str().unwrap().into()),
+    })
+    .unwrap();
+    let mut status = backend.status.clone();
+    let client = Arc::new(Client::new(&settings, backend.bridge.clone()).unwrap());
+    let owner = client.clone();
+    let monitor = tokio::spawn(async move { owner.monitor().await });
+    tokio::time::timeout(Duration::from_secs(15), async {
+        while status.borrow().0 != 1 {
+            status.changed().await.unwrap();
+            assert_ne!(status.borrow().0, 2, "initial admission probe failed");
+        }
+    })
+    .await
+    .expect("HTTP/3 admission timed out");
+    let mut opening = tokio::task::JoinSet::new();
+    for _ in 0..80 {
+        let client = client.clone();
+        opening.spawn(async move { client.open("127.0.0.1", tcp.port(), false).await });
+    }
+    let mut flows = Vec::new();
+    tokio::time::timeout(Duration::from_secs(30), async {
+        while let Some(result) = opening.join_next().await {
+            flows.push(result.unwrap().expect("concurrent HTTP/3 CONNECT rejected"));
+        }
+    })
+    .await
+    .expect("80 simultaneous HTTP/3 CONNECT streams stalled");
+    assert_eq!(flows.len(), 80);
+    // This fixture opens no local listener: parent-zero resources are the
+    // outer QUIC groups, while request/control streams have a group parent.
+    let outer_groups = || {
+        backend
+            .bridge
+            .resources
+            .lock()
+            .unwrap()
+            .values()
+            .filter(|resource| resource.parent == 0)
+            .count()
+    };
+    assert_eq!(outer_groups(), 1, "HTTP/3 created a connection per flow");
+    for (index, flow) in flows.iter_mut().enumerate() {
+        let payload = (index as u64).to_be_bytes();
+        flow.stream.write_all(&payload).await.unwrap();
+        let mut reply = [0; 8];
+        tokio::time::timeout(Duration::from_secs(5), flow.stream.read_exact(&mut reply))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(reply, payload);
+    }
+    drop(flows.pop());
+    let mut udp_flow = UdpFlow::new(
+        client
+            .open("127.0.0.1", udp.port(), true)
+            .await
+            .unwrap()
+            .stream,
+    );
+    udp_flow
+        .send(b"UDP survives sibling cancellation")
+        .await
+        .unwrap();
+    assert_eq!(
+        &tokio::time::timeout(Duration::from_secs(5), udp_flow.recv())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap()[..],
+        b"UDP survives sibling cancellation"
+    );
+    assert_eq!(outer_groups(), 1);
+    assert_eq!(
+        status.borrow().0,
+        1,
+        "cancelling a flow disrupted the probe"
+    );
+    drop(udp_flow);
+    monitor.abort();
+    let _ = monitor.await;
+    drop(client);
+    // Admitted requests retain the shared session after the cache owner and
+    // readiness probe are gone. Cancelling one request cannot abort siblings.
+    for flow in &mut flows {
+        flow.stream.write_all(b"still alive").await.unwrap();
+        let mut reply = [0; 11];
+        tokio::time::timeout(Duration::from_secs(5), flow.stream.read_exact(&mut reply))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(&reply, b"still alive");
+    }
+    drop(flows);
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while backend.resource_count() != 0 || !backend.bridge.resources.lock().unwrap().is_empty()
+        {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("shared HTTP/3 resources leaked before backend shutdown");
+    backend.shutdown().await;
+    println!(
+        "{} h3: 80 concurrent CONNECT streams + admission probe on one outer QUIC connection; independent cancellation, UDP, client-drop lifetime and pre-shutdown cleanup passed",
+        fixture["kind"].as_str().unwrap()
+    );
+}
+
 /// This crosses the former ten-second failure window, the sixty-second
 /// readiness-probe renewal and the Rust server's 120-second UDP idle minimum.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -316,6 +454,18 @@ async fn http3_stability_soak() {
         "readiness monitor unexpectedly stopped"
     );
     assert_eq!(backend.datagrams_sent(), 0);
+    assert_eq!(
+        backend
+            .bridge
+            .resources
+            .lock()
+            .unwrap()
+            .values()
+            .filter(|resource| resource.parent == 0)
+            .count(),
+        1,
+        "probe renewals must keep the same outer QUIC connection as business flows"
+    );
     tcp_flow.stream.shutdown().await.unwrap();
     drop(tcp_flow);
     drop(udp_flow);

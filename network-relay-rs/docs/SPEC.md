@@ -60,6 +60,13 @@ IPv6 UDP maximum is outside the initial profile. Stream pumps use bounded
 64 KiB duplex buffers and 16 KiB write chunks. HTTP/2 returns receive credit
 only after the consumer accepts bytes.
 
+HTTP/3 reuses a session for independent CONNECT and CONNECT-UDP streams. New
+requests stop using a session after GOAWAY; admitted streams keep their driver
+and parent connection until released. Session creation and request-stream
+capacity waits are bounded. At most four sessions are owned by one client,
+including sessions retained by draining flows. A request is not automatically
+replayed after HEADERS submission or a response timeout.
+
 ## SOCKS5
 
 The local interface is SOCKS5 CONNECT and UDP ASSOCIATE with no authentication.
@@ -85,8 +92,9 @@ SOCKS flows retain their own lifetimes. Malformed protocol data and transport
 errors remain failures.
 
 Forced HTTP/3 must remain HTTP/3. Automatic mode may try HTTP/3 and fall back to
-TCP; its tests and logs must identify the chosen transport. Silent fallback must
-not count as a forced HTTP/3 pass. Short failures use exponential backoff; at
+TCP during connection setup and capability negotiation, before submitting the
+CONNECT request; its tests and logs must identify the chosen transport. Silent
+fallback must not count as a forced HTTP/3 pass. Short failures use exponential backoff; at
 least 30 seconds of admitted readiness resets that backoff. A recurring failure
 must remain visible in Normal or higher logs.
 

@@ -2,7 +2,7 @@
 //! are provided by the Tokio/rustls/Quinn backend through a bounded bridge.
 use crate::{
     native, proto,
-    stream::{Keep, Stream},
+    stream::{H3Keep, Keep, Stream},
 };
 use anyhow::{Context, Result, ensure};
 use bytes::Bytes;
@@ -15,7 +15,7 @@ use hyper_util::rt::TokioIo;
 use std::{net::SocketAddr, sync::Arc, time::Duration};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    sync::watch,
+    sync::{Mutex, OwnedSemaphorePermit, Semaphore, watch},
 };
 
 const WAIT: Duration = Duration::from_secs(10);
@@ -24,6 +24,9 @@ const WAIT: Duration = Duration::from_secs(10);
 // changing any independent SOCKS flow or generating Internet probe traffic.
 const PROBE_RENEW: Duration = Duration::from_secs(60);
 const STABLE_SESSION: Duration = Duration::from_secs(30);
+// One session accepts new requests; older GOAWAY sessions may still carry
+// active flows. Bound those connections too, rather than creating one per flow.
+const H3_CONNECTIONS: usize = 4;
 
 #[derive(Debug, thiserror::Error)]
 #[error(
@@ -39,7 +42,14 @@ pub struct Client {
     authorization: http::HeaderValue,
     transport: String,
     selected: watch::Sender<Option<String>>,
+    h3: Mutex<Option<Arc<H3Session>>>,
+    h3_slots: Arc<Semaphore>,
     pub probe_target: SocketAddr,
+}
+struct H3Session {
+    sender: Mutex<h3::client::SendRequest<crate::quic::Opener, Bytes>>,
+    keep: H3Keep,
+    _slot: OwnedSemaphorePermit,
 }
 pub struct Opened {
     pub stream: Stream,
@@ -100,6 +110,8 @@ impl Client {
             authorization,
             transport: config.transport.clone(),
             selected,
+            h3: Mutex::new(None),
+            h3_slots: Arc::new(Semaphore::new(H3_CONNECTIONS)),
             probe_target: config.probe_target,
         })
     }
@@ -144,9 +156,22 @@ impl Client {
                 .context("HTTP/3 connect timed out")?;
         }
         if mode == "auto" {
-            match tokio::time::timeout(Duration::from_secs(5), self.open_h3(host, port, udp)).await
-            {
-                Ok(Ok(open)) => return Ok(open),
+            // Fallback is limited to setup. Never replay a CONNECT whose
+            // HEADERS may already have reached the server.
+            let setup = async {
+                let session = self.h3_session().await?;
+                self.h3_settings(&session, udp).await?;
+                Ok::<_, anyhow::Error>(session)
+            };
+            match tokio::time::timeout(Duration::from_secs(5), setup).await {
+                Ok(Ok(session)) => {
+                    return tokio::time::timeout(
+                        WAIT * 3,
+                        self.h3_request(session, host, port, udp),
+                    )
+                    .await
+                    .context("HTTP/3 connect timed out")?;
+                }
                 Ok(Err(e)) if terminal(&e) => return Err(e),
                 _ => tracing::warn!("HTTP/3 unavailable; trying Rust TCP"),
             }
@@ -276,7 +301,32 @@ impl Client {
             transport: "HTTP/1.1",
         })
     }
-    async fn open_h3(&self, host: &str, port: u16, udp: bool) -> Result<Opened> {
+    async fn h3_session(&self) -> Result<Arc<H3Session>> {
+        use h3::ConnectionState;
+        let mut cache = tokio::time::timeout(WAIT, self.h3.lock())
+            .await
+            .context("HTTP/3 connection setup busy")?;
+        if let Some(session) = cache.as_ref() {
+            let sender = tokio::time::timeout(WAIT, session.sender.lock())
+                .await
+                .context("HTTP/3 request submission busy")?;
+            if self
+                .bridge
+                .resources
+                .lock()
+                .unwrap()
+                .contains_key(&session.keep.lease.id)
+                && !session.keep.task.is_finished()
+                && sender.get_conn_error().is_none()
+                && !sender.is_closing()
+            {
+                return Ok(session.clone());
+            }
+        }
+        *cache = None;
+        let slot = tokio::time::timeout(WAIT, self.h3_slots.clone().acquire_owned())
+            .await
+            .context("HTTP/3 connections are still draining")??;
         let native = tokio::time::timeout(
             WAIT,
             native::Quic::open(self.bridge.clone(), self.options(&["h3"])),
@@ -289,41 +339,77 @@ impl Client {
             .enable_datagram(false)
             .send_grease(false)
             .max_field_section_size(16384);
-        let (mut driver, mut sender) = tokio::time::timeout(
+        let (driver, sender) = tokio::time::timeout(
             WAIT,
             builder.build::<_, _, Bytes>(crate::quic::Connection::new(native)),
         )
         .await??;
-        let mut keep = Keep::default();
-        keep.lease = Some(lease);
-        keep.tasks.push(tokio::spawn(async move {
-            let error = driver.wait_idle().await;
+        let driver = Arc::new(std::sync::Mutex::new(driver));
+        let driven = driver.clone();
+        let task = tokio::spawn(async move {
+            let error = std::future::poll_fn(|cx| driven.lock().unwrap().poll_close(cx)).await;
             tracing::debug!("HTTP/3 connection driver ended: {error}");
-        }));
+        });
+        let session = Arc::new(H3Session {
+            sender: Mutex::new(sender),
+            keep: H3Keep {
+                task,
+                lease,
+                driver,
+            },
+            _slot: slot,
+        });
+        *cache = Some(session.clone());
+        Ok(session)
+    }
+    async fn h3_settings(&self, session: &H3Session, udp: bool) -> Result<()> {
         if udp {
             use h3::ConnectionState;
-            let waiter = &mut sender;
-            let driver_task = &keep.tasks[0];
-            tokio::time::timeout(WAIT, async move {
-                while !waiter.settings().enable_extended_connect() {
+            tokio::time::timeout(WAIT, async {
+                loop {
+                    let sender = session.sender.lock().await;
+                    if sender.settings().enable_extended_connect() {
+                        return Ok::<_, anyhow::Error>(());
+                    }
                     ensure!(
-                        !driver_task.is_finished(),
+                        !session.keep.task.is_finished(),
                         "HTTP/3 closed before Extended CONNECT settings"
                     );
+                    drop(sender);
                     tokio::time::sleep(Duration::from_millis(5)).await;
                 }
-                Ok::<_, anyhow::Error>(())
             })
             .await
             .context("server did not enable HTTP/3 Extended CONNECT")??;
         }
+        Ok(())
+    }
+    async fn open_h3(&self, host: &str, port: u16, udp: bool) -> Result<Opened> {
+        let session = self.h3_session().await?;
+        self.h3_settings(&session, udp).await?;
+        self.h3_request(session, host, port, udp).await
+    }
+    async fn h3_request(
+        &self,
+        session: Arc<H3Session>,
+        host: &str,
+        port: u16,
+        udp: bool,
+    ) -> Result<Opened> {
         let mut request = self.request(host, port, udp)?;
         if udp {
             request
                 .extensions_mut()
                 .insert(h3::ext::Protocol::CONNECT_UDP);
         }
-        let mut stream = tokio::time::timeout(WAIT, sender.send_request(request)).await??;
+        let mut sender = tokio::time::timeout(WAIT, session.sender.lock())
+            .await
+            .context("HTTP/3 request submission busy")?;
+        let mut stream = tokio::time::timeout(WAIT, sender.send_request(request))
+            .await
+            .context("HTTP/3 stream capacity timed out")??;
+        // Serialize stream creation, not response waits or business traffic.
+        drop(sender);
         tracing::debug!(
             sid = stream.id().into_inner(),
             "HTTP/3 request HEADERS sent; waiting for response"
@@ -332,7 +418,12 @@ impl Client {
             .await
             .context("no HTTP/3 response")??;
         check(response.status(), response.headers(), udp, StatusCode::OK)?;
-        keep.sender = Some(Box::new(sender));
+        let keep = Keep {
+            connection: Some(session),
+            tasks: Vec::new(),
+            sender: None,
+            lease: None,
+        };
         Ok(Opened {
             stream: Stream::h3(stream, keep),
             transport: "HTTP/3",

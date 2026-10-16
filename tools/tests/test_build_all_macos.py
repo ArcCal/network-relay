@@ -60,7 +60,10 @@ if tool == "git":
     elif "status" in args:
         pass
 elif tool == "cargo":
-    if "--version" in args:
+    if args == ["zigbuild", "--version"]:
+        print("error: unexpected argument '--version' found", file=sys.stderr)
+        sys.exit(2)
+    if args == ["--version"]:
         print("cargo 1.99.0")
     elif "build" in args or "zigbuild" in args:
         target = args[args.index("--target") + 1]
@@ -69,6 +72,20 @@ elif tool == "cargo":
         bins = [args[index + 1] for index, value in enumerate(args[:-1]) if value == "--bin"]
         for binary in bins:
             emit_binary(root / target / "release" / binary, target)
+elif tool == "cargo-zigbuild":
+    if args == ["--version"]:
+        if os.environ.get("MOCK_CARGO_ZIGBUILD_VERSION_FAILURE") == "1":
+            print("cargo-zigbuild version probe failed", file=sys.stderr)
+            sys.exit(19)
+        print("cargo-zigbuild 0.23.4")
+    else:
+        sys.exit(2)
+elif tool == "zig":
+    if args == ["version"]:
+        print("0.15.1")
+elif tool == "swift":
+    if args == ["--version"]:
+        print("Apple Swift version 6.3")
 elif tool == "go":
     if "version" in args:
         print("go version go1.27.2 darwin/arm64")
@@ -151,7 +168,8 @@ class BuildOrchestrationTests(unittest.TestCase):
         self.mock_bin.mkdir()
         for name in ("git", "cargo", "go", "file", "ditto", "codesign", "xcrun",
                      "sw_vers", "uname", "rustc", "rustup", "sleep", "plutil",
-                     "xcode-select", "mas", "brew", "xcodebuild", "sudo", "open", "curl"):
+                     "xcode-select", "mas", "brew", "xcodebuild", "sudo", "open", "curl",
+                     "cargo-zigbuild", "zig", "swift"):
             path = self.mock_bin / name
             path.write_text("#!" + sys.executable + "\n" + MOCK_TOOL, encoding="utf-8")
             path.chmod(0o755)
@@ -495,6 +513,36 @@ class BuildOrchestrationTests(unittest.TestCase):
         self.assertEqual(self.commands("curl"), [])
         self.assertGreaterEqual(len([item for item in self.commands("xcode-select")
                                      if item["args"] == ["-p"]]), 2)
+
+    def test_tool_versions_uses_standalone_zigbuild_and_finishes_record(self):
+        result = self.run_bash("""
+            say "Fresh build directory: $BUILD_ROOT"
+            write_tool_versions 2>&1 | tee "$BUILD_ROOT/TOOL-VERSIONS.txt"
+            touch "$BUILD_ROOT/versions-recorded"
+            """)
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertTrue((self.root / "build root/versions-recorded").exists())
+        recorded = (self.root / "build root/TOOL-VERSIONS.txt").read_text()
+        for version in ("cargo-zigbuild 0.23.4", "go version go1.27.2", "Apple Swift version 6.3"):
+            self.assertIn(version, recorded)
+        self.assertIn("Fresh build directory:", result.stdout)
+        self.assertEqual([item["args"] for item in self.commands("cargo-zigbuild")], [["--version"]])
+        self.assertEqual([item["args"] for item in self.commands("cargo")], [["--version"]])
+
+    def test_failed_tool_version_probe_is_visible_and_stops_pipeline(self):
+        result = self.run_bash("""
+            say "Fresh build directory: $BUILD_ROOT"
+            write_tool_versions 2>&1 | tee "$BUILD_ROOT/TOOL-VERSIONS.txt"
+            touch "$BUILD_ROOT/incorrect-version-success"
+            """, {"MOCK_CARGO_ZIGBUILD_VERSION_FAILURE": "1"})
+        self.assertEqual(result.returncode, 19, result.stdout)
+        self.assertFalse((self.root / "build root/incorrect-version-success").exists())
+        self.assertIn("Fresh build directory:", result.stdout)
+        self.assertIn("cargo-zigbuild version probe failed", result.stdout)
+        recorded = (self.root / "build root/TOOL-VERSIONS.txt").read_text()
+        self.assertIn("cargo-zigbuild version probe failed", recorded)
+        self.assertEqual(self.commands("go"), [])
+        self.assertEqual(self.commands("swift"), [])
 
 
 if __name__ == "__main__":

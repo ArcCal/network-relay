@@ -414,6 +414,20 @@ write_checksums() {
     )
 }
 
+write_tool_versions() {
+    date -u '+Started: %Y-%m-%dT%H:%M:%SZ'
+    sw_vers
+    xcrun --sdk macosx --show-sdk-version
+    rustc --version
+    cargo --version
+    zig version
+    # The version flag belongs to the standalone command, not its build
+    # subcommand. `cargo zigbuild --version` is rejected by cargo-zigbuild.
+    cargo-zigbuild --version
+    go version
+    swift --version
+}
+
 main() {
     BUILD_JOBS=2
     OUTPUT_PARENT="$HOME/Projects"
@@ -455,18 +469,10 @@ main() {
         "$OUT/macos-arm64/bin" "$OUT/macos-arm64/apps"
     printf 'job\tresult\tlog\n' > "$BUILD_RESULTS"
     printf 'repository\tcommit\n' > "$SOURCE_REVISIONS"
-    {
-        date -u '+Started: %Y-%m-%dT%H:%M:%SZ'
-        sw_vers
-        xcrun --sdk macosx --show-sdk-version
-        rustc --version
-        cargo --version
-        zig version
-        cargo zigbuild --version
-        go version
-        swift --version
-    } > "$BUILD_ROOT/TOOL-VERSIONS.txt" 2>&1
     say "Fresh build directory: $BUILD_ROOT"
+    # Keep failures visible before any build jobs have started, and preserve
+    # the failing probe's exit status through the pipeline.
+    write_tool_versions 2>&1 | tee "$BUILD_ROOT/TOOL-VERSIONS.txt"
     say 'Source downloads are full working trees of main; history is shallow. GitHub may ask you to sign in.'
     schedule_builds
     cp "$SOURCE_REVISIONS" "$OUT/SOURCE-REVISIONS.tsv"

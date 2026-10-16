@@ -117,7 +117,7 @@ final class SavedSettingsTests: XCTestCase {
         let object = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any])
         XCTAssertEqual(Set(object.keys), ["servers", "selectedServer", "logLevel", "settings", "password"])
         let settings = try XCTUnwrap(object["settings"] as? [String: Any])
-        XCTAssertEqual(Set(settings.keys), ["serverIP", "domain", "username", "listenAddress", "port", "connectOnLaunch", "transport"])
+        XCTAssertEqual(Set(settings.keys), ["serverIP", "domain", "username", "listenAddress", "port", "connectOnLaunch", "transport", "probeTarget"])
         XCTAssertEqual(settings["domain"] as? String, "de.example.com")
         XCTAssertEqual(settings["port"] as? Int, 1081)
         XCTAssertEqual(object["password"] as? String, "other")
@@ -162,7 +162,7 @@ final class SavedSettingsTests: XCTestCase {
                 try loaded.save(to: file)
                 let saved = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any])
                 let savedSettings = try XCTUnwrap(saved["settings"] as? [String: Any])
-                XCTAssertEqual(Set(savedSettings.keys), ["serverIP", "domain", "username", "listenAddress", "port", "connectOnLaunch", "transport"])
+                XCTAssertEqual(Set(savedSettings.keys), ["serverIP", "domain", "username", "listenAddress", "port", "connectOnLaunch", "transport", "probeTarget"])
                 XCTAssertEqual(Configuration.load(from: file), baseline)
                 XCTAssertFalse(try clientConfiguration(loaded.settings, password: loaded.password).contains("gssapi"))
             }

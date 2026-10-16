@@ -11,11 +11,11 @@ required to build it.
 **Development status:** the protocol core is implemented. Production socket,
 TLS and QUIC operations are supplied by Apple Network.framework. Linux core
 checks are available; the user has reported a Mac build/launch and successful
-forced HTTP/2 SOCKS TCP and UDP forwarding with Rust network-relay. Native HTTP/3
-reaches admission but repeatedly fails with EINVAL about ten seconds later.
-Stream-error propagation and idle-probe lifecycle defects are now fixed with
-portable tests; the fixes still need Mac validation. The complete native matrix
-remains incomplete, and HTTP/3 remains experimental.
+forced HTTP/2 SOCKS TCP and UDP forwarding with Rust network-relay. The earlier
+periodic native HTTP/3 disconnect was confirmed resolved by the user after the
+server idle-stream-0 and client probe-lifecycle fixes. Archived failing runs are
+historical evidence, not a current reproduction. The complete current-build
+native matrix remains incomplete; this is a development application.
 See [implementation status](docs/STATUS.md) before treating this as a release.
 “Perfect compatibility” is an acceptance goal, not a result we have established.
 
@@ -26,6 +26,7 @@ See [implementation status](docs/STATUS.md) before treating this as a release.
 - [Validation procedure and evidence](docs/VALIDATION.md)
 - [User-reported Mac build and TCP/UDP results](docs/evidence/native-mac-20261011.md)
 - [Fresh Mac build, log levels and TCP/UDP observation](docs/BUILD-AND-OBSERVE.md)
+- [Opt-in native acceptance matrix](docs/NATIVE-ACCEPTANCE.md)
 - [Source provenance](SOURCE-PROVENANCE.json)
 
 ## Build on a Mac
@@ -67,6 +68,10 @@ remote relay connection, not programs connecting to the local proxy.
 curl -I --noproxy '' --proxy socks5h://127.0.0.1:1080 \
   --connect-timeout 10 --max-time 30 https://example.com/
 ```
+
+**Relay Connected** means the relay authenticated and admitted a request. It
+does not verify Internet access. Test an allowed TCP destination and UDP target
+separately; the proxy never switches to direct access when the relay fails.
 
 Switching the selected server or its transport while connected restarts this
 app's client automatically and ends existing proxy sessions. Saving an inactive

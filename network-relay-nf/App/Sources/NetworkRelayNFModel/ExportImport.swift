@@ -61,6 +61,9 @@ extension Configuration {
                 lines.append("password = \(tomlString(server.password))")
             }
             lines.append("transport = \(tomlString(server.transport.rawValue))")
+            if server.probeTarget != Settings().probeTarget {
+                lines.append("probe_target = \(tomlString(server.probeTarget))")
+            }
             if server.id == selected {
                 lines.append("selected = true")
             }
@@ -128,6 +131,7 @@ extension Configuration {
             server.username = try reader.string("username") ?? ""
             server.password = try reader.string("password") ?? ""
             server.transport = try reader.transport("transport") ?? .auto
+            server.probeTarget = try admissionProbeTarget(reader.string("probe_target") ?? Settings().probeTarget)
             configuration.servers.append(server)
             if try reader.boolean("selected") == true && configuration.selectedServerID == nil {
                 configuration.selectedServerID = server.id
@@ -183,6 +187,7 @@ extension Configuration {
             server.username = try file.string("username") ?? ""
             server.password = try file.string("password") ?? ""
             server.transport = try file.transport("transport") ?? .auto
+            server.probeTarget = try admissionProbeTarget(file.string("probe_target") ?? Settings().probeTarget)
             configuration.servers = [server]
             configuration.selectedServerID = server.id
         }

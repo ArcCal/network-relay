@@ -26,9 +26,9 @@ public func appendClientLog(_ incoming: [String], to log: inout [String], limit:
 public enum Status: Equatable {
     /// Not running.
     case stopped
-    /// Started, the tunnel is not up yet.
+    /// Started, relay admission has not completed yet.
     case connecting
-    /// The tunnel is up; the proxy forwards through it.
+    /// The relay authenticated and admitted a request; destination access is unverified.
     case connected
     /// The tunnel went down; the client keeps retrying on its own.
     case reconnecting(String)
@@ -39,15 +39,16 @@ public enum Status: Equatable {
         switch self {
         case .stopped: return "Not Connected"
         case .connecting: return "Connecting…"
-        case .connected: return "Connected"
+        case .connected: return "Relay Connected"
         case .reconnecting: return "Connection Lost, Reconnecting…"
         case .failed: return "Connection Failed"
         }
     }
 
-    /// Why the tunnel is down, if it is.
+    /// Admission scope when connected, otherwise the recorded failure reason.
     public var detail: String? {
         switch self {
+        case .connected: return "Relay authenticated; Internet access is not verified."
         case .reconnecting(let why), .failed(let why): return why
         default: return nil
         }

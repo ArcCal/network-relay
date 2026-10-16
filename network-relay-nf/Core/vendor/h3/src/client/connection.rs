@@ -175,6 +175,12 @@ where
             .await
             .map_err(|e| self.handle_quic_stream_error(e))?;
 
+        // Stream capacity can become available after the peer's GOAWAY.
+        // RFC 9114 section 5.2 forbids initiating a new request then.
+        if let Some(error) = self.check_peer_connection_closing() {
+            return Err(error);
+        }
+
         //= https://www.rfc-editor.org/rfc/rfc9114#section-4.2
         //= type=TODO
         //# Characters in field names MUST be

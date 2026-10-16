@@ -15,6 +15,11 @@ fn stream_error(e: io::Error) -> StreamErrorIncoming {
 fn connection_error(e: io::Error) -> ConnectionErrorIncoming {
     ConnectionErrorIncoming::Undefined(Arc::new(e))
 }
+/// Created only when native bidirectional stream creation failed before it
+/// returned a stream to h3. No request HEADERS can have been written yet.
+#[derive(Debug, thiserror::Error)]
+#[error("request stream was not created: {0}")]
+pub(crate) struct RequestNotSubmitted(#[source] pub io::Error);
 pub struct Stream {
     pub io: Io,
     pending: Bytes,
@@ -153,7 +158,18 @@ impl Opener {
         }
         let result = std::task::ready!(slot.as_mut().unwrap().as_mut().poll(cx));
         *slot = None;
-        Poll::Ready(result.map(Stream::new).map_err(stream_error))
+        Poll::Ready(result.map(Stream::new).map_err(|error| {
+            if !uni
+                && matches!(
+                    error.kind(),
+                    io::ErrorKind::NotConnected | io::ErrorKind::ConnectionAborted
+                )
+            {
+                StreamErrorIncoming::Unknown(Box::new(RequestNotSubmitted(error)))
+            } else {
+                stream_error(error)
+            }
+        }))
     }
 }
 impl quic::OpenStreams<Bytes> for Opener {

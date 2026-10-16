@@ -1,5 +1,41 @@
 # Implementation status
 
+## Scoped client repair, 2026-10-16
+
+Changes are restricted to `network-relay-nf/`; neither server nor another client
+is modified. HTTP/2 and HTTP/3 sessions now share outer connections, while
+HTTP/1.1 retains one connection per tunnel. CONNECT response waiting is separate
+from transport initialization and allows the Rust relay's default DNS/connect
+budget. Native QUIC options, certificate verification and the earlier resolved
+periodic-disconnect repairs remain unchanged. Portable regression results for
+this revision are [recorded separately](evidence/client-reliability-20261016.md)
+from native Mac acceptance.
+
+GOAWAY retires cached sessions without cancelling admitted streams. A local
+HTTP/3 library fix rechecks GOAWAY after waiting for stream credit, preventing
+a queued request from sending HEADERS in violation of RFC 9114 section 5.2.
+Recovery permits one same-protocol attempt only when native stream creation
+fails before any HEADERS could be submitted; submitted requests are never
+replayed. Forced HTTP/1.1 handshakes remain independent.
+
+The UI says **Relay Connected** and explains that authentication/admission is
+not proof of Internet access. Each server profile now exposes its existing core
+`probe_target` as **Admission probe target**, default `1.1.1.1:53`. It accepts a
+numeric IPv4/IPv6 address and UDP port allowed by the relay's existing policy.
+It sends no target datagrams and does not bypass that policy. The field persists
+through JSON storage and TOML import/export; old profiles keep their default.
+
+UDP queue saturation is counted separately in each direction, with bounded
+warning frequency and final association totals. Deliveries after queue closure
+are counted separately and must not be labelled queue overflow.
+
+The opt-in [native acceptance procedure](NATIVE-ACCEPTANCE.md) and
+`scripts/observe-native.sh` record build identity and bounded real TCP/UDP
+observations. They do not turn missing Apple SDK/runtime execution into a pass.
+The six forced server/transport pairings, held active/idle connections,
+sleep/wake and network changes still require the real Mac and current deployed
+server binaries.
+
 ## Local authentication removal, 2026-10-14
 
 Kerberos/GSS-API support, its UI/settings, native bridge and helper scripts are
@@ -169,11 +205,13 @@ The dated update above supersedes their earlier unresolved-H3 classification.
   builds reached admission then failed about ten seconds later. The old
   [research](QUIC-RESEARCH.md) remains historical evidence; the server idle-stream-0
   and client probe-lifecycle fixes must be preserved.
-- **HTTP/1.1 reset versus EOF remains under investigation.** An earlier NF/Caddy
-  pairing sometimes exposed a target reset as clean EOF. Current review has not
-  established a client defect: TLS close-notify can obscure a later TCP reset.
-  This response repair preserves observed errors but does not invent an error
-  for a valid EOF or claim to resolve that intermittent observation.
+- **HTTP/1.1 reset versus EOF is not established as a client defect.** A retained
+  Caddy build can send TLS close-notify before a later raw TCP reset even to
+  standalone OpenSSL, without NF or its emulator. The client must preserve real
+  errors and half-closes, not invent an error for an authenticated TLS EOF. See
+  [the boundary investigation](evidence/h1-reset-boundary-20261016.md). The exact
+  current deployed pairing and Apple boundary still need native verification;
+  no server was changed in this task.
 - H1 logs include a control connection reset and individual flow timeouts; H2
   logs include individual flow resets. Their causes are unconfirmed. Do not
   declare all TCP transports stable for long sessions from the one positive H2
@@ -182,18 +220,18 @@ The dated update above supersedes their earlier unresolved-H3 classification.
   the old response timeout must not be substituted for this admitted-H3 fault.
 - The complete Apple-to-both-server acceptance matrix and build/test/signature
   artifacts are missing. Therefore “perfect interoperability” has not been delivered.
-- One outer connection per flow can exhaust restrictive server connection limits
-  and adds handshake overhead. Shared HTTP/2/3 connections are not implemented.
-  Measured 2026-10-13 with default limits: network-relay accepts 64 connections
-  per client IP over TCP and QUIC, and caddy-network-relay 64 HTTP/3 connections
-  (HTTP/2 was not limited at 80). Beyond about 63 concurrent SOCKS flows (the
-  readiness probe holds one connection), new flows fail.
-- The client waits 10 seconds for a CONNECT response; network-relay may take up
-  to 15 (5-second DNS timeout plus its default 10-second connect timeout). A slow
-  destination can therefore fail as a client timeout rather than the relay's 504.
+- The old one-outer-connection-per-flow limit is addressed for HTTP/2 and HTTP/3
+  by shared sessions. Server tunnel/stream limits still apply, and HTTP/1.1 still
+  requires one connection per tunnel. Current-build native concurrency/resource
+  verification remains a separate gate.
+- CONNECT response waiting now allows 20 seconds rather than 10, covering the
+  Rust relay's default 5-second DNS plus 10-second connect budget. Servers with
+  longer custom budgets can still exceed this bounded client wait.
 - Readiness verifies authenticated CONNECT-UDP admission only. It sends no target
   traffic or heartbeat, can be denied by destination policy, and cannot establish
   Internet reachability or continuously verify every independent SOCKS flow.
+  The UI now makes this distinction explicit and permits an allowed numeric
+  admission target per server.
 - Custom UDP templates are accepted only by core configuration, not by the GUI.
   Mutual TLS/client-certificate identity, BIND, SOCKS UDP fragments, Intel builds
   and pre-macOS-27 support are not implemented.
@@ -212,7 +250,7 @@ confirms natively the client side of the idle-stream-0 chain. The server
 event is inferred from source and emulator, not yet logged. The group API
 cannot use stream 0, so the repair is server-side.
 
-## Server repair, 2026-10-11 (implemented and tested; native confirmation pending)
+## Historical server repair, 2026-10-11
 
 With server changes permitted, both relay servers now start the HTTP/3 header
 deadline at a request stream's first byte and leave an unwritten stream open:
@@ -221,12 +259,13 @@ unchanged. Against the rebuilt servers, `Core/tests/idle_stream_zero.rs` sees
 no event on stream 0 thirteen seconds after admission (before: reset at
 10.01 s), and the unchanged real-server matrix passes over HTTP/1.1, HTTP/2 and
 HTTP/3 ([evidence](evidence/native-http3-20261011-1412.md#server-repair)).
-Native confirmation needs a deployed fixed server: no group `POSIX 22` about
-ten seconds after the first request, and HTTP/3 sessions that stay up.
+At that point native confirmation required a deployed fixed server. The user
+later confirmed the periodic disconnect resolved; the earlier pending label is
+historical and does not reopen that resolved fault.
 
-## Possible issues, not established root causes
+## Historical hypotheses and remaining native coverage
 
-- Initial bidi ownership and an implicit idle SID 0 may interact with the
+- The historical initial-bidi/implicit-idle-SID-0 explanation concerned the
   servers' ten-second header rejection and Apple's group lifecycle. Since
   2026-10-11, two of the three steps are established without a Mac
   ([evidence](evidence/idle-group-stream-zero-20261011.md)). Apple documents
@@ -235,10 +274,11 @@ ten seconds after the first request, and HTTP/3 sessions that stay up.
   servers reset and stopped an idle stream 0 about ten seconds after the
   first request: the Rust relay with H3_REQUEST_REJECTED,
   caddy-network-relay with H3_REQUEST_INCOMPLETE. The emulator measured
-  both. Still unverified:
-  that Network.framework turns that reset into the group EINVAL, and which
-  server build is deployed. Group failures are now logged at WARN to settle
-  this on a Mac.
+  both. The user later confirmed the periodic fault resolved. The archived
+  record still does not directly trace how Network.framework turns that reset
+  into group EINVAL, or identify every deployed server build in those older
+  captures. Group failures are logged at WARN for
+  any new investigation; this is not evidence of a remaining periodic fault.
 - Stream-only extraction may avoid DATAGRAM lifecycle coupling, but no Mac A/B
   has shown that it fixes the earlier failure. Disabling GREASE is also unproven.
 - Native UDP overflow, address rebinding, network migration, long idle sessions
@@ -247,10 +287,9 @@ ten seconds after the first request, and HTTP/3 sessions that stay up.
   ran for the supplied revision. It does not verify every GUI action or the
   portable Swift tests and native smoke gates.
 
-## Deferred work and QUIC stopping rule
+## Remaining native validation
 
-The native H3 stopping rule has been reached. Preserve the failing runs and use
-forced HTTP/2; do not spend this delivery replacing the QUIC backend. A future
-repairer can select a bounded A/B from the report without changing either server
-in this task. Confirm the new source fixes on a Mac and complete native H2 TCP/UDP
-against Caddy, then the remaining UI, security, concurrency and long-session gates.
+Preserve the historical failing runs and the user-confirmed resolution. Do not
+replace the QUIC backend to address a stale failure description. Run the current
+six-pairing [native matrix](NATIVE-ACCEPTANCE.md), with independent security,
+concurrency, active/idle long-session, sleep/wake and network-change results.

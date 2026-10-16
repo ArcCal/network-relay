@@ -2,7 +2,7 @@
 //! are requested through the bridge; rustls/Quinn are test-only backends.
 use crate::{
     native, proto,
-    stream::{Keep, Stream},
+    stream::{ConnectionKeep, Keep, Stream},
 };
 use anyhow::{Context, Result, ensure};
 use bytes::Bytes;
@@ -17,10 +17,13 @@ use std::{
 };
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    sync::watch,
+    sync::{Mutex, watch},
 };
 
 const WAIT: Duration = Duration::from_secs(10);
+// The server can spend 5 seconds resolving and 10 seconds connecting a
+// destination. That delay must not be mistaken for a broken outer transport.
+const RESPONSE_WAIT: Duration = Duration::from_secs(20);
 // The readiness probe sends no application datagrams. Refresh it before the
 // Rust server's minimum supported UDP idle expiry (120 seconds), without
 // changing any independent SOCKS flow or generating Internet probe traffic.
@@ -41,7 +44,21 @@ pub struct Client {
     authorization: http::HeaderValue,
     transport: String,
     selected: watch::Sender<Option<String>>,
+    h2: Mutex<Option<Arc<H2Session>>>,
+    h3: Mutex<Option<Arc<H3Session>>>,
     pub probe_target: SocketAddr,
+}
+struct H2Session {
+    sender: Mutex<h2::client::SendRequest<Bytes>>,
+    keep: ConnectionKeep,
+}
+struct H3Session {
+    sender: Mutex<h3::client::SendRequest<crate::quic::Opener, Bytes>>,
+    keep: ConnectionKeep,
+}
+enum TcpSession {
+    H1(native::Io),
+    H2(Arc<H2Session>),
 }
 pub struct Opened {
     pub stream: Stream,
@@ -101,6 +118,8 @@ impl Client {
             authorization,
             transport: config.transport.clone(),
             selected,
+            h2: Mutex::new(None),
+            h3: Mutex::new(None),
             probe_target: config.probe_target,
         })
     }
@@ -137,26 +156,73 @@ impl Client {
                     .all(|c| c.is_ascii_alphanumeric() || b"-._:".contains(&c)),
             "invalid target host or port"
         );
+        tokio::time::timeout(WAIT * 3, self.open_inner(host, port, udp))
+            .await
+            .context("relay CONNECT timed out")?
+    }
+    async fn open_inner(&self, host: &str, port: u16, udp: bool) -> Result<Opened> {
         let selected = self.selected.borrow().clone();
         let mode = selected.as_deref().unwrap_or(&self.transport);
         if mode == "h3" {
-            return tokio::time::timeout(WAIT * 3, self.open_h3(host, port, udp))
-                .await
-                .context("HTTP/3 connect timed out")?;
+            let session = self.h3_session().await?;
+            self.h3_settings(&session, udp).await?;
+            return self.open_h3(session, host, port, udp).await;
         }
         if mode == "auto" {
-            match tokio::time::timeout(Duration::from_secs(5), self.open_h3(host, port, udp)).await
-            {
-                Ok(Ok(open)) => return Ok(open),
+            // Only connection establishment and capability negotiation are
+            // eligible for fallback. Never replay an already submitted CONNECT
+            // because its destination is slow or the relay rejects it.
+            let setup = async {
+                let session = self.h3_session().await?;
+                self.h3_settings(&session, udp).await?;
+                Ok::<_, anyhow::Error>(session)
+            };
+            match tokio::time::timeout(Duration::from_secs(5), setup).await {
+                Ok(Ok(session)) => return self.open_h3(session, host, port, udp).await,
                 Ok(Err(e)) if terminal(&e) => return Err(e),
                 _ => tracing::warn!("HTTP/3 unavailable; trying native TCP"),
             }
         }
-        tokio::time::timeout(WAIT * 3, self.open_tcp(host, port, udp, mode))
-            .await
-            .context("TCP connect timed out")?
+        match self.tcp_session(mode).await? {
+            TcpSession::H1(io) => self.open_h1(io, host, port, udp).await,
+            TcpSession::H2(session) => self.open_h2(session, host, port, udp).await,
+        }
     }
-    async fn open_tcp(&self, host: &str, port: u16, udp: bool, mode: &str) -> Result<Opened> {
+    async fn tcp_session(&self, mode: &str) -> Result<TcpSession> {
+        // Classic HTTP/1.1 CONNECT consumes its TLS connection; it has no
+        // pooled session and must not queue behind another TLS handshake.
+        if mode == "http/1.1" {
+            let io =
+                tokio::time::timeout(WAIT, self.bridge.tcp(self.options(&["http/1.1"]))).await??;
+            ensure!(
+                io.ready.alpn == "http/1.1",
+                "server did not negotiate the requested ALPN"
+            );
+            return Ok(TcpSession::H1(io));
+        }
+        let mut cache = tokio::time::timeout(WAIT, self.h2.lock())
+            .await
+            .context("HTTP/2 connection setup busy")?;
+        if mode != "http/1.1" {
+            if let Some(session) = cache.as_ref() {
+                let mut sender = session.sender.lock().await;
+                // The cached sender is never used to submit HEADERS: only
+                // clones are. Its pending-open slot stays empty, so this
+                // health check cannot replace a live request's wake-up.
+                let closed = !self.native_session_open(&session.keep)
+                    || session.keep.tasks[0].is_finished()
+                    || matches!(
+                        sender.poll_ready(&mut std::task::Context::from_waker(
+                            std::task::Waker::noop()
+                        )),
+                        Poll::Ready(Err(_))
+                    );
+                if !closed {
+                    return Ok(TcpSession::H2(session.clone()));
+                }
+            }
+            *cache = None;
+        }
         let alpn = match mode {
             "h2" => vec!["h2"],
             "http/1.1" => vec!["http/1.1"],
@@ -165,30 +231,58 @@ impl Client {
         let io = tokio::time::timeout(WAIT, self.bridge.tcp(self.options(&alpn))).await??;
         let chosen = io.ready.alpn.clone();
         match chosen.as_str() {
-            "h2" if mode != "http/1.1" => self.open_h2(io, host, port, udp).await,
-            "http/1.1" if mode != "h2" => self.open_h1(io, host, port, udp).await,
+            "h2" if mode != "http/1.1" => {
+                let session = self.connect_h2(io).await?;
+                *cache = Some(session.clone());
+                Ok(TcpSession::H2(session))
+            }
+            "http/1.1" if mode != "h2" => Ok(TcpSession::H1(io)),
             _ => anyhow::bail!("server did not negotiate the requested ALPN"),
         }
     }
-    async fn open_h2(&self, io: native::Io, host: &str, port: u16, udp: bool) -> Result<Opened> {
+    fn native_session_open(&self, keep: &ConnectionKeep) -> bool {
+        keep.lease.as_ref().is_some_and(|lease| {
+            self.bridge
+                .resources
+                .lock()
+                .unwrap()
+                .contains_key(&lease.id)
+        })
+    }
+    async fn connect_h2(&self, io: native::Io) -> Result<Arc<H2Session>> {
+        let lease = io.lease.clone();
         let mut builder = h2::client::Builder::new();
         builder
             .initial_window_size(2 << 20)
             .initial_connection_window_size(5 << 20)
             .max_header_list_size(16384);
-        let (mut sender, connection) =
+        let (sender, connection) =
             tokio::time::timeout(WAIT, builder.handshake::<_, Bytes>(io)).await??;
-        let mut keep = Keep::default();
+        let mut keep = ConnectionKeep::default();
+        keep.lease = Some(lease);
         keep.tasks.push(tokio::spawn(async move {
             if let Err(e) = connection.await {
                 tracing::debug!("HTTP/2 connection ended: {e}");
             }
         }));
+        Ok(Arc::new(H2Session {
+            sender: Mutex::new(sender),
+            keep,
+        }))
+    }
+    async fn open_h2(
+        &self,
+        session: Arc<H2Session>,
+        host: &str,
+        port: u16,
+        udp: bool,
+    ) -> Result<Opened> {
+        let mut sender = session.sender.lock().await.clone();
         if udp {
             tokio::time::timeout(WAIT, async {
                 while !sender.is_extended_connect_protocol_enabled() {
                     ensure!(
-                        !keep.tasks[0].is_finished(),
+                        !session.keep.tasks[0].is_finished(),
                         "HTTP/2 closed before Extended CONNECT settings"
                     );
                     tokio::time::sleep(Duration::from_millis(5)).await;
@@ -198,7 +292,9 @@ impl Client {
             .await
             .context("server did not enable HTTP/2 Extended CONNECT")??;
         }
-        sender = sender.ready().await?;
+        sender = tokio::time::timeout(WAIT, sender.ready())
+            .await
+            .context("HTTP/2 stream capacity timed out")??;
         let mut request = self.request(host, port, udp)?;
         if udp {
             request
@@ -206,9 +302,14 @@ impl Client {
                 .insert(h2::ext::Protocol::from_static(proto::CONNECT_UDP_PROTOCOL));
         }
         let (response, send) = sender.send_request(request, false)?;
-        let response = tokio::time::timeout(WAIT, response).await??;
+        let response = tokio::time::timeout(RESPONSE_WAIT, response)
+            .await
+            .context("no HTTP/2 CONNECT response")??;
         check(response.status(), response.headers(), udp, StatusCode::OK)?;
-        keep.sender = Some(Box::new(sender));
+        let keep = Keep {
+            connection: Some(session),
+            tasks: Vec::new(),
+        };
         Ok(Opened {
             stream: Stream::h2(send, response.into_body(), keep),
             transport: "HTTP/2",
@@ -247,7 +348,7 @@ impl Client {
         let mut pending = std::pin::pin!(sender.send_request(request));
         let mut driver_error = None;
         let response = tokio::time::timeout(
-            WAIT,
+            RESPONSE_WAIT,
             std::future::poll_fn(|cx| {
                 if let Poll::Ready(result) = pending.as_mut().poll(cx) {
                     return Poll::Ready(result.map_err(anyhow::Error::from));
@@ -322,7 +423,24 @@ impl Client {
             transport: "HTTP/1.1",
         })
     }
-    async fn open_h3(&self, host: &str, port: u16, udp: bool) -> Result<Opened> {
+    async fn h3_session(&self) -> Result<Arc<H3Session>> {
+        use h3::ConnectionState;
+        let mut cache = tokio::time::timeout(WAIT, self.h3.lock())
+            .await
+            .context("HTTP/3 connection setup busy")?;
+        if let Some(session) = cache.as_ref() {
+            let sender = tokio::time::timeout(WAIT, session.sender.lock())
+                .await
+                .context("HTTP/3 request submission busy")?;
+            if self.native_session_open(&session.keep)
+                && !session.keep.tasks[0].is_finished()
+                && sender.get_conn_error().is_none()
+                && !sender.is_closing()
+            {
+                return Ok(session.clone());
+            }
+        }
+        *cache = None;
         let native = tokio::time::timeout(
             WAIT,
             native::Quic::open(self.bridge.clone(), self.options(&["h3"])),
@@ -335,23 +453,34 @@ impl Client {
             .enable_datagram(false)
             .send_grease(false)
             .max_field_section_size(16384);
-        let (driver, mut sender) = tokio::time::timeout(
+        let (driver, sender) = tokio::time::timeout(
             WAIT,
             builder.build::<_, _, Bytes>(crate::quic::Connection::new(native)),
         )
         .await??;
         let driver = Arc::new(std::sync::Mutex::new(driver));
-        let mut keep = Keep::default();
+        let mut keep = ConnectionKeep::default();
         keep.lease = Some(lease);
         keep.h3_driver = Some(driver.clone());
         keep.tasks.push(tokio::spawn(async move {
             let error = std::future::poll_fn(|cx| driver.lock().unwrap().poll_close(cx)).await;
             tracing::debug!("HTTP/3 connection driver ended: {error}");
         }));
+        let session = Arc::new(H3Session {
+            sender: Mutex::new(sender),
+            keep,
+        });
+        *cache = Some(session.clone());
+        Ok(session)
+    }
+    async fn h3_settings(&self, session: &H3Session, udp: bool) -> Result<()> {
         if udp {
             use h3::ConnectionState;
+            let mut sender = tokio::time::timeout(WAIT, session.sender.lock())
+                .await
+                .context("HTTP/3 capability negotiation busy")?;
             let waiter = &mut sender;
-            let driver_task = &keep.tasks[0];
+            let driver_task = &session.keep.tasks[0];
             tokio::time::timeout(WAIT, async move {
                 while !waiter.settings().enable_extended_connect() {
                     ensure!(
@@ -365,22 +494,68 @@ impl Client {
             .await
             .context("server did not enable HTTP/3 Extended CONNECT")??;
         }
-        let mut request = self.request(host, port, udp)?;
-        if udp {
-            request
-                .extensions_mut()
-                .insert(h3::ext::Protocol::CONNECT_UDP);
-        }
-        let mut stream = tokio::time::timeout(WAIT, sender.send_request(request)).await??;
+        Ok(())
+    }
+    async fn open_h3(
+        &self,
+        mut session: Arc<H3Session>,
+        host: &str,
+        port: u16,
+        udp: bool,
+    ) -> Result<Opened> {
+        use h3::ConnectionState;
+        let mut retried = false;
+        let mut stream = loop {
+            let mut sender = tokio::time::timeout(WAIT, session.sender.lock())
+                .await
+                .context("HTTP/3 request submission timed out")?;
+            let mut request = self.request(host, port, udp)?;
+            if udp {
+                request
+                    .extensions_mut()
+                    .insert(h3::ext::Protocol::CONNECT_UDP);
+            }
+            let result = tokio::time::timeout(WAIT, sender.send_request(request)).await?;
+            let closing = sender.is_closing();
+            // Headers submission is serialized, not the destination response
+            // or tunnel lifetime; unrelated requests continue concurrently.
+            drop(sender);
+            match result {
+                Ok(stream) => break stream,
+                Err(h3::error::StreamError::Undefined(error))
+                    if !retried && !closing && error.is::<crate::quic::RequestNotSubmitted>() =>
+                {
+                    // A native group can fail between the cache health check
+                    // and stream creation. The typed adapter error proves no
+                    // HEADERS were sent, so one fresh same-protocol attempt
+                    // is safe. Never replay response or stream-write errors.
+                    let mut cache = self.h3.lock().await;
+                    if cache
+                        .as_ref()
+                        .is_some_and(|cached| Arc::ptr_eq(cached, &session))
+                    {
+                        *cache = None;
+                    }
+                    drop(cache);
+                    session = self.h3_session().await?;
+                    self.h3_settings(&session, udp).await?;
+                    retried = true;
+                }
+                Err(error) => return Err(error.into()),
+            }
+        };
         tracing::debug!(
             sid = stream.id().into_inner(),
             "HTTP/3 request HEADERS sent; waiting for response"
         );
-        let response = tokio::time::timeout(WAIT, stream.recv_response())
+        let response = tokio::time::timeout(RESPONSE_WAIT, stream.recv_response())
             .await
             .context("no HTTP/3 response")??;
         check(response.status(), response.headers(), udp, StatusCode::OK)?;
-        keep.sender = Some(Box::new(sender));
+        let keep = Keep {
+            connection: Some(session),
+            tasks: Vec::new(),
+        };
         Ok(Opened {
             stream: Stream::h3(stream, keep),
             transport: "HTTP/3",

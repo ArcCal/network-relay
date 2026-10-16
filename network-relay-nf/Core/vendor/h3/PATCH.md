@@ -4,6 +4,11 @@ Source: https://github.com/hyperium/h3/tree/43745ad87e95b0c035ac9c547aad46730321
 
 Original source and MIT license retained. Changes are confined to:
 
+- `client/connection.rs`: recheck peer GOAWAY after awaiting bidirectional
+  stream capacity, before writing request HEADERS (RFC 9114 section 5.2).
+  A request queued before GOAWAY must not start after it; already-admitted
+  streams remain independent. NF's `connection_reuse` regression exercises
+  this with a one-stream peer limit and verifies no HEADERS on the queued SID.
 - `frame.rs`: a FIN with outstanding DATA bytes is a truncated frame, including
   when no payload bytes arrived.
 - `connection.rs`, `client/stream.rs`, `server/stream.rs`: an opt-in

@@ -10,7 +10,10 @@ use bytes::Bytes;
 use std::{
     collections::HashMap,
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
     time::Duration,
 };
 use tokio::{
@@ -207,6 +210,72 @@ fn packet(bytes: &[u8]) -> Option<(Target, &[u8])> {
     let target = Target { host, port };
     target.valid().then_some((target, &rest[2..]))
 }
+
+#[derive(Clone, Copy)]
+enum UdpQueueDirection {
+    ToRelay,
+    ToClient,
+}
+
+/// Shared by one association and its target tasks. The final summary is emitted
+/// only after those tasks release their references, including during shutdown.
+#[derive(Default)]
+struct UdpQueueDrops {
+    to_relay: AtomicU64,
+    to_client: AtomicU64,
+    closed: AtomicU64,
+}
+
+impl UdpQueueDrops {
+    fn enqueue<T>(&self, tx: &mpsc::Sender<T>, value: T, direction: UdpQueueDirection) {
+        match tx.try_send(value) {
+            Ok(()) => {}
+            Err(mpsc::error::TrySendError::Full(_)) => {
+                let (counter, direction) = match direction {
+                    UdpQueueDirection::ToRelay => (&self.to_relay, "to_relay"),
+                    UdpQueueDirection::ToClient => (&self.to_client, "to_client"),
+                };
+                let dropped = counter.fetch_add(1, Ordering::Relaxed) + 1;
+                // Keep packet-pressure diagnostics bounded without hiding the
+                // first loss. The association's final summary has exact totals.
+                if dropped.is_power_of_two() {
+                    tracing::warn!(
+                        direction,
+                        dropped_datagrams = dropped,
+                        "SOCKS UDP queue full; datagrams dropped"
+                    );
+                }
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => {
+                // A target can end between retain() and enqueue(). Shutdown is
+                // not queue pressure, and must never be reported as overflow.
+                self.closed.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+    }
+}
+
+impl Drop for UdpQueueDrops {
+    fn drop(&mut self) {
+        let to_relay = *self.to_relay.get_mut();
+        let to_client = *self.to_client.get_mut();
+        let closed = *self.closed.get_mut();
+        if to_relay != 0 || to_client != 0 {
+            tracing::warn!(
+                dropped_to_relay = to_relay,
+                dropped_to_client = to_client,
+                closed_queue_datagrams = closed,
+                "SOCKS UDP association ended; queue drop totals"
+            );
+        } else if closed != 0 {
+            tracing::debug!(
+                closed_queue_datagrams = closed,
+                "SOCKS UDP association ended; datagrams discarded after queue closure"
+            );
+        }
+    }
+}
+
 async fn udp_association(
     client: Arc<Client>,
     mut control: native::Io,
@@ -234,6 +303,7 @@ async fn udp_association(
     let (responses, mut incoming) = mpsc::channel::<(Target, Bytes)>(32);
     let mut buffer = vec![0; 65536];
     let mut control_byte = [0; 1];
+    let queue_drops = Arc::new(UdpQueueDrops::default());
     loop {
         tokio::select! {
             read = control.read(&mut control_byte) => { read?; break; }
@@ -252,6 +322,7 @@ async fn udp_association(
                     let client=client.clone();
                     let responses=responses.clone();
                     let destination=target.clone();
+                    let queue_drops=queue_drops.clone();
                     tasks.spawn(async move {
                         let result: Result<()> = async {
                             let opened=client.open(&destination.host,destination.port,true).await?;
@@ -262,7 +333,7 @@ async fn udp_association(
                                     payload=flow.recv() => {
                                         let Some(payload)=payload? else { break; };
                                         // Bound SOCKS UDP packet size, including the address header.
-                                        if payload.len() <= 65240 { let _=responses.try_send((destination.clone(), payload)); }
+                                        if payload.len() <= 65240 { queue_drops.enqueue(&responses, (destination.clone(), payload), UdpQueueDirection::ToClient); }
                                     }
                                     _=tokio::time::sleep(Duration::from_secs(120)) => break,
                                 }
@@ -272,7 +343,7 @@ async fn udp_association(
                         if let Err(e)=result { tracing::debug!(host=%destination.host,port=destination.port,"UDP relay flow ended: {e:#}"); }
                     });
                 }
-                if let Some(tx)=flows.get(&target) { let _=tx.try_send(Bytes::copy_from_slice(payload)); }
+                if let Some(tx)=flows.get(&target) { queue_drops.enqueue(tx, Bytes::copy_from_slice(payload), UdpQueueDirection::ToRelay); }
             }
             Some((target,payload))=incoming.recv() => {
                 if let Some(source)=source {
@@ -305,5 +376,50 @@ mod tests {
         bytes[2] = 1;
         assert!(packet(&bytes).is_none());
         assert!(packet(&[0, 0, 0, 3, 255]).is_none());
+    }
+
+    #[test]
+    fn udp_queue_pressure_counts_each_direction_and_preserves_buffered_packets() {
+        let drops = UdpQueueDrops::default();
+        // Exercise the production enqueue path with both production capacities.
+        for (capacity, direction) in [
+            (16, UdpQueueDirection::ToRelay),
+            (32, UdpQueueDirection::ToClient),
+        ] {
+            let (tx, mut rx) = mpsc::channel(capacity);
+            for packet in 0..capacity {
+                drops.enqueue(&tx, packet, direction);
+            }
+            for packet in capacity..capacity + 5 {
+                drops.enqueue(&tx, packet, direction);
+            }
+            // Full queues drop the newest datagram; pressure does not replace
+            // old packets or prevent the queue from recovering after draining.
+            for packet in 0..capacity {
+                assert_eq!(rx.try_recv().unwrap(), packet);
+            }
+            assert!(matches!(
+                rx.try_recv(),
+                Err(mpsc::error::TryRecvError::Empty)
+            ));
+            drops.enqueue(&tx, 99, direction);
+            assert_eq!(rx.try_recv().unwrap(), 99);
+        }
+        assert_eq!(drops.to_relay.load(Ordering::Relaxed), 5);
+        assert_eq!(drops.to_client.load(Ordering::Relaxed), 5);
+        assert_eq!(drops.closed.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn udp_closed_queues_are_not_counted_as_overflow() {
+        let drops = UdpQueueDrops::default();
+        for direction in [UdpQueueDirection::ToRelay, UdpQueueDirection::ToClient] {
+            let (tx, rx) = mpsc::channel(1);
+            drop(rx);
+            drops.enqueue(&tx, Bytes::new(), direction);
+        }
+        assert_eq!(drops.to_relay.load(Ordering::Relaxed), 0);
+        assert_eq!(drops.to_client.load(Ordering::Relaxed), 0);
+        assert_eq!(drops.closed.load(Ordering::Relaxed), 2);
     }
 }

@@ -4,7 +4,8 @@
 //! is reported as an error, and to the SOCKS program as a connection reset,
 //! rather than as a clean end of data. Run by `scripts/test-interop.py --test
 //! large_transfer`; `RELAY_NF_DOWNLOAD_MIB` sets the size (default 64). The
-//! Quinn/rustls emulator replaces Network.framework.
+//! `RELAY_NF_TEST_TRANSPORT` optionally isolates one forced mode; the default
+//! still checks all three. The Quinn/rustls emulator replaces Network.framework.
 mod support;
 use network_relay_nf_core::{Config, client::Client};
 use std::{
@@ -121,7 +122,16 @@ async fn large_downloads() {
     let kind = fixture["kind"].as_str().unwrap().to_string();
     let size: u64 = std::env::var("RELAY_NF_DOWNLOAD_MIB").map_or(64, |v| v.parse().unwrap()) << 20;
     let target = source().await;
+    let only = std::env::var("RELAY_NF_TEST_TRANSPORT").ok();
+    assert!(
+        only.as_deref()
+            .is_none_or(|mode| ["http/1.1", "h2", "h3"].contains(&mode)),
+        "RELAY_NF_TEST_TRANSPORT must be http/1.1, h2 or h3"
+    );
     for transport in ["http/1.1", "h2", "h3"] {
+        if only.as_deref().is_some_and(|mode| mode != transport) {
+            continue;
+        }
         let backend = support::Backend::start(fixture["ca"].as_str().unwrap().into());
         let client =
             Arc::new(Client::new(&settings(&fixture, transport), backend.bridge.clone()).unwrap());

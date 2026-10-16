@@ -1,5 +1,6 @@
 Core/target/
 App/.build/
+/.build/
 build/
 dist/
 .local/

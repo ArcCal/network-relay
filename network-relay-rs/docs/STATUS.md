@@ -193,6 +193,48 @@ Both reproduced with the production Rust transport against network-relay
 
 The same two defects were found and repaired in Network Relay NF's core.
 
+## HTTP/3 connection reuse follow-up (2026-10-16)
+
+The previous RS core opened one outer QUIC connection per business flow and
+readiness probe. Against the preserved Caddy `8a0df41` binary, one probe and
+63 business connections filled the default per-client allowance; the next
+five requests failed with `connection limit (code 263)`. Releasing one flow
+restored admission. A separate 100-cycle open/echo/drop check returned to its
+resource baseline before backend shutdown; that check did not reproduce an
+ordinary flow-release leak.
+
+RS now shares a cached HTTP/3 session across independent request streams and
+limits owned sessions, including GOAWAY drainers, to four. This repair changes
+only RS. HTTP/1.1, HTTP/2, the UI and both servers are unchanged. The vendored
+HTTP/3 client rechecks GOAWAY after waiting for stream capacity, before sending
+HEADERS. Automatic fallback is limited to setup, so a submitted CONNECT is not
+replayed because its response is slow.
+
+All 82 app/core package tests pass, including five production-backend
+regressions for shared-session/GOAWAY lifetimes, queued GOAWAY requests,
+bounded draining sessions, cancelled capacity waits and a six-second Automatic
+response without a duplicate TCP request. The real-server regression admits
+80 simultaneous business streams plus the probe on one outer connection with
+both Rust and Caddy; cancellation, UDP and cleanup before backend shutdown
+pass. The same 80-stream test fails against the old core with Caddy's explicit
+connection-limit rejection. App/core Clippy with `--no-deps --all-targets`
+and warnings treated as errors passes.
+
+The full local matrix also passes HTTP/1.1, HTTP/2, forced HTTP/3, Automatic,
+certificate/authentication/policy checks, bulk half-close and UDP for both
+preserved server binaries: network-relay 1.5.0 (SHA-256
+`a916de7037488e9a6c2f75d00ed5ef910787427c6e63f21d413c0ae198658878`)
+and Caddy 2.11.6 / `8a0df41` (SHA-256
+`b309743bdc76c37330aada6b53f29afbf432ebcb34dbd18192af0fd2ea6a53e7`).
+Each pairing passes a 125-second TCP/UDP soak across two readiness-probe
+renewals, retaining one outer QUIC connection without entering Reconnecting.
+A TCP-only Caddy fixture separately passes Automatic fallback to HTTP/2.
+
+The separate three-second per-address QUIC handshake deadline and readiness
+status wording were not changed. The remote Rust-server SETTINGS/response
+stalls are not conclusively explained by the capacity reproducer. Native Mac
+GUI execution and prolonged remote stability remain separate acceptance gates.
+
 Known failed checks, if any, must be added here with a reproducer, exact versions
 and the smallest justified repair. A failure that cannot be safely repaired
 must remain visible rather than being relabeled as unsupported or a success.

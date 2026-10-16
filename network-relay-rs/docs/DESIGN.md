@@ -62,6 +62,14 @@ transport restarts an active instance automatically. Late status messages from
 an earlier generation cannot overwrite the new instance. Changes to only log
 level, profile display name or inactive profiles do not reconnect.
 
+Each client caches one HTTP/3 session for new CONNECT requests and the readiness
+probe. Independent request streams share that session; cancelling a flow or
+renewing the probe releases only its stream. Active flows retain their session
+after cache eviction. A four-session permit limit includes old GOAWAY sessions
+still draining, with bounded waits for session and stream capacity. Asynchronous
+QUIC shutdown can briefly overlap physical connection closure and replacement.
+Connection setup is serialized; response waits and business traffic are not.
+
 NF exports are imported only through an explicit user action. RS never loads
 NF's private JSON store automatically and never edits it. Imported password-free
 profiles preserve a matching existing password; a first import may therefore

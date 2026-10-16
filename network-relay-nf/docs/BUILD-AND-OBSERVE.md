@@ -5,9 +5,10 @@ new checkout. It does not build Masque NF or modify either relay server. The
 macOS build and native interoperability cannot run in the Linux cloud environment.
 The user has since reported a Mac build/launch and successful SOCKS TCP/UDP probes;
 [the recorded evidence](evidence/native-mac-20261011.md) distinguishes these from
-the still-incomplete native matrix. The supplied native H3 run repeatedly fails
-after admission; the [handoff report](QUIC-RESEARCH.md) records it. The new portable
-stream-error and readiness-probe fixes have not been retested on a Mac.
+the still-incomplete native matrix. The earlier periodic HTTP/3 disconnect is
+user-confirmed resolved; [the report](QUIC-RESEARCH.md) preserves its historical
+evidence. New changes still require current-build Mac verification using
+[the opt-in acceptance matrix](NATIVE-ACCEPTANCE.md).
 A compiler failure is a failed gate.
 
 ## Prerequisites
@@ -201,20 +202,24 @@ but sends no DNS query. It cannot establish website or UDP delivery. Conversely,
 curl alone does not test UDP. These small observations are not the full
 compatibility acceptance matrix.
 
+The per-server **Admission probe target** field defaults to `1.1.1.1:53`. If the
+relay denies that target, choose a numeric IP and UDP port that its existing
+policy allows. This checks authenticated admission only, without sending target
+datagrams. **Relay Connected** does not verify Internet access. Changing this
+field requires Save; the active client reconnects using the new setting.
+
 ## One bounded HTTP/3 observation
 
-The supplied 0.1.0 run has already met this stopping rule: it reached admission
-and repeatedly failed with native EINVAL approximately ten seconds later. Keep
-HTTP/2 as the working baseline. The procedure below is for a deliberate repair
-retest, not a request to repeat the same failing run. Admission alone is not a
-PASS; sustained TCP and UDP traffic and a stable session are required.
+The older 0.1.0 admission-to-EINVAL incident is resolved according to the user's
+later tests. Use current deployed servers and a fresh app build. Admission alone
+is not a PASS; sustained TCP and UDP traffic and a stable session are required.
 
 Keep the same domain, IP, certificate verification and account. Set
 **Everything**, select forced **HTTP/3 (QUIC, UDP)** and allow one attempt to
-finish. Do not change/save parameters during that attempt. Each initialization
-stage has a ten-second budget; a forced flow has a thirty-second outer budget.
+finish. Do not change/save parameters during that attempt. Record the current
+build's timeout settings rather than assuming the older ten-second budget.
 Wait for `Relay ready; HTTP/3` or the first natural `Relay session failed` record.
-If no outcome appears within about 35 seconds, disconnect and record that
+If no outcome appears within 90 seconds, disconnect and record that
 absence. Disconnect after the first failure to avoid collecting endless retries.
 
 Save the retained log immediately as `nf-rust-http3.log` or
@@ -240,7 +245,8 @@ Automatic mode's fallback is a separate observation.
 No extended QUIC troubleshooting is required for this initial handover. Mark a
 failed native HTTP/3 row as **FAIL**, keep HTTP/2 as the baseline, and attach the
 evidence to [QUIC-RESEARCH.md](QUIC-RESEARCH.md). Nothing in this guide establishes
-that Network.framework has an unavoidable defect or that HTTP/3 is repaired.
+that Network.framework has an unavoidable defect or that the whole native
+acceptance matrix has passed.
 
 For review, retain the build environment/source file, build log, per-server
 application log, TCP output and UDP output. Server revision/configuration and

@@ -16,10 +16,11 @@ public struct Server: Codable, Equatable, Identifiable {
     public var password: String
     /// Which HTTP version carries the tunnel.
     public var transport: Transport
+    public var probeTarget: String
 
     public init(
         id: UUID = UUID(), name: String = "", domain: String = "", serverIP: String = "", username: String = "",
-        password: String = "", transport: Transport = .auto
+        password: String = "", transport: Transport = .auto, probeTarget: String = "1.1.1.1:53"
     ) {
         self.id = id
         self.name = name
@@ -28,6 +29,7 @@ public struct Server: Codable, Equatable, Identifiable {
         self.username = username
         self.password = password
         self.transport = transport
+        self.probeTarget = probeTarget
     }
 
     /// The server a settings file from before the list of servers (1.3 and
@@ -50,7 +52,7 @@ public struct Server: Codable, Equatable, Identifiable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, name, domain, serverIP, username, password, transport
+        case id, name, domain, serverIP, username, password, transport, probeTarget
     }
 
     /// A field that is missing or unreadable takes its default.
@@ -66,6 +68,7 @@ public struct Server: Codable, Equatable, Identifiable {
         username = value(.username, "")
         password = value(.password, "")
         transport = value(.transport, .auto)
+        probeTarget = value(.probeTarget, Settings().probeTarget)
     }
 }
 
@@ -113,7 +116,7 @@ public struct Configuration: Codable, Equatable {
     public func settings(for server: Server) -> Settings {
         Settings(
             serverIP: server.serverIP, domain: server.domain, username: server.username, listenAddress: listenAddress,
-            port: port, connectOnLaunch: connectOnLaunch, transport: server.transport)
+            port: port, connectOnLaunch: connectOnLaunch, transport: server.transport, probeTarget: server.probeTarget)
     }
 
     /// Why the settings cannot be saved, if they cannot: the proxy first,
@@ -153,7 +156,7 @@ public struct Configuration: Codable, Equatable {
         } else if !old.domain.trimmed.isEmpty || !old.username.trimmed.isEmpty || !oldPassword.isEmpty {
             servers = [Server(
                 id: Server.firstID, domain: old.domain, serverIP: old.serverIP, username: old.username, password: oldPassword,
-                transport: old.transport)]
+                transport: old.transport, probeTarget: old.probeTarget)]
         } else {
             servers = []
         }

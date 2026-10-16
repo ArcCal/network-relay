@@ -1,25 +1,31 @@
 # Native QUIC research and handover
 
-Date: 2026-10-11. This report separates observed failures, supported mechanisms,
+Historical investigation date: 2026-10-11. This report separates observed failures, supported mechanisms,
 unproven hypotheses and this new client's implementation choices. It does not
 assert that Network.framework has an unavoidable defect.
 
 ## Current conclusion
 
-**Network Relay NF's forced native HTTP/3 is confirmed unstable in the supplied
-Mac run. Its root cause is unresolved.** Authentication and the intended H3
-request succeed; native QUIC groups then repeatedly fail with POSIX 22 (EINVAL),
-approximately ten seconds after readiness. This differs from the older Masque
-NF response timeout. Neither a Linux Quinn test nor HTTP/2 success repairs or
-validates Apple's QUIC path. Do not describe this as an unavoidable framework
-defect, or claim that the changes below fix the native EINVAL.
+**The earlier periodic native HTTP/3 disconnect is user-confirmed resolved.**
+The server idle-stream-0 and client probe-lifecycle repairs must be preserved.
+The ten-second EINVAL runs below describe their recorded older builds; they are
+not a current failure or a reason to disable working HTTP/3. The report retains
+the original evidence and the limits of the root-cause attribution. It never
+established an unavoidable Network.framework defect.
+
+The complete current-build Apple-to-both-server acceptance matrix is still
+incomplete. [NATIVE-ACCEPTANCE.md](NATIVE-ACCEPTANCE.md) separates forced
+HTTP/1.1, HTTP/2 and HTTP/3, actual forwarding, long-lived flows, idle operation,
+sleep/wake and network changes. A Linux Quinn pass cannot fill a native row.
 
 Two separately established client defects have been repaired in the current
 source: HTTP stream pump errors did not wake the opposite pending I/O operation;
 and normal expiry of an idle readiness probe was treated as a relay failure.
-The fixes have portable regression coverage, but no Mac retest yet.
+The fixes have portable regression coverage. The user later confirmed the
+periodic disconnect resolved; that confirmation does not establish every native
+acceptance case on every server/build.
 
-### 2026-10-11 follow-up: server reaction to idle stream 0
+### Historical 2026-10-11 follow-up: server reaction to idle stream 0
 
 See [the evidence](evidence/idle-group-stream-zero-20261011.md). Apple DTS
 documents that an `NWConnectionGroup` owns client bidirectional stream 0 and
@@ -27,11 +33,10 @@ exposes no I/O on it, so the observed request on SID 4 leaves stream 0
 implicitly open and idle. With that state emulated, real Rust network-relay
 and caddy-network-relay binaries each reset and stop stream 0 about ten
 seconds after readiness (codes 0x10B and 0x10D). The admitted stream-4
-session continues on Quinn. The final link, Network.framework surfacing that
-reset as group EINVAL, is still unobserved. The EINVAL remains unrepaired.
-No client fix is possible with the group API, and a server-side change is
-outside this directory. The client now logs group failures at WARN and the
-group-owned SID at Detailed.
+session continues on Quinn. At that investigation point, the final link,
+Network.framework surfacing that reset as group EINVAL, was unobserved and the
+EINVAL was not yet repaired. The group API did not expose stream 0 for client
+I/O. The client logs group failures at WARN and the group-owned SID at Detailed.
 
 Later the same day, a Mac run confirmed `groupSID=0`, requests on SID 4 and
 group EINVAL failures 10.36–11.60 s after each group's first request
@@ -39,8 +44,10 @@ group EINVAL failures 10.36–11.60 s after each group's first request
 permitted: network-relay `9821c4f` and caddy-network-relay `ef04df6` start the
 header deadline at a request stream's first byte, so the unwritten stream 0 is
 left open. Network Relay NF is unchanged. Emulator and server tests pass;
-native acceptance against a deployed fixed server is pending, and that
-acceptance is what will confirm the last link (reset → group EINVAL).
+native acceptance against a deployed fixed server was pending at that point.
+The later user-confirmed resolution supersedes that earlier stopping conclusion;
+the archived source/emulator evidence alone does not prove Apple's internal
+error mapping.
 
 ## New relay application observations
 
@@ -106,7 +113,7 @@ removing generated cache restored the checks, with no server or source change.
 These results verify the portable repairs and preserve protocol compatibility;
 they cannot establish a native EINVAL fix or a Swift build result.
 
-## Leading explanation to investigate, not a proven cause
+## Historical leading explanation, not proof of Apple's internal error mapping
 
 Opening client bidi SID 4 implicitly makes lower same-type SID 0 exist under
 RFC 9000. A plausible sequence is: the group owns an unused initial bidi stream;
@@ -210,7 +217,7 @@ The initial relay-core interoperability runner tests both real relay binaries
 through an emulator; see [STATUS.md](STATUS.md) and recorded results. It cannot
 answer whether Apple's old QUIC API works on this Mac.
 
-## Candidate causes
+## Historical candidate causes
 
 | Candidate | Supporting evidence | Limits / counterevidence |
 | --- | --- | --- |
@@ -268,14 +275,15 @@ The project observations were inherited from the completed Masque NF study;
 those projects have not been rerun on the user's OS. Apple's extraction,
 idle-timeout and keepalive documentation was checked again for this update.
 
-## Limited next steps
+## Current regression follow-up
 
-The stopping rule has been reached: preserve the confirmed H3 failure, keep forced
-HTTP/2 as the operational baseline and hand off QUIC repair. Do not repeat native
-tests indefinitely or spend this delivery rewriting the transport. Native Caddy
-H2, long-session behavior and the new fixes still require Mac acceptance.
+The earlier stopping rule applied to the recorded failing builds. Do not reopen
+that resolved incident solely because its archived logs remain in this report.
+Preserve the existing server and client fixes, and use the opt-in native matrix
+with current binaries. This application's repair scope does not authorize server
+changes, a QUIC backend replacement or relaxed certificate validation.
 
-A future repairer can make one bounded native reproduction with fixed settings,
+If a new failure is observed, make one bounded native reproduction with fixed settings,
 no unrelated SOCKS traffic, and synchronized client/server traces. First capture
 accepted SIDs 0/4, late-header rejection or connection-close code, and which native
 callback first reports EINVAL. Record the deployed server revision and effective

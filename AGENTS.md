@@ -1,20 +1,5 @@
 # Agent instructions for network-relay
 
-## Project context
-
-- The root application is an Apple Network Relay server: classic CONNECT for
-  TCP and CONNECT-UDP for UDP over H1/H2/H3. It is not a CONNECT-IP/TUN VPN.
-- Start with `docs/USER_GUIDE.md`, `src/main.rs`, `src/config.rs` and
-  `deploy/relay.example.toml`. Preserve authentication, destination protections,
-  bounded resource ownership and TCP/UDP payload semantics.
-- `network-relay-nf`, `network-relay-rs` and `network-relay-cf-masque` are separate
-  applications. NF uses Network.framework; RS uses Rust transports; the
-  experimental CF server requires WARP egress without a direct fallback.
-- Standalone installer scripts contain generated payloads. Follow
-  `deploy/package-installer.py` and associated checksum procedures when changing
-  their inputs; do not hand-edit embedded payloads.
-- Distinguish local protocol tests, emulated NF bridges, native Apple observations
-  and live WARP evidence. Do not turn incomplete acceptance into a readiness claim.
 
 ## Repository-wide contribution rules
 

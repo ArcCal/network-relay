@@ -460,7 +460,7 @@ mod tests {
         assert!(parse(&ok.replace("iphone", "a:b")).is_err());
         let expiring = format!("{ok}\nexpires = 2027-01-31T00:00:00Z");
         assert_eq!(parse(&expiring).unwrap().users[0].expires.as_deref(), Some("2027-01-31T00:00:00Z"));
-        assert!(parse(&format!("{ok}\nexpires = \"2027-01-31T00:00:00+08:00\"")).is_ok());
+        assert!(parse(&format!("{ok}\nexpires = \"2027-01-30T08:00:00-08:00\"")).is_ok());
         assert!(parse(&format!("{ok}\nexpires = \"soon\"")).is_err());
         let fp = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
         let cert = format!("[[user]]\nname = \"ipad\"\ncertificate_sha256 = \"{fp}\"");

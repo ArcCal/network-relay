@@ -135,11 +135,11 @@ final class ServersTests: XCTestCase {
 
 final class LogLevelTests: XCTestCase {
     private let lines = [
-        "error": "2026-10-04 06:00:00.000 +08:00 ERROR SOCKS5 proxy: listening on 127.0.0.1:1080: Address already in use (os error 48)",
-        "warn": "2026-10-04 06:00:00.000 +08:00  WARN session failed: server closed the tunnel",
-        "info": #"2026-10-04 06:00:00.000 +08:00  INFO tunnel up transport="HTTP/2" addresses=10.89.0.137/32 routes=8"#,
-        "debug": "2026-10-04 06:00:00.000 +08:00 DEBUG SOCKS5 CONNECT 192.0.2.80:80 via Ok(10.89.0.137:80) client=127.0.0.1:50122",
-        "trace": "2026-10-04 06:00:00.000 +08:00 TRACE native: Native stream 7 received 512 bytes",
+        "error": "2026-10-03 15:00:00.000 -07:00 ERROR SOCKS5 proxy: listening on 127.0.0.1:1080: Address already in use (os error 48)",
+        "warn": "2026-10-03 15:00:00.000 -07:00  WARN session failed: server closed the tunnel",
+        "info": #"2026-10-03 15:00:00.000 -07:00  INFO tunnel up transport="HTTP/2" addresses=10.89.0.137/32 routes=8"#,
+        "debug": "2026-10-03 15:00:00.000 -07:00 DEBUG SOCKS5 CONNECT 192.0.2.80:80 via Ok(10.89.0.137:80) client=127.0.0.1:50122",
+        "trace": "2026-10-03 15:00:00.000 -07:00 TRACE native: Native stream 7 received 512 bytes",
     ]
 
     private func shown(_ level: LogLevel) -> Set<String> {

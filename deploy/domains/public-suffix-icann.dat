@@ -4100,7 +4100,7 @@ mh
 // mil : https://www.iana.org/domains/root/db/mil.html
 mil
 
-// mk : https://marnet.mk/ -> "ПРАВИЛНИК"
+// mk : https://marnet.mk/ -> "REGULATIONS"
 mk
 com.mk
 edu.mk
@@ -6494,14 +6494,14 @@ yt
 বাংলা
 
 // xn--90ae ("bg", Bulgarian) : BG
-бг
+xn--90ae
 
 // xn--mgbcpq6gpa1a ("albahrain", Arabic) : BH
 البحرين
 
 // xn--90ais ("bel", Belarusian/Russian Cyrillic) : BY
 // Operated by .by registry
-бел
+xn--90ais
 
 // xn--fiqs8s ("Zhongguo/China", Chinese, Simplified) : CN
 // CNNIC
@@ -6522,7 +6522,7 @@ xn--fiqz9s
 
 // xn--e1a4c ("eu", Cyrillic) : EU
 // https://eurid.eu
-ею
+xn--e1a4c
 
 // xn--qxa6a ("eu", Greek) : EU
 // https://eurid.eu
@@ -6626,10 +6626,10 @@ xn--od0alg.xn--j6w193g
 الاردن
 
 // xn--3e0b707e ("Republic of Korea", Hangul) : KR
-한국
+xn--3e0b707e
 
 // xn--80ao21a ("Kaz", Kazakh) : KZ
-қаз
+xn--80ao21a
 
 // xn--q7ce6a ("Lao", Lao) : LA
 ລາວ
@@ -6647,10 +6647,10 @@ xn--od0alg.xn--j6w193g
 
 // xn--d1alf ("mkd", Macedonian) : MK
 // MARnet
-мкд
+xn--d1alf
 
 // xn--l1acc ("mon", Mongolian) : MN
-мон
+xn--l1acc
 
 // xn--mix891f ("Macao", Chinese, Traditional) : MO
 // MONIC / HNET Asia (Registry Operator for .mo)
@@ -6678,18 +6678,18 @@ xn--mix082f
 
 // xn--90a3ac ("srb", Cyrillic) : RS
 // https://www.rnids.rs/en/domains/national-domains
-срб
-ак.срб
-обр.срб
-од.срб
-орг.срб
-пр.срб
-упр.срб
+xn--90a3ac
+xn--80au.xn--90a3ac
+xn--90azh.xn--90a3ac
+xn--d1at.xn--90a3ac
+xn--c1avg.xn--90a3ac
+xn--o1ac.xn--90a3ac
+xn--o1ach.xn--90a3ac
 
 // xn--p1ai ("rf", Russian-Cyrillic) : RU
 // https://cctld.ru/files/pdf/docs/en/rules_ru-rf.pdf
 // Submitted by George Georgievsky <gug@cctld.ru>
-рф
+xn--p1ai
 
 // xn--wgbl6a ("Qatar", Arabic) : QA
 // https://www.cra.gov.qa/
@@ -6750,7 +6750,7 @@ xn--kprw13d
 xn--nnx388a
 
 // xn--j1amh ("ukr", Cyrillic) : UA
-укр
+xn--j1amh
 
 // xn--mgb2ddes ("AlYemen", Arabic) : YE
 اليمن
@@ -10880,19 +10880,19 @@ xn--6qq986b3xl
 
 // xn--80adxhks : Foundation for Assistance for Internet Technologies and Infrastructure Development (FAITID)
 // https://www.iana.org/domains/root/db/xn--80adxhks.html
-москва
+xn--80adxhks
 
 // xn--80aqecdr1a : Pontificium Consilium de Comunicationibus Socialibus (PCCS) (Pontifical Council for Social Communication)
 // https://www.iana.org/domains/root/db/xn--80aqecdr1a.html
-католик
+xn--80aqecdr1a
 
 // xn--80asehdb : CORE Association
 // https://www.iana.org/domains/root/db/xn--80asehdb.html
-онлайн
+xn--80asehdb
 
 // xn--80aswg : CORE Association
 // https://www.iana.org/domains/root/db/xn--80aswg.html
-сайт
+xn--80aswg
 
 // xn--8y0a063a : China United Network Communications Corporation Limited
 // https://www.iana.org/domains/root/db/xn--8y0a063a.html
@@ -10920,7 +10920,7 @@ xn--b4w605ferd
 
 // xn--c1avg : Public Interest Registry
 // https://www.iana.org/domains/root/db/xn--c1avg.html
-орг
+xn--c1avg
 
 // xn--c2br7g : VeriSign Sarl
 // https://www.iana.org/domains/root/db/xn--c2br7g.html
@@ -10936,7 +10936,7 @@ xn--b4w605ferd
 
 // xn--cg4bki : SAMSUNG SDS CO., LTD
 // https://www.iana.org/domains/root/db/xn--cg4bki.html
-삼성
+xn--cg4bki
 
 // xn--czr694b : Internet DotTrademark Organisation Limited
 // https://www.iana.org/domains/root/db/xn--czr694b.html
@@ -10952,7 +10952,7 @@ xn--czru2d
 
 // xn--d1acj3b : The Foundation for Network Initiatives “The Smart Internet”
 // https://www.iana.org/domains/root/db/xn--d1acj3b.html
-дети
+xn--d1acj3b
 
 // xn--eckvdtc9d : Amazon Registry Services, Inc.
 // https://www.iana.org/domains/root/db/xn--eckvdtc9d.html
@@ -11020,7 +11020,7 @@ xn--io0a7i
 
 // xn--j1aef : VeriSign Sarl
 // https://www.iana.org/domains/root/db/xn--j1aef.html
-ком
+xn--j1aef
 
 // xn--jlq480n2rg : Amazon Registry Services, Inc.
 // https://www.iana.org/domains/root/db/xn--jlq480n2rg.html
@@ -11064,7 +11064,7 @@ xn--kput3i
 
 // xn--mk1bu44c : VeriSign Sarl
 // https://www.iana.org/domains/root/db/xn--mk1bu44c.html
-닷컴
+xn--mk1bu44c
 
 // xn--mxtq1m : Net-Chinese Co., Ltd.
 // https://www.iana.org/domains/root/db/xn--mxtq1m.html
@@ -11100,7 +11100,7 @@ xn--otu796d
 
 // xn--p1acf : Rusnames Limited
 // https://www.iana.org/domains/root/db/xn--p1acf.html
-рус
+xn--p1acf
 
 // xn--pssy2u : VeriSign Sarl
 // https://www.iana.org/domains/root/db/xn--pssy2u.html
@@ -11128,7 +11128,7 @@ xn--ses554g
 
 // xn--t60b56a : VeriSign Sarl
 // https://www.iana.org/domains/root/db/xn--t60b56a.html
-닷넷
+xn--t60b56a
 
 // xn--tckwe : VeriSign Sarl
 // https://www.iana.org/domains/root/db/xn--tckwe.html

@@ -49,11 +49,12 @@ a new live Cloudflare, native Apple or hour-long stability acceptance run.
   H3 timed out during setup. Neither reached account/exit validation.
 - `docs/review/`: independent source review and separately reproduced
   shutdown/controller-drop regressions.
-- `docs/evidence/parent-baseline.json`: all 387 original parent files and
-  the pre-existing working-tree changes. Final verification compares their
-  exact content, missing-file state and outside-project inventory.
-- [Final parent verification](evidence/parent-final-verification.json): all
-  387 baseline files unchanged, with no outside-project changes.
+- `docs/evidence/parent-baseline.json`: retained original parent-file hashes
+  and the pre-existing working-tree changes. The historical verification
+  compared exact content, missing-file state and outside-project inventory.
+- [Final parent verification](evidence/parent-final-verification.json): the
+  historical check found all 387 baseline files unchanged, with no
+  outside-project changes.
 - [Release/source binding](evidence/release-soak-source-binding.json): the
   retained release binary matches its build hash and all 112 production files
   match the passed soak's production source. This binds the release to tested

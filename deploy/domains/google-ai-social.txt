@@ -83,7 +83,7 @@ turn.livekit.cloud
 # Shared login challenge; the root-domain generators widen this to cloudflare.com
 challenges.cloudflare.com
 
-# GreatFire most blocked sites (user-selected, 2026-10-06)
+# Selected GreatFire most blocked sites
 wsj.com
 scmpchinese.com
 wikipedia.org

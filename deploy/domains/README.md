@@ -6,7 +6,7 @@ It covers Google/Gemini sign-in and common resources, Gmail, Drive, Photos, Maps
 
 On 2026-10-01 the service endpoints were selected by comparison with the `google`, `youtube`, `anthropic`, `twitter`, `xai` and `openai` data in [v2fly/domain-list-community](https://github.com/v2fly/domain-list-community/tree/2d71342eea1720da57261b55663c9d55619e9b1c/data). The source is community-maintained domain data, **not an official allowlist that the vendors guarantee to be complete**; attempts to read Google's and Claude's official help pages returned 403 from the environment used. The MIT license of the source data is kept in `LICENSE.domain-list-community`.
 
-The Google/AI/X preset selects service and resource hosts, and includes the user-selected GreatFire roots. The root-domain installer intentionally widens these names: for example specific Azure storage hosts become `windows.net`, and `challenges.cloudflare.com` becomes `cloudflare.com`. That wider scope is a routing choice; it can include services unrelated to the named apps.
+The Google/AI/X preset selects service and resource hosts, and includes selected GreatFire roots. The root-domain installer intentionally widens these names: for example specific Azure storage hosts become `windows.net`, and `challenges.cloudflare.com` becomes `cloudflare.com`. That wider scope is a routing choice; it can include services unrelated to the named apps.
 
 Domains change, and this is not a complete per-app list obtained by capturing each release's traffic. The Google rule source supplies its listed regional domains; redirects for other regions, payment flows or dynamic third-party endpoints may still need to be added. If a feature does not go through the relay, temporarily enable `debug.log_requests` on the server, check the domains against what the device actually connects to, and add the narrowest rule that works.
 
@@ -31,7 +31,7 @@ python3 deploy/global-profile.py --host relay.example.com --user iphone --binary
 
 Both generators use their base lists, gfwlist and the eighteen service lists. Both apply root-domain normalization, exclude `.adult`, and enforce the single-file 524288-byte limit. Neither includes Loyalsoldier proxy.txt. `public-suffix-icann.dat` is the ICANN section of the official Public Suffix List, fetched 2026-10-06, version `2026-10-01_23-02-52_UTC`, commit `6cd82aff889e3d64e5e03bc5c1f43da1934a960a`; its MPL-2.0 notice is retained. It is bundled to avoid another deployment-time download.
 
-On 2026-10-06, the 40 domains supplied by the user from GreatFire’s “Most blocked sites (all time)” list were merged into this preset. The counts describe GreatFire tests, not subdomains that need separate rules. The installer normalizes and deduplicates these names with gfwlist; shared hosting roots intentionally include every tenant.
+The preset includes 40 selected domains from GreatFire’s “Most blocked sites (all time)” list. The counts describe GreatFire tests, not subdomains that need separate rules. The installer normalizes and deduplicates these names with gfwlist; shared hosting roots intentionally include every tenant.
 
 ## blackmatrix7 service rule sources
 

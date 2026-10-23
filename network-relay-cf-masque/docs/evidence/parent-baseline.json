@@ -99,10 +99,6 @@
       "sha256": "46ca44626536d0f1bd3f970c1b946121ad83bf3a1884784d69e36c227819db24",
       "bytes": 36143
     },
-    "docs/english-content-audit-20261011.json": {
-      "sha256": "fe431f458b21f7d631a4784d1cb46d9b4ffd63c596f4197b106366d976270e94",
-      "bytes": 3222
-    },
     "docs/manual-mac-cloudflare-dns.md": {
       "sha256": "67f669ecb0f6b19a9ae0cb94ed9bfea694e34143c27d6ab3a5e35d3851325feb",
       "bytes": 20416

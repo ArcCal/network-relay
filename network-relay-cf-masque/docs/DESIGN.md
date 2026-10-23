@@ -2,7 +2,7 @@
 
 ## Scope and evidence-driven decisions
 
-All project source, manifests, locks, tests, examples, documentation, private test files and generated outputs stay in this subdirectory. The parent and sibling repositories are read-only. `docs/evidence/parent-baseline.json` records the initial parent tree, including its pre-existing changes.
+All project source, manifests, locks, tests, examples, documentation, private test files and generated outputs stay in this subdirectory. The parent and sibling repositories are read-only. `docs/evidence/parent-baseline.json` records retained file hashes from the initial parent tree, including its pre-existing changes.
 
 Research was completed before implementation. See the four `RESEARCH-*.md` reports for pinned sources actually read: current Network Relay, ArcCal/cf-masque, usque, usque-rs, Xray-core, sing-box and mihomo. Cloudflare WARP is a distinct dialect of MASQUE; generic RFC CONNECT-IP alone is insufficient. The selected design reuses pinned MIT cf-masque transport, userspace-stack and resolver sources because they supply those reviewed capabilities; reuse is an implementation choice, not a project requirement. GPL reference implementations supply behavioral evidence and are not copied into production. [NOTICE.md](../NOTICE.md) records the selected source and licenses.
 

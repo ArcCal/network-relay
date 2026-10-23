@@ -1,6 +1,6 @@
 # Debian 12/13 x64: automatic install from a prebuilt binary
 
-For a Debian 12 or 13, x86_64, systemd VPS (the script is still called `install-debian13.sh`). Upload the extracted Linux x86_64 release binary as `/tmp/network-relay`. The installer uses that file by default, without installing Rust, Cargo, Git or build tools. It never falls back to compilation if the file is missing or invalid. Installation needs the Debian package mirrors and, for automatic certificates, access to Let's Encrypt.
+For a Debian 12 or 13, x86_64, systemd VPS (the script is still called `install-debian13.sh`). Upload a Linux x86_64 executable built from the same source revision as the installer, naming it `/tmp/network-relay`; see the [build instructions](deploy.md#building-from-source). The installer uses that file by default, without installing Rust, Cargo, Git or build tools. It never falls back to compilation if the file is missing or invalid. Installation needs the Debian package mirrors and, for automatic certificates, access to Let's Encrypt.
 
 Keep the deployment files together: `deploy/install-debian13.sh`, `deploy/install.py`, `deploy/global-profile.py`, `deploy/network-relay.service`, `deploy/certbot-hook.sh`, `deploy/domains/google-ai-social.txt` and `deploy/domains/public-suffix-icann.dat`. No Rust source or Cargo files are needed. These files can come from a deployment bundle or the current source ZIP. A self-contained `network-relay-install.sh` bundles these files and refreshes the device profile as well as installing the binary; upload it alongside the binary and run:
 
@@ -34,7 +34,7 @@ The installer generates a new random password, stores only its hash, preserves o
 
 ## Source-compiling installer
 
-`network-relay-install-from-source.sh` is the other standalone download. It bundles the complete Rust source, Cargo.lock and the patched vendor crates; no prebuilt `/tmp/network-relay` is needed. With DNS pointing at the VPS and TCP 80 plus TCP/UDP 443 open, run:
+The [source installer](../network-relay-install-from-source.sh) and its [checksum](../network-relay-install-from-source.sh.sha256) are available in the repository root. It bundles the complete Rust source, Cargo.lock and the patched vendor crates; no prebuilt `/tmp/network-relay` is needed. With DNS pointing at the VPS and TCP 80 plus TCP/UDP 443 open, run:
 
 ```bash
 sudo bash /tmp/network-relay-install-from-source.sh --domain relay.example.com

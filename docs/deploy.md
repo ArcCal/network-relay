@@ -22,7 +22,7 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 source "$HOME/.cargo/env"
 ```
 
-The repository is private. The simplest way is to log in to GitHub in your computer's browser, download the ZIP of the `main` branch, upload it to the server and extract it (see the README's [one-step install, step 2](../README.md#step-2-download-the-source-and-upload-it)), then skip to the `cd` step below. Alternatively, log in with GitHub's official command-line tool on the server and clone:
+The repository is private. The simplest way is to log in to GitHub in your computer's browser, download the ZIP of the `main` branch, upload it to the server and extract it, then enter the extracted `network-relay-main` directory and continue with `cargo build` below. The README's [one-step install, step 2](../README.md#step-2-download-verify-and-upload) describes downloading standalone installers instead. Alternatively, log in with GitHub's official command-line tool on the server and clone:
 
 ```bash
 apt install -y gh

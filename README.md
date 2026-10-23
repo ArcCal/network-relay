@@ -2,7 +2,7 @@
 
 A server for the **built-in "Network Relay"** feature of iPhone, iPad and Mac.
 
-**Latest release: [1.5](https://github.com/ArcCal/network-relay/releases/tag/1.5)** (program version `1.5.0`). Linux x86_64 and arm64 binaries, both standalone installers and their SHA-256 files are available under **Assets**. The automatic installers support **Debian 12/13 x86_64**; use the manual installation for arm64.
+**Latest release: [1.5](https://github.com/ArcCal/network-relay/releases/tag/1.5)** (program version `1.5.0`). Source archives are available on the release page. The current standalone installers and their SHA-256 files are in the repository root; the source installer builds the bundled program on the VPS. The automatic installers support **Debian 12/13 x86_64**; use the manual installation for arm64.
 
 - **No app to install on the device**: install a profile (`.mobileconfig`) and the system itself forwards traffic through your server.
 - Traffic can be selected or excluded by **domain and subdomains** or by **exact host name**, or **all traffic** can go through the relay. Exact matching needs iOS 18.4 / macOS 15.4 or later.
@@ -118,12 +118,12 @@ All of these happened in real deployments.
 
 **For**: a Debian 12 or 13, x86_64, systemd VPS (the Debian images from Vultr, AWS Lightsail, Google Cloud, DigitalOcean and others all qualify). If you are not sure of the version, run `cat /etc/os-release` on the server and look at `VERSION_ID`.
 
-Choose one installation mode. **Neither requires a source ZIP.**
+Choose one installation mode. **Neither requires a source ZIP.** Source mode builds the bundled program. Prebuilt mode requires a Linux x86_64 executable built from the same source revision as the installer.
 
-| Mode | Download from [Release 1.5](https://github.com/ArcCal/network-relay/releases/tag/1.5) | What you upload to the VPS |
+| Mode | Download from the current repository | What you upload to the VPS |
 |---|---|---|
-| **Prebuilt binary — recommended for a small VPS** | [x86_64 archive](https://github.com/ArcCal/network-relay/releases/download/1.5/network-relay-1.5.0-linux-x86_64.tar.gz) and [network-relay-install.sh](https://github.com/ArcCal/network-relay/releases/download/1.5/network-relay-install.sh), plus their `.sha256` files | The extracted executable as `/tmp/network-relay`, and the script as `/tmp/network-relay-install.sh`. No compilation or Rust toolchain on the VPS. |
-| **Compile from source on the VPS** | [network-relay-install-from-source.sh](https://github.com/ArcCal/network-relay/releases/download/1.5/network-relay-install-from-source.sh) and its `.sha256` file | `/tmp/network-relay-install-from-source.sh`. It bundles Cargo.lock, Rust source and patched vendor crates, and installs the build tools. No uploaded binary needed. |
+| **Compile from source on the VPS** | [network-relay-install-from-source.sh](network-relay-install-from-source.sh) and its [SHA-256 file](network-relay-install-from-source.sh.sha256) | `/tmp/network-relay-install-from-source.sh`. It bundles Cargo.lock, Rust source and patched vendor crates, and installs the build tools. No uploaded binary needed. |
+| **Use an executable you already built** | [network-relay-install.sh](network-relay-install.sh) and its [SHA-256 file](network-relay-install.sh.sha256) | Your Linux x86_64 executable as `/tmp/network-relay`, and the script as `/tmp/network-relay-install.sh`. No compilation or Rust toolchain on the VPS. See the [Mac-to-Linux build guide](docs/manual-mac-cloudflare-dns.md#3-download-a-fresh-main-checkout-and-compile) to build elsewhere. |
 
 Both scripts install dependencies, obtain a Let's Encrypt certificate and configure renewal, create the account and configuration, install and start the systemd service, generate a device profile and run the relay self-check. Both fetch gfwlist and the eighteen service lists on every normal run and regenerate one cleaned routing profile. DNS and the cloud firewall need to be prepared first. See [routing rules](#default-root-domain-routing) and the [deployment guide](docs/deploy-debian13.md) for details.
 
@@ -145,7 +145,7 @@ The scripts and checksums are also checked into the repository: [prebuilt instal
 
 ### Step 2: Download, verify and upload
 
-Log in to GitHub with an account that has repository access, open [Release 1.5](https://github.com/ArcCal/network-relay/releases/tag/1.5), expand **Assets**, and download the files for your chosen mode. For this private repository, unauthenticated `curl`/`wget` download links can fail; downloading in your signed-in browser works.
+Log in to GitHub with an account that has repository access, open the installer and checksum links in the table above, and download each file using GitHub's **Download raw file** button. Keep the original filenames. For this private repository, unauthenticated `curl`/`wget` links can fail; downloading in your signed-in browser works.
 
 In the **Mac's Terminal**, enter the download directory:
 
@@ -153,26 +153,16 @@ In the **Mac's Terminal**, enter the download directory:
 cd ~/Downloads
 ```
 
-**Prebuilt mode:** download the x86_64 archive, the prebuilt installer and both corresponding `.sha256` files, then verify them:
-
-```bash
-shasum -a 256 -c network-relay-1.5.0-linux-x86_64.tar.gz.sha256
-```
+**Prebuilt mode:** download the prebuilt installer and its checksum, then verify the installer:
 
 ```bash
 shasum -a 256 -c network-relay-install.sh.sha256
 ```
 
-Each must print `OK`. Extract the archive:
+It must print `OK`. Place your Linux x86_64 executable in this directory as `network-relay`, then upload it together with the script:
 
 ```bash
-tar -xzf network-relay-1.5.0-linux-x86_64.tar.gz
-```
-
-Upload the **executable**, not the archive, together with the script:
-
-```bash
-scp -i ~/.ssh/your-key network-relay-1.5.0-linux-x86_64/network-relay network-relay-install.sh root@203.0.113.10:/tmp/
+scp -i ~/.ssh/your-key network-relay network-relay-install.sh root@203.0.113.10:/tmp/
 ```
 
 **Source mode:** download the source installer and its checksum, verify it and upload it:
@@ -260,7 +250,7 @@ All checks passed.
 
 ### Re-run, upgrade or refresh the routing lists
 
-For the prebuilt installer, upload the new executable as `/tmp/network-relay` before running it again. After a reboot, upload it again if `/tmp` was cleared. For the source installer, download the new release's script before upgrading; each run compiles its bundled source.
+For the prebuilt installer, upload the new executable as `/tmp/network-relay` before running it again. After a reboot, upload it again if `/tmp` was cleared. For the source installer, download the current repository's script and checksum before upgrading; each run compiles its bundled source.
 
 ```bash
 bash /tmp/network-relay-install.sh
@@ -375,25 +365,13 @@ The first time, it asks for an email address (enter yours), whether you agree to
 
 ### Step 5: Install the program
 
-Pick one of two sources:
-
-- **Release**: on the GitHub Releases page, download `network-relay-VERSION-linux-x86_64.tar.gz` (on an ARM server, the `arm64` one; if unsure, run `uname -m` on the server: `aarch64` means arm64). After uploading it:
-  ```bash
-  tar -xzf network-relay-*-linux-x86_64.tar.gz
-  ```
-  ```bash
-  cd network-relay-*-linux-x86_64
-  ```
-  ```bash
-  install -m 755 network-relay /usr/local/bin/
-  ```
-- **Build it yourself**: see [docs/deploy.md](docs/deploy.md#building-from-source).
+Build on the Linux server using [docs/deploy.md](docs/deploy.md#building-from-source), or follow the [Mac-to-Linux build guide](docs/manual-mac-cloudflare-dns.md#3-download-a-fresh-main-checkout-and-compile). Use a build for the server's architecture: `uname -m` prints `x86_64` or `aarch64` (arm64). Keep the complete source checkout on the server, including its `deploy/` directory.
 
 ```bash
 network-relay --version
 ```
 
-**You should see** `network-relay 1.5.0` (or a newer version). **Stay in this directory**; the `deploy/` files in it are needed later.
+**You should see** `network-relay 1.5.0` (or a newer version). **Stay in the source directory**; the `deploy/` files in it are needed later.
 
 ### Step 6: Put up a decoy website
 
@@ -966,4 +944,4 @@ cargo test
 
 GitHub Actions runs format, clippy, deployment, independent interoperability and vendored HTTP/3 tests on PRs and pushes to `main`. Published releases and manual workflow runs additionally test and build Linux x86_64 and arm64 packages (arm64 under qemu); published releases receive the packages automatically.
 
-The two standalone installers and their `.sha256` files are checked into the repository root and match the Release 1.5 attachments. To refresh them after deployment-file changes, run `python3 deploy/package-installer.py --out network-relay-install.sh` and `python3 deploy/package-installer.py --source --out network-relay-install-from-source.sh`, then verify the checksums and commit all four files.
+The two standalone installers and their `.sha256` files are checked into the repository root. To refresh them after deployment-file changes, run `python3 deploy/package-installer.py --out network-relay-install.sh` and `python3 deploy/package-installer.py --source --out network-relay-install-from-source.sh`, then verify the checksums and commit all four files.

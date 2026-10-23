@@ -32,7 +32,7 @@ unless the user explicitly requests changing those objectives.
 ### 4. Server requirements
 
 All network-relay-related servers must have no violations of applicable IETF
-specifications and Apple's specifications, no known performance or security
+specifications and Apple's Network Relay specifications, no known performance or security
 issues, and no regressions.
 
 ### 5. Client requirements

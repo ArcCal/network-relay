@@ -31,9 +31,6 @@ unless the user explicitly requests changing those objectives.
 
 ### 4. Server requirements
 
-All MASQUE-related servers must have no violations of applicable IETF
-specifications, no known performance or security issues, and no regressions.
-
 All network-relay-related servers must have no violations of applicable IETF
 specifications and Apple's specifications, no known performance or security
 issues, and no regressions.

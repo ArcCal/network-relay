@@ -176,14 +176,20 @@ rg_step source-network-relay rg_snapshot
 caddy_src="$work/sources/caddy-network-relay-src"
 cloudflare_src="$work/sources/cloudflare-src"
 if [[ $mode == all ]]; then
+    rg_require
+    # The Linux entry pins the reviewed Cloudflare DNS plugin release.
+    # shellcheck disable=SC1091
+    source "$repo/build-linux-servers-on-linux.sh"
     rg_step source-caddy-network-relay rg_clone ArcCal/caddy-network-relay "$caddy_src" main
-    rg_step source-cloudflare rg_clone caddy-dns/cloudflare "$cloudflare_src" master
+    rg_step source-cloudflare rg_clone caddy-dns/cloudflare "$cloudflare_src" "$LR_CLOUDFLARE_DNS_TAG"
 fi
 rg_require
 caddy_commit=; cloudflare_commit=
 if [[ $mode == all ]]; then
     caddy_commit=$(git -C "$caddy_src" rev-parse HEAD)
     cloudflare_commit=$(git -C "$cloudflare_src" rev-parse HEAD)
+    [[ $cloudflare_commit == "$LR_CLOUDFLARE_DNS_COMMIT" ]] ||
+        rg_die "caddy-dns/cloudflare $LR_CLOUDFLARE_DNS_TAG is not the reviewed commit."
 fi
 # Discard ambient build flags without discarding proxy or registry credentials.
 while IFS='=' read -r key _value; do

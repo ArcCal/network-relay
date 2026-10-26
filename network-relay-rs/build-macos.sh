@@ -35,7 +35,8 @@ export MACOSX_DEPLOYMENT_TARGET=27.0
 # Keep the application independent even when the invoking shell has a parent
 # project's CARGO_TARGET_DIR setting.
 export CARGO_TARGET_DIR="$RS_ROOT/build/target"
-export APP_BUILD_TIME=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
+APP_BUILD_TIME=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
+export APP_BUILD_TIME
 export APP_SOURCE_REVISION="$RS_SOURCE"
 RS_TARGET=aarch64-apple-darwin
 rustup target add "$RS_TARGET"

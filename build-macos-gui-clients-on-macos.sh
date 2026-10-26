@@ -42,7 +42,7 @@ snapshot. Local commits are refused; dirty/untracked files are preserved and
 never used as build inputs. Sources, builds and signing use /private/tmp.
 App names include the software, macOS and arm64. Logs, source revisions and
 SHA256SUMS are kept with the artifacts. Failed builds keep their workspace.
-RUSTUP_TOOLCHAIN defaults to 1.99.0. Existing checkouts are never deleted.
+RUSTUP_TOOLCHAIN defaults to 1.99.1. Existing checkouts are never deleted.
 HELP
 }
 rg_host() {
@@ -191,10 +191,10 @@ while IFS='=' read -r key _value; do
         CARGO_TARGET_DIR|CARGO_BUILD_TARGET|CARGO_BUILD_RUSTFLAGS|CARGO_TARGET_*|CARGO_PROFILE_*|RUSTFLAGS|RUSTDOCFLAGS|CARGO_ENCODED_RUSTFLAGS|CC|CXX|AR|LD|CC_*|CXX_*|AR_*|CFLAGS*|CXXFLAGS*|CPPFLAGS*|LDFLAGS|SDKROOT|MACOSX_DEPLOYMENT_TARGET|GOOS|GOARCH|GOAMD64|GOARM64|GOFLAGS|CGO_*) unset "$key" ;;
     esac
 done < <(env)
-export RUSTUP_TOOLCHAIN=${RUSTUP_TOOLCHAIN:-1.99.0}
+export RUSTUP_TOOLCHAIN=${RUSTUP_TOOLCHAIN:-1.99.1}
 export CARGO_BUILD_JOBS="$jobs" CARGO_ENCODED_RUSTFLAGS=''
 export COPYFILE_DISABLE=1 TMPDIR="$work/tmp/"
-export GOTOOLCHAIN=${GOTOOLCHAIN:-go1.27.2+auto} GOWORK=off GOFLAGS='' GOAMD64=v1 GOARM64=v8.0
+export GOTOOLCHAIN=${GOTOOLCHAIN:-go1.27.3+auto} GOWORK=off GOFLAGS='' GOAMD64=v1 GOARM64=v8.0
 rg_attributes() { find -P "$1" \( -type f -o -type d \) -exec xattr -c {} +; }
 rg_rust() {
     rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal

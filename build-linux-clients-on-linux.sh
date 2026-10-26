@@ -29,7 +29,7 @@ and untracked caller files are preserved and never built. Git credentials or
 NETWORK_RELAY_TOKEN must allow reading ArcCal/network-relay. An existing gh
 login is used without changing global Git configuration.
 
-Rust 1.99.0 (or RUSTUP_TOOLCHAIN), Zig and cargo-zigbuild produce static musl
+Rust 1.99.1 (or RUSTUP_TOOLCHAIN), Zig and cargo-zigbuild produce static musl
 executables named network-relay-rs-linux-amd64 and -arm64. Both architectures
 are inspected; native files also run --version and --help. SHA256SUMS,
 MANIFEST.txt and logs stay with the artifacts. Failed builds keep .work.
@@ -71,11 +71,11 @@ lc_check_tools() {
         else printf '  %s: missing\n' "$tool" >&2; missing=1; fi
     done
     if command -v rustup >/dev/null; then
-        if ! rustup which --toolchain "${RUSTUP_TOOLCHAIN:-1.99.0}" rustc >/dev/null 2>&1; then
-            printf '  Rust toolchain %s: missing\n' "${RUSTUP_TOOLCHAIN:-1.99.0}" >&2
+        if ! rustup which --toolchain "${RUSTUP_TOOLCHAIN:-1.99.1}" rustc >/dev/null 2>&1; then
+            printf '  Rust toolchain %s: missing\n' "${RUSTUP_TOOLCHAIN:-1.99.1}" >&2
             missing=1
         else
-            targets=$(rustup target list --installed --toolchain "${RUSTUP_TOOLCHAIN:-1.99.0}") || missing=1
+            targets=$(rustup target list --installed --toolchain "${RUSTUP_TOOLCHAIN:-1.99.1}") || missing=1
             for triple in x86_64-unknown-linux-musl aarch64-unknown-linux-musl; do
                 if ! grep -Fxq "$triple" <<< "${targets:-}"; then
                     printf '  Rust target %s: missing\n' "$triple" >&2; missing=1
@@ -345,7 +345,7 @@ mkdir -m 700 -- "$output/logs"
 ln -s -- "$work" "$output/.work"
 printf 'Artifacts: %s\nPersistent checkout: %s\nWork directory: %s\n' "$output" "$checkout" "$work"
 failures=0
-export RUSTUP_TOOLCHAIN=${RUSTUP_TOOLCHAIN:-1.99.0}
+export RUSTUP_TOOLCHAIN=${RUSTUP_TOOLCHAIN:-1.99.1}
 export APP_SOURCE_REVISION="$root_commit"
 APP_BUILD_TIME=$(date -u +%FT%TZ)
 export APP_BUILD_TIME

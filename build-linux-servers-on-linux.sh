@@ -34,7 +34,7 @@ server uses a committed private snapshot. Caddy uses current main;
 caddy-dns/cloudflare uses current master. Fetched commits are fixed for this
 run and recorded in MANIFEST.txt. Credentials must allow both private repos.
 Optional NETWORK_RELAY_TOKEN / CADDY_NETWORK_RELAY_TOKEN provide read tokens.
-Rust defaults to 1.99.0; Go defaults to go1.27.2+auto (honors module requirements).
+Rust defaults to 1.99.1; Go defaults to go1.27.3+auto (honors module requirements).
 
 Any failed source, build, verification or checksum step fails the run.
 Successful runs retain four binaries, logs, MANIFEST.txt and SHA256SUMS;
@@ -71,11 +71,11 @@ lr_check_tools() {
         else printf '  %s: missing\n' "$tool" >&2; missing=1; fi
     done
     if command -v rustup >/dev/null; then
-        if ! rustup which --toolchain "${RUSTUP_TOOLCHAIN:-1.99.0}" rustc >/dev/null 2>&1; then
-            printf '  Rust toolchain %s: missing\n' "${RUSTUP_TOOLCHAIN:-1.99.0}" >&2
+        if ! rustup which --toolchain "${RUSTUP_TOOLCHAIN:-1.99.1}" rustc >/dev/null 2>&1; then
+            printf '  Rust toolchain %s: missing\n' "${RUSTUP_TOOLCHAIN:-1.99.1}" >&2
             missing=1
         else
-            targets=$(rustup target list --installed --toolchain "${RUSTUP_TOOLCHAIN:-1.99.0}") || missing=1
+            targets=$(rustup target list --installed --toolchain "${RUSTUP_TOOLCHAIN:-1.99.1}") || missing=1
             for triple in x86_64-unknown-linux-musl aarch64-unknown-linux-musl; do
                 if ! grep -Fxq "$triple" <<< "${targets:-}"; then
                     printf '  Rust target %s: missing\n' "$triple" >&2; missing=1
@@ -424,9 +424,9 @@ mkdir -m 700 -- "$output/logs"
 ln -s -- "$work" "$output/.work"
 printf 'Artifacts: %s\nPersistent checkout: %s\nWork directory: %s\n' "$output" "$checkout" "$work"
 failures=0
-export RUSTUP_TOOLCHAIN=${RUSTUP_TOOLCHAIN:-1.99.0}
+export RUSTUP_TOOLCHAIN=${RUSTUP_TOOLCHAIN:-1.99.1}
 if (( install_deps )); then
-    export GOTOOLCHAIN=${GOTOOLCHAIN:-go1.27.2+auto}
+    export GOTOOLCHAIN=${GOTOOLCHAIN:-go1.27.3+auto}
 else
     export GOTOOLCHAIN=${GOTOOLCHAIN:-local}
 fi

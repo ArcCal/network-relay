@@ -4,7 +4,7 @@
 
 lr_usage() {
     cat <<'HELP'
-Usage: bash build-servers-linux.sh [--repo DIR] [--output DIR] [--jobs N]
+Usage: bash build-linux-servers-on-linux.sh [--repo DIR] [--output DIR] [--jobs N]
                                    [--install-deps | --no-install-deps] [--check]
 
 Build all three servers for BOTH Linux amd64 (x64) and arm64 on every run:
@@ -43,7 +43,7 @@ only their private work directory is removed. Failed runs retain .work.
 No server installation or service configuration is performed.
 HELP
 }
-lr_die() { printf 'build-servers-linux: %s\n' "$*" >&2; exit 1; }
+lr_die() { printf 'build-linux-servers-on-linux: %s\n' "$*" >&2; exit 1; }
 lr_value() { [[ $# -ge 2 && -n $2 && $2 != --* ]] || lr_die "Pass a value to $1."; }
 lr_physical_dir() { REPLY=$(cd -P -- "$1" && printf '%s/' "$PWD"); REPLY=${REPLY%/}; }
 lr_empty_dir() {
@@ -378,7 +378,7 @@ lr_main() {
     stage=$(mktemp -d /tmp/relay-servers.XXXXXX) || lr_die 'Cannot create private workspace.'
     trap 'status=$?; if (( status )); then printf "Update failed (exit %s). Work: %s\n" "$status" "$stage" >&2; fi' EXIT
     printf '%s\n' "$root_commit" > "$stage/.owner"
-    git -C "$checkout" show "$root_commit:build-servers-linux.sh" > "$stage/driver.sh" || lr_die 'Cannot load newest committed script.'
+    git -C "$checkout" show "$root_commit:build-linux-servers-on-linux.sh" > "$stage/driver.sh" || lr_die 'Cannot load newest committed script.'
     [[ -s $stage/driver.sh ]] || lr_die 'Newest build script is empty.'
     exec "$BASH" "$stage/driver.sh" --build-updated "$checkout" "$stage" "$output" "$root_commit" "$jobs" "$install_deps" --deps-policy-v2
 }

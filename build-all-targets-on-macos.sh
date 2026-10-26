@@ -5,7 +5,7 @@ unset CDPATH
 
 usage() {
     cat <<'HELP'
-Usage: bash build-all-targets.sh [--repo DIR] [--output DIR] [--jobs N]
+Usage: bash build-all-targets-on-macos.sh [--repo DIR] [--output DIR] [--jobs N]
 
 Build network-relay, network-relay-cf-masque and Caddy Network Relay for
 Linux x64 and arm64, plus the Network Relay NF and RS macOS applications.
@@ -28,7 +28,7 @@ used as build inputs. Git credentials must allow reading both repositories.
 Compilation and signing use a private /private/tmp workspace.
 HELP
 }
-die() { printf 'build-all-targets: %s\n' "$*" >&2; exit 1; }
+die() { printf 'build-all-targets-on-macos: %s\n' "$*" >&2; exit 1; }
 physical_dir() { REPLY=$(cd -P -- "$1" && printf '%s/' "$PWD"); REPLY=${REPLY%/}; }
 remote_git() {
     if command -v gh >/dev/null 2>&1; then
@@ -70,7 +70,7 @@ build_updated() {
        -f $build_work/.owner && ! -L $build_work/.owner &&
        $(cat "$build_work/.owner") == "$commit" ]] || die 'Invalid private build workspace.'
     trap report_failure EXIT
-    git -C "$repo" show "$commit:build-macos-gui.sh" > "$build_work/gui-driver.sh"
+    git -C "$repo" show "$commit:build-macos-gui-clients-on-macos.sh" > "$build_work/gui-driver.sh"
     [[ -s $build_work/gui-driver.sh ]] || die 'Updated macOS build engine is missing.'
     exec "$BASH" "$build_work/gui-driver.sh" --build-updated \
         "$repo" "$build_work" "$3" "$commit" all "$jobs"
@@ -136,7 +136,7 @@ main() {
     build_work=$(mktemp -d /private/tmp/relay-mac.XXXXXX)
     trap report_failure EXIT
     printf '%s\n' "$commit" > "$build_work/.owner"
-    git -C "$repo" show "$commit:build-all-targets.sh" > "$build_work/driver.sh"
+    git -C "$repo" show "$commit:build-all-targets-on-macos.sh" > "$build_work/driver.sh"
     [[ -s $build_work/driver.sh ]] || die 'Updated all-target build script is missing.'
     exec "$BASH" "$build_work/driver.sh" --build-updated \
         "$repo" "$build_work" "$output" "$commit" "$jobs"

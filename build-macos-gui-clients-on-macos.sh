@@ -5,7 +5,7 @@
 set -euo pipefail
 unset CDPATH
 
-rg_die() { printf 'build-macos-gui: %s\n' "$*" >&2; exit 1; }
+rg_die() { printf 'build-macos-gui-clients-on-macos: %s\n' "$*" >&2; exit 1; }
 rg_dir() { REPLY=$(cd -P -- "$1" && printf '%s/' "$PWD"); REPLY=${REPLY%/}; }
 rg_empty() {
     local entries
@@ -23,7 +23,7 @@ rg_remote_git() {
 }
 rg_usage() {
     cat <<'HELP'
-Usage: bash build-macos-gui.sh [--repo DIR] [--output DIR] [--jobs N]
+Usage: bash build-macos-gui-clients-on-macos.sh [--repo DIR] [--output DIR] [--jobs N]
 
 Build Network Relay NF and Network Relay RS, including their original tests,
 ad-hoc signatures and ZIPs. Requires an Apple silicon Mac, macOS 27+, the
@@ -113,7 +113,7 @@ rg_main() {
     work=$(mktemp -d /private/tmp/relay-mac.XXXXXX)
     trap 'status=$?; if (( status )); then printf "Update failed (exit %s). Work: %s\n" "$status" "$work" >&2; fi' EXIT
     printf '%s\n' "$root_commit" > "$work/.owner"
-    git -C "$checkout" show "$root_commit:build-macos-gui.sh" > "$work/driver.sh" || rg_die 'Cannot load the latest GUI script.'
+    git -C "$checkout" show "$root_commit:build-macos-gui-clients-on-macos.sh" > "$work/driver.sh" || rg_die 'Cannot load the latest GUI script.'
     [[ -s $work/driver.sh ]] || rg_die 'The latest GUI script is empty.'
     exec "$BASH" "$work/driver.sh" --build-updated "$checkout" "$work" "$output" "$root_commit" gui "$jobs"
 }
@@ -248,7 +248,7 @@ rg_binary() {
 rg_servers() {
     # Reuse the Linux entry's build recipes, including its Caddy patch overlay.
     # shellcheck disable=SC1091
-    source "$repo/build-servers-linux.sh"
+    source "$repo/build-linux-servers-on-linux.sh"
     # Read by the sourced Caddy helper.
     # shellcheck disable=SC2034
     host_arch=arm64

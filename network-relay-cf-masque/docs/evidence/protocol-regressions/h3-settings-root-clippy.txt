@@ -1,7 +1,0 @@
-    Checking h3 v0.0.8 (/workspace/network-relay/network-relay-cf-masque/vendor/h3)
-    Checking h3-datagram v0.0.2 (/workspace/network-relay/network-relay-cf-masque/vendor/h3-datagram)
-    Checking h3-quinn v0.0.10 (/workspace/network-relay/network-relay-cf-masque/vendor/h3-quinn)
-    Checking warp-masque-egress v0.1.0 (/workspace/network-relay/network-relay-cf-masque/crates/warp-egress)
-    Checking relay-frontend v1.5.0 (/workspace/network-relay/network-relay-cf-masque/crates/relay-frontend)
-    Checking network-relay-cf-masque v0.1.0 (/workspace/network-relay/network-relay-cf-masque)
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.73s

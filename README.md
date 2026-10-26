@@ -3,7 +3,7 @@
 A server for the **built-in "Network Relay"** feature of iPhone, iPad and Mac.
 
 **Practical manual:** [installation, profiles, administration, desktop clients,
-WARP variant, troubleshooting and test evidence](docs/USER_GUIDE.md).
+troubleshooting and test evidence](docs/USER_GUIDE.md).
 
 **Latest release: [1.5](https://github.com/ArcCal/network-relay/releases/tag/1.5)** (program version `1.5.0`). Source archives are available on the release page. The current standalone installers and their SHA-256 files are in the repository root; the source installer builds the bundled program on the VPS. The automatic installers support **Debian 12/13 x86_64**; use the manual installation for arm64.
 

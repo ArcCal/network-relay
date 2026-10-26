@@ -2,8 +2,8 @@
 
 This guide covers the standalone Rust server, Apple's built-in Network Relay
 profiles, and the additional applications shipped in this repository. Start
-with the standard server and one test device. The experimental WARP server and
-the NF/RS desktop clients have different requirements and validation status.
+with the standard server and one test device. The NF/RS desktop clients have
+different requirements and validation status.
 
 Commands are examples to run deliberately on your own systems. Replace
 `relay.example.com`, `203.0.113.10`, SSH account names and paths before use.
@@ -20,7 +20,6 @@ Commands are examples to run deliberately on your own systems. Replace
 - [Routine administration](#routine-administration)
 - [Upgrade, stop and remove](#upgrade-stop-and-remove)
 - [Use the NF and RS desktop clients](#use-the-nf-and-rs-desktop-clients)
-- [Use the experimental WARP-egress server](#use-the-experimental-warp-egress-server)
 - [Troubleshooting](#troubleshooting)
 - [Tests and evidence](#tests-and-evidence)
 
@@ -32,7 +31,6 @@ Commands are examples to run deliberately on your own systems. Replace
 | Apple `.mobileconfig` profile | Configures the operating system's built-in relay feature | You want domain-based routing without installing a client application |
 | [Network Relay NF](../network-relay-nf/README.md) | Separate macOS SOCKS5 application, using Apple Network.framework for production sockets/TLS/QUIC | You want applications to use an explicit local SOCKS proxy and can meet its current macOS/SDK requirements |
 | [Network Relay RS](../network-relay-rs/README.md) | Separate Rust/AppKit macOS SOCKS5 application, using Tokio/rustls/Quinn | You want the independent Rust desktop client or its headless mode |
-| [Network Relay CF MASQUE](../network-relay-cf-masque/README.md) | Separate experimental relay server whose forwarded traffic and DNS must leave through WARP | You specifically need WARP egress and accept the live-service validation gap |
 
 The root server's current package version is `1.5.0`; it is not the same
 program as the similarly named desktop applications. Read the version of the
@@ -446,7 +444,7 @@ configuration, service status, timestamps and the exact failed check. Enable
 `[debug] log_requests = true` briefly and reload if destination evidence is
 needed. Turn it off afterwards. Logs can still expose usernames and destination
 metadata even when authentication headers are redacted. Do not share passwords,
-full mobileconfig files, private keys or WARP enrollment material.
+full mobileconfig files or private keys.
 
 ## Upgrade, stop and remove
 
@@ -558,61 +556,6 @@ and [RS build guide](../network-relay-rs/docs/BUILD-AND-OBSERVE.md) for fresh-so
 procedures, signing observations and TCP/UDP acceptance. Do not infer native Mac
 runtime success from a Linux model or transport test.
 
-## Use the experimental WARP-egress server
-
-This is a separate application under `network-relay-cf-masque/`. It retains the
-ordinary relay client protocol, but forwards business TCP, UDP and server-side
-DNS through its userspace stack and WARP. It does not create a host TUN or use
-the VPS as a fallback exit. Existing client profiles carry relay credentials;
-WARP enrollment secrets stay on the server.
-
-Use Rust 1.99+, a native compiler/linker and the
-[dedicated configuration guide](../network-relay-cf-masque/docs/CONFIGURATION.md).
-From that application's directory:
-
-```bash
-bash scripts/build.sh
-mkdir -p config
-chmod 700 config
-cp examples/relay.toml config/relay.toml
-chmod 600 config/relay.toml
-```
-
-Edit the single file to include the relay's actual TLS paths, users, listen
-address and existing MASQUE enrollment material under `[warp.registration]`.
-An API token or WireGuard key alone is insufficient. The application does not
-enroll or refresh the device. Default IPv4 H2 egress needs the enrolled P-256
-PKCS#8 private key, endpoint public-key pin and tunnel IPv4 address. IPv6 is
-optional. Select WARP `transport = "h2"` or `"h3"` explicitly; ingress H1/H2/H3
-selection is independent.
-
-```bash
-./target/release/network-relay-cf-masque serve --config config/relay.toml --check
-```
-
-```bash
-RUST_LOG=info ./target/release/network-relay-cf-masque serve --config config/relay.toml
-```
-
-`--check` validates local material only. Normal startup must establish WARP
-before opening ingress. Terminal WARP loss fails flows and exits nonzero;
-there is no implicit reconnect, transport downgrade, direct exit or local DNS
-fallback. A supervisor can start a fresh process. Changing WARP settings needs
-a restart; ordinary relay reloads do not reconfigure the active egress.
-
-The [status record](../network-relay-cf-masque/docs/STATUS.md) reports successful
-synthetic peer/interoperability and held-flow tests, but retained real WARP
-attempts failed before an exit-IP check. An earlier synthetic H3 timeout remains
-unresolved despite a later successful approximately 65-minute run. This is an
-experimental option, not an established live Cloudflare deployment recipe.
-
-Its stack has a shared **64-socket** budget, including DNS and connecting/closing
-TCP sockets. Reserve capacity rather than copying the standard kernel-backed
-server's large tunnel limit. At the default MTU 1280, UDP payloads are limited
-to 1252 bytes for IPv4 and 1232 for IPv6; oversize datagrams are dropped without
-fragmentation or a native-VPS fallback. These limits can affect DNS/application
-traffic even when a small connectivity probe succeeds.
-
 ## Troubleshooting
 
 | Symptom | Check first | Next action |
@@ -635,7 +578,6 @@ traffic even when a small connectivity probe succeeds.
 | Password change has no effect | Duplicate entries, validation, reload journal | Replace one hash, validate/reload and update the device profile |
 | NF/RS fails to listen | Existing `127.0.0.1:1080` owner | Stop the competing proxy or change this app's listener |
 | Client says connected but an origin fails | Separate allowed TCP and UDP payload tests | Admission/readiness is weaker than end-to-end reachability |
-| WARP variant never opens listener | WARP configuration, pin, endpoint and egress startup log | Its startup is fail-closed; `--check` success is not live WARP success |
 
 ## Tests and evidence
 
@@ -651,7 +593,6 @@ repeating them rather than attributing an older run to a new build.
 | Root CI intent | [build workflow](../.github/workflows/build.yml) | Workflow configuration is a test recipe, not proof that the current checkout ran it |
 | NF | [Current status](../network-relay-nf/docs/STATUS.md), [native evidence](../network-relay-nf/docs/evidence/native-mac-20261011.md) | User-reported native H2 successes and H3 repair confirmation are distinct from a complete current native matrix; Linux bridge tests do not execute Network.framework |
 | RS | [Current status](../network-relay-rs/docs/STATUS.md) | Production Rust transport passed both-server local matrices and short H3 stability checks; AppKit packaging/GUI and sustained remote Mac acceptance remain separate |
-| WARP variant | [Status](../network-relay-cf-masque/docs/STATUS.md), [evidence matrix](../network-relay-cf-masque/docs/evidence/MATRIX.md) | Synthetic WARP peers and successful soak do not establish live Cloudflare interoperability; an earlier timeout remains open |
 
 For root server development, the documented baseline checks include:
 

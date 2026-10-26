@@ -354,7 +354,7 @@ audit_outputs() {
     local arch binary name repo
     for arch in amd64 arm64; do
         for binary in caddy-masque caddy-network-relay masque-server network-relay \
-                      masque-vpn-cf-masque network-relay-cf-masque masque-passwd masque-cf-passwd; do
+                      masque-vpn-cf-masque masque-passwd masque-cf-passwd; do
             verify_binary "$OUT/linux-$arch/$binary" "linux-$arch"
         done
     done
@@ -386,7 +386,6 @@ schedule_builds() {
         fi
         run_job "relay-$arch" build_rust network-relay '' "$target" '' network-relay
         run_job "masque-cf-$arch" build_rust masque-vpn masque-vpn-cf-masque "$target" '' masque-vpn-cf-masque masque-cf-passwd
-        run_job "relay-cf-$arch" build_rust network-relay network-relay-cf-masque "$target" '' network-relay-cf-masque
         run_job "caddy-masque-$arch" build_go caddy-masque "$arch" '' caddy-masque
         run_job "caddy-relay-$arch" build_go caddy-network-relay "$arch" http2legacy caddy-network-relay
     done

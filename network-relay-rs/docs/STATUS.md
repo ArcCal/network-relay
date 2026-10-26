@@ -64,7 +64,7 @@ metadata only, including event kind/resource/byte counts and read EOF. Headless
 The strict app/core Clippy check also passes with warnings treated as errors.
 
 The locked transport versions include Quinn 0.11.12, quinn-proto 0.11.19,
-quinn-udp 0.5.16, rustls 0.23.45, Tokio 1.53.2, h2 0.4.20 and SFV 0.14.0.
+quinn-udp 0.5.16, rustls 0.23.46, Tokio 1.53.2, h2 0.4.20 and SFV 0.14.0.
 Cargo.lock is authoritative; these checks used stable Rust 1.99.
 
 ## Automated compatibility matrix

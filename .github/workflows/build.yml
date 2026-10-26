@@ -1,8 +1,11 @@
 # Tests pull requests and pushes to main. Release and manual runs build
-# Linux arm64 and x86_64 packages; published Releases receive the packages.
+# every binary package: the server and the headless Network Relay RS client
+# for Linux arm64 and x86_64, and the Network Relay RS and NF macOS apps
+# plus the RS command-line client for macOS arm64. Published Releases (and
+# manual runs given a release tag) receive all of them and the installers.
 #
-# Built on Ubuntu 22.04, so the program runs on Ubuntu 22.04, Debian 12 and
-# later. arm64 is cross-compiled, and its tests run under qemu.
+# Linux packages are built on Ubuntu 22.04, so they run on Ubuntu 22.04,
+# Debian 12 and later. arm64 is cross-compiled, and its tests run under qemu.
 name: build
 
 on:
@@ -120,6 +123,22 @@ jobs:
           tar -czf dist/$name.tar.gz -C dist $name
           (cd dist && sha256sum $name.tar.gz > $name.tar.gz.sha256)
           echo "name=$name" >> "$GITHUB_OUTPUT"
+      # The headless Network Relay RS client is its own Cargo workspace.
+      - name: Test Network Relay RS client (arm64 runs under qemu)
+        run: cargo test --locked --release --manifest-path network-relay-rs/Cargo.toml -p network-relay-rs -p network-relay-rs-core --target ${{ matrix.target }}
+      - name: Build Network Relay RS client
+        run: |
+          APP_SOURCE_REVISION=$(git rev-parse HEAD) APP_BUILD_TIME=$(date -u +%FT%TZ) \
+            cargo build --locked --release --manifest-path network-relay-rs/Cargo.toml --bin network-relay-rs --target ${{ matrix.target }}
+      - name: Package Network Relay RS client
+        run: |
+          version=$(tr -d '[:space:]' < network-relay-rs/VERSION)
+          name="network-relay-rs-$version-linux-${{ matrix.arch }}"
+          mkdir -p "dist/$name"
+          cp "network-relay-rs/target/${{ matrix.target }}/release/network-relay-rs" "dist/$name/"
+          cp network-relay-rs/README.md network-relay-rs/NOTICE.md "dist/$name/"
+          tar -czf "dist/$name.tar.gz" -C dist "$name"
+          (cd dist && sha256sum "$name.tar.gz" > "$name.tar.gz.sha256")
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: ${{ steps.package.outputs.name }}
@@ -127,6 +146,86 @@ jobs:
             dist/*.tar.gz
             dist/*.tar.gz.sha256
           retention-days: 30
+
+  # The macOS applications are built by their own scripts, which also run
+  # their tests. Both target macOS 27 and run on the GitHub-hosted macOS 27
+  # image with Xcode 27 (currently a public preview). Each job attaches its
+  # own files, so a missing macOS runner never holds back the Linux packages.
+  macos-rs:
+    name: build Network Relay RS (macOS arm64)
+    if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
+    runs-on: xcode-27
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable branch
+        with:
+          toolchain: stable
+          targets: aarch64-apple-darwin
+      - name: Build the app and command-line client
+        run: bash network-relay-rs/build-macos.sh
+      - name: Package
+        run: |
+          version=$(tr -d '[:space:]' < network-relay-rs/VERSION)
+          name="network-relay-rs-$version-macos-arm64"
+          mkdir -p "dist/$name"
+          cp network-relay-rs/build/target/aarch64-apple-darwin/release/network-relay-rs "dist/$name/"
+          codesign --force --sign - "dist/$name/network-relay-rs"
+          codesign --verify --strict "dist/$name/network-relay-rs"
+          "dist/$name/network-relay-rs" --version
+          cp network-relay-rs/README.md network-relay-rs/NOTICE.md "dist/$name/"
+          tar -czf "dist/$name.tar.gz" -C dist "$name"
+          (cd dist && shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256")
+          cp "network-relay-rs/dist/NetworkRelayRS-$version-macos-arm64.zip" "network-relay-rs/dist/NetworkRelayRS-$version-macos-arm64.zip.sha256" dist/
+          rm -rf "dist/${name:?}"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: network-relay-rs-macos-arm64
+          path: dist/*
+          retention-days: 30
+      - name: Attach to the release
+        if: github.event_name == 'release' || inputs.tag != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name || inputs.tag }}
+        run: gh release upload "$TAG" dist/* --clobber --repo "$GITHUB_REPOSITORY"
+
+  macos-nf:
+    name: build Network Relay NF (macOS arm64)
+    if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
+    # Network Relay NF requires macOS 27 and the Xcode 27 SDK.
+    runs-on: xcode-27
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable branch
+        with:
+          toolchain: stable
+          targets: aarch64-apple-darwin
+      - name: Build the app
+        run: bash network-relay-nf/build-macos.sh
+      - name: Package
+        run: |
+          version=$(tr -d '[:space:]' < network-relay-nf/VERSION)
+          mkdir -p dist
+          cp "network-relay-nf/dist/NetworkRelayNF-$version-macos-arm64.zip" "network-relay-nf/dist/NetworkRelayNF-$version-macos-arm64.zip.sha256" dist/
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: network-relay-nf-macos-arm64
+          path: dist/*
+          retention-days: 30
+      - name: Attach to the release
+        if: github.event_name == 'release' || inputs.tag != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name || inputs.tag }}
+        run: gh release upload "$TAG" dist/* --clobber --repo "$GITHUB_REPOSITORY"
 
   release:
     name: attach to the release
@@ -145,6 +244,7 @@ jobs:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           path: dist
+          pattern: network-relay-*-linux-*
           merge-multiple: true
       - name: Verify and package standalone installers
         run: |

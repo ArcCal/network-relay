@@ -33,6 +33,8 @@ Rust 1.99.1 (or RUSTUP_TOOLCHAIN), Zig and cargo-zigbuild produce static musl
 executables named network-relay-rs-linux-amd64 and -arm64. Both architectures
 are inspected; native files also run --version and --help. SHA256SUMS,
 MANIFEST.txt and logs stay with the artifacts. Failed builds keep .work.
+Network steps are retried. Debian 13 keeps /tmp in memory; when it is too small,
+temporary files go to ~/.cache instead. Free disk space is checked first.
 No client is installed or connected and no system proxy settings are changed.
 HELP
 }
@@ -89,11 +91,12 @@ lc_check_tools() {
 lc_install_system() {
     local apt_command=(apt-get)
     if (( EUID != 0 )); then
-        command -v sudo >/dev/null || lc_die '--install-deps requires root or sudo.'
+        command -v sudo >/dev/null || lc_die 'Installing missing system packages needs administrator rights. Run this script again with sudo, or ask an administrator to run it once.'
         apt_command=(sudo apt-get)
     fi
-    "${apt_command[@]}" update
-    "${apt_command[@]}" install -y --no-install-recommends \
+    # apt retries interrupted downloads itself.
+    "${apt_command[@]}" -o Acquire::Retries=3 update
+    "${apt_command[@]}" -o Acquire::Retries=3 install -y --no-install-recommends \
         build-essential pkg-config ca-certificates curl git file binutils python3-venv
 }
 
@@ -130,7 +133,7 @@ lc_install_rustup() {
     if ! command -v rustup >/dev/null; then
         (( install_deps )) || lc_die 'Missing rustup; use --install-deps.'
         installer=$(mktemp)
-        curl --proto '=https' --tlsv1.2 -fsSL https://sh.rustup.rs -o "$installer" || {
+        curl --proto '=https' --tlsv1.2 -fsSL --retry 3 --retry-delay 5 https://sh.rustup.rs -o "$installer" || {
             rm -f -- "$installer"; lc_die 'Cannot download rustup.';
         }
         sh "$installer" -y --profile minimal --default-toolchain none --no-modify-path || {
@@ -160,41 +163,137 @@ lc_token_git() {
         GIT_CONFIG_VALUE_1="Authorization: Basic $header" git "$@"
 }
 
+# Run a network command up to three times, 5 and then 15 seconds apart.
+lc_retry() {
+    local attempt
+    for attempt in 1 2 3; do
+        "$@" && return 0
+        [[ $attempt == 3 ]] && break
+        printf 'Network step failed (attempt %s of 3); retrying in %s seconds.\n' "$attempt" "$((attempt * 10 - 5))" >&2
+        sleep "$((attempt * 10 - 5))"
+    done
+    return 1
+}
+# Explain a problem the user has to fix, one line per argument, then stop.
+lc_explain() {
+    printf '\n' >&2
+    printf '%s\n' "$@" >&2
+    printf '\n' >&2
+    exit 1
+}
+# Plain-language help after GitHub could not be reached or read.
+lc_access_help() {
+    printf '\nCould not download %s from GitHub.\n' "$1" >&2
+    printf 'Check that this computer is online. The repository is private, so Git must be signed in.\n' >&2
+    if ! command -v gh >/dev/null; then
+        printf 'Install the GitHub CLI (gh), run "gh auth login"%s, then run this script again.\n' "${2:+, or set $2 to a GitHub token}" >&2
+    elif ! gh auth status >/dev/null 2>&1; then
+        printf 'Sign in by running "gh auth login", then run this script again.\n' >&2
+    else
+        printf 'Your GitHub account may lack access to %s; check it, then run this script again.\n' "$1" >&2
+    fi
+}
+# Run Git against GitHub with retries, then once with the optional token.
+lc_github() {
+    lc_retry lc_remote_git "$@" && return 0
+    [[ -n ${NETWORK_RELAY_TOKEN:-} ]] || return 1
+    printf 'Trying once more with NETWORK_RELAY_TOKEN.\n' >&2
+    lc_token_git "$@"
+}
+# Print local edits that an update to $2 would overwrite, one per line.
+lc_blocking_changes() {
+    local incoming line path
+    incoming=$(git -C "$1" -c core.quotePath=false diff --name-only HEAD "$2" --) || return 0
+    git -C "$1" -c core.quotePath=false status --porcelain --untracked-files=all |
+        while IFS= read -r line; do
+            path=${line:3}
+            path=${path##* -> }
+            if grep -Fxq -- "$path" <<< "$incoming"; then printf '  %s\n' "$path"; fi
+        done
+}
 lc_update_checkout() {
-    local actual_root remote selected_branch fetched has_repo=0
+    local actual_root remote selected_branch fetched has_repo=0 ahead behind blocked script fresh
+    printf -v script '%q' "$0"
+    printf -v fresh '%q' "$HOME/network-relay-build"
     while [[ $checkout == */ && $checkout != / ]]; do checkout=${checkout%/}; done
     if [[ -e $checkout || -L $checkout ]]; then
         if [[ -d $checkout && -e $checkout/.git ]]; then has_repo=1;
         elif [[ ! -d $checkout || -L $checkout ]] || ! lc_empty_dir "$checkout"; then
-            lc_die "Existing path is not a Git checkout: $checkout"
+            lc_explain "$checkout already exists, but it is not a Git copy of ArcCal/network-relay." \
+                'Nothing in it was changed. Rename or move that folder, or build in a new folder:' \
+                "  bash $script --repo $fresh"
         fi
     fi
     if (( has_repo )); then
         lc_physical_dir "$checkout"; checkout=$REPLY
         actual_root=$(git -C "$checkout" rev-parse --show-toplevel && printf '.') || lc_die 'Cannot inspect checkout root.'
         actual_root=${actual_root%.}; actual_root=${actual_root%$'\n'}
-        [[ $actual_root == "$checkout" ]] || lc_die 'Select the repository root.'
-        remote=$(git -C "$checkout" config --get remote.origin.url) || lc_die 'Cannot read origin.'
-        case $remote in
-            https://github.com/ArcCal/network-relay|https://github.com/ArcCal/network-relay.git|git@github.com:ArcCal/network-relay.git|ssh://git@github.com/ArcCal/network-relay.git) ;;
-            *) lc_die 'origin must point to ArcCal/network-relay on GitHub.' ;;
+        [[ $actual_root == "$checkout" ]] ||
+            lc_explain "$checkout is inside the Git repository $actual_root; select the top folder of the copy." \
+                'Nothing was changed. Pass that folder with --repo DIR, or build in a new folder:' \
+                "  bash $script --repo $fresh"
+        remote=$(git -C "$checkout" config --get remote.origin.url) || remote='no origin'
+        # GitHub owner and repository names are case-insensitive.
+        case $(printf '%s' "$remote" | tr '[:upper:]' '[:lower:]') in
+            https://github.com/arccal/network-relay|https://github.com/arccal/network-relay.git|git@github.com:arccal/network-relay.git|ssh://git@github.com/arccal/network-relay.git) ;;
+            *) lc_explain "$checkout is a Git copy of $remote, not of ArcCal/network-relay." \
+                   'Nothing was changed. Choose the right folder with --repo DIR, or build in a new folder:' \
+                   "  bash $script --repo $fresh" ;;
         esac
-        selected_branch=$(git -C "$checkout" symbolic-ref --short HEAD) || lc_die 'Use a main checkout, not detached HEAD.'
-        [[ $selected_branch == main ]] || lc_die 'Use a main checkout; other branches are left unchanged.'
+        selected_branch=$(git -C "$checkout" symbolic-ref --short -q HEAD) || selected_branch=
+        if [[ $selected_branch != main ]]; then
+            lc_explain "$checkout is ${selected_branch:+on branch \"$selected_branch\", }not on the main branch, which the build uses." \
+                'Your branch and files were left unchanged. Switch back to main and run this script again:' \
+                "  git -C $(printf '%q' "$checkout") switch main" \
+                'or leave this copy as it is and build in a new folder:' \
+                "  bash $script --repo $fresh"
+        fi
         printf '==> Updating existing checkout with pull --ff-only\n'
-        if ! lc_remote_git -C "$checkout" pull --ff-only origin main; then
-            lc_token_git -C "$checkout" pull --ff-only origin main || lc_die 'Cannot fast-forward checkout.'
+        if ! lc_github -C "$checkout" fetch origin main; then
+            lc_access_help ArcCal/network-relay NETWORK_RELAY_TOKEN
+            lc_die 'Could not check for updates; no local files were changed.'
         fi
         fetched=$(git -C "$checkout" rev-parse --verify FETCH_HEAD) || lc_die 'Cannot identify fetched commit.'
+        ahead=$(git -C "$checkout" rev-list --count "$fetched..HEAD") || lc_die 'Cannot compare the checkout with GitHub.'
+        if (( ahead )); then
+            lc_explain "Your copy at $checkout has $ahead commit(s) that are not on GitHub's main branch" \
+                "(your own commits, or main was rewritten on GitHub). The build always uses GitHub's main," \
+                'and updating could lose or mix in that work, so nothing was changed.' \
+                'Build in a new folder instead; this copy stays exactly as it is:' \
+                "  bash $script --repo $fresh"
+        fi
+        behind=$(git -C "$checkout" rev-list --count "HEAD..$fetched") || lc_die 'Cannot compare the checkout with GitHub.'
+        if (( behind )); then
+            blocked=$(lc_blocking_changes "$checkout" "$fetched")
+            if [[ -n $blocked ]]; then
+                lc_explain "These files in $checkout were changed on this computer, and the update changes them too:" \
+                    "$blocked" \
+                    'Updating would overwrite your changes, so nothing was changed. Either build in a new folder' \
+                    '(this copy stays exactly as it is):' \
+                    "  bash $script --repo $fresh" \
+                    'or set your changes aside, run this script, and then bring them back:' \
+                    "  git -C $(printf '%q' "$checkout") stash push --include-untracked" \
+                    "  bash $script" \
+                    "  git -C $(printf '%q' "$checkout") stash pop"
+            fi
+            if ! lc_remote_git -C "$checkout" pull --ff-only origin main ||
+                { [[ -n ${NETWORK_RELAY_TOKEN:-} ]] && lc_token_git -C "$checkout" pull --ff-only origin main; }; then
+                lc_explain "Git could not update $checkout (its message is above). Your files were left as they were." \
+                    'Run this script again in a few minutes, or build in a new folder:' \
+                    "  bash $script --repo $fresh"
+            fi
+            fetched=$(git -C "$checkout" rev-parse --verify FETCH_HEAD) || lc_die 'Cannot identify fetched commit.'
+        else
+            printf 'Already up to date.\n'
+        fi
+        if [[ -n $(git -C "$checkout" status --porcelain) ]]; then
+            printf 'Your uncommitted changes in %s were kept; the build does not use them.\n' "$checkout"
+        fi
     else
         printf '==> Cloning ArcCal/network-relay\n'
-        if ! lc_remote_git clone --depth 1 --single-branch --branch main -- https://github.com/ArcCal/network-relay.git "$checkout"; then
-            if [[ -e $checkout || -L $checkout ]]; then
-                if [[ ! -d $checkout || -L $checkout ]] || ! lc_empty_dir "$checkout"; then
-                    lc_die 'Clone failed; existing destination preserved.'
-                fi
-            fi
-            lc_token_git clone --depth 1 --single-branch --branch main -- https://github.com/ArcCal/network-relay.git "$checkout" || lc_die 'Cannot clone checkout.'
+        if ! lc_github clone --depth 1 --single-branch --branch main -- https://github.com/ArcCal/network-relay.git "$checkout"; then
+            lc_access_help ArcCal/network-relay NETWORK_RELAY_TOKEN
+            lc_die 'Could not download the source code; nothing was changed.'
         fi
         lc_physical_dir "$checkout"; checkout=$REPLY
         fetched=$(git -C "$checkout" rev-parse --verify refs/remotes/origin/main) || lc_die 'Cannot identify cloned commit.'
@@ -204,8 +303,8 @@ lc_update_checkout() {
 }
 
 lc_prepare_rust() {
-    rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
-    rustup target add --toolchain "$RUSTUP_TOOLCHAIN" x86_64-unknown-linux-musl aarch64-unknown-linux-musl
+    lc_retry rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
+    lc_retry rustup target add --toolchain "$RUSTUP_TOOLCHAIN" x86_64-unknown-linux-musl aarch64-unknown-linux-musl
     rustc --version
 }
 
@@ -270,6 +369,44 @@ lc_collect() {
     install -m 755 -- "$source" "$output/network-relay-rs-linux-$arch"
 }
 
+# Free space, in KiB, on the filesystem holding $1 or its nearest existing parent.
+lc_free_kib() {
+    local dir=$1
+    while [[ ! -d $dir ]]; do dir=$(dirname -- "$dir"); done
+    df -Pk -- "$dir" | awk 'NR == 2 { print $4 }'
+}
+# Mount point of the filesystem holding $1 or its nearest existing parent.
+lc_mount_of() {
+    local dir=$1
+    while [[ ! -d $dir ]]; do dir=$(dirname -- "$dir"); done
+    df -Pk -- "$dir" | awk 'NR == 2 { print $6 }'
+}
+lc_gib() { awk -v k="$1" 'BEGIN { printf "%.1f", k / 1048576 }'; }
+# Choose where temporary build files go before any long step starts, and check
+# that the build tools fit in the home folder. Debian 13 keeps /tmp in memory,
+# which can be too small, so the home folder's cache is the fallback.
+lc_work_parent() {
+    local work_gib=2 tools_gib=1 candidate need home_free tmp_free
+    # A first build also installs the Rust toolchain and fills their caches.
+    if ! compgen -G "${RUSTUP_HOME:-$HOME/.rustup}/toolchains/${RUSTUP_TOOLCHAIN:-1.99.1}-*" >/dev/null; then
+        tools_gib=2
+    fi
+    home_free=$(lc_free_kib "$HOME")
+    for candidate in /tmp "$HOME/.cache"; do
+        need=$work_gib
+        if [[ $(lc_mount_of "$candidate") == "$(lc_mount_of "$HOME")" ]]; then need=$((need + tools_gib)); fi
+        if (( $(lc_free_kib "$candidate") >= need * 1048576 && home_free >= tools_gib * 1048576 )); then
+            REPLY=$candidate
+            return 0
+        fi
+    done
+    tmp_free=$(lc_free_kib /tmp)
+    lc_explain 'There is not enough free disk space to build.' \
+        "The build needs about $work_gib GB for temporary files and $tools_gib GB for its tools, but only" \
+        "$(lc_gib "$tmp_free") GB is free in /tmp and $(lc_gib "$home_free") GB in your home folder." \
+        'Free up space (for example by deleting old build output folders) or use a larger disk,' \
+        'then run this script again.'
+}
 lc_main() {
     checkout=${NETWORK_RELAY_SRC:-"$HOME/network-relay"}
     # 2: install missing prerequisites; 1: additionally refresh apt; 0: opt out.
@@ -302,7 +439,15 @@ lc_main() {
         lc_install_system
     fi
     lc_update_checkout
-    stage=$(mktemp -d /tmp/network-relay-linux-clients.XXXXXX) || lc_die 'Cannot create private workspace.'
+    lc_work_parent
+    mkdir -p -- "$REPLY" || lc_die "Cannot create $REPLY."
+    stage=$(mktemp -d "$REPLY/network-relay-linux-clients.XXXXXX") || lc_die 'Cannot create private workspace.'
+    if [[ $REPLY != /tmp ]]; then
+        # Compilers and Go also write temporary files; keep them off the small /tmp.
+        mkdir -- "$stage/tmp"
+        export TMPDIR="$stage/tmp"
+        printf 'Temporary build files go to %s because /tmp is too small.\n' "$stage"
+    fi
     trap 'status=$?; if (( status )); then printf "Update failed (exit %s). Work: %s\n" "$status" "$stage" >&2; fi' EXIT
     printf '%s\n' "$root_commit" > "$stage/.owner"
     git -C "$checkout" show "$root_commit:build-linux-clients-on-linux.sh" > "$stage/driver.sh" || lc_die 'Cannot load newest committed script.'
@@ -331,11 +476,14 @@ export PATH="${CARGO_HOME:-$HOME/.cargo}/bin:$PATH"
 while [[ $output == */ && $output != / ]]; do output=${output%/}; done
 if [[ -z $output ]]; then
     stamp=$(date -u +%Y%m%d-%H%M%S)
-    output=$(mktemp -d "$PWD/network-relay-linux-clients-$platform-$stamp.XXXXXX")
+    output=$(mktemp -d "$PWD/network-relay-linux-clients-$platform-$stamp.XXXXXX") ||
+        lc_explain "Cannot create the output folder in $PWD (this folder is not writable)." \
+            'Run the script from your home folder (cd ~) or choose a folder with --output DIR.'
 elif [[ -e $output || -L $output ]]; then
     if [[ ! -d $output || -L $output ]] || ! lc_empty_dir "$output"; then lc_die '--output must be a new or empty directory.'; fi
 else
-    mkdir -p -- "$output"
+    mkdir -p -- "$output" || lc_explain "Cannot create the output folder $output." \
+        'Choose a folder you can write to with --output DIR, for example one in your home folder.'
 fi
 lc_physical_dir "$output"; output=$REPLY
 [[ $output/ != "$stage/"* && $stage/ != "$output/"* ]] || lc_die 'Output and work directories cannot overlap.'

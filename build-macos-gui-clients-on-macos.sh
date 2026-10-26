@@ -4,6 +4,11 @@
 # shellcheck disable=SC2015
 set -euo pipefail
 unset CDPATH
+# Find tools from rustup and Homebrew even if this shell has not loaded them yet.
+for rg_path in /opt/homebrew/bin "${CARGO_HOME:-$HOME/.cargo}/bin"; do
+    if [[ -d $rg_path && :$PATH: != *:"$rg_path":* ]]; then PATH="$rg_path:$PATH"; fi
+done
+export PATH
 
 rg_die() { printf 'build-macos-gui-clients-on-macos: %s\n' "$*" >&2; exit 1; }
 rg_dir() { REPLY=$(cd -P -- "$1" && printf '%s/' "$PWD"); REPLY=${REPLY%/}; }
@@ -45,53 +50,182 @@ SHA256SUMS are kept with the artifacts. Failed builds keep their workspace.
 RUSTUP_TOOLCHAIN defaults to 1.99.1. Existing checkouts are never deleted.
 HELP
 }
+# Use an Xcode with the macOS 27 SDK, including one installed as Xcode-beta.app.
+rg_select_xcode() {
+    local app sdk
+    [[ -z ${DEVELOPER_DIR:-} ]] || return 0
+    for app in /Applications/Xcode.app /Applications/Xcode*.app; do
+        [[ -d $app/Contents/Developer ]] || continue
+        sdk=$(DEVELOPER_DIR=$app/Contents/Developer xcrun --sdk macosx --show-sdk-version 2>/dev/null) || continue
+        if [[ ${sdk%%.*} =~ ^[0-9]+$ ]] && (( ${sdk%%.*} >= 27 )); then
+            export DEVELOPER_DIR=$app/Contents/Developer
+            return 0
+        fi
+    done
+}
+# Install rustup for this user when Rust is missing, as the Linux builders do.
+rg_rustup() {
+    local installer
+    command -v rustup >/dev/null && return 0
+    printf '==> Rust is not installed; installing rustup for this user account\n'
+    installer=$(mktemp) || return 1
+    if curl --proto '=https' --tlsv1.2 -fsSL --retry 3 --retry-delay 5 https://sh.rustup.rs -o "$installer" &&
+        sh "$installer" -y --profile minimal --default-toolchain none --no-modify-path; then
+        rm -f -- "$installer"
+        export PATH="${CARGO_HOME:-$HOME/.cargo}/bin:$PATH"
+        return 0
+    fi
+    rm -f -- "$installer"
+    return 1
+}
 rg_host() {
     local version sdk tool
     [[ $(uname -s) == Darwin && $(uname -m) == arm64 ]] || rg_die 'An Apple silicon Mac is required.'
     version=$(sw_vers -productVersion)
-    [[ ${version%%.*} =~ ^[0-9]+$ ]] && (( ${version%%.*} >= 27 )) || rg_die 'macOS 27 or newer is required.'
-    if [[ -z ${DEVELOPER_DIR:-} && -d /Applications/Xcode.app/Contents/Developer ]]; then
-        export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
-    fi
-    sdk=$(xcrun --sdk macosx --show-sdk-version)
-    [[ ${sdk%%.*} =~ ^[0-9]+$ ]] && (( ${sdk%%.*} >= 27 )) || rg_die 'Select an Xcode macOS 27 or newer SDK.'
-    xcrun --sdk macosx --find xctest >/dev/null || rg_die 'Xcode with XCTest is required.'
+    [[ ${version%%.*} =~ ^[0-9]+$ ]] && (( ${version%%.*} >= 27 )) || rg_die 'macOS 27 or newer is required. Update macOS in System Settings > General > Software Update, then run this script again.'
+    git --version >/dev/null 2>&1 || rg_die "Apple's developer tools are missing, so Git cannot run. Install Xcode 27 from the App Store and open it once (or run: xcode-select --install), then run this script again."
+    rg_select_xcode
+    sdk=$(xcrun --sdk macosx --show-sdk-version 2>/dev/null) || sdk=
+    [[ ${sdk%%.*} =~ ^[0-9]+$ ]] && (( ${sdk%%.*} >= 27 )) || rg_die "Xcode 27 with the macOS 27 SDK is required. Install or update Xcode from the App Store, open it once to finish its setup, then run this script again."
+    xcrun --sdk macosx --find xctest >/dev/null 2>&1 || rg_die 'Xcode with XCTest is required. Open Xcode once so it can finish installing its components, then run this script again.'
+    rg_rustup || rg_die 'Rust could not be installed automatically. Check the internet connection, or install it from https://rustup.rs, then run this script again.'
     for tool in git rustup rustc cargo swift swiftc sips iconutil otool file codesign ditto plutil xattr unzip shasum find xargs mktemp install; do
-        command -v "$tool" >/dev/null || rg_die "Missing required tool: $tool"
+        command -v "$tool" >/dev/null || rg_die "Missing required tool: $tool. It is part of macOS and Xcode; install Xcode 27 from the App Store, open it once, then run this script again."
     done
 }
+# Run a network command up to three times, 5 and then 15 seconds apart.
+rg_retry() {
+    local attempt
+    for attempt in 1 2 3; do
+        "$@" && return 0
+        [[ $attempt == 3 ]] && break
+        printf 'Network step failed (attempt %s of 3); retrying in %s seconds.\n' "$attempt" "$((attempt * 10 - 5))" >&2
+        sleep "$((attempt * 10 - 5))"
+    done
+    return 1
+}
+# Explain a problem the user has to fix, one line per argument, then stop.
+rg_explain() {
+    printf '\n' >&2
+    printf '%s\n' "$@" >&2
+    printf '\n' >&2
+    exit 1
+}
+# Plain-language help after GitHub could not be reached or read.
+rg_access_help() {
+    printf '\nCould not download %s from GitHub.\n' "$1" >&2
+    printf 'Check that this computer is online. The repository is private, so Git must be signed in.\n' >&2
+    if ! command -v gh >/dev/null; then
+        printf 'Install the GitHub CLI (gh), run "gh auth login"%s, then run this script again.\n' "${2:+, or set $2 to a GitHub token}" >&2
+    elif ! gh auth status >/dev/null 2>&1; then
+        printf 'Sign in by running "gh auth login", then run this script again.\n' >&2
+    else
+        printf 'Your GitHub account may lack access to %s; check it, then run this script again.\n' "$1" >&2
+    fi
+}
+# Run Git against GitHub with retries, then once with the optional token.
+rg_github() {
+    rg_retry rg_remote_git "$@" && return 0
+    return 1
+}
+# Print local edits that an update to $2 would overwrite, one per line.
+rg_blocking_changes() {
+    local incoming line path
+    incoming=$(git -C "$1" -c core.quotePath=false diff --name-only HEAD "$2" --) || return 0
+    git -C "$1" -c core.quotePath=false status --porcelain --untracked-files=all |
+        while IFS= read -r line; do
+            path=${line:3}
+            path=${path##* -> }
+            if grep -Fxq -- "$path" <<< "$incoming"; then printf '  %s\n' "$path"; fi
+        done
+}
 rg_update() {
-    local remote selected actual fetched has_repo=0
-    while [[ $checkout != / && $checkout == */ ]]; do checkout=${checkout%/}; done
+    local actual_root remote selected_branch fetched has_repo=0 ahead behind blocked script fresh
+    printf -v script '%q' "$0"
+    printf -v fresh '%q' "$HOME/network-relay-build"
+    while [[ $checkout == */ && $checkout != / ]]; do checkout=${checkout%/}; done
     if [[ -e $checkout || -L $checkout ]]; then
-        if [[ -d $checkout && -e $checkout/.git ]]; then
-            has_repo=1
-        else
-            [[ -d $checkout && ! -L $checkout ]] && rg_empty "$checkout" || rg_die "Existing path is not a Git checkout: $checkout"
+        if [[ -d $checkout && -e $checkout/.git ]]; then has_repo=1;
+        elif [[ ! -d $checkout || -L $checkout ]] || ! rg_empty "$checkout"; then
+            rg_explain "$checkout already exists, but it is not a Git copy of ArcCal/network-relay." \
+                'Nothing in it was changed. Rename or move that folder, or build in a new folder:' \
+                "  bash $script --repo $fresh"
         fi
     fi
     if (( has_repo )); then
         rg_dir "$checkout"; checkout=$REPLY
-        actual=$(git -C "$checkout" rev-parse --show-toplevel && printf '.') || rg_die 'Cannot inspect the checkout.'
-        actual=${actual%.}; actual=${actual%$'\n'}
-        [[ $actual == "$checkout" ]] || rg_die 'Select the repository root.'
-        remote=$(git -C "$checkout" config --get remote.origin.url) || rg_die 'Cannot read origin.'
-        case $remote in
-            https://github.com/ArcCal/network-relay|https://github.com/ArcCal/network-relay.git|git@github.com:ArcCal/network-relay.git|ssh://git@github.com/ArcCal/network-relay.git) ;;
-            *) rg_die 'origin must point to ArcCal/network-relay on GitHub.' ;;
+        actual_root=$(git -C "$checkout" rev-parse --show-toplevel && printf '.') || rg_die 'Cannot inspect checkout root.'
+        actual_root=${actual_root%.}; actual_root=${actual_root%$'\n'}
+        [[ $actual_root == "$checkout" ]] ||
+            rg_explain "$checkout is inside the Git repository $actual_root; select the top folder of the copy." \
+                'Nothing was changed. Pass that folder with --repo DIR, or build in a new folder:' \
+                "  bash $script --repo $fresh"
+        remote=$(git -C "$checkout" config --get remote.origin.url) || remote='no origin'
+        # GitHub owner and repository names are case-insensitive.
+        case $(printf '%s' "$remote" | tr '[:upper:]' '[:lower:]') in
+            https://github.com/arccal/network-relay|https://github.com/arccal/network-relay.git|git@github.com:arccal/network-relay.git|ssh://git@github.com/arccal/network-relay.git) ;;
+            *) rg_explain "$checkout is a Git copy of $remote, not of ArcCal/network-relay." \
+                   'Nothing was changed. Choose the right folder with --repo DIR, or build in a new folder:' \
+                   "  bash $script --repo $fresh" ;;
         esac
-        selected=$(git -C "$checkout" symbolic-ref --short HEAD) || rg_die 'Use a main branch checkout.'
-        [[ $selected == main ]] || rg_die 'Other branches are preserved; select a main checkout.'
+        selected_branch=$(git -C "$checkout" symbolic-ref --short -q HEAD) || selected_branch=
+        if [[ $selected_branch != main ]]; then
+            rg_explain "$checkout is ${selected_branch:+on branch \"$selected_branch\", }not on the main branch, which the build uses." \
+                'Your branch and files were left unchanged. Switch back to main and run this script again:' \
+                "  git -C $(printf '%q' "$checkout") switch main" \
+                'or leave this copy as it is and build in a new folder:' \
+                "  bash $script --repo $fresh"
+        fi
         printf '==> Updating existing checkout with pull --ff-only\n'
-        rg_remote_git -C "$checkout" pull --ff-only origin main || rg_die 'Cannot fast-forward the checkout; local files were preserved.'
-        fetched=$(git -C "$checkout" rev-parse --verify FETCH_HEAD)
+        if ! rg_github -C "$checkout" fetch origin main; then
+            rg_access_help ArcCal/network-relay
+            rg_die 'Could not check for updates; no local files were changed.'
+        fi
+        fetched=$(git -C "$checkout" rev-parse --verify FETCH_HEAD) || rg_die 'Cannot identify fetched commit.'
+        ahead=$(git -C "$checkout" rev-list --count "$fetched..HEAD") || rg_die 'Cannot compare the checkout with GitHub.'
+        if (( ahead )); then
+            rg_explain "Your copy at $checkout has $ahead commit(s) that are not on GitHub's main branch" \
+                "(your own commits, or main was rewritten on GitHub). The build always uses GitHub's main," \
+                'and updating could lose or mix in that work, so nothing was changed.' \
+                'Build in a new folder instead; this copy stays exactly as it is:' \
+                "  bash $script --repo $fresh"
+        fi
+        behind=$(git -C "$checkout" rev-list --count "HEAD..$fetched") || rg_die 'Cannot compare the checkout with GitHub.'
+        if (( behind )); then
+            blocked=$(rg_blocking_changes "$checkout" "$fetched")
+            if [[ -n $blocked ]]; then
+                rg_explain "These files in $checkout were changed on this computer, and the update changes them too:" \
+                    "$blocked" \
+                    'Updating would overwrite your changes, so nothing was changed. Either build in a new folder' \
+                    '(this copy stays exactly as it is):' \
+                    "  bash $script --repo $fresh" \
+                    'or set your changes aside, run this script, and then bring them back:' \
+                    "  git -C $(printf '%q' "$checkout") stash push --include-untracked" \
+                    "  bash $script" \
+                    "  git -C $(printf '%q' "$checkout") stash pop"
+            fi
+            if ! rg_remote_git -C "$checkout" pull --ff-only origin main; then
+                rg_explain "Git could not update $checkout (its message is above). Your files were left as they were." \
+                    'Run this script again in a few minutes, or build in a new folder:' \
+                    "  bash $script --repo $fresh"
+            fi
+            fetched=$(git -C "$checkout" rev-parse --verify FETCH_HEAD) || rg_die 'Cannot identify fetched commit.'
+        else
+            printf 'Already up to date.\n'
+        fi
+        if [[ -n $(git -C "$checkout" status --porcelain) ]]; then
+            printf 'Your uncommitted changes in %s were kept; the build does not use them.\n' "$checkout"
+        fi
     else
         printf '==> Cloning ArcCal/network-relay\n'
-        rg_remote_git clone --depth 1 --single-branch --branch main -- https://github.com/ArcCal/network-relay.git "$checkout" || rg_die 'Cannot clone network-relay; configure Git credentials for this repository.'
+        if ! rg_github clone --depth 1 --single-branch --branch main -- https://github.com/ArcCal/network-relay.git "$checkout"; then
+            rg_access_help ArcCal/network-relay
+            rg_die 'Could not download the source code; nothing was changed.'
+        fi
         rg_dir "$checkout"; checkout=$REPLY
-        fetched=$(git -C "$checkout" rev-parse --verify refs/remotes/origin/main)
+        fetched=$(git -C "$checkout" rev-parse --verify refs/remotes/origin/main) || rg_die 'Cannot identify cloned commit.'
     fi
-    root_commit=$(git -C "$checkout" rev-parse --verify HEAD)
+    root_commit=$(git -C "$checkout" rev-parse --verify HEAD) || rg_die 'Cannot identify checkout commit.'
     [[ $root_commit == "$fetched" ]] || rg_die 'Local commits differ from fetched main; no local files were reset.'
 }
 rg_main() {
@@ -148,6 +282,13 @@ logs="$output/logs"
 mkdir -m 700 -- "$logs" "$work/sources" "$work/tmp"
 ln -s -- "$work" "$output/.work"
 printf 'Artifacts: %s\nPersistent checkout: %s\nPrivate workspace: %s\nSource commit: %s\n' "$output" "$checkout" "$work" "$root_commit"
+# Check free space before any long step. These are estimates from the Linux
+# builds of the same code: about 6 GB for the apps, 10 GB with every target.
+rg_space_gib=6; [[ $mode != all ]] || rg_space_gib=10
+rg_free_kib=$(df -Pk -- "$work" | awk 'NR == 2 { print $4 }')
+if (( rg_free_kib < rg_space_gib * 1048576 )); then
+    rg_die "Not enough free disk space: the build needs about $rg_space_gib GB, but only $(awk -v k="$rg_free_kib" 'BEGIN { printf "%.1f", k / 1048576 }') GB is free. Empty the Trash or delete old build folders, then run this script again."
+fi
 
 rg_failures=0
 rg_step() {
@@ -171,7 +312,10 @@ rg_snapshot() {
     git clone --no-hardlinks --no-checkout -- "$checkout" "$repo"
     git -C "$repo" checkout --detach "$root_commit"
 }
-rg_clone() { rg_remote_git clone --depth 1 --single-branch --branch "$3" -- "https://github.com/$1.git" "$2"; }
+rg_clone() {
+    rg_retry rg_remote_git clone --depth 1 --single-branch --branch "$3" -- "https://github.com/$1.git" "$2" ||
+        { rg_access_help "$1"; return 1; }
+}
 rg_step source-network-relay rg_snapshot
 caddy_src="$work/sources/caddy-network-relay-src"
 cloudflare_src="$work/sources/cloudflare-src"
@@ -210,9 +354,9 @@ rg_rust() {
     fi
 }
 rg_cross_tools() {
-    if ! command -v zig >/dev/null; then command -v brew >/dev/null || rg_die 'Install Zig or Homebrew.'; brew install zig; fi
+    if ! command -v zig >/dev/null; then command -v brew >/dev/null || rg_die 'Install Homebrew from https://brew.sh (or Zig), then run this script again.'; rg_retry brew install zig; fi
     if ! command -v cargo-zigbuild >/dev/null; then cargo install --locked cargo-zigbuild; fi
-    if ! command -v go >/dev/null; then command -v brew >/dev/null || rg_die 'Install Go or Homebrew.'; brew install go; fi
+    if ! command -v go >/dev/null; then command -v brew >/dev/null || rg_die 'Install Homebrew from https://brew.sh (or Go), then run this script again.'; rg_retry brew install go; fi
     zig version
     cargo-zigbuild --version
     go version

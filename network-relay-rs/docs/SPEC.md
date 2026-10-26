@@ -67,6 +67,17 @@ capacity waits are bounded. At most four sessions are owned by one client,
 including sessions retained by draining flows. A request is not automatically
 replayed after HEADERS submission or a response timeout.
 
+HTTP/2 likewise shares one cached TLS connection for independent CONNECT and
+CONNECT-UDP streams, including the readiness probe. A connection that received
+GOAWAY or failed is not reused; admitted streams keep it until released.
+The client sends a PING every 20 seconds and ends a connection whose PING is
+unanswered for 20 seconds, so a path that stopped carrying packets without a
+TCP error is replaced for new flows within about 40 seconds.
+Because flows share the connection's receive window, that window is the
+protocol maximum while each stream keeps its 2 MiB window, so unread flows
+cannot stall the others. HTTP/1.1 CONNECT consumes its TLS connection and
+still opens one per flow.
+
 ## SOCKS5
 
 The local interface is SOCKS5 CONNECT and UDP ASSOCIATE with no authentication.

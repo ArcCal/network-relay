@@ -69,6 +69,10 @@ after cache eviction. A four-session permit limit includes old GOAWAY sessions
 still draining, with bounded waits for session and stream capacity. Asynchronous
 QUIC shutdown can briefly overlap physical connection closure and replacement.
 Connection setup is serialized; response waits and business traffic are not.
+HTTP/2 caches one TLS connection the same way. Each stream keeps its own
+2 MiB receive window and the shared connection window is not a limit, so an
+unread flow cannot stall its siblings. A 20-second PING keepalive ends a
+silently dead connection, as QUIC keep-alive and idle timeout do for HTTP/3.
 
 NF exports are imported only through an explicit user action. RS never loads
 NF's private JSON store automatically and never edits it. Imported password-free

@@ -17,7 +17,8 @@ pub struct Keep {
     pub tasks: Vec<tokio::task::JoinHandle<()>>,
     pub sender: Option<Box<dyn Send>>,
     pub lease: Option<Arc<crate::native::Lease>>,
-    // HTTP/3 flows retain their shared connection, but own only their pumps.
+    // HTTP/2 and HTTP/3 flows retain their shared connection, but own only
+    // their pumps.
     pub connection: Option<Arc<dyn Send + Sync>>,
 }
 pub struct H3Keep {

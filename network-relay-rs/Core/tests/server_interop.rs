@@ -234,6 +234,23 @@ async fn real_server_matrix() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "requires scripts/test-interop.py fixture"]
 async fn http3_concurrent_streams_share_one_connection() {
+    concurrent_streams_share_one_connection("h3").await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires scripts/test-interop.py fixture"]
+async fn http2_concurrent_streams_share_one_connection() {
+    concurrent_streams_share_one_connection("h2").await;
+}
+
+/// 80 flows exceed network-relay's default 64 connections per client
+/// address, so a client that opens a connection per flow fails here.
+async fn concurrent_streams_share_one_connection(transport: &str) {
+    let label = if transport == "h3" {
+        "HTTP/3"
+    } else {
+        "HTTP/2"
+    };
     let fixture: serde_json::Value =
         serde_json::from_slice(&std::fs::read(std::env::var("RELAY_RS_FIXTURE").unwrap()).unwrap())
             .unwrap();
@@ -247,7 +264,7 @@ async fn http3_concurrent_streams_share_one_connection() {
         username: "alice".into(),
         password: fixture["password"].as_str().unwrap().into(),
         server_name: Some("relay.test".into()),
-        transport: "h3".into(),
+        transport: transport.into(),
         probe_target: udp,
         mode: "socks".into(),
         socks: network_relay_rs_core::Socks {
@@ -269,7 +286,7 @@ async fn http3_concurrent_streams_share_one_connection() {
         }
     })
     .await
-    .expect("HTTP/3 admission timed out");
+    .unwrap_or_else(|_| panic!("{label} admission timed out"));
     let mut opening = tokio::task::JoinSet::new();
     for _ in 0..80 {
         let client = client.clone();
@@ -278,14 +295,17 @@ async fn http3_concurrent_streams_share_one_connection() {
     let mut flows = Vec::new();
     tokio::time::timeout(Duration::from_secs(30), async {
         while let Some(result) = opening.join_next().await {
-            flows.push(result.unwrap().expect("concurrent HTTP/3 CONNECT rejected"));
+            let flow = result.unwrap().expect("concurrent CONNECT rejected");
+            assert_eq!(flow.transport, label);
+            flows.push(flow);
         }
     })
     .await
-    .expect("80 simultaneous HTTP/3 CONNECT streams stalled");
+    .unwrap_or_else(|_| panic!("80 simultaneous {label} CONNECT streams stalled"));
     assert_eq!(flows.len(), 80);
     // This fixture opens no local listener: parent-zero resources are the
-    // outer QUIC groups, while request/control streams have a group parent.
+    // outer TLS connections or QUIC groups; QUIC request/control streams
+    // have a group parent.
     let outer_groups = || {
         backend
             .bridge
@@ -296,7 +316,7 @@ async fn http3_concurrent_streams_share_one_connection() {
             .filter(|resource| resource.parent == 0)
             .count()
     };
-    assert_eq!(outer_groups(), 1, "HTTP/3 created a connection per flow");
+    assert_eq!(outer_groups(), 1, "{label} created a connection per flow");
     for (index, flow) in flows.iter_mut().enumerate() {
         let payload = (index as u64).to_be_bytes();
         flow.stream.write_all(&payload).await.unwrap();
@@ -356,10 +376,10 @@ async fn http3_concurrent_streams_share_one_connection() {
         }
     })
     .await
-    .expect("shared HTTP/3 resources leaked before backend shutdown");
+    .unwrap_or_else(|_| panic!("shared {label} resources leaked before backend shutdown"));
     backend.shutdown().await;
     println!(
-        "{} h3: 80 concurrent CONNECT streams + admission probe on one outer QUIC connection; independent cancellation, UDP, client-drop lifetime and pre-shutdown cleanup passed",
+        "{} {transport}: 80 concurrent CONNECT streams + admission probe on one outer connection; independent cancellation, UDP, client-drop lifetime and pre-shutdown cleanup passed",
         fixture["kind"].as_str().unwrap()
     );
 }

@@ -27,6 +27,15 @@ const STABLE_SESSION: Duration = Duration::from_secs(30);
 // One session accepts new requests; older GOAWAY sessions may still carry
 // active flows. Bound those connections too, rather than creating one per flow.
 const H3_CONNECTIONS: usize = 4;
+// Flows on a shared HTTP/2 connection share its receive window. Each stream
+// window (2 MiB) still bounds what an unread flow buffers, so the connection
+// window is set to the protocol maximum: stalled flows must not use up the
+// credit of every other flow on the connection (RFC 9113 section 6.9).
+const H2_CONNECTION_WINDOW: u32 = (1 << 31) - 1;
+// A shared connection can stop carrying packets without a TCP error, after a
+// network change for example. PING it as QUIC keeps its connection alive, and
+// end it when a PING is not answered, so new flows open a working connection.
+const H2_KEEPALIVE: Duration = Duration::from_secs(20);
 
 #[derive(Debug, thiserror::Error)]
 #[error(
@@ -42,9 +51,22 @@ pub struct Client {
     authorization: http::HeaderValue,
     transport: String,
     selected: watch::Sender<Option<String>>,
+    h2: Mutex<Option<Arc<H2Session>>>,
     h3: Mutex<Option<Arc<H3Session>>>,
     h3_slots: Arc<Semaphore>,
     pub probe_target: SocketAddr,
+}
+// Independent CONNECT streams share one HTTP/2 connection. Flows retain it
+// through `Keep::connection` after a closed session leaves the cache.
+struct H2Session {
+    sender: Mutex<h2::client::SendRequest<Bytes>>,
+    task: tokio::task::JoinHandle<()>,
+    lease: Arc<native::Lease>,
+}
+impl Drop for H2Session {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
 }
 struct H3Session {
     sender: Mutex<h3::client::SendRequest<crate::quic::Opener, Bytes>>,
@@ -110,6 +132,7 @@ impl Client {
             authorization,
             transport: config.transport.clone(),
             selected,
+            h2: Mutex::new(None),
             h3: Mutex::new(None),
             h3_slots: Arc::new(Semaphore::new(H3_CONNECTIONS)),
             probe_target: config.probe_target,
@@ -181,38 +204,112 @@ impl Client {
             .context("TCP connect timed out")?
     }
     async fn open_tcp(&self, host: &str, port: u16, udp: bool, mode: &str) -> Result<Opened> {
-        let alpn = match mode {
-            "h2" => vec!["h2"],
-            "http/1.1" => vec!["http/1.1"],
-            _ => vec!["h2", "http/1.1"],
+        // Classic HTTP/1.1 CONNECT consumes its TLS connection, so it has no
+        // shared session and does not wait behind another handshake.
+        if mode == "http/1.1" {
+            let io =
+                tokio::time::timeout(WAIT, self.bridge.tcp(self.options(&["http/1.1"]))).await??;
+            ensure!(
+                io.ready.alpn == "http/1.1",
+                "server did not negotiate the requested ALPN"
+            );
+            return self.open_h1(io, host, port, udp).await;
+        }
+        let mut cache = tokio::time::timeout(WAIT, self.h2.lock())
+            .await
+            .context("HTTP/2 connection setup busy")?;
+        if let Some(session) = cache.as_ref() {
+            let mut sender = session.sender.lock().await;
+            // Only clones of the cached sender submit HEADERS, so this check
+            // cannot replace the wake-up of a live request. h2 reports a
+            // received GOAWAY or a connection error here.
+            let open = self
+                .bridge
+                .resources
+                .lock()
+                .unwrap()
+                .contains_key(&session.lease.id)
+                && !session.task.is_finished()
+                && !matches!(
+                    sender
+                        .poll_ready(&mut std::task::Context::from_waker(std::task::Waker::noop())),
+                    std::task::Poll::Ready(Err(_))
+                );
+            if open {
+                let session = session.clone();
+                drop(sender);
+                drop(cache);
+                return self.open_h2(session, host, port, udp).await;
+            }
+        }
+        *cache = None;
+        let alpn = if mode == "h2" {
+            vec!["h2"]
+        } else {
+            vec!["h2", "http/1.1"]
         };
         let io = tokio::time::timeout(WAIT, self.bridge.tcp(self.options(&alpn))).await??;
-        let chosen = io.ready.alpn.clone();
-        match chosen.as_str() {
-            "h2" if mode != "http/1.1" => self.open_h2(io, host, port, udp).await,
-            "http/1.1" if mode != "h2" => self.open_h1(io, host, port, udp).await,
+        match io.ready.alpn.as_str() {
+            "h2" => {
+                let session = self.connect_h2(io).await?;
+                *cache = Some(session.clone());
+                drop(cache);
+                self.open_h2(session, host, port, udp).await
+            }
+            "http/1.1" if mode != "h2" => {
+                drop(cache);
+                self.open_h1(io, host, port, udp).await
+            }
             _ => anyhow::bail!("server did not negotiate the requested ALPN"),
         }
     }
-    async fn open_h2(&self, io: native::Io, host: &str, port: u16, udp: bool) -> Result<Opened> {
+    async fn connect_h2(&self, io: native::Io) -> Result<Arc<H2Session>> {
+        let lease = io.lease.clone();
         let mut builder = h2::client::Builder::new();
         builder
             .initial_window_size(2 << 20)
-            .initial_connection_window_size(5 << 20)
+            .initial_connection_window_size(H2_CONNECTION_WINDOW)
             .max_header_list_size(16384);
-        let (mut sender, connection) =
+        let (sender, mut connection) =
             tokio::time::timeout(WAIT, builder.handshake::<_, Bytes>(io)).await??;
-        let mut keep = Keep::default();
-        keep.tasks.push(tokio::spawn(async move {
-            if let Err(e) = connection.await {
-                tracing::debug!("HTTP/2 connection ended: {e}");
+        let mut ping = connection.ping_pong().context("HTTP/2 PING unavailable")?;
+        let task = tokio::spawn(async move {
+            let keepalive = async {
+                loop {
+                    tokio::time::sleep(H2_KEEPALIVE).await;
+                    match tokio::time::timeout(H2_KEEPALIVE, ping.ping(h2::Ping::opaque())).await {
+                        Ok(Ok(_)) => {}
+                        Ok(Err(e)) => return e.to_string(),
+                        Err(_) => return "PING not answered".to_string(),
+                    }
+                }
+            };
+            tokio::select! {
+                result = connection => if let Err(e) = result {
+                    tracing::debug!("HTTP/2 connection ended: {e}");
+                },
+                reason = keepalive => tracing::debug!("HTTP/2 connection closed: {reason}"),
             }
-        }));
+        });
+        Ok(Arc::new(H2Session {
+            sender: Mutex::new(sender),
+            task,
+            lease,
+        }))
+    }
+    async fn open_h2(
+        &self,
+        session: Arc<H2Session>,
+        host: &str,
+        port: u16,
+        udp: bool,
+    ) -> Result<Opened> {
+        let mut sender = session.sender.lock().await.clone();
         if udp {
             tokio::time::timeout(WAIT, async {
                 while !sender.is_extended_connect_protocol_enabled() {
                     ensure!(
-                        !keep.tasks[0].is_finished(),
+                        !session.task.is_finished(),
                         "HTTP/2 closed before Extended CONNECT settings"
                     );
                     tokio::time::sleep(Duration::from_millis(5)).await;
@@ -222,7 +319,9 @@ impl Client {
             .await
             .context("server did not enable HTTP/2 Extended CONNECT")??;
         }
-        sender = sender.ready().await?;
+        sender = tokio::time::timeout(WAIT, sender.ready())
+            .await
+            .context("HTTP/2 stream capacity timed out")??;
         let mut request = self.request(host, port, udp)?;
         if udp {
             request
@@ -232,7 +331,12 @@ impl Client {
         let (response, send) = sender.send_request(request, false)?;
         let response = tokio::time::timeout(WAIT, response).await??;
         check(response.status(), response.headers(), udp, StatusCode::OK)?;
-        keep.sender = Some(Box::new(sender));
+        let keep = Keep {
+            connection: Some(session),
+            tasks: Vec::new(),
+            sender: None,
+            lease: None,
+        };
         Ok(Opened {
             stream: Stream::h2(send, response.into_body(), keep),
             transport: "HTTP/2",

@@ -278,11 +278,13 @@ def main():
                         completed_tests = [selected_test]
                         if tested.returncode == 0 and not tcp_only:
                             ensure_same_inputs()
-                            print(f'{kind}: checking 80 concurrent HTTP/3 streams and cancellation', flush=True)
-                            reuse_command = test_command[:-1] + ['http3_concurrent_streams_share_one_connection']
-                            reused = subprocess.run(reuse_command, cwd=root, env=environment, capture_output=True, text=True, timeout=90)
-                            tested = subprocess.CompletedProcess(test_command, reused.returncode, tested.stdout + reused.stdout, tested.stderr + reused.stderr)
-                            completed_tests.append('http3_concurrent_streams_share_one_connection')
+                            for version, reuse_test in (('HTTP/3', 'http3_concurrent_streams_share_one_connection'), ('HTTP/2', 'http2_concurrent_streams_share_one_connection')):
+                                if tested.returncode: break
+                                print(f'{kind}: checking 80 concurrent {version} streams and cancellation', flush=True)
+                                reuse_command = test_command[:-1] + [reuse_test]
+                                reused = subprocess.run(reuse_command, cwd=root, env=environment, capture_output=True, text=True, timeout=90)
+                                tested = subprocess.CompletedProcess(test_command, reused.returncode, tested.stdout + reused.stdout, tested.stderr + reused.stderr)
+                                completed_tests.append(reuse_test)
                         if tested.returncode == 0 and not args.skip_soak and not tcp_only:
                             ensure_same_inputs()
                             print(f'{kind}: fast matrix passed; starting the 125-second HTTP/3 soak', flush=True)

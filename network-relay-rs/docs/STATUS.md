@@ -235,6 +235,41 @@ status wording were not changed. The remote Rust-server SETTINGS/response
 stalls are not conclusively explained by the capacity reproducer. Native Mac
 GUI execution and prolonged remote stability remain separate acceptance gates.
 
+## HTTP/2 connection sharing (2026-10-26)
+
+HTTP/2 opened one TLS connection per SOCKS flow and per readiness-probe
+renewal. A Mac trace showed each new flow waiting for its own handshake, and
+network-relay's default of 64 connections per client address would refuse the
+65th simultaneous HTTP/2 flow. RS now caches one HTTP/2 connection, as it does
+for HTTP/3; a connection that received GOAWAY or failed is not reused, while
+its admitted flows continue. HTTP/1.1 is unchanged.
+
+Sharing exposed two problems that were fixed before release. With the old
+5 MiB connection receive window, flows whose data was not being read filled
+the shared window and froze every other flow; the window is now the protocol
+maximum while each stream keeps its 2 MiB limit. A connection that silently
+stopped carrying packets would also have been reused for minutes; a 20-second
+PING keepalive now ends it.
+
+Five loopback regressions cover 70 concurrent TCP flows plus UDP on one
+connection, GOAWAY, an abruptly closed connection, four unread 3 MiB flows
+beside an active one, and an unanswered PING. Against the previous core three
+of them fail; with the 5 MiB window the unread-flow test fails, and without the
+keepalive the PING test fails. All 63 core and 25 app tests and core/app
+Clippy with warnings as errors pass. The real-server harness passes for
+network-relay `5d6fe32` (1.5.0) and caddy-network-relay `3c7823b` (Caddy 2.11.7):
+the HTTP/1.1, HTTP/2, HTTP/3 and Automatic matrix, a new 80-flow HTTP/2
+sharing test beside the HTTP/3 one, the 125-second HTTP/3 soak, headless app
+smoke tests for every transport and the TCP-only Automatic fallback. The
+harness ran over IPv4 because the test host has no IPv6.
+
+The servers' own HTTP/2 receive windows still limit uploads on a shared
+connection: network-relay releases upload credit only as a destination
+accepts data, with about 2 MiB per connection and 1 MiB per stream by default
+(Caddy: 16 MiB and 4 MiB). Uploads to slow destinations can therefore delay
+other uploads on the same connection. This also applies to NF and other
+clients that share HTTP/2 connections, and was not changed here.
+
 Known failed checks, if any, must be added here with a reproducer, exact versions
 and the smallest justified repair. A failure that cannot be safely repaired
 must remain visible rather than being relabeled as unsupported or a success.

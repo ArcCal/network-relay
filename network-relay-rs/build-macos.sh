@@ -14,11 +14,11 @@ fi
 [[ $# == 0 ]] || { echo 'Usage: build-macos.sh [--unsigned | --sign IDENTITY]' >&2; exit 2; }
 
 if [[ $(uname -s) != Darwin || $(uname -m) != arm64 ]]; then
-    echo 'Build Network Relay RS on an Apple silicon Mac with macOS 13 or newer.' >&2
+    echo 'Build Network Relay RS on an Apple silicon Mac with macOS 27 or newer.' >&2
     exit 1
 fi
 RS_OS_MAJOR=$(sw_vers -productVersion | cut -d. -f1)
-[[ $RS_OS_MAJOR -ge 13 ]] || { echo 'macOS 13 or newer is required.' >&2; exit 1; }
+[[ $RS_OS_MAJOR -ge 27 ]] || { echo 'macOS 27 or newer is required.' >&2; exit 1; }
 for RS_TOOL in cargo rustup xcrun plutil sips iconutil codesign ditto shasum otool; do
     command -v "$RS_TOOL" >/dev/null || { echo "Required tool is missing: $RS_TOOL" >&2; exit 1; }
 done
@@ -31,7 +31,7 @@ if [[ $RS_SOURCE != Unknown ]] && [[ -n $(git -C "$RS_ROOT" status --porcelain -
     RS_SOURCE="$RS_SOURCE-dirty"
 fi
 export RUSTUP_TOOLCHAIN=${RUSTUP_TOOLCHAIN:-stable}
-export MACOSX_DEPLOYMENT_TARGET=13.0
+export MACOSX_DEPLOYMENT_TARGET=27.0
 # Keep the application independent even when the invoking shell has a parent
 # project's CARGO_TARGET_DIR setting.
 export CARGO_TARGET_DIR="$RS_ROOT/build/target"

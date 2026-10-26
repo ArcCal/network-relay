@@ -134,7 +134,7 @@ lockfile fingerprints remain identical.
 
 ## Confirmed scope limits
 
-- Apple silicon macOS 13+ is the initial GUI target; Intel GUI is not implemented.
+- Apple silicon macOS 27+ is the initial GUI target; Intel GUI is not implemented.
 - No system-wide proxy/VPN integration, privileged helper or mobileconfig is
   generated. The app exposes a local SOCKS service.
 - Custom CONNECT-UDP templates are not exposed by GUI or headless settings

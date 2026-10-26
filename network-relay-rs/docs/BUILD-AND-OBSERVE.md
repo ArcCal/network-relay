@@ -1,7 +1,7 @@
 # Fresh Mac build and observation
 
 This builds **Network Relay RS** on an Apple silicon Mac, including a Mac mini
-M1. It does not rebuild or replace NF or either server. macOS 13 or newer and
+M1. It does not rebuild or replace NF or either server. macOS 27 or newer and
 current stable Rust are the initial target. The manifests declare Rust 1.88 as
 their minimum; the locked graph is tested with Rust 1.99, and older toolchains
 have not been validated. Unlike NF, no Swift compiler or

@@ -29,7 +29,7 @@ on one connection.
 
 ## Build on an Apple silicon Mac
 
-Use macOS 13 or newer, Apple Command Line Tools or Xcode, and current stable
+Use macOS 27 or newer, Apple Command Line Tools or Xcode, and current stable
 Rust. The manifests require at least Rust 1.88; the locked dependency graph
 is tested with Rust 1.99, so an older compiler is not an established build
 configuration. From this application directory:

@@ -302,9 +302,17 @@ lc_update_checkout() {
     [[ $root_commit == "$fetched" ]] || lc_die 'Local commits differ from fetched main; no local files were reset.'
 }
 
+# Rust comes from static.rust-lang.org; explain a download that keeps failing.
+lc_rust_help() {
+    printf '\nCould not download Rust %s from static.rust-lang.org.\n' "$RUSTUP_TOOLCHAIN" >&2
+    printf 'This is a network problem on this computer, not a problem with the build.\n' >&2
+    printf 'Check the internet connection. If a VPN, proxy or firewall is in use, make sure it\n' >&2
+    printf 'allows static.rust-lang.org (or turn it off). Then run this script again.\n' >&2
+    return 1
+}
 lc_prepare_rust() {
-    lc_retry rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
-    lc_retry rustup target add --toolchain "$RUSTUP_TOOLCHAIN" x86_64-unknown-linux-musl aarch64-unknown-linux-musl
+    lc_retry rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal || lc_rust_help
+    lc_retry rustup target add --toolchain "$RUSTUP_TOOLCHAIN" x86_64-unknown-linux-musl aarch64-unknown-linux-musl || lc_rust_help
     rustc --version
 }
 

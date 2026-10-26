@@ -313,9 +313,17 @@ lr_clone_repo() {
         git clone --depth 1 --branch main --single-branch -- "https://github.com/ArcCal/$name.git" "$destination" ||
         { lr_access_help "ArcCal/$name" "$token_name"; return 1; }
 }
+# Rust comes from static.rust-lang.org; explain a download that keeps failing.
+lr_rust_help() {
+    printf '\nCould not download Rust %s from static.rust-lang.org.\n' "$RUSTUP_TOOLCHAIN" >&2
+    printf 'This is a network problem on this computer, not a problem with the build.\n' >&2
+    printf 'Check the internet connection. If a VPN, proxy or firewall is in use, make sure it\n' >&2
+    printf 'allows static.rust-lang.org (or turn it off). Then run this script again.\n' >&2
+    return 1
+}
 lr_prepare_rust() {
-    lr_retry rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
-    lr_retry rustup target add --toolchain "$RUSTUP_TOOLCHAIN" x86_64-unknown-linux-musl aarch64-unknown-linux-musl
+    lr_retry rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal || lr_rust_help
+    lr_retry rustup target add --toolchain "$RUSTUP_TOOLCHAIN" x86_64-unknown-linux-musl aarch64-unknown-linux-musl || lr_rust_help
     rustc --version
 }
 lr_prepare_cross_tools() {

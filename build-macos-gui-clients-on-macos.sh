@@ -346,11 +346,19 @@ export CARGO_BUILD_JOBS="$jobs" CARGO_ENCODED_RUSTFLAGS=''
 export COPYFILE_DISABLE=1 TMPDIR="$work/tmp/"
 export GOTOOLCHAIN=${GOTOOLCHAIN:-go1.27.3+auto} GOWORK=off GOFLAGS='' GOAMD64=v1 GOARM64=v8.0
 rg_attributes() { find -P "$1" \( -type f -o -type d \) -exec xattr -c {} +; }
+# Rust comes from static.rust-lang.org; explain a download that keeps failing.
+rg_rust_help() {
+    printf '\nCould not download Rust %s from static.rust-lang.org.\n' "$RUSTUP_TOOLCHAIN" >&2
+    printf 'This is a network problem on this computer, not a problem with the build.\n' >&2
+    printf 'Check the internet connection. If a VPN, proxy or firewall is in use, make sure it\n' >&2
+    printf 'allows static.rust-lang.org (or turn it off). Then run this script again.\n' >&2
+    return 1
+}
 rg_rust() {
-    rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
-    rustup target add --toolchain "$RUSTUP_TOOLCHAIN" aarch64-apple-darwin
+    rg_retry rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal || rg_rust_help
+    rg_retry rustup target add --toolchain "$RUSTUP_TOOLCHAIN" aarch64-apple-darwin || rg_rust_help
     if [[ $mode == all ]]; then
-        rustup target add --toolchain "$RUSTUP_TOOLCHAIN" x86_64-unknown-linux-musl aarch64-unknown-linux-musl
+        rg_retry rustup target add --toolchain "$RUSTUP_TOOLCHAIN" x86_64-unknown-linux-musl aarch64-unknown-linux-musl || rg_rust_help
     fi
 }
 rg_cross_tools() {

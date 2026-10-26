@@ -19,10 +19,23 @@ if [[ $(uname -s) != Darwin || $(uname -m) != arm64 ]]; then
 fi
 RS_OS_MAJOR=$(sw_vers -productVersion | cut -d. -f1)
 [[ $RS_OS_MAJOR -ge 27 ]] || { echo 'macOS 27 or newer is required.' >&2; exit 1; }
-for RS_TOOL in cargo rustup xcrun plutil sips iconutil codesign ditto shasum otool; do
-    command -v "$RS_TOOL" >/dev/null || { echo "Required tool is missing: $RS_TOOL" >&2; exit 1; }
+# Find tools from rustup and Homebrew even if this shell has not loaded them yet.
+for RS_PATH in /opt/homebrew/bin "${CARGO_HOME:-$HOME/.cargo}/bin"; do
+    if [[ -d $RS_PATH && :$PATH: != *:"$RS_PATH":* ]]; then PATH="$RS_PATH:$PATH"; fi
 done
-xcrun --sdk macosx --show-sdk-path >/dev/null
+export PATH
+for RS_TOOL in cargo rustup xcrun plutil sips iconutil codesign ditto shasum otool; do
+    command -v "$RS_TOOL" >/dev/null && continue
+    case $RS_TOOL in
+        cargo|rustup) echo "Required tool is missing: $RS_TOOL. Install Rust from https://rustup.rs, then run this script again." >&2 ;;
+        *) echo "Required tool is missing: $RS_TOOL. Install Xcode 27 from the App Store and open it once, then run this script again." >&2 ;;
+    esac
+    exit 1
+done
+xcrun --sdk macosx --show-sdk-path >/dev/null 2>&1 || {
+    echo 'The macOS SDK is unavailable. Install Xcode 27 from the App Store and open it once, then run this script again.' >&2
+    exit 1
+}
 
 RS_ROOT=$(cd "$(dirname "$0")" && pwd)
 RS_VERSION=$(tr -d '[:space:]' < "$RS_ROOT/VERSION")

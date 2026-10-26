@@ -1,15 +1,28 @@
 #!/usr/bin/env bash
 # Independent native app. No existing project or system configuration is changed.
 set -euo pipefail
+# Find tools from rustup and Homebrew even if this shell has not loaded them yet.
+for NF_PATH in /opt/homebrew/bin "${CARGO_HOME:-$HOME/.cargo}/bin"; do
+    if [[ -d $NF_PATH && :$PATH: != *:"$NF_PATH":* ]]; then PATH="$NF_PATH:$PATH"; fi
+done
+export PATH
 if [[ $(uname -s) != Darwin || $(uname -m) != arm64 ]]; then
     echo 'Build Network Relay NF on an Apple silicon Mac with macOS 27 or newer.' >&2
     exit 1
 fi
 if [[ $(sw_vers -productVersion | cut -d. -f1) -lt 27 ]] ||
    [[ $(xcrun --sdk macosx --show-sdk-version | cut -d. -f1) -lt 27 ]]; then
-    echo 'macOS 27 and an Xcode macOS 27 or newer SDK are required.' >&2
+    echo 'macOS 27 and an Xcode macOS 27 or newer SDK are required. Install or update Xcode from the App Store and open it once, then run this script again.' >&2
     exit 1
 fi
+for NF_TOOL in rustup cargo swift; do
+    command -v "$NF_TOOL" >/dev/null && continue
+    case $NF_TOOL in
+        swift) echo 'Required tool is missing: swift. Install Xcode 27 from the App Store and open it once, then run this script again.' >&2 ;;
+        *) echo "Required tool is missing: $NF_TOOL. Install Rust from https://rustup.rs, then run this script again." >&2 ;;
+    esac
+    exit 1
+done
 NF_ROOT=$(cd "$(dirname "$0")" && pwd)
 NF_VERSION=$(tr -d '[:space:]' < "$NF_ROOT/VERSION")
 NF_SOURCE=$(git -C "$NF_ROOT" rev-parse HEAD 2>/dev/null || printf 'Unknown')

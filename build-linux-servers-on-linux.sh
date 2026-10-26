@@ -12,7 +12,7 @@ Build all three servers for BOTH Linux amd64 (x64) and arm64 on every run:
   ArcCal/network-relay/network-relay-cf-masque: network-relay-cf-masque
   ArcCal/caddy-network-relay: caddy-network-relay, including Cloudflare DNS
 
-Supported hosts: Debian 13 x64; Ubuntu 26.04 x64 or arm64.
+Supported hosts: Debian 13 and Ubuntu 26.04, on x64 or arm64.
 Rust binaries use static musl via Zig; Go uses CGO_ENABLED=0.
 All six files are named SOFTWARE-linux-ARCH and inspected for architecture
 and static linking. Native executables also run version/module smoke checks.
@@ -59,9 +59,10 @@ lr_host() {
     source /etc/os-release
     case ${ID:-}:${VERSION_ID:-}:$(uname -m) in
         debian:13:x86_64) platform=debian-13-amd64; host_arch=amd64 ;;
+        debian:13:aarch64|debian:13:arm64) platform=debian-13-arm64; host_arch=arm64 ;;
         ubuntu:26.04:x86_64) platform=ubuntu-26.04-amd64; host_arch=amd64 ;;
         ubuntu:26.04:aarch64|ubuntu:26.04:arm64) platform=ubuntu-26.04-arm64; host_arch=arm64 ;;
-        *) lr_die 'Supported hosts: Debian 13 x64, Ubuntu 26.04 x64 or Ubuntu 26.04 arm64.' ;;
+        *) lr_die 'Supported hosts: Debian 13 or Ubuntu 26.04 on x64 or arm64.' ;;
     esac
 }
 lr_check_tools() {

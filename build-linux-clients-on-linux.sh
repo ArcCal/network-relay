@@ -10,7 +10,7 @@ Usage: bash build-linux-clients-on-linux.sh [--repo DIR] [--output DIR]
 
 Run ONLY on Linux and build the headless Network Relay RS client for BOTH
 Linux amd64 (x64) and arm64. No macOS files, GUI apps or servers are built.
-Supported hosts: Debian 13 x64; Ubuntu 26.04 x64 or arm64.
+Supported hosts: Debian 13 and Ubuntu 26.04, on x64 or arm64.
 
   --repo DIR       persistent main checkout (default: ~/network-relay or
                    NETWORK_RELAY_SRC); clone if absent, otherwise pull --ff-only
@@ -57,9 +57,10 @@ lc_host() {
     source /etc/os-release
     case ${ID:-}:${VERSION_ID:-}:$(uname -m) in
         debian:13:x86_64) platform=debian-13-amd64; host_arch=amd64 ;;
+        debian:13:aarch64|debian:13:arm64) platform=debian-13-arm64; host_arch=arm64 ;;
         ubuntu:26.04:x86_64) platform=ubuntu-26.04-amd64; host_arch=amd64 ;;
         ubuntu:26.04:aarch64|ubuntu:26.04:arm64) platform=ubuntu-26.04-arm64; host_arch=arm64 ;;
-        *) lc_die 'Supported hosts: Debian 13 x64, Ubuntu 26.04 x64 or Ubuntu 26.04 arm64.' ;;
+        *) lc_die 'Supported hosts: Debian 13 or Ubuntu 26.04 on x64 or arm64.' ;;
     esac
 }
 

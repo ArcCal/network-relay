@@ -7,14 +7,13 @@ lr_usage() {
 Usage: bash build-linux-servers-on-linux.sh [--repo DIR] [--output DIR] [--jobs N]
                                    [--install-deps | --no-install-deps] [--check]
 
-Build all three servers for BOTH Linux amd64 (x64) and arm64 on every run:
+Build both servers for BOTH Linux amd64 (x64) and arm64 on every run:
   ArcCal/network-relay: network-relay
-  ArcCal/network-relay/network-relay-cf-masque: network-relay-cf-masque
   ArcCal/caddy-network-relay: caddy-network-relay, including Cloudflare DNS
 
 Supported hosts: Debian 13 and Ubuntu 26.04, on x64 or arm64.
 Rust binaries use static musl via Zig; Go uses CGO_ENABLED=0.
-All six files are named SOFTWARE-linux-ARCH and inspected for architecture
+All four files are named SOFTWARE-linux-ARCH and inspected for architecture
 and static linking. Native executables also run version/module smoke checks.
 
   --repo DIR       persistent network-relay checkout (default: ~/network-relay,
@@ -30,15 +29,15 @@ and static linking. Native executables also run version/module smoke checks.
   --check          inspect host/tools without network access or filesystem changes
 
 The newest committed script handles each build. Local commits are refused;
-uncommitted files are preserved and never used as build inputs. The two Rust
-servers use the same committed private snapshot. Caddy uses current main;
+uncommitted files are preserved and never used as build inputs. The Rust
+server uses a committed private snapshot. Caddy uses current main;
 caddy-dns/cloudflare uses current master. Fetched commits are fixed for this
 run and recorded in MANIFEST.txt. Credentials must allow both private repos.
 Optional NETWORK_RELAY_TOKEN / CADDY_NETWORK_RELAY_TOKEN provide read tokens.
 Rust defaults to 1.99.0; Go defaults to go1.27.2+auto (honors module requirements).
 
 Any failed source, build, verification or checksum step fails the run.
-Successful runs retain six binaries, logs, MANIFEST.txt and SHA256SUMS;
+Successful runs retain four binaries, logs, MANIFEST.txt and SHA256SUMS;
 only their private work directory is removed. Failed runs retain .work.
 No server installation or service configuration is performed.
 HELP
@@ -467,10 +466,8 @@ for arch in amd64 arm64; do
         arm64) triple=aarch64-unknown-linux-musl ;;
     esac
     lr_run "build-network-relay-$arch" lr_build_rust "$repo/Cargo.toml" "$work/rust-main" "$triple" --bin network-relay
-    lr_run "build-cf-masque-$arch" lr_build_rust "$repo/network-relay-cf-masque/Cargo.toml" "$work/rust-cf" "$triple" --bin network-relay-cf-masque
     lr_run "build-caddy-network-relay-$arch" lr_build_caddy "$arch"
     lr_run "verify-network-relay-$arch" lr_collect "$work/rust-main/$triple/release/network-relay" network-relay "$arch"
-    lr_run "verify-network-relay-cf-masque-$arch" lr_collect "$work/rust-cf/$triple/release/network-relay-cf-masque" network-relay-cf-masque "$arch"
     lr_run "verify-caddy-network-relay-$arch" lr_collect "$work/caddy-network-relay-$arch" caddy-network-relay "$arch"
 done
 (( failures == 0 )) || lr_die "$failures step(s) failed; see $output/logs."
@@ -489,7 +486,7 @@ lr_write_manifest() {
         printf 'Source: %s\nBranch: %s\nCommit: %s\n' "${source##*/}" "$branch" "$commit"
     done
     for arch in amd64 arm64; do
-        for program in network-relay network-relay-cf-masque caddy-network-relay; do
+        for program in network-relay caddy-network-relay; do
             description=$(LC_ALL=C file -b -- "$output/$program-linux-$arch")
             printf '%s: %s\n' "$program-linux-$arch" "$description"
         done
@@ -503,7 +500,7 @@ lr_checksums() (
     cd -- "$output" || exit
     artifact_files=()
     for arch in amd64 arm64; do
-        for program in network-relay network-relay-cf-masque caddy-network-relay; do artifact_files+=("$program-linux-$arch"); done
+        for program in network-relay caddy-network-relay; do artifact_files+=("$program-linux-$arch"); done
     done
     sha256sum -- "${artifact_files[@]}" MANIFEST.txt > SHA256SUMS || exit
     sha256sum --check SHA256SUMS || exit
@@ -513,4 +510,4 @@ lr_run checksums lr_checksums
 rm -f -- "$output/.work"
 rm -rf -- "${work:?}"
 trap - EXIT
-printf '\nAll three servers built for amd64 and arm64.\nBoth architectures inspected; native executables also smoke-tested.\nArtifacts: %s\n' "$output"
+printf '\nBoth servers built for amd64 and arm64.\nBoth architectures inspected; native executables also smoke-tested.\nArtifacts: %s\n' "$output"

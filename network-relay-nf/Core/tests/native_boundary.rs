@@ -448,6 +448,37 @@ async fn shutdown_drains_an_outstanding_write_before_sending_fin() {
 }
 
 #[tokio::test]
+async fn a_shorter_write_after_an_abandoned_write_is_sent_and_counted_separately() {
+    let (bridge, mut events) = instance();
+    let mut io = bounded(connection(&bridge, &mut events)).await;
+    let id = io.id();
+    // An HTTP/1.1 request write can still await contentProcessed when the
+    // tunnel's first, shorter capsule is written to the same connection.
+    let request = vec![7u8; 200];
+    assert!(
+        tokio::time::timeout(Duration::from_millis(20), io.write_all(&request))
+            .await
+            .is_err()
+    );
+    let first = next_event(&mut events).await;
+    assert_eq!((first.kind, first.id, first.data.len()), (WRITE, id, 200));
+    let capsule = [0u8, 1, 0];
+    let writer = tokio::spawn(async move {
+        io.write_all(&capsule).await.unwrap();
+        io
+    });
+    assert!(bridge.input(ACK, id, first.token, 0, b""));
+    let second = next_event(&mut events).await;
+    assert_eq!((second.kind, second.id, second.flags), (WRITE, id, 0));
+    assert_eq!(second.data, capsule[..]);
+    assert!(!writer.is_finished());
+    assert!(bridge.input(ACK, id, second.token, 0, b""));
+    let io = bounded(writer).await.unwrap();
+    assert!(events.try_recv().is_err());
+    drop(io);
+}
+
+#[tokio::test]
 async fn failure_of_an_outstanding_data_write_aborts_shutdown_without_fin() {
     let (bridge, mut events) = instance();
     let mut io = bounded(connection(&bridge, &mut events)).await;

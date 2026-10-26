@@ -6,6 +6,7 @@
 - The HTTP/3 header deadline starts at a request stream's first byte. Apple's QUIC connection group, which Network Relay NF uses, owns client stream 0 and never writes it; its first request on stream 4 implicitly opens stream 0 (RFC 9000 §3.2). The relay rejected that unwritten stream after ten seconds with `H3_REQUEST_REJECTED`, and in native tests the client's whole connection failed about then; that Network.framework fails the group because of this reset has not been confirmed on a Mac against the fixed server. Unwritten streams are now left open and do not count as requests for the idle timeout; streams with partial headers are still rejected after ten seconds.
 - HTTP/3 control streams: a client's CANCEL_PUSH is a connection error of type `H3_ID_ERROR`, since the relay never sends PUSH_PROMISE and so has mentioned no push ID (RFC 9114 §7.2.3), and so is a MAX_PUSH_ID smaller than one received before (§7.2.7). The h3 library ignored both frames.
 - The experimental network-relay-cf-masque server (WARP egress) is removed from the repository.
+- Network Relay NF and RS: a write abandoned while waiting for its native completion no longer makes the next, shorter write report more bytes than it was given, which panicked in `write_all` (for example the first CONNECT-UDP capsule after an HTTP/1.1 request). The next write is now sent and counted on its own.
 
 ## 1.5.0 — 2026-10-07
 

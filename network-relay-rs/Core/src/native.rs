@@ -392,7 +392,7 @@ pub struct Io {
     pub lease: Arc<Lease>,
     read: Arc<Mutex<ReadState>>,
     sender: PollSender<Event>,
-    pending: Option<(usize, oneshot::Receiver<io::Result<()>>)>,
+    pending: Option<(Bytes, oneshot::Receiver<io::Result<()>>)>,
     shutdown: bool,
     pub ready: Ready,
     failure: SharedFailure,
@@ -445,13 +445,23 @@ impl Io {
         if let Some((flags, data)) = &*self.failure.lock().unwrap() {
             return Poll::Ready(Err(native_error(*flags, data)));
         }
-        if let Some((n, rx)) = &mut self.pending {
-            let n = *n;
+        if let Some((sent, rx)) = &mut self.pending {
             let result = std::task::ready!(Pin::new(rx).poll(cx))
                 .map_err(|_| io::ErrorKind::BrokenPipe.into())
                 .and_then(|r| r);
+            let sent = std::mem::take(sent);
             self.pending = None;
-            return Poll::Ready(result.map(|_| n));
+            result?;
+            // A retry of the completed write, possibly with more bytes after
+            // it, reports the bytes sent. A caller that abandoned that write
+            // and now passes other bytes has them sent as a write of their
+            // own, so a count never exceeds the caller's buffer.
+            if fin || buf.starts_with(&sent) {
+                return Poll::Ready(Ok(sent.len()));
+            }
+            if buf.is_empty() {
+                return Poll::Ready(Ok(0));
+            }
         }
         let n = buf.len().min(MAX_CHUNK);
         std::task::ready!(self.sender.poll_reserve(cx)).map_err(|_| io::ErrorKind::BrokenPipe)?;
@@ -465,19 +475,20 @@ impl Io {
             };
             resource.writes.insert(token, tx);
         }
+        let data = Bytes::copy_from_slice(&buf[..n]);
         self.sender
             .send_item(Event {
                 kind: WRITE,
                 id: self.id(),
                 token,
                 flags: u64::from(fin),
-                data: Bytes::copy_from_slice(&buf[..n]),
+                data: data.clone(),
             })
             .map_err(|_| io::ErrorKind::BrokenPipe)?;
         if fin {
             self.shutdown = true;
         }
-        self.pending = Some((n, rx));
+        self.pending = Some((data, rx));
         self.poll_send(cx, buf, fin)
     }
 }

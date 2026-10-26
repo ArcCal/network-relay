@@ -50,7 +50,7 @@ SITE = Path('/var/www/relay')
 UDP_TEMPLATE = '/.well-known/masque/udp/{target_host}/{target_port}/'
 # A fresh VPS often runs unattended-upgrades right after boot; wait for its
 # dpkg lock instead of failing.
-APT = ['apt-get', '-o', 'DPkg::Lock::Timeout=1800']
+APT = ['apt-get', '-o', 'DPkg::Lock::Timeout=1800', '-o', 'Acquire::Retries=3']
 SUPPORTED_DEBIAN = ('12', '13')
 PROFILE_NAME = 'Selected domains — everything else direct'
 MAX_PROFILE_BYTES = 16 << 20

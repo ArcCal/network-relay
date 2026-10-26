@@ -398,7 +398,7 @@ schedule_builds() {
     run_job app-masque-mac build_app masque-vpn masque-vpn-mac/build-macos.sh 'masque-vpn-mac/dist/Masque VPN Mac.app' 'Masque VPN Mac' 14
     run_job app-masque-killswitch build_app masque-vpn masque-vpn-killswitch/build-macos.sh 'masque-vpn-killswitch/dist/Masque VPN Killswitch.app' 'Masque VPN Killswitch' 14
     run_job app-relay-nf build_app network-relay network-relay-nf/build-macos.sh 'network-relay-nf/dist/Network Relay NF.app' 'Network Relay NF' 27
-    run_job app-relay-rs build_app network-relay network-relay-rs/build-macos.sh 'network-relay-rs/dist/Network Relay RS.app' 'Network Relay RS' 13
+    run_job app-relay-rs build_app network-relay network-relay-rs/build-macos.sh 'network-relay-rs/dist/Network Relay RS.app' 'Network Relay RS' 27
     run_job app-cf-masque build_app cf-masque macos/build-app.sh 'macos/dist/Cloudflare Masque.app' 'Cloudflare Masque' 13
     run_job output-audit audit_outputs
 }

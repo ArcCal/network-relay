@@ -523,7 +523,7 @@ SOCKS protocol scope.
 
 ### Network Relay RS
 
-Build on an Apple silicon Mac with macOS 13+ and Xcode/Command Line Tools. The
+Build on an Apple silicon Mac with macOS 27+ and Xcode/Command Line Tools. The
 manifests require at least Rust 1.88; the locked build is recorded with Rust
 1.99, so prefer the documented tested toolchain. Start from the repository
 root in a fresh terminal:

@@ -220,12 +220,19 @@ impl Relay {
         S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
     {
         let mut builder = h2::server::Builder::new();
-        let window = (self.inner.connection_memory / 4) as u32;
+        // Data the client sends is released only as a destination accepts
+        // it, so a tunnel to a slow destination keeps its stream window.
+        // The connection window holds four stream windows: three such
+        // tunnels cannot leave the others on the connection without credit
+        // (RFC 9113 section 5.2). Queued sends are bounded per tunnel
+        // (`limits::MEMORY_PER_TUNNEL`), so HTTP/2 uses half of the
+        // connection's reservation for receiving rather than a quarter.
+        let window = (self.inner.connection_memory / 2) as u32;
         builder
             .enable_connect_protocol()
             .max_concurrent_streams(MAX_STREAMS_HTTP2)
             .max_header_list_size(32 * 1024)
-            .initial_window_size(window.min(1 << 20))
+            .initial_window_size((window / 4).min(1 << 20))
             .initial_connection_window_size(window)
             .max_send_buffer_size(64 * 1024);
         let mut conn = tokio::time::timeout(HEADER_TIMEOUT, builder.handshake::<_, Bytes>(io)).await??;

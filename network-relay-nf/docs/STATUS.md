@@ -1,5 +1,19 @@
 # Implementation status
 
+## Shared HTTP/2 receive window, 2026-10-26
+
+The shared HTTP/2 connection used a 5 MiB receive window beside 2 MiB stream
+windows, so three flows whose data was not being read could take all of it and
+stall every other flow on the connection. A new regression opens four such
+flows and an active flow on one connection; it timed out before the change and
+passes with the connection window at the protocol maximum. Each flow still
+buffers at most its 2 MiB stream window. All 97 core tests, Clippy with
+warnings as errors and both real-server matrices (network-relay and
+caddy-network-relay, HTTP/1.1, HTTP/2 and HTTP/3 over the rustls/Quinn
+emulator) pass. A silently dead path needs no client keepalive here:
+Network.framework TCP keepalive and `connectionDropTime` already end it.
+Network.framework itself remains untested.
+
 ## Scoped client repair, 2026-10-16
 
 Changes are restricted to `network-relay-nf/`; neither server nor another client

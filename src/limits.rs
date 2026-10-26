@@ -452,8 +452,8 @@ impl Drop for MemoryPermit {
 pub const ASSUMED_MEMORY: u64 = 1 << 30;
 
 /// Transport capacity of an HTTP/2 or HTTP/3 connection: its flow-control
-/// windows (a quarter each for receiving and sending), datagram buffers,
-/// TLS and stream state. The windows are sized from it, so on small hosts
+/// windows (half for receiving; HTTP/3 also a quarter for sending, while
+/// HTTP/2 queues sends per tunnel), datagram buffers, TLS and stream state. The windows are sized from it, so on small hosts
 /// they shrink with it. The connection reserves it from the shared budget
 /// when it opens its first tunnel (see [`Connections`]).
 pub fn connection_memory(memory: Option<u64>) -> u64 {

@@ -29,6 +29,11 @@ const RESPONSE_WAIT: Duration = Duration::from_secs(20);
 // changing any independent SOCKS flow or generating Internet probe traffic.
 const PROBE_RENEW: Duration = Duration::from_secs(60);
 const STABLE_SESSION: Duration = Duration::from_secs(30);
+// Flows on a shared HTTP/2 connection share its receive window. Each stream
+// window (2 MiB) still bounds what an unread flow buffers, so the connection
+// window is set to the protocol maximum: stalled flows must not use up the
+// credit of every other flow on the connection (RFC 9113 section 6.9).
+const H2_CONNECTION_WINDOW: u32 = (1 << 31) - 1;
 
 #[derive(Debug, thiserror::Error)]
 #[error(
@@ -254,7 +259,7 @@ impl Client {
         let mut builder = h2::client::Builder::new();
         builder
             .initial_window_size(2 << 20)
-            .initial_connection_window_size(5 << 20)
+            .initial_connection_window_size(H2_CONNECTION_WINDOW)
             .max_header_list_size(16384);
         let (sender, connection) =
             tokio::time::timeout(WAIT, builder.handshake::<_, Bytes>(io)).await??;

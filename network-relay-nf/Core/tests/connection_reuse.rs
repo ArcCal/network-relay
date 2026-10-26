@@ -19,6 +19,9 @@ use tokio::{
 };
 
 static FIXTURE_ID: AtomicUsize = AtomicUsize::new(0);
+/// HTTP/2 target port whose tunnel sends this many bytes and never reads.
+const FLOOD_PORT: u16 = 19;
+const FLOOD: usize = 3 << 20;
 
 struct Fixture {
     address: SocketAddr,
@@ -143,6 +146,7 @@ impl Fixture {
                             let Some(Ok((request, mut response))) = next else {
                                 break;
                             };
+                            let request_port = request.uri().port_u16();
                             tokio::spawn(async move {
                                 tokio::time::sleep(response_delay).await;
                                 let Ok(mut send) = response.send_response(
@@ -152,6 +156,12 @@ impl Fixture {
                                     return;
                                 };
                                 let mut recv = request.into_body();
+                                if request_port == Some(FLOOD_PORT) {
+                                    // h2 releases this as the client grants credit.
+                                    let _ = send.send_data(Bytes::from(vec![0; FLOOD]), false);
+                                    while let Some(Ok(_)) = recv.data().await {}
+                                    return;
+                                }
                                 while let Some(Ok(bytes)) = recv.data().await {
                                     let len = bytes.len();
                                     if send.send_data(bytes, false).is_err() {
@@ -582,4 +592,29 @@ async fn slow_target_response_is_allowed_without_auto_transport_downgrade() {
     while let Some(check) = checks.join_next().await {
         check.unwrap();
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn unread_http2_flows_do_not_stall_other_flows_on_the_connection() {
+    let fixture = Fixture::start("h2", Duration::ZERO).await;
+    let backend = support::Backend::start_with(fixture.ca.clone(), false);
+    let client = Client::new(&fixture.settings("h2"), backend.bridge.clone()).unwrap();
+    // Each unread flow fills its whole 2 MiB stream window; four of them
+    // exceed a 5 MiB connection window.
+    let mut unread = Vec::new();
+    for _ in 0..4 {
+        unread.push(client.open("127.0.0.1", FLOOD_PORT, false).await.unwrap());
+    }
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let mut active = client.open("127.0.0.1", 7, false).await.unwrap();
+    echo(&mut active.stream, &vec![7; 256 << 10]).await;
+    assert_eq!(backend.opened.lock().unwrap().len(), 1);
+    let mut first = vec![0; FLOOD];
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        unread[0].stream.read_exact(&mut first),
+    )
+    .await
+    .expect("a stalled flow did not resume")
+    .unwrap();
 }

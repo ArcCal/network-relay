@@ -263,12 +263,15 @@ sharing test beside the HTTP/3 one, the 125-second HTTP/3 soak, headless app
 smoke tests for every transport and the TCP-only Automatic fallback. The
 harness ran over IPv4 because the test host has no IPv6.
 
-The servers' own HTTP/2 receive windows still limit uploads on a shared
-connection: network-relay releases upload credit only as a destination
-accepts data, with about 2 MiB per connection and 1 MiB per stream by default
-(Caddy: 16 MiB and 4 MiB). Uploads to slow destinations can therefore delay
-other uploads on the same connection. This also applies to NF and other
-clients that share HTTP/2 connections, and was not changed here.
+The relays release upload credit only as a destination accepts data. With
+network-relay's former 2 MiB connection window and 1 MiB stream windows, two
+uploads to destinations that stopped reading blocked every other upload on a
+shared connection (on HTTP/3 also new requests). network-relay now receives
+4 MiB per connection over HTTP/2 and HTTP/3, four stream windows, within its
+existing memory reservation; Caddy already holds four (16 MiB and 4 MiB).
+After that change the RS and NF real-server matrices, the independent
+quic-go/masque-go/curl checks against both servers and all network-relay
+tests pass again.
 
 Known failed checks, if any, must be added here with a reproducer, exact versions
 and the smallest justified repair. A failure that cannot be safely repaired

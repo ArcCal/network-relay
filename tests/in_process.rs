@@ -1406,6 +1406,117 @@ async fn http2_tcp_tunnels_share_a_connection() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn http2_uploads_to_stalled_destinations_leave_room_for_other_tunnels() {
+    let relay = TestRelay::start("").await;
+    let (echo, _e) = echo_server().await;
+    // A destination that accepts connections and never reads from them.
+    let stalled = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let target = stalled.local_addr().unwrap();
+    let _stalled = Driver(tokio::spawn(async move {
+        let mut held = Vec::new();
+        while let Ok((tcp, _)) = stalled.accept().await {
+            held.push(tcp);
+        }
+    }));
+    let (mut sender, _driver) = raw_h2(&relay).await;
+    // Each upload fills every buffer before its destination and then its
+    // whole stream window, which the relay releases only as the destination
+    // accepts data. Several such uploads on one connection must not leave the
+    // other tunnels without connection credit (RFC 9113 section 5.2).
+    let mut uploads = Vec::new();
+    for _ in 0..3 {
+        sender = within("HTTP/2 stream capacity", sender.ready()).await.unwrap();
+        let (response, mut send) = sender.send_request(connect_request(target), false).unwrap();
+        let response = within("CONNECT response", response).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        uploads.push((
+            Driver(tokio::spawn(async move {
+                let mut bytes = Bytes::from(pattern(16 << 20));
+                while !bytes.is_empty() {
+                    send.reserve_capacity(bytes.len().min(64 * 1024));
+                    let Some(Ok(capacity)) = std::future::poll_fn(|cx| send.poll_capacity(cx)).await else {
+                        return;
+                    };
+                    let n = capacity.min(bytes.len());
+                    if send.send_data(bytes.split_to(n), false).is_err() {
+                        return;
+                    }
+                }
+            })),
+            response,
+        ));
+    }
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    sender = within("HTTP/2 stream capacity", sender.ready()).await.unwrap();
+    let (response, mut send) = sender.send_request(connect_request(echo), false).unwrap();
+    let response = within("CONNECT response", response).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let mut recv = response.into_body();
+    let expected = pattern(256 * 1024);
+    write_h2(&mut send, Bytes::from(expected.clone())).await;
+    let mut received = Vec::new();
+    within("echo beside stalled uploads", async {
+        while received.len() < expected.len() {
+            let data = recv.data().await.unwrap().unwrap();
+            recv.flow_control().release_capacity(data.len()).unwrap();
+            received.extend_from_slice(&data);
+        }
+    })
+    .await;
+    assert!(received == expected, "echoed data corrupted");
+    drop(uploads);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn http3_uploads_to_stalled_destinations_leave_room_for_other_tunnels() {
+    let relay = TestRelay::start("").await;
+    let (echo, _e) = echo_server().await;
+    let stalled = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let target = stalled.local_addr().unwrap();
+    let _stalled = Driver(tokio::spawn(async move {
+        let mut held = Vec::new();
+        while let Ok((tcp, _)) = stalled.accept().await {
+            held.push(tcp);
+        }
+    }));
+    let (mut sender, conn, _driver) = raw_h3(&relay, false).await;
+    // As over HTTP/2, uploads to destinations that do not read keep their
+    // stream credit; they must not use up the connection's (RFC 9000
+    // section 4.1).
+    let mut uploads = Vec::new();
+    for _ in 0..3 {
+        let mut stream = within("CONNECT request", sender.send_request(connect_request(target))).await.unwrap();
+        assert_eq!(within("CONNECT response", stream.recv_response()).await.unwrap().status(), StatusCode::OK);
+        let (mut send, recv) = stream.split();
+        uploads.push((
+            Driver(tokio::spawn(async move {
+                let chunk = Bytes::from(pattern(60_000));
+                while send.send_data(chunk.clone()).await.is_ok() {}
+            })),
+            recv,
+        ));
+    }
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let mut stream = within("CONNECT request", sender.send_request(connect_request(echo))).await.unwrap();
+    assert_eq!(within("CONNECT response", stream.recv_response()).await.unwrap().status(), StatusCode::OK);
+    let expected = pattern(256 * 1024);
+    let mut received = Vec::new();
+    within("echo beside stalled uploads", async {
+        for chunk in expected.chunks(60_000) {
+            stream.send_data(Bytes::copy_from_slice(chunk)).await.unwrap();
+        }
+        while received.len() < expected.len() {
+            let mut data = stream.recv_data().await.unwrap().unwrap();
+            received.extend_from_slice(&data.copy_to_bytes(data.remaining()));
+        }
+    })
+    .await;
+    assert!(received == expected, "echoed data corrupted");
+    drop(uploads);
+    conn.close(0u32.into(), b"");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn http2_tcp_tunnel_releases_flow_control_and_half_closes() {
     let relay = TestRelay::start("").await;
     let (echo, _e) = echo_server().await;

@@ -169,9 +169,14 @@ pub(super) fn transport_config() -> TransportConfig {
     let mut t = TransportConfig::default();
     let reserved = crate::limits::connection_memory(crate::limits::total_memory());
     let window = (reserved / 4) as u32;
+    // Data a client sends is released only as a destination accepts it, and
+    // connection credit also covers new requests (RFC 9000 section 4.1). The
+    // receive window holds four stream windows, so three tunnels to slow
+    // destinations cannot stop the connection's other tunnels or requests.
+    let receive = (reserved / 2) as u32;
     t.max_concurrent_bidi_streams(VarInt::from_u32(MAX_STREAMS_UNAUTHENTICATED));
-    t.stream_receive_window(VarInt::from_u32(window.min(1 << 20)));
-    t.receive_window(VarInt::from_u32(window));
+    t.stream_receive_window(VarInt::from_u32((receive / 4).min(1 << 20)));
+    t.receive_window(VarInt::from_u32(receive));
     t.send_window(u64::from(window));
     t.datagram_receive_buffer_size(Some((reserved / 32) as usize));
     t.datagram_send_buffer_size((reserved / 32) as usize);

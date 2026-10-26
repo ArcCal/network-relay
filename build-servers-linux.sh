@@ -5,7 +5,7 @@
 lr_usage() {
     cat <<'HELP'
 Usage: bash build-servers-linux.sh [--repo DIR] [--output DIR] [--jobs N]
-                                   [--install-deps] [--check]
+                                   [--install-deps | --no-install-deps] [--check]
 
 Build all three servers for BOTH Linux amd64 (x64) and arm64 on every run:
   ArcCal/network-relay: network-relay
@@ -22,7 +22,11 @@ and static linking. Native executables also run version/module smoke checks.
                    pull --ff-only origin main; missing checkouts are cloned.
   --output DIR     new or empty artifact directory (default: ./relay-servers-*)
   --jobs N         Cargo and Go parallelism (default: 2)
-  --install-deps   install apt prerequisites and missing Rust/cross tools
+  Dependencies    install missing build prerequisites automatically (default).
+                   Uses root or sudo only when system packages are missing.
+  --install-deps   also refresh/install the apt prerequisite package set
+  --no-install-deps
+                   require existing build tools and Rust targets; install none
   --check          inspect host/tools without network access or filesystem changes
 
 The newest committed script handles each build. Local commits are refused;
@@ -36,7 +40,7 @@ Rust defaults to 1.99.0; Go defaults to go1.27.2+auto (honors module requirement
 Any failed source, build, verification or checksum step fails the run.
 Successful runs retain six binaries, logs, MANIFEST.txt and SHA256SUMS;
 only their private work directory is removed. Failed runs retain .work.
-No installation or service configuration is performed.
+No server installation or service configuration is performed.
 HELP
 }
 lr_die() { printf 'build-servers-linux: %s\n' "$*" >&2; exit 1; }
@@ -70,13 +74,14 @@ lr_check_tools() {
         if ! rustup which --toolchain "${RUSTUP_TOOLCHAIN:-1.99.0}" rustc >/dev/null 2>&1; then
             printf '  Rust toolchain %s: missing\n' "${RUSTUP_TOOLCHAIN:-1.99.0}" >&2
             missing=1
+        else
+            targets=$(rustup target list --installed --toolchain "${RUSTUP_TOOLCHAIN:-1.99.0}") || missing=1
+            for triple in x86_64-unknown-linux-musl aarch64-unknown-linux-musl; do
+                if ! grep -Fxq "$triple" <<< "${targets:-}"; then
+                    printf '  Rust target %s: missing\n' "$triple" >&2; missing=1
+                fi
+            done
         fi
-        targets=$(rustup target list --installed --toolchain "${RUSTUP_TOOLCHAIN:-1.99.0}") || missing=1
-        for triple in x86_64-unknown-linux-musl aarch64-unknown-linux-musl; do
-            if ! grep -Fxq "$triple" <<< "${targets:-}"; then
-                printf '  Rust target %s: missing\n' "$triple" >&2; missing=1
-            fi
-        done
     fi
     return "$missing"
 }
@@ -89,6 +94,33 @@ lr_install_system() {
     "${apt_command[@]}" update
     "${apt_command[@]}" install -y --no-install-recommends \
         build-essential pkg-config ca-certificates curl git file golang-go binutils python3-venv
+}
+lr_ensure_system() {
+    local tool missing=0 needs_python=0
+    for tool in git curl cc pkg-config file sha256sum go readelf; do
+        if ! command -v "$tool" >/dev/null; then
+            printf 'Missing system prerequisite: %s\n' "$tool"
+            missing=1
+        fi
+    done
+    [[ -s /etc/ssl/certs/ca-certificates.crt ]] || missing=1
+    if ! command -v zig >/dev/null; then
+        needs_python=1
+        if ! command -v python3 >/dev/null || ! python3 -c 'import ensurepip, venv' >/dev/null 2>&1; then
+            printf 'Missing Python venv support for the Zig installer.\n'
+            missing=1
+        fi
+    fi
+    (( missing )) || return 0
+    (( install_deps )) || lr_die 'Missing system prerequisites and --no-install-deps was selected.'
+    lr_install_system
+    for tool in git curl cc pkg-config file sha256sum go readelf; do
+        command -v "$tool" >/dev/null || lr_die "System package installation did not provide $tool."
+    done
+    [[ -s /etc/ssl/certs/ca-certificates.crt ]] || lr_die 'System CA certificates are unavailable.'
+    if (( needs_python )); then
+        python3 -c 'import ensurepip, venv' >/dev/null 2>&1 || lr_die 'Python venv support is unavailable after package installation.'
+    fi
 }
 lr_install_rustup() {
     local installer
@@ -313,7 +345,8 @@ lr_collect() {
 }
 lr_main() {
     checkout=${NETWORK_RELAY_SRC:-"$HOME/network-relay"}
-    output=; jobs=2; install_deps=0
+    # 2: install missing prerequisites; 1: additionally refresh apt; 0: opt out.
+    output=; jobs=2; install_deps=2
     local check_only=0
     while (( $# )); do
         case $1 in
@@ -322,12 +355,13 @@ lr_main() {
             --output) lr_value "$@"; output=$2; shift 2 ;;
             --jobs) lr_value "$@"; jobs=$2; shift 2 ;;
             --install-deps) install_deps=1; shift ;;
+            --no-install-deps) install_deps=0; shift ;;
             --check) check_only=1; shift ;;
             *) lr_usage >&2; lr_die "Unknown argument: $1" ;;
         esac
     done
     [[ $jobs =~ ^[1-9][0-9]*$ ]] || lr_die '--jobs must be a positive integer.'
-    (( ! check_only || ! install_deps )) || lr_die '--check and --install-deps conflict.'
+    (( ! check_only || install_deps != 1 )) || lr_die '--check and --install-deps conflict.'
     lr_host
     export PATH="${CARGO_HOME:-$HOME/.cargo}/bin:$PATH"
     if (( check_only )); then
@@ -335,15 +369,18 @@ lr_main() {
         lr_check_tools
         return
     fi
-    (( ! install_deps )) || lr_install_system
-    command -v git >/dev/null || lr_die 'Missing git; use --install-deps.'
+    (( install_deps != 1 )) || lr_install_system
+    if ! command -v git >/dev/null; then
+        (( install_deps )) || lr_die 'Missing git and --no-install-deps was selected.'
+        lr_install_system
+    fi
     lr_update_checkout
     stage=$(mktemp -d /tmp/relay-servers.XXXXXX) || lr_die 'Cannot create private workspace.'
     trap 'status=$?; if (( status )); then printf "Update failed (exit %s). Work: %s\n" "$status" "$stage" >&2; fi' EXIT
     printf '%s\n' "$root_commit" > "$stage/.owner"
     git -C "$checkout" show "$root_commit:build-servers-linux.sh" > "$stage/driver.sh" || lr_die 'Cannot load newest committed script.'
     [[ -s $stage/driver.sh ]] || lr_die 'Newest build script is empty.'
-    exec "$BASH" "$stage/driver.sh" --build-updated "$checkout" "$stage" "$output" "$root_commit" "$jobs" "$install_deps"
+    exec "$BASH" "$stage/driver.sh" --build-updated "$checkout" "$stage" "$output" "$root_commit" "$jobs" "$install_deps" --deps-policy-v2
 }
 
 # Sourcing provides the portable build helpers without inspecting or changing a host.
@@ -352,9 +389,12 @@ set -euo pipefail
 unset CDPATH
 # Parse the complete conditional before pull can replace the running input file.
 if [[ ${1:-} != --build-updated ]]; then lr_main "$@"; exit; fi
-[[ $# == 7 ]] || lr_die 'Invalid internal build invocation.'
+[[ $# == 7 || ( $# == 8 && ${8:-} == --deps-policy-v2 ) ]] || lr_die 'Invalid internal build invocation.'
 checkout=$2; stage=$3; output=$4; root_commit=$5; jobs=$6; install_deps=$7
-[[ $jobs =~ ^[1-9][0-9]*$ && ( $install_deps == 0 || $install_deps == 1 ) ]] || lr_die 'Invalid build options.'
+[[ $jobs =~ ^[1-9][0-9]*$ && ( $install_deps == 0 || $install_deps == 1 || $install_deps == 2 ) ]] || lr_die 'Invalid build options.'
+# Published launchers used seven arguments and passed 0 for an ordinary run.
+# Upgrade that old default too; only the versioned protocol can request opt-out.
+if [[ $# == 7 && $install_deps == 0 ]]; then install_deps=2; fi
 [[ ${stage##*/} == relay-servers.* && -d $stage && ! -L $stage && -f $stage/.owner && ! -L $stage/.owner &&
    $(cat "$stage/.owner") == "$root_commit" ]] || lr_die 'Invalid private workspace.'
 trap 'status=$?; if (( status )); then printf "Build incomplete (exit %s). Work: %s; artifacts/logs: %s\n" "$status" "$stage" "$output" >&2; fi' EXIT
@@ -363,13 +403,6 @@ trap 'exit 143' TERM
 lr_host
 printf 'Build host: %s; targets: linux-amd64, linux-arm64 (static)\n' "$platform"
 export PATH="${CARGO_HOME:-$HOME/.cargo}/bin:$PATH"
-lr_install_rustup
-for tool in git curl cc pkg-config file sha256sum rustup rustc cargo go readelf; do
-    command -v "$tool" >/dev/null || lr_die "Missing $tool; use --install-deps or install it first."
-done
-if (( ! install_deps )); then
-    for tool in zig cargo-zigbuild; do command -v "$tool" >/dev/null || lr_die "Missing $tool; use --install-deps."; done
-fi
 while [[ $output == */ && $output != / ]]; do output=${output%/}; done
 if [[ -z $output ]]; then
     stamp=$(date -u +%Y%m%d-%H%M%S)
@@ -391,6 +424,21 @@ mkdir -m 700 -- "$output/logs"
 ln -s -- "$work" "$output/.work"
 printf 'Artifacts: %s\nPersistent checkout: %s\nWork directory: %s\n' "$output" "$checkout" "$work"
 failures=0
+export RUSTUP_TOOLCHAIN=${RUSTUP_TOOLCHAIN:-1.99.0}
+if (( install_deps )); then
+    export GOTOOLCHAIN=${GOTOOLCHAIN:-go1.27.2+auto}
+else
+    export GOTOOLCHAIN=${GOTOOLCHAIN:-local}
+fi
+lr_run system-prerequisites lr_ensure_system
+(( failures == 0 )) || lr_die 'Cannot prepare system prerequisites.'
+if (( install_deps )); then
+    lr_run bootstrap-rustup lr_install_rustup
+else
+    lr_run installed-prerequisites lr_check_tools
+fi
+(( failures == 0 )) || lr_die 'Build prerequisites are unavailable.'
+for tool in rustup rustc cargo; do command -v "$tool" >/dev/null || lr_die "Missing required tool after bootstrap: $tool"; done
 lr_snapshot() {
     git clone --no-hardlinks --no-checkout -- "$checkout" "$repo"
     git -C "$repo" checkout --detach "$root_commit"
@@ -399,13 +447,15 @@ lr_run source-network-relay lr_snapshot
 lr_run source-caddy-network-relay lr_clone_repo caddy-network-relay "$caddy_src" CADDY_NETWORK_RELAY_TOKEN
 lr_run source-cloudflare env GIT_TERMINAL_PROMPT=0 git clone --depth 1 --branch master --single-branch -- \
     https://github.com/caddy-dns/cloudflare.git "$cloudflare_src"
-export RUSTUP_TOOLCHAIN=${RUSTUP_TOOLCHAIN:-1.99.0}
-export GOTOOLCHAIN=${GOTOOLCHAIN:-go1.27.2+auto}
 export GOWORK=off GOFLAGS='' GOAMD64=v1 GOARM64=v8.0
 unset GOOS GOARCH CARGO_BUILD_TARGET RUSTFLAGS
 export CARGO_ENCODED_RUSTFLAGS=''
 export PATH="$work/tools/bin:$PATH"
-lr_run toolchain-rust lr_prepare_rust
+if (( install_deps )); then
+    lr_run toolchain-rust lr_prepare_rust
+else
+    lr_run toolchain-rust rustc --version
+fi
 lr_run toolchain-cross lr_prepare_cross_tools
 (( failures == 0 )) || lr_die "$failures source/toolchain step(s) failed."
 lr_run prepare-caddy lr_prepare_caddy

@@ -57,10 +57,10 @@ resolved by Network.framework unless the user supplies its IP.
 
 ## Connections and readiness
 
-The initial implementation opens one outer TLS/QUIC connection per destination
-flow. It does not yet share one HTTP/2 or HTTP/3 connection across SOCKS flows.
-This simplifies cancellation ownership but costs extra handshakes and server
-connection slots; it is a documented limitation, not a finished performance design.
+HTTP/2 and HTTP/3 SOCKS flows share one outer TLS/QUIC connection per session;
+a connection that received GOAWAY or failed is not reused for new flows, while
+its admitted flows continue. HTTP/1.1 has no multiplexing and still opens one
+outer TLS connection per flow.
 
 A separate authenticated idle CONNECT-UDP flow acts as the connection monitor.
 “Relay ready” means that the server accepted this authenticated protocol request.
@@ -78,7 +78,7 @@ Automatic mode tries HTTP/3 for five seconds, then native TCP with ALPN `h2`,
 `http/1.1`. Authentication/security rejection is terminal rather than a reason
 to downgrade; 502, 503 and 504 refusals are temporary and are retried. Forced modes do not silently change transport. The monitor's
 successful transport becomes the preferred mode for new flows until reconnect.
-Existing flows have separate outer connections and are not migrated.
+Existing flows stay on the connection they started on and are not migrated.
 Retry backoff remains exponential for short failures and returns to one second
 after at least 30 seconds of admitted readiness. Readiness is not target reachability.
 
@@ -94,11 +94,15 @@ DATAGRAM optimization is deliberately deferred.
 The inherited NWConnectionGroup stream adapter remains experimental. The initial
 core also disables outbound GREASE streams to keep the layout simple during
 bring-up. These two changes are design choices, not a controlled proof of the
-old fault's cause or a claim that native HTTP/3 is repaired. Actual stream IDs
+old fault's cause. The periodic native HTTP/3 disconnect was user-confirmed
+resolved after the server idle-stream-0 and client probe-lifecycle fixes. Actual stream IDs
 are logged and range-checked. Complete local stream direction/initiator checks
 and modern NetworkConnection<QUIC> evaluation are deferred.
 
 ## Native QUIC evidence and repair method
+
+This section is a historical record of older builds. The disconnect it describes
+was later user-confirmed resolved; see [STATUS.md](STATUS.md).
 
 The latest supplied Relay log runs the older binary from source
 `666b795c881b44eeaade9891edfae04ffcbd34a6`, built at

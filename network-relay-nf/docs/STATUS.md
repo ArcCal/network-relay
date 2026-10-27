@@ -1,5 +1,19 @@
 # Implementation status
 
+## Server deletion and import/export check, 2026-10-27
+
+The minus button used to remove a server from the settings form only, so
+nothing changed until Save. It now deletes a saved server from the saved
+settings at once after a confirmation, keeping other unsaved edits; deleting
+the connected server moves the connection to its neighbor in the list, and an
+unsaved server only leaves the form. Saved server and transport choices still
+apply immediately; unsaved or newly imported servers still need Save.
+Exports from Network Relay RS (lowercase IDs, its own header, probe targets)
+import with every field kept, and NF exports import into RS without loss.
+All 56 portable model tests, including three new ones, pass with Swift 6.1.2
+on Linux. **The SwiftUI change has only been syntax-checked; it has not been
+compiled or run on a Mac.**
+
 ## Shared HTTP/2 receive window, 2026-10-26
 
 The shared HTTP/2 connection used a 5 MiB receive window beside 2 MiB stream
@@ -146,8 +160,9 @@ forced HTTP/2 run `810BA952`. Native H3 runs `5FBDACF5` and `30625FF0` reach
 admission but repeatedly fail with group EINVAL approximately ten seconds later.
 Run `E5EF8AE9` shows a different H2 incident: clean readiness-probe EOF after
 300.001568 seconds. [Current trace and provenance](evidence/native-quic-20261011.json).
-Complete build/test/signature output, native Caddy results and sustained native
-H3 forwarding are still missing.
+These H3 failures came from older builds and are user-confirmed resolved; see
+Confirmed issues and limitations below. Complete build/test/signature output,
+native Caddy results and sustained native H3 forwarding are still missing.
 
 ## Implemented, requiring further Mac verification
 

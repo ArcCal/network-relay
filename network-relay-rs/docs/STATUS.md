@@ -14,7 +14,7 @@ acceptance gate. A potential risk is not a confirmed runtime defect.
 | Area | Status | Evidence and limit |
 | --- | --- | --- |
 | Independent application identity and directory | Implemented | Own bundle ID, Cargo workspace, lockfile, code, documents and private settings path |
-| NF-compatible settings workflow | Implemented; model checks PASS | 18 model regressions include import/export, selection and private storage |
+| NF-compatible settings workflow | Implemented; model checks PASS | 20 model regressions include import/export with NF probe targets, selection and private storage |
 | Active server/transport automatic restart | Implemented; controller checks PASS | Rust cancellation and generation ownership; actual Mac interactions not executed |
 | Five-level retained log workflow | Implemented; controller checks PASS | Bounded retention and filters; Mac appearance/interaction not executed |
 | NF icon and native GUI behavior | Implemented; NOT RUN on Mac | Shared PNG, Rust AppKit UI; exact visual parity needs a Mac comparison |
@@ -276,3 +276,21 @@ tests pass again.
 Known failed checks, if any, must be added here with a reproducer, exact versions
 and the smallest justified repair. A failure that cannot be safely repaired
 must remain visible rather than being relabeled as unsupported or a success.
+
+## Server deletion and NF probe targets (2026-10-27)
+
+The minus button used to remove a server from the settings draft only, so
+nothing changed until Save. It now deletes a saved server from the saved
+settings at once after a confirmation, keeping other draft edits; deleting the
+connected server moves the connection to its neighbor in the list. Saved
+server and transport choices still apply immediately; unsaved or newly
+imported servers still need Save.
+
+NF exports carry a per-server admission probe target that RS dropped on import
+and export and replaced with `1.1.1.1:53` when connecting. RS now keeps it,
+validates it as NF does, connects with it (headless too) and writes it back.
+RS exports were imported by NF's model code (Swift 6.1.2 on Linux) and NF's
+re-exports imported back into RS with every field and ID unchanged. All 20
+model and 12 library tests with the UI type-check feature, Clippy with
+warnings as errors and the real-server matrix with headless smoke tests for
+every transport pass. The AppKit deletion flow has not been run on a Mac.

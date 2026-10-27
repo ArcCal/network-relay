@@ -24,6 +24,9 @@ for NF_TOOL in rustup cargo swift; do
     exit 1
 done
 NF_ROOT=$(cd "$(dirname "$0")" && pwd)
+# Leave the source and artifact folders, and every folder below them, open to all users.
+nf_open_dirs() { find "$NF_ROOT" ${CARGO_TARGET_DIR:+"$CARGO_TARGET_DIR"} -type d -exec chmod 777 {} + 2>/dev/null || true; }
+trap nf_open_dirs EXIT
 NF_VERSION=$(tr -d '[:space:]' < "$NF_ROOT/VERSION")
 NF_SOURCE=$(git -C "$NF_ROOT" rev-parse HEAD 2>/dev/null || printf 'Unknown')
 if [[ $NF_SOURCE != Unknown ]] && [[ -n $(git -C "$NF_ROOT" status --porcelain -- .) ]]; then
@@ -46,7 +49,7 @@ NF_BIN=$(swift build -c release --arch arm64 --show-bin-path)
 bash "$NF_ROOT/scripts/test-native.sh" "$NF_LIB"
 mkdir -p "$NF_ROOT/dist" "$NF_ROOT/build"
 NF_STAGE=$(mktemp -d "$NF_ROOT/build/bundle.XXXXXX")
-trap 'rm -rf "$NF_STAGE"' EXIT
+trap 'rm -rf "$NF_STAGE"; nf_open_dirs' EXIT
 NF_APP="$NF_STAGE/Network Relay NF.app"
 mkdir -p "$NF_APP/Contents/MacOS" "$NF_APP/Contents/Resources"
 cp "$NF_BIN/NetworkRelayNF" "$NF_APP/Contents/MacOS/NetworkRelayNF"

@@ -41,6 +41,8 @@ if [[ -n ${NF_DOWNLOAD_URL:-} || -n ${NF_DOWNLOAD_SHA256:-} ]]; then
 fi
 mkdir "$NF_OUT" # Refuse to mix evidence with an earlier run.
 NF_OUT=$(cd "$NF_OUT" && pwd)
+# Leave the evidence folder, and every folder below it, open to all users.
+trap 'find "$NF_OUT" -type d -exec chmod 777 {} + 2>/dev/null || true' EXIT
 trap 'printf "INCOMPLETE: failed; inspect individual logs.\n" >> "$NF_OUT/result.txt"' ERR
 trap 'printf "INCOMPLETE: interrupted.\n" >> "$NF_OUT/result.txt"; exit 130' INT
 trap 'printf "INCOMPLETE: terminated.\n" >> "$NF_OUT/result.txt"; exit 143' TERM

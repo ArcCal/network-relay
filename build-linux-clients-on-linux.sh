@@ -33,6 +33,7 @@ Rust 1.99.1 (or RUSTUP_TOOLCHAIN), Zig and cargo-zigbuild produce static musl
 executables named network-relay-rs-linux-amd64 and -arm64. Both architectures
 are inspected; native files also run --version and --help. SHA256SUMS,
 MANIFEST.txt and logs stay with the artifacts. Failed builds keep .work.
+Afterwards every folder in the checkout and the artifacts is mode 777.
 Network steps are retried. Debian 13 keeps /tmp in memory; when it is too small,
 temporary files go to ~/.cache instead. Free disk space is checked first.
 No client is installed or connected and no system proxy settings are changed.
@@ -40,6 +41,14 @@ HELP
 }
 
 lc_die() { printf 'build-linux-clients-on-linux: %s\n' "$*" >&2; exit 1; }
+# Leave the source and artifact folders, and every folder below them, open to all users.
+lc_open_dirs() {
+    local dir
+    for dir in "$@"; do
+        [[ -n $dir && -d $dir && ! -L $dir ]] || continue
+        find "$dir" -type d -exec chmod 777 {} + 2>/dev/null || true
+    done
+}
 
 lc_value() { [[ $# -ge 2 && -n $2 && $2 != --* ]] || lc_die "Pass a value to $1."; }
 
@@ -446,6 +455,7 @@ lc_main() {
         (( install_deps )) || lc_die 'Missing git and --no-install-deps was selected.'
         lc_install_system
     fi
+    trap 'lc_open_dirs "$checkout"' EXIT
     lc_update_checkout
     lc_work_parent
     mkdir -p -- "$REPLY" || lc_die "Cannot create $REPLY."
@@ -456,7 +466,7 @@ lc_main() {
         export TMPDIR="$stage/tmp"
         printf 'Temporary build files go to %s because /tmp is too small.\n' "$stage"
     fi
-    trap 'status=$?; if (( status )); then printf "Update failed (exit %s). Work: %s\n" "$status" "$stage" >&2; fi' EXIT
+    trap 'status=$?; if (( status )); then printf "Update failed (exit %s). Work: %s\n" "$status" "$stage" >&2; fi; lc_open_dirs "$checkout" "$stage"' EXIT
     printf '%s\n' "$root_commit" > "$stage/.owner"
     git -C "$checkout" show "$root_commit:build-linux-clients-on-linux.sh" > "$stage/driver.sh" || lc_die 'Cannot load newest committed script.'
     [[ -s $stage/driver.sh ]] || lc_die 'Newest build script is empty.'
@@ -475,7 +485,7 @@ checkout=$2; stage=$3; output=$4; root_commit=$5; jobs=$6; install_deps=$7
    ( $install_deps == 0 || $install_deps == 1 || $install_deps == 2 ) ]] || lc_die 'Invalid build options.'
 [[ ${stage##*/} == network-relay-linux-clients.* && -d $stage && ! -L $stage &&
    -f $stage/.owner && ! -L $stage/.owner && $(cat "$stage/.owner") == "$root_commit" ]] || lc_die 'Invalid private workspace.'
-trap 'status=$?; if (( status )); then printf "Build incomplete (exit %s). Work: %s; artifacts/logs: %s\n" "$status" "$stage" "${output:-not created}" >&2; fi' EXIT
+trap 'status=$?; if (( status )); then printf "Build incomplete (exit %s). Work: %s; artifacts/logs: %s\n" "$status" "$stage" "${output:-not created}" >&2; fi; lc_open_dirs "$checkout" "$output" "$stage"' EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 lc_host
@@ -558,5 +568,4 @@ lc_run checksums lc_checksums
 (( failures == 0 )) || lc_die 'Checksum generation or verification failed.'
 rm -f -- "$output/.work"
 rm -rf -- "${work:?}"
-trap - EXIT
 printf '\nLinux headless clients built for amd64 and arm64.\nArtifacts: %s\n' "$output"

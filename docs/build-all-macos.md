@@ -127,6 +127,9 @@ its intended VPS. The other binaries retain their own program names.
 The script prints the exact output location and opens it in Finder after
 all jobs pass. App bundles use the original recipes' ad-hoc signing and are
 not notarized releases.
+When the script ends, successfully or not, every folder in the build
+directory, including sources and `out/`, is mode 777 so other users and file
+synchronization tools such as Syncthing can use it.
 The build directory is printed before compiler-version checks; their output
 is displayed in Terminal and saved in `TOOL-VERSIONS.txt`, including errors.
 

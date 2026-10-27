@@ -31,6 +31,7 @@ pull --ff-only origin main and executes the latest committed scripts.
 Local commits are refused. Uncommitted files are preserved and are never
 used as build inputs. Git credentials must allow reading both repositories.
 Compilation and signing use a private /private/tmp workspace.
+Afterwards every folder in the checkout and the artifacts is mode 777.
 HELP
 }
 die() { printf 'build-all-targets-on-macos: %s\n' "$*" >&2; exit 1; }
@@ -191,6 +192,16 @@ report_failure() {
         printf 'Build/update failed (exit %s). Work retained: %s\n' \
             "$relay_exit_status" "${build_work:-not created}" >&2
     fi
+    open_dirs
+}
+# Leave the source folder, and every folder below it, open to all users.
+# shellcheck disable=SC2317,SC2329
+open_dirs() {
+    local dir
+    for dir in "${relay_checkout:-}" "${build_work:-}"; do
+        [[ -n $dir && -d $dir && ! -L $dir ]] || continue
+        find "$dir" -type d -exec chmod 777 {} + 2>/dev/null || true
+    done
 }
 # Use an Xcode with the macOS 27 SDK, including one installed as Xcode-beta.app.
 select_xcode() {
@@ -222,7 +233,7 @@ check_host() {
 }
 build_updated() {
     local repo=$1 commit=$4 jobs=$5
-    build_work=$2
+    build_work=$2 relay_checkout=$1
     [[ $commit =~ ^[0-9a-f]{40}$ && $jobs =~ ^[1-9][0-9]*$ ]] || die 'Invalid internal build arguments.'
     [[ ${build_work##*/} == relay-mac.* && -d $build_work && ! -L $build_work &&
        -f $build_work/.owner && ! -L $build_work/.owner &&
@@ -257,7 +268,10 @@ main() {
     done
     [[ $jobs =~ ^[1-9][0-9]*$ ]] || die '--jobs must be a positive integer.'
     check_host
+    relay_checkout=$repo
+    trap open_dirs EXIT
     update_checkout
+    relay_checkout=$repo
     build_work=$(mktemp -d /private/tmp/relay-mac.XXXXXX)
     trap report_failure EXIT
     printf '%s\n' "$commit" > "$build_work/.owner"

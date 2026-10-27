@@ -38,6 +38,9 @@ xcrun --sdk macosx --show-sdk-path >/dev/null 2>&1 || {
 }
 
 RS_ROOT=$(cd "$(dirname "$0")" && pwd)
+# Leave the source and artifact folders, and every folder below them, open to all users.
+rs_open_dirs() { find "$RS_ROOT" -type d -exec chmod 777 {} + 2>/dev/null || true; }
+trap rs_open_dirs EXIT
 RS_VERSION=$(tr -d '[:space:]' < "$RS_ROOT/VERSION")
 RS_SOURCE=$(git -C "$RS_ROOT" rev-parse HEAD 2>/dev/null || printf 'Unknown')
 if [[ $RS_SOURCE != Unknown ]] && [[ -n $(git -C "$RS_ROOT" status --porcelain -- .) ]]; then
@@ -63,7 +66,7 @@ fi
 
 mkdir -p "$RS_ROOT/build" "$RS_ROOT/dist"
 RS_STAGE=$(mktemp -d "$RS_ROOT/build/bundle.XXXXXX")
-trap 'rm -rf "$RS_STAGE"' EXIT
+trap 'rm -rf "$RS_STAGE"; rs_open_dirs' EXIT
 RS_APP="$RS_STAGE/Network Relay RS.app"
 mkdir -p "$RS_APP/Contents/MacOS" "$RS_APP/Contents/Resources"
 cp "$CARGO_TARGET_DIR/$RS_TARGET/release/network-relay-rs" "$RS_APP/Contents/MacOS/network-relay-rs"

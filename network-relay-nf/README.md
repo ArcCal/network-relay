@@ -52,6 +52,8 @@ open 'dist/Network Relay NF.app'
 The script runs Rust tests, Swift model tests and native boundary smoke checks,
 builds the static core and GUI, creates the icon, and applies an ad-hoc signature.
 It produces `dist/NetworkRelayNF-0.1.0-macos-arm64.zip` and its SHA-256 file.
+When it ends, every folder under `network-relay-nf/` (sources, `build/`, `dist/`)
+and the Cargo target folder is mode 777.
 It does not notarize the app. The user has built and launched source revision
 `666b795c881b44eeaade9891edfae04ffcbd34a6`; its complete build/test transcript and
 signature results have not been supplied. No release binary is included here.

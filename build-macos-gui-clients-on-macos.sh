@@ -11,6 +11,14 @@ done
 export PATH
 
 rg_die() { printf 'build-macos-gui-clients-on-macos: %s\n' "$*" >&2; exit 1; }
+# Leave the source and artifact folders, and every folder below them, open to all users.
+rg_open_dirs() {
+    local dir
+    for dir in "$@"; do
+        [[ -n $dir && -d $dir && ! -L $dir ]] || continue
+        find "$dir" -type d -exec chmod 777 {} + 2>/dev/null || true
+    done
+}
 rg_dir() { REPLY=$(cd -P -- "$1" && printf '%s/' "$PWD"); REPLY=${REPLY%/}; }
 rg_empty() {
     local entries
@@ -47,6 +55,7 @@ snapshot. Local commits are refused; dirty/untracked files are preserved and
 never used as build inputs. Sources, builds and signing use /private/tmp.
 App names include the software, macOS and arm64. Logs, source revisions and
 SHA256SUMS are kept with the artifacts. Failed builds keep their workspace.
+Afterwards every folder in the checkout and the artifacts is mode 777.
 RUSTUP_TOOLCHAIN defaults to 1.99.1. Existing checkouts are never deleted.
 HELP
 }
@@ -243,9 +252,10 @@ rg_main() {
     done
     [[ $jobs =~ ^[1-9][0-9]*$ ]] || rg_die '--jobs must be a positive integer.'
     rg_host
+    trap 'rg_open_dirs "$checkout"' EXIT
     rg_update
     work=$(mktemp -d /private/tmp/relay-mac.XXXXXX)
-    trap 'status=$?; if (( status )); then printf "Update failed (exit %s). Work: %s\n" "$status" "$work" >&2; fi' EXIT
+    trap 'status=$?; if (( status )); then printf "Update failed (exit %s). Work: %s\n" "$status" "$work" >&2; fi; rg_open_dirs "$checkout" "$work"' EXIT
     printf '%s\n' "$root_commit" > "$work/.owner"
     git -C "$checkout" show "$root_commit:build-macos-gui-clients-on-macos.sh" > "$work/driver.sh" || rg_die 'Cannot load the latest GUI script.'
     [[ -s $work/driver.sh ]] || rg_die 'The latest GUI script is empty.'
@@ -261,7 +271,7 @@ checkout=$2; work=$3; output=$4; root_commit=$5; mode=$6; jobs=$7
    $(cat "$work/.owner") == "$root_commit" ]] || rg_die 'Invalid private workspace.'
 repo="$work/sources/network-relay"
 logs=
-trap 'status=$?; if (( status )); then printf "Build failed (exit %s). Work: %s\nArtifacts/logs: %s\n" "$status" "$work" "${output:-not created}" >&2; fi' EXIT
+trap 'status=$?; if (( status )); then printf "Build failed (exit %s). Work: %s\nArtifacts/logs: %s\n" "$status" "$work" "${output:-not created}" >&2; fi; rg_open_dirs "$checkout" "$output" "$work"' EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 rg_host

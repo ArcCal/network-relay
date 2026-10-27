@@ -27,6 +27,7 @@ Missing SDK/XCTest tools trigger an Xcode installation from the App Store.
 Apple may require sign-in, license acceptance or administrator authentication.
 Unsupported app jobs fail explicitly; other jobs still run. Any failure
 makes the final exit status nonzero. Existing source folders are not reused.
+Afterwards every folder in the build directory is mode 777.
 EOF
 }
 
@@ -490,7 +491,14 @@ main() {
     open "$OUT" || true
 }
 
+# Leave the source and artifact folders, and every folder below them, open to all users.
+open_build_dirs() {
+    [[ -n ${BUILD_ROOT:-} && -d $BUILD_ROOT && ! -L $BUILD_ROOT ]] || return 0
+    find "$BUILD_ROOT" -type d -exec chmod 777 {} + 2>/dev/null || true
+}
+
 if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
     set -euo pipefail
+    trap open_build_dirs EXIT
     main "$@"
 fi

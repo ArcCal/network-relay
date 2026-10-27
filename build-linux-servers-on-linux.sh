@@ -39,6 +39,7 @@ Rust defaults to 1.99.1; Go defaults to go1.27.3+auto (honors module requirement
 Any failed source, build, verification or checksum step fails the run.
 Successful runs retain four binaries, logs, MANIFEST.txt and SHA256SUMS;
 only their private work directory is removed. Failed runs retain .work.
+Afterwards every folder in the checkout and the artifacts is mode 777.
 Network steps are retried. Debian 13 keeps /tmp in memory; when it is too small,
 temporary files go to ~/.cache instead. Free disk space is checked first.
 No server installation or service configuration is performed.
@@ -48,6 +49,14 @@ HELP
 LR_CLOUDFLARE_DNS_TAG=v0.2.4
 LR_CLOUDFLARE_DNS_COMMIT=a8737d095ad5a48ca031cea6ab704057dbc2d250
 lr_die() { printf 'build-linux-servers-on-linux: %s\n' "$*" >&2; exit 1; }
+# Leave the source and artifact folders, and every folder below them, open to all users.
+lr_open_dirs() {
+    local dir
+    for dir in "$@"; do
+        [[ -n $dir && -d $dir && ! -L $dir ]] || continue
+        find "$dir" -type d -exec chmod 777 {} + 2>/dev/null || true
+    done
+}
 lr_value() { [[ $# -ge 2 && -n $2 && $2 != --* ]] || lr_die "Pass a value to $1."; }
 lr_physical_dir() { REPLY=$(cd -P -- "$1" && printf '%s/' "$PWD"); REPLY=${REPLY%/}; }
 lr_empty_dir() {
@@ -524,6 +533,7 @@ lr_main() {
         (( install_deps )) || lr_die 'Missing git and --no-install-deps was selected.'
         lr_install_system
     fi
+    trap 'lr_open_dirs "$checkout"' EXIT
     lr_update_checkout
     lr_work_parent
     mkdir -p -- "$REPLY" || lr_die "Cannot create $REPLY."
@@ -534,7 +544,7 @@ lr_main() {
         export TMPDIR="$stage/tmp"
         printf 'Temporary build files go to %s because /tmp is too small.\n' "$stage"
     fi
-    trap 'status=$?; if (( status )); then printf "Update failed (exit %s). Work: %s\n" "$status" "$stage" >&2; fi' EXIT
+    trap 'status=$?; if (( status )); then printf "Update failed (exit %s). Work: %s\n" "$status" "$stage" >&2; fi; lr_open_dirs "$checkout" "$stage"' EXIT
     printf '%s\n' "$root_commit" > "$stage/.owner"
     git -C "$checkout" show "$root_commit:build-linux-servers-on-linux.sh" > "$stage/driver.sh" || lr_die 'Cannot load newest committed script.'
     [[ -s $stage/driver.sh ]] || lr_die 'Newest build script is empty.'
@@ -555,7 +565,7 @@ checkout=$2; stage=$3; output=$4; root_commit=$5; jobs=$6; install_deps=$7
 if [[ $# == 7 && $install_deps == 0 ]]; then install_deps=2; fi
 [[ ${stage##*/} == relay-servers.* && -d $stage && ! -L $stage && -f $stage/.owner && ! -L $stage/.owner &&
    $(cat "$stage/.owner") == "$root_commit" ]] || lr_die 'Invalid private workspace.'
-trap 'status=$?; if (( status )); then printf "Build incomplete (exit %s). Work: %s; artifacts/logs: %s\n" "$status" "$stage" "$output" >&2; fi' EXIT
+trap 'status=$?; if (( status )); then printf "Build incomplete (exit %s). Work: %s; artifacts/logs: %s\n" "$status" "$stage" "$output" >&2; fi; lr_open_dirs "$checkout" "$output" "$stage"' EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 lr_host
@@ -678,5 +688,4 @@ lr_run checksums lr_checksums
 (( failures == 0 )) || lr_die 'Checksum generation or verification failed.'
 rm -f -- "$output/.work"
 rm -rf -- "${work:?}"
-trap - EXIT
 printf '\nBoth servers built for amd64 and arm64.\nBoth architectures inspected; native executables also smoke-tested.\nArtifacts: %s\n' "$output"

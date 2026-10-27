@@ -458,6 +458,8 @@ main() {
     mkdir -p "$OUTPUT_PARENT"
     OUTPUT_PARENT=$(cd "$OUTPUT_PARENT" && pwd -P)
     BUILD_ROOT=$(mktemp -d "$OUTPUT_PARENT/vpn-build-$(date +%Y%m%d-%H%M%S)-XXXXXX")
+    # mktemp creates mode 700; artifacts get ordinary permissions for sharing and sync.
+    chmod -- "$(printf '%o' $((0777 & ~$(umask))))" "$BUILD_ROOT"
     SOURCES="$BUILD_ROOT/sources"
     OUT="$BUILD_ROOT/out"
     LOGS="$BUILD_ROOT/logs"

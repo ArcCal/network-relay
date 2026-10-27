@@ -271,6 +271,8 @@ if [[ -z $output ]]; then
     mkdir -p -- "$parent"
     stem=macos-gui; [[ $mode != all ]] || stem=all
     output=$(mktemp -d "$parent/network-relay-$stem-$(date -u +%Y%m%d-%H%M%S).XXXXXX")
+    # mktemp creates mode 700; artifacts get ordinary permissions for sharing and sync.
+    chmod -- "$(printf '%o' $((0777 & ~$(umask))))" "$output"
 elif [[ -e $output || -L $output ]]; then
     [[ -d $output && ! -L $output ]] && rg_empty "$output" || rg_die '--output must be new or empty, and not a symlink.'
 else
@@ -279,7 +281,8 @@ fi
 rg_dir "$output"; output=$REPLY
 [[ $output/ != "$work/"* && $work/ != "$output/"* ]] || rg_die 'Output and work directories cannot overlap.'
 logs="$output/logs"
-mkdir -m 700 -- "$logs" "$work/sources" "$work/tmp"
+mkdir -- "$logs"
+mkdir -m 700 -- "$work/sources" "$work/tmp"
 ln -s -- "$work" "$output/.work"
 printf 'Artifacts: %s\nPersistent checkout: %s\nPrivate workspace: %s\nSource commit: %s\n' "$output" "$checkout" "$work" "$root_commit"
 # Check free space before any long step. These are estimates from the Linux

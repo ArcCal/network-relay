@@ -39,7 +39,6 @@ if [[ -n ${NF_DOWNLOAD_URL:-} || -n ${NF_DOWNLOAD_SHA256:-} ]]; then
     exit 2
   fi
 fi
-umask 077
 mkdir "$NF_OUT" # Refuse to mix evidence with an earlier run.
 NF_OUT=$(cd "$NF_OUT" && pwd)
 trap 'printf "INCOMPLETE: failed; inspect individual logs.\n" >> "$NF_OUT/result.txt"' ERR

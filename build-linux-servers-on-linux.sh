@@ -567,6 +567,8 @@ if [[ -z $output ]]; then
     output=$(mktemp -d "$PWD/relay-servers-$platform-$stamp.XXXXXX") ||
         lr_explain "Cannot create the output folder in $PWD (this folder is not writable)." \
             'Run the script from your home folder (cd ~) or choose a folder with --output DIR.'
+    # mktemp creates mode 700; artifacts get ordinary permissions for sharing and sync.
+    chmod -- "$(printf '%o' $((0777 & ~$(umask))))" "$output"
 elif [[ -e $output || -L $output ]]; then
     if [[ ! -d $output || -L $output ]] || ! lr_empty_dir "$output"; then
         lr_die '--output must be a new or empty directory.'
@@ -581,7 +583,7 @@ work=$stage
 repo="$work/network-relay-src"
 caddy_src="$work/caddy-network-relay-src"
 cloudflare_src="$work/cloudflare-src"
-mkdir -m 700 -- "$output/logs"
+mkdir -- "$output/logs"
 ln -s -- "$work" "$output/.work"
 printf 'Artifacts: %s\nPersistent checkout: %s\nWork directory: %s\n' "$output" "$checkout" "$work"
 failures=0

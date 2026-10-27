@@ -487,6 +487,8 @@ if [[ -z $output ]]; then
     output=$(mktemp -d "$PWD/network-relay-linux-clients-$platform-$stamp.XXXXXX") ||
         lc_explain "Cannot create the output folder in $PWD (this folder is not writable)." \
             'Run the script from your home folder (cd ~) or choose a folder with --output DIR.'
+    # mktemp creates mode 700; artifacts get ordinary permissions for sharing and sync.
+    chmod -- "$(printf '%o' $((0777 & ~$(umask))))" "$output"
 elif [[ -e $output || -L $output ]]; then
     if [[ ! -d $output || -L $output ]] || ! lc_empty_dir "$output"; then lc_die '--output must be a new or empty directory.'; fi
 else
@@ -497,7 +499,7 @@ lc_physical_dir "$output"; output=$REPLY
 [[ $output/ != "$stage/"* && $stage/ != "$output/"* ]] || lc_die 'Output and work directories cannot overlap.'
 work=$stage
 repo="$work/network-relay-src"
-mkdir -m 700 -- "$output/logs"
+mkdir -- "$output/logs"
 ln -s -- "$work" "$output/.work"
 printf 'Artifacts: %s\nPersistent checkout: %s\nWork directory: %s\n' "$output" "$checkout" "$work"
 failures=0

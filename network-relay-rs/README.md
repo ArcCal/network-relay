@@ -55,7 +55,13 @@ Settings are stored privately at
 `~/Library/Application Support/NetworkRelayRS/configuration.json`.
 NF-exported TOML can be explicitly imported. This application does not read or
 rewrite NF's private settings automatically. Password-free exports leave an
-existing matching server password intact.
+existing matching server password intact. RS keeps and uses NF's per-server
+admission probe target but has no field to edit it.
+
+A saved server chosen in either server menu, or a new transport, applies
+immediately; a newly added or imported server must be saved first. The minus
+(-) button deletes the selected server after a confirmation; deleting the
+connected server moves the connection to the next server in the list.
 
 ## Command-line operation
 

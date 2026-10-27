@@ -118,15 +118,21 @@ settings import/export, About and the copied icon. GUI source and application
 logic are Rust; native AppKit is a platform widget layer.
 
 Selecting another server or changing active transport must take effect
-automatically. Editing active connection parameters and saving restarts after
-the old listener closes. Editing inactive profiles, display-only names or log
+automatically. A newly added or imported server takes effect only after Save,
+and adding or importing never connects by itself. The minus button deletes the
+selected server: a saved server leaves the saved settings at once after a
+confirmation, the connected one passes the connection to its list neighbor, and
+an unsaved server only leaves the draft. Editing active connection parameters
+and saving restarts after the old listener closes. Editing inactive profiles, display-only names or log
 level must not interrupt active traffic. Explicit Disconnect cancels pending
 automatic restarts. Saving a blank new profile must not unexpectedly select the
 first profile or reconnect to it.
 
 Settings use RS's own private JSON file, directory mode 0700 and file mode 0600
 with atomic replacement. NF-format TOML imports are explicit; exports can omit
-passwords and can select server or application scope. Exporting secrets requires
+passwords and can select server or application scope. NF's per-server
+`probe_target` is validated, stored, exported and used for readiness; RS
+provides no field to edit it. Exporting secrets requires
 private file permissions. RS must not change NF's saved settings, parent server
 files, system proxy settings or another app's process.
 
@@ -169,7 +175,7 @@ Test IPv6 when supported by the host; mark an unavailable fixture as NOT RUN.
 
 Actual Mac acceptance additionally covers successful ARM64 linking and
 packaging, launch, NF appearance/interaction comparison, menu bar, file panels,
-profile imports, active server/transport changes, blank draft selection and log
+profile imports, active server/transport changes, server deletion, blank draft selection and log
 controls. Run at least ten minutes per real server and transport with separate
 idle and active TCP/UDP periods, exceeding the historical ten-second and probe
 renewal intervals. Confirm no periodic automatic failure/reconnect cycle.

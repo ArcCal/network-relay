@@ -77,7 +77,8 @@ silently dead connection, as QUIC keep-alive and idle timeout do for HTTP/3.
 NF exports are imported only through an explicit user action. RS never loads
 NF's private JSON store automatically and never edits it. Imported password-free
 profiles preserve a matching existing password; a first import may therefore
-require the user to enter credentials before connecting.
+require the user to enter credentials before connecting. Each server keeps NF's
+admission probe target so NF exports pass through RS without loss.
 
 ## Compatibility target
 

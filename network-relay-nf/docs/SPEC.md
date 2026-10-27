@@ -150,12 +150,18 @@ response and is visible in Detailed logs.
 Selecting a different configured server or changing the selected transport must
 automatically restart an active client after this instance releases its listeners.
 Saving an inactive server, editing its display name or changing log level must not
-restart the active connection. An explicit Disconnect cancels any pending automatic
-restart. Saving a new incomplete server must not select the first list entry over
+restart the active connection. A newly added or imported server takes effect only
+after Save, and adding or importing never connects by itself. The minus button
+deletes the selected server: a saved server leaves the saved settings at once
+after a confirmation, the connected one passes the connection to its list
+neighbor, and an unsaved server only leaves the form. An explicit Disconnect
+cancels any pending automatic restart. Saving a new incomplete server must not select the first list entry over
 an existing active selection. Invalid settings fail before a usable client starts.
 
 Stored settings, exported TOML and log filenames use this app's identity. Export
 may omit passwords; export with passwords must use private file permissions.
+Network Relay RS exports import with every field kept, and RS imports NF exports
+without loss.
 Logs retain at most 5,000 recent lines in memory. The level menu runs from most
 to least detailed: Everything (TRACE through ERROR), Detailed (DEBUG through
 ERROR), Normal (INFO through ERROR), Warnings and Errors, Errors Only. Changing

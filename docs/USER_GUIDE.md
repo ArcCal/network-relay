@@ -513,9 +513,13 @@ Internet destination works. Test payload forwarding separately:
 curl -I --noproxy '' --proxy socks5h://127.0.0.1:1080 --connect-timeout 10 --max-time 30 https://example.com/
 ```
 
-Use `socks5h` so curl sends destination hostnames to the proxy. Switching the
-active server/transport restarts this client's connections. The application
-does not switch failed proxy traffic to a direct connection. The current NF
+Use `socks5h` so curl sends destination hostnames to the proxy. Choosing a saved
+server in the sidebar or settings, or another transport, applies at once and
+restarts this client's connections; a newly added or imported server must be
+saved before it can be chosen. Adding or importing a server never connects by
+itself. The minus (-) button deletes the selected server after a confirmation;
+deleting the connected server moves the connection to the next one in the list.
+The application does not switch failed proxy traffic to a direct connection. The current NF
 local SOCKS profile supports only no authentication; Kerberos/GSS-API is not
 available. See the application's
 [specification](../network-relay-nf/docs/SPEC.md) for its deliberately limited
@@ -537,7 +541,11 @@ open 'dist/Network Relay RS.app'
 RS has its own private settings at
 `~/Library/Application Support/NetworkRelayRS/configuration.json`. It can
 explicitly import NF-compatible TOML; it does not automatically rewrite NF's
-settings. A password-free export is not a credential backup.
+settings. A password-free export is not a credential backup. Server and
+transport choices, Save and the minus (-) button behave as in NF. Servers,
+Application Settings and All Settings exports from either app import into the
+other through the matching Import menu item, and server exports into RS headless
+`--config`, without losing fields.
 
 The packaged executable also has a headless mode:
 

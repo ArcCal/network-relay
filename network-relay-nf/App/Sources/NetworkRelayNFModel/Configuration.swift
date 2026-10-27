@@ -132,6 +132,21 @@ public struct Configuration: Codable, Equatable {
         }
     }
 
+    /// Without the server `id`. Deleting the server connected to moves the
+    /// connection to its neighbor in the list.
+    public func removing(server id: UUID) -> Configuration {
+        var new = self
+        let selected = selectedServer?.id
+        new.selectedServerID = selected
+        if let index = new.servers.firstIndex(where: { $0.id == id }) {
+            new.servers.remove(at: index)
+            if selected == id {
+                new.selectedServerID = new.servers.isEmpty ? nil : new.servers[min(index, new.servers.count - 1)].id
+            }
+        }
+        return new
+    }
+
     // MARK: The settings file
 
     private enum CodingKeys: String, CodingKey {

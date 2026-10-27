@@ -405,8 +405,8 @@ impl Drop for Controller {
 fn config_identity(c: &network_relay_rs_core::Config) -> String {
     // Used only for in-memory equality; never logged or persisted separately.
     format!(
-        "{}\0{}\0{}\0{:?}\0{}\0{:?}",
-        c.uri_template, c.username, c.password, c.server_name, c.transport, c.socks.listen
+        "{}\0{}\0{}\0{:?}\0{}\0{:?}\0{}",
+        c.uri_template, c.username, c.password, c.server_name, c.transport, c.socks.listen, c.probe_target
     )
 }
 #[derive(Clone)]

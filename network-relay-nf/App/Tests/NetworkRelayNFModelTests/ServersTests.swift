@@ -38,6 +38,31 @@ final class ServersTests: XCTestCase {
         XCTAssertEqual(other.settings.proxyAddress, "127.0.0.1:1081")
     }
 
+    func testDeletingTheServerConnectedToMovesToItsNeighbor() {
+        let paris = Server(name: "Paris", domain: "fr.example.com", username: "macbook", password: "pw")
+        var configuration = Configuration(servers: [tokyo, frankfurt, paris], selectedServerID: frankfurt.id, port: 1081)
+        configuration = configuration.removing(server: frankfurt.id)
+        XCTAssertEqual(configuration.servers, [tokyo, paris])
+        XCTAssertEqual(configuration.selectedServerID, paris.id)
+        XCTAssertEqual(configuration.port, 1081, "application settings stay")
+        configuration = configuration.removing(server: paris.id)
+        XCTAssertEqual(configuration.selectedServerID, tokyo.id)
+        configuration = configuration.removing(server: tokyo.id)
+        XCTAssertTrue(configuration.servers.isEmpty)
+        XCTAssertNil(configuration.selectedServerID)
+        XCTAssertNoThrow(try configuration.check())
+    }
+
+    func testDeletingAnotherServerKeepsTheOneConnectedTo() {
+        let configuration = Configuration(servers: [tokyo, frankfurt])
+        XCTAssertEqual(configuration.removing(server: frankfurt.id).servers, [tokyo])
+        XCTAssertEqual(configuration.removing(server: frankfurt.id).selectedServerID, tokyo.id)
+        XCTAssertEqual(configuration.removing(server: tokyo.id).selectedServerID, frankfurt.id)
+        var unchanged = configuration
+        unchanged.selectedServerID = tokyo.id
+        XCTAssertEqual(configuration.removing(server: UUID()), unchanged)
+    }
+
     func testServersAreShownByTheirNameOrElseTheirDomain() {
         XCTAssertEqual(tokyo.title, "Tokyo")
         XCTAssertEqual(Server(name: "  ", domain: " vpn.example.com ").title, "vpn.example.com")

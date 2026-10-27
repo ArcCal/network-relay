@@ -179,6 +179,51 @@ final class ExportImportTests: XCTestCase {
         }
     }
 
+    func testANetworkRelayRSExportIsImported() throws {
+        // As Network Relay RS writes it: lowercase IDs and its own header.
+        let imported = try Configuration.importing(#"""
+        # Network Relay RS settings; compatible with Network Relay NF imports.
+        # The file holds passwords: keep it private.
+
+        [proxy]
+        listen_address = "::1"
+        port = 1089
+        connect_on_launch = true
+        log_level = "everything"
+
+        [[server]]
+        id = "53eb9547-0b6e-489c-a617-85dd2d60c1fa"
+        name = "Tokyo \"one\" \u007F"
+        domain = "vpn.example.com:8443"
+        ip = "2001:db8::7"
+        username = "mac-1"
+        password = "p\"a\\ss w\u00f6rd"
+        transport = "h3"
+        probe_target = "[2606:4700:4700::1111]:53"
+
+        [[server]]
+        id = "a2f25a16-f797-4a34-b7d1-bbb9e980f3bc"
+        domain = "de.example.com"
+        username = "mac.2"
+        password = "pw"
+        transport = "http/1.1"
+        selected = true
+
+        """#)
+        XCTAssertEqual(imported.servers.map(\.id.uuidString), ["53EB9547-0B6E-489C-A617-85DD2D60C1FA", "A2F25A16-F797-4A34-B7D1-BBB9E980F3BC"])
+        XCTAssertEqual(imported.servers[0].name, "Tokyo \"one\" \u{7F}")
+        XCTAssertEqual(imported.servers[0].password, "p\"a\\ss wörd")
+        XCTAssertEqual(imported.servers[0].probeTarget, "[2606:4700:4700::1111]:53")
+        XCTAssertEqual(imported.servers[1].transport, .http1)
+        XCTAssertEqual(imported.selectedServer?.id, imported.servers[1].id)
+        XCTAssertEqual(imported.listenAddress, "::1")
+        XCTAssertEqual(imported.port, 1089)
+        XCTAssertTrue(imported.connectOnLaunch)
+        XCTAssertEqual(imported.logLevel, .everything)
+        XCTAssertNoThrow(try imported.check())
+        assertSame(try Configuration.importing(imported.exportedTOML(withPasswords: true)), imported)
+    }
+
     func testAFileWrittenByHand() throws {
         let imported = try Configuration.importing("""
         [[server]]

@@ -239,6 +239,86 @@ selected = true
 }
 
 #[test]
+fn nf_admission_probe_targets_survive_import_use_and_export() {
+    // The shape of a Network Relay NF export, including its UTF-8 header.
+    let nf = "# Network Relay NF settings. Import them in Network Relay NF with Settings \u{2192} Import\u{2026}.\n"
+        .to_owned()
+        + r#"# The file holds the passwords: keep it private.
+
+[proxy]
+listen_address = "127.0.0.1"
+port = 1080
+connect_on_launch = false
+log_level = "normal"
+
+[[server]]
+id = "7D3C1F0A-5B2E-4C11-9A6B-0123456789AB"
+name = "Tokyo"
+domain = "vpn.example.com"
+username = "macbook"
+password = "test-only"
+transport = "h2"
+probe_target = "[2606:4700:4700::1111]:53"
+selected = true
+
+[[server]]
+id = "7D3C1F0A-5B2E-4C11-9A6B-0123456789AC"
+domain = "de.example.com"
+username = "macbook"
+password = "test-only"
+transport = "auto"
+"#;
+    let c = Configuration::importing(&nf, TransferScope::All, &Configuration::default()).unwrap();
+    assert_eq!(c.servers[0].probe_target, "[2606:4700:4700::1111]:53");
+    assert_eq!(c.servers[1].probe_target, "1.1.1.1:53");
+    assert_eq!(c.core_config().unwrap().probe_target, "[2606:4700:4700::1111]:53".parse().unwrap());
+    let exported = c.exported_toml(true, TransferScope::All);
+    assert!(exported.contains("probe_target = \"[2606:4700:4700::1111]:53\""));
+    assert_eq!(exported.matches("probe_target").count(), 1, "the default is left out, as NF does");
+    assert_eq!(Configuration::importing(&exported, TransferScope::All, &Configuration::default()).unwrap(), c);
+    let core = c.client_config_toml().unwrap();
+    assert!(core.contains("probe_target = \"[2606:4700:4700::1111]:53\""));
+    let from_core = Configuration::importing(&core, TransferScope::All, &Configuration::default()).unwrap();
+    assert_eq!(from_core.servers[0].probe_target, "[2606:4700:4700::1111]:53");
+    // A changed probe target is part of the running client configuration.
+    let mut changed = c.clone();
+    changed.servers[0].probe_target = "9.9.9.9:53".into();
+    assert_eq!(client_change(&c, &changed), ClientChange::Reconnect);
+    let spaced = Configuration::importing(
+        "[[server]]\ndomain = \"a.example.com\"\nprobe_target = \" 8.8.8.8:53 \"",
+        TransferScope::All,
+        &Configuration::default(),
+    )
+    .unwrap();
+    assert_eq!(spaced.servers[0].probe_target, "8.8.8.8:53");
+    for target in [
+        "1.1.1.1",
+        "dns.example:53",
+        "1.1.1.1:0",
+        "1.1.1.1:65536",
+        "2606:4700::1111:53",
+        "[1.1.1.1]:53",
+        "[fe80::1%2]:53",
+    ] {
+        let text = format!("[[server]]\ndomain = \"a.example.com\"\nprobe_target = \"{target}\"");
+        assert!(Configuration::importing(&text, TransferScope::All, &Configuration::default()).is_err(), "{target}");
+    }
+}
+
+#[test]
+fn settings_saved_before_probe_targets_load_with_the_default() {
+    let folder = temporary_folder();
+    let path = folder.join("configuration.json");
+    fs::create_dir_all(&folder).unwrap();
+    fs::write(&path, r#"{"servers":[{"domain":"vpn.example.com","username":"macbook","password":"x"}]}"#).unwrap();
+    let c = Configuration::try_load(&path).unwrap();
+    assert_eq!(c.servers[0].probe_target, "1.1.1.1:53");
+    assert!(!c.servers[0].is_blank());
+    assert!(Server::default().is_blank());
+    fs::remove_dir_all(folder).unwrap();
+}
+
+#[test]
 fn import_ipv6_core_endpoint_retains_domain_and_port() {
     let core = r#"uri_template = "https://[2001:db8::7]:8443/.well-known/masque/udp/{target_host}/{target_port}/"
 server_name = "relay.example.com"

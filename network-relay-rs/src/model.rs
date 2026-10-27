@@ -15,6 +15,7 @@ use std::{
 use uuid::Uuid;
 
 const UDP_PATH: &str = "/.well-known/masque/udp/{target_host}/{target_port}/";
+const PROBE_TARGET: &str = "1.1.1.1:53";
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 pub enum Transport {
@@ -118,6 +119,8 @@ pub struct Server {
     pub username: String,
     pub password: String,
     pub transport: Transport,
+    /// NF's per-server admission probe target, kept for lossless transfers.
+    pub probe_target: String,
 }
 impl Default for Server {
     fn default() -> Self {
@@ -129,6 +132,7 @@ impl Default for Server {
             username: String::new(),
             password: String::new(),
             transport: Transport::Auto,
+            probe_target: PROBE_TARGET.into(),
         }
     }
 }
@@ -150,6 +154,7 @@ impl Server {
             && self.username.trim().is_empty()
             && self.password.is_empty()
             && self.transport == Transport::Auto
+            && self.probe_target == PROBE_TARGET
     }
     fn same_without_id(&self, other: &Self) -> bool {
         self.name == other.name
@@ -158,6 +163,7 @@ impl Server {
             && self.username == other.username
             && self.password == other.password
             && self.transport == other.transport
+            && self.probe_target == other.probe_target
     }
 }
 
@@ -280,6 +286,7 @@ impl Configuration {
         if server.password.chars().any(char::is_control) {
             return Err(ModelError("The password must not contain control characters such as line breaks.".into()));
         }
+        let probe_target = probe_target(&server.probe_target)?.parse().map_err(|_| invalid_probe_target())?;
         Ok(core::Config {
             uri_template: format!(
                 "https://{}{UDP_PATH}",
@@ -289,7 +296,7 @@ impl Configuration {
             username: username.into(),
             password: server.password.clone(),
             transport: server.transport.as_str().into(),
-            probe_target: "1.1.1.1:53".parse().expect("literal address"),
+            probe_target,
             mode: "socks".into(),
             socks: core::Socks { listen: vec![self.listen()?] },
         })
@@ -304,6 +311,9 @@ impl Configuration {
         lines.push(format!("password = {}", toml_string(&config.password)));
         if config.transport != "auto" {
             lines.push(format!("transport = {}", toml_string(&config.transport)));
+        }
+        if config.probe_target.to_string() != PROBE_TARGET {
+            lines.push(format!("probe_target = {}", toml_string(&config.probe_target.to_string())));
         }
         lines.extend([
             "mode = \"socks\"".into(),
@@ -393,6 +403,9 @@ impl Configuration {
                     lines.push(format!("password = {}", toml_string(&server.password)));
                 }
                 lines.push(format!("transport = {}", toml_string(server.transport.as_str())));
+                if server.probe_target != PROBE_TARGET {
+                    lines.push(format!("probe_target = {}", toml_string(&server.probe_target)));
+                }
                 if self.selected_server().is_some_and(|s| s.id == server.id) {
                     lines.push("selected = true".into());
                 }
@@ -475,6 +488,7 @@ impl Configuration {
             server.username = string(t, "username", &place)?.unwrap_or("").into();
             server.password = string(t, "password", &place)?.unwrap_or("").into();
             server.transport = read_transport(t, &place)?;
+            server.probe_target = probe_target(string(t, "probe_target", &place)?.unwrap_or(PROBE_TARGET))?;
             if boolean(t, "selected", &place)? == Some(true) && config.selected_server_id.is_none() {
                 config.selected_server_id = Some(server.id);
             }
@@ -505,6 +519,7 @@ impl Configuration {
             server.username = string(doc, "username", "")?.unwrap_or("").into();
             server.password = string(doc, "password", "")?.unwrap_or("").into();
             server.transport = read_transport(doc, "")?;
+            server.probe_target = probe_target(string(doc, "probe_target", "")?.unwrap_or(PROBE_TARGET))?;
             config.selected_server_id = Some(server.id);
             config.servers = vec![server];
         }
@@ -677,6 +692,24 @@ fn parse_authority(authority: &str) -> Result<(String, u16), ModelError> {
             Ok((authority.into(), 443))
         }
     }
+}
+/// NF's canonical numeric `host:port`; a probe name is never resolved locally.
+fn probe_target(text: &str) -> Result<String, ModelError> {
+    let text = text.trim();
+    let (host, port) = text.rsplit_once(':').ok_or_else(invalid_probe_target)?;
+    let port = port.parse::<u16>().ok().filter(|port| *port != 0).ok_or_else(invalid_probe_target)?;
+    let host = match host.strip_prefix('[').and_then(|host| host.strip_suffix(']')) {
+        Some(host) if host.parse::<std::net::Ipv6Addr>().is_ok() => host,
+        None if host.parse::<std::net::Ipv4Addr>().is_ok() => host,
+        _ => return Err(invalid_probe_target()),
+    };
+    Ok(socket_address(host, port))
+}
+fn invalid_probe_target() -> ModelError {
+    ModelError(
+        "The admission probe target must be an IP address and port, such as 1.1.1.1:53 or [2606:4700:4700::1111]:53."
+            .into(),
+    )
 }
 fn domain_with_port(host: &str, port: u16) -> String {
     if port == 443 { host.into() } else { format!("{host}:{port}") }

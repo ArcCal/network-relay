@@ -78,7 +78,7 @@ without changing saved GUI settings. Everything adds Rust I/O event kinds,
 resource handles, byte counts and read EOF markers; it does not print packet
 payloads, passwords or authentication headers.
 The headless importer follows the NF settings profile: one local SOCKS address,
-the standard UDP URI template and the default readiness target. It is not a
+the standard UDP URI template and the server's admission probe target. It is not a
 lossless importer for every lower-level core configuration option.
 
 ## Automated checks

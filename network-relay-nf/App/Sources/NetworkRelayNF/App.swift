@@ -394,7 +394,7 @@ struct SettingsForm: View {
                         Button { removeServer() } label: { Image(systemName: "minus") }
                             .buttonStyle(.borderless)
                             .disabled(editedIndex == nil)
-                            .help("Remove This Server")
+                            .help("Delete This Server")
                     }
                 }
                 Section {
@@ -509,8 +509,8 @@ struct SettingsForm: View {
         field(key, empty: "")
     }
 
-    /// A saved profile applies its saved settings immediately; merely adding,
-    /// removing or importing a draft profile still waits for Save.
+    /// A saved profile applies its saved settings immediately; merely adding
+    /// or importing a draft profile still waits for Save.
     private func changeServer(_ id: UUID?) {
         guard let id, draft.servers.contains(where: { $0.id == id }) else { return }
         guard tunnel.configuration.servers.contains(where: { $0.id == id }) else {
@@ -574,10 +574,32 @@ struct SettingsForm: View {
         draft.editing = server.id
     }
 
+    /// A saved server is deleted from the saved settings at once; an unsaved
+    /// one only leaves the form. Other unsaved edits are kept.
     private func removeServer() {
         guard let index = editedIndex else { return }
-        draft.servers.remove(at: index)
-        draft.editing = draft.servers.isEmpty ? nil : draft.servers[min(index, draft.servers.count - 1)].id
+        let id = draft.servers[index].id
+        if let server = tunnel.configuration.servers.first(where: { $0.id == id }) {
+            let alert = NSAlert()
+            alert.messageText = "Delete \"\(server.title)\"?"
+            alert.informativeText = "The server and its saved password are deleted now. This cannot be undone."
+            alert.addButton(withTitle: "Delete")
+            alert.addButton(withTitle: "Cancel")
+            guard alert.runModal() == .alertFirstButtonReturn else { return }
+            do {
+                try tunnel.save(tunnel.configuration.removing(server: id))
+            } catch {
+                message = .error(error.localizedDescription)
+                return
+            }
+        }
+        draft.servers.removeAll { $0.id == id }
+        if draft.selectAfterSave == id {
+            draft.selectAfterSave = nil
+        }
+        let active = tunnel.configuration.selectedServer?.id
+        draft.editing = draft.servers.contains { $0.id == active } ? active : draft.servers.first?.id
+        message = .note("Server deleted. Other changes still need Save.")
     }
 
     private func configurationFromDraft(scope: TransferScope = .all) throws -> NetworkRelayNFModel.Configuration {

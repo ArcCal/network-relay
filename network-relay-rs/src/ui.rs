@@ -429,15 +429,33 @@ impl App {
                 self.show_server_editor();
             }
             REMOVE => {
-                if let Some(at) = self.draft.servers.iter().position(|server| Some(server.id) == self.editing) {
-                    self.draft.servers.remove(at);
-                    self.editing = self
-                        .draft
-                        .servers
-                        .get(at.min(self.draft.servers.len().saturating_sub(1)))
-                        .map(|server| server.id);
-                    self.show_server_editor();
+                let Some(id) = self.editing.filter(|id| self.draft.servers.iter().any(|server| server.id == *id))
+                else {
+                    return Ok(());
+                };
+                // A saved server is deleted from the saved settings at once;
+                // an unsaved one only leaves the form.
+                if let Some(server) = self.controller.config.servers.iter().find(|server| server.id == id) {
+                    if alert(
+                        &format!("Delete \"{}\"?", server.title()),
+                        "The server and its saved password are deleted now. This cannot be undone.",
+                        &["Delete", "Cancel"],
+                    ) != 0
+                    {
+                        return Ok(());
+                    }
+                    self.controller.apply(without_server(&self.controller.config, id))?;
                 }
+                self.draft.servers.retain(|server| server.id != id);
+                if self.select_after_save == Some(id) {
+                    self.select_after_save = None;
+                }
+                let active = self.controller.config.selected_server().map(|server| server.id);
+                self.editing = active
+                    .filter(|id| self.draft.servers.iter().any(|server| server.id == *id))
+                    .or_else(|| self.draft.servers.first().map(|server| server.id));
+                self.show_server_editor();
+                self.message("Server deleted. Other changes still need Save.");
             }
             LEVEL => self.controller.set_log_level(log_level_at(index(sender)))?,
             COPY_ADDRESS => copy_text(&self.controller.config.proxy_address()),
@@ -978,7 +996,7 @@ unsafe fn settings_view(parent: Id, delegate: Id) -> Editor {
     }
     let hint = label(
         servers,
-        "Saved server and transport choices apply immediately. Other edits need Save.",
+        "Saved server and transport choices and deletions apply immediately. Other edits need Save.",
         rect(18., 10., 554., 23.),
         10.,
         false,
@@ -1162,6 +1180,21 @@ fn prepare_save(draft: &Configuration, current: &Configuration, requested: Optio
     saved
 }
 
+/// Deleting the connected server moves the connection to its neighbor.
+fn without_server(current: &Configuration, id: Uuid) -> Configuration {
+    let mut saved = current.clone();
+    let selected = current.selected_server().map(|server| server.id);
+    saved.selected_server_id = selected;
+    if let Some(at) = saved.servers.iter().position(|server| server.id == id) {
+        saved.servers.remove(at);
+        if selected == Some(id) {
+            saved.selected_server_id =
+                saved.servers.get(at.min(saved.servers.len().saturating_sub(1))).map(|server| server.id);
+        }
+    }
+    saved
+}
+
 fn private_write(path: &Path, contents: &[u8]) -> Result<()> {
     crate::model::write_privately(contents, path)?;
     Ok(())
@@ -1226,5 +1259,45 @@ mod tests {
         let mut draft = current.clone();
         draft.servers.push(imported.clone());
         assert_eq!(prepare_save(&draft, &current, Some(imported.id)).selected_server_id, Some(imported.id));
+    }
+    #[test]
+    fn deleting_the_connected_server_moves_the_connection_to_its_neighbor() {
+        let [first, second, third] = ["first", "second", "third"].map(configured);
+        let current = Configuration {
+            servers: vec![first.clone(), second.clone(), third.clone()],
+            selected_server_id: Some(second.id),
+            ..Configuration::default()
+        };
+        let saved = without_server(&current, second.id);
+        assert_eq!(saved.servers, vec![first.clone(), third.clone()]);
+        assert_eq!(saved.selected_server_id, Some(third.id));
+        let saved = without_server(&saved, third.id);
+        assert_eq!(saved.servers, vec![first.clone()]);
+        assert_eq!(saved.selected_server_id, Some(first.id));
+        let saved = without_server(&saved, first.id);
+        assert!(saved.servers.is_empty());
+        assert_eq!(saved.selected_server_id, None);
+        assert!(saved.check().is_ok());
+    }
+    #[test]
+    fn deleting_another_server_keeps_the_connection_and_application_settings() {
+        let [first, second] = ["first", "second"].map(configured);
+        let current = Configuration {
+            servers: vec![first.clone(), second.clone()],
+            selected_server_id: None,
+            listen_address: "::1".into(),
+            port: 1081,
+            ..Configuration::default()
+        };
+        let saved = without_server(&current, second.id);
+        assert_eq!(saved.servers, vec![first.clone()]);
+        assert_eq!(saved.selected_server_id, Some(first.id));
+        assert_eq!((saved.listen_address.as_str(), saved.port), ("::1", 1081));
+        let saved = without_server(&current, first.id);
+        assert_eq!(saved.selected_server_id, Some(second.id));
+        assert_eq!(
+            without_server(&current, Server::default().id),
+            Configuration { selected_server_id: Some(first.id), ..current }
+        );
     }
 }

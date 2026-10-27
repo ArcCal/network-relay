@@ -31,6 +31,7 @@ This project and [masque-vpn](https://github.com/ArcCal/masque-vpn) are two inde
 - [Troubleshooting](#troubleshooting)
 - [Glossary](#glossary)
 - [How it works](#how-it-works)
+- [Build scripts](#build-scripts)
 - [Tests](#tests)
 - [Changelog](CHANGELOG.md)
 
@@ -935,6 +936,33 @@ A device usually keeps just one HTTP/3 connection to the relay, carrying many re
 | [docs/design.md](docs/design.md) | Design: findings about Apple's network relay with sources, protocol details, security considerations, code structure |
 | [CHANGELOG.md](CHANGELOG.md) | Release history |
 
+## Build scripts
+
+These scripts build from fresh committed sources. Each one prints where it put
+its results.
+
+| Script | Run on | Builds | Results (default) |
+|---|---|---|---|
+| `build-linux-servers-on-linux.sh` | Debian 13 or Ubuntu 26.04, x64 or arm64 | `network-relay` and `caddy-network-relay` (with Cloudflare DNS) for Linux x64 and arm64 | `./relay-servers-*` |
+| `build-linux-clients-on-linux.sh` | Debian 13 or Ubuntu 26.04, x64 or arm64 | the headless Network Relay RS client for Linux x64 and arm64 | `./network-relay-linux-clients-*` |
+| `build-macos-gui-clients-on-macos.sh` | Apple silicon Mac, macOS 27+ and Xcode 27+ | the Network Relay NF and RS apps | `~/Desktop/Network-Relay-Builds/network-relay-macos-gui-*` |
+| `build-all-targets-on-macos.sh` | Apple silicon Mac, macOS 27+ and Xcode 27+ | everything above, plus the RS client for macOS arm64 | `~/Desktop/Network-Relay-Builds/network-relay-all-*` |
+| [`tools/build-all-macos.sh`](docs/build-all-macos.md) | Apple silicon Mac | every ArcCal VPN application from five repositories | `~/Projects/vpn-build-*` |
+| `network-relay-nf/build-macos.sh`, `network-relay-rs/build-macos.sh` | Apple silicon Mac | one app from the current folder | `dist/` in that app's folder |
+| `deploy/package-installer.py` | any system with Python 3 | the standalone installers (no compiling) | `dist/` |
+
+The repository-root scripts keep their source checkout in `~/network-relay`
+(change it with `--repo`), update it with `git pull --ff-only` and build a
+private snapshot of the fetched commit. Run any of them with `--help` for all
+options. Artifacts include logs, `MANIFEST.txt` or source revisions, and
+`SHA256SUMS`.
+
+When a script ends, successfully or not, every folder in its source checkout
+and its results, including all subfolders, is mode 777, so other users and
+file synchronization tools such as Syncthing can read and change them. File
+modes are left as they are. The private temporary work folders are removed
+after a successful build.
+
 ## Tests
 
 ```bash
@@ -947,4 +975,4 @@ cargo test
 
 GitHub Actions runs format, clippy, deployment, independent interoperability and vendored HTTP/3 tests on PRs and pushes to `main`. Published releases and manual workflow runs additionally test and build Linux x86_64 and arm64 packages (arm64 under qemu); published releases receive the packages automatically.
 
-The two standalone installers and their `.sha256` files are checked into the repository root. To refresh them after deployment-file changes, run `python3 deploy/package-installer.py --out network-relay-install.sh` and `python3 deploy/package-installer.py --source --out network-relay-install-from-source.sh`, then verify the checksums and commit all four files.
+The two standalone installers and their `.sha256` files are checked into the repository root. To refresh them after deployment-file changes, run `python3 deploy/package-installer.py --out network-relay-install.sh` and `python3 deploy/package-installer.py --source --out network-relay-install-from-source.sh`, then verify the checksums and commit all four files. Afterwards every folder in the repository and the output folder is mode 777.

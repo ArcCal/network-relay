@@ -6,6 +6,7 @@ import base64
 import gzip
 import hashlib
 import io
+import os
 from pathlib import Path
 import tarfile
 import textwrap
@@ -76,6 +77,16 @@ NETWORK_RELAY_DEPLOYMENT_BUNDLE
     print(f'Wrote {out}: {out.stat().st_size} bytes; {len(files)} bundled files; {mode}.')
 
 
+def open_dirs(*roots):
+    """Leave the source and artifact folders, and every folder below them, open to all users."""
+    for root in roots:
+        for folder, _, _ in os.walk(root):
+            try:
+                os.chmod(folder, 0o777)
+            except OSError:
+                pass
+
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--out', type=Path)
@@ -83,3 +94,4 @@ if __name__ == '__main__':
     args = parser.parse_args()
     out = args.out or Path('dist/network-relay-install-from-source.sh' if args.source else 'dist/network-relay-install.sh')
     package(out, args.source)
+    open_dirs(ROOT, out.resolve().parent)

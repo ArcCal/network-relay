@@ -12,6 +12,7 @@
 - Network Relay NF: the shared HTTP/2 connection's receive window is the protocol maximum instead of 5 MiB, so three downloads whose data is not being read can no longer stall every other flow on the connection. Each flow still buffers at most its 2 MiB stream window.
 - Network Relay RS and NF: the minus (-) button deletes the selected server. A saved server is removed from the saved settings at once, after a confirmation, and deleting the connected server moves the connection to its neighbor in the list; other unsaved edits are kept. It used to remove the server from the form only, so nothing changed until Save. Saved server and transport choices still apply immediately; unsaved or newly imported servers still need Save before they can be chosen.
 - Network Relay RS keeps NF's per-server admission probe target (`probe_target`) when importing, uses it to connect, including headless, and writes it back on export and in its client configuration, so NF exports move through RS without losing it. Settings saved before this keep the default 1.1.1.1:53.
+- Build scripts no longer leave restrictive permissions behind: when a build or packaging script ends, successfully or not, every folder in its source checkout and its results is mode 777, so other users and file synchronization tools such as Syncthing can use them. File modes are unchanged. The README lists every build script.
 
 ## 1.5.0 — 2026-10-07
 

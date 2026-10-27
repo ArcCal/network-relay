@@ -101,7 +101,7 @@ sudo bash deploy/install-debian13.sh
 
 It reads the installation's domain, port and user name from `/etc/network-relay/install.json` and installs the uploaded binary. A binary-only upgrade needs neither the profile nor the password. To regenerate the routing profile as well, add `--refresh-profile`; the password is reused from the old delivery file or prompted for. It refuses to overwrite an account with a different domain, port or user name. Upload again after a reboot if `/tmp` was cleared.
 
-To reproduce the standalone download file without compiling anything, run `python3 deploy/package-installer.py` from the repository; it writes `dist/network-relay-install.sh` and its SHA-256 file. Add `--source` to package `dist/network-relay-install-from-source.sh` and its SHA-256 file. Packaging does not compile Rust.
+To reproduce the standalone download file without compiling anything, run `python3 deploy/package-installer.py` from the repository; it writes `dist/network-relay-install.sh` and its SHA-256 file. Add `--source` to package `dist/network-relay-install-from-source.sh` and its SHA-256 file. Packaging does not compile Rust. Afterwards every folder in the repository and the output folder is mode 777.
 
 Installations made by earlier versions of the script have no `install.json`; the script reads their identity from `/etc/network-relay/device.mobileconfig` instead, writes `install.json`, and reminds you that the old file holds the password. Delete it once your devices have the profile.
 

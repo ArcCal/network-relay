@@ -195,6 +195,13 @@ and vendored HTTP/3 patches; replacing their dependencies casually changes the
 tested transport implementation. A successful cross-build is not a native
 runtime test.
 
+To build Linux x64 and arm64 server binaries for upload instead, run
+`bash build-linux-servers-on-linux.sh` on Debian 13 or Ubuntu 26.04; it
+installs what it needs and writes both servers, logs and `SHA256SUMS` to a new
+`relay-servers-*` folder. The [build scripts](../README.md#build-scripts)
+section lists every build script. When a build script ends, every folder in its
+source checkout and its results is mode 777.
+
 The supplied service runs as `network-relay` with only low-port bind capability;
 normal forwarding does not require `CAP_NET_ADMIN`. Installation itself requires
 administrative privileges. Certbot's root-only key must be copied with the
@@ -559,7 +566,9 @@ Headless mode does not load/save GUI settings. `--ca-file` adds a test CA while
 retaining certificate-name verification; it is not an insecure mode.
 
 Both app build scripts create ad-hoc-signed local bundles, not notarized public
-releases. Follow their [NF build guide](../network-relay-nf/docs/BUILD-AND-OBSERVE.md)
+releases. When they end, every folder in that app's folder, including `build/`
+and `dist/`, is mode 777. `build-macos-gui-clients-on-macos.sh` in the
+repository root builds both apps from a fresh checkout in one run. Follow their [NF build guide](../network-relay-nf/docs/BUILD-AND-OBSERVE.md)
 and [RS build guide](../network-relay-rs/docs/BUILD-AND-OBSERVE.md) for fresh-source
 procedures, signing observations and TCP/UDP acceptance. Do not infer native Mac
 runtime success from a Linux model or transport test.

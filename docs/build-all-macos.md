@@ -5,6 +5,7 @@ It downloads fresh source and cross-compiles the Linux software; no Linux
 VM, Docker, existing checkout, enrollment, server password, or VPN settings
 are needed. Mac mini M6 uses the same `arm64` target as other Apple silicon.
 Existing source/build directories and installed applications are not replaced.
+When the script ends, every folder in the new build directory is mode 777.
 
 ## First run
 

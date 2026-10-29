@@ -1,21 +1,23 @@
 #!/usr/bin/env bash
-# Interactive fresh deployment: native Linux build + Certbot Cloudflare DNS-01.
+# Interactive repeatable deployment: native Linux build + Certbot Cloudflare DNS-01.
 # Requires Debian 12+ or Ubuntu 22.04+, Bash 4+, systemd and amd64/arm64.
 # Run from the complete checkout on the server. --plan makes no changes.
 # Token permissions: Zone:DNS:Edit and Zone:Zone:Read for the selected zone.
 # Keep DNS-only A/AAAA records pointing here; allow inbound TCP/UDP 443.
 # DNS validation does not need inbound port 80. No Python helper is used.
 #
-# Deployment sequence (this is a fresh installer, not an upgrade/repair tool):
-#   1. Check the host, dedicated paths/account and service/port conflicts.
+# Repeatable deployment/repair sequence:
+#   1. Check the host, dedicated path ownership, account and socket ownership.
 #   2. Read only the relay domain and a hidden Cloudflare token.
 #   3. Install prerequisites noninteractively; verify and build native Rust.
-#   4. Create a dedicated account, private directories and root token source.
-#   5. Obtain a certificate as root, copy its pair and configure the sandbox.
-#   6. Validate/start the server and run trusted HTTPS and relay protocol checks.
-#   7. Export a Rust client TOML using the same generated account credentials.
-# The Apple profile is written before startup so it retains the password if a
-# later check fails. The runtime never receives the Cloudflare API token.
+#   4. Reuse a valid domain certificate, or obtain one with DNS-01 when needed.
+#   5. Stage/validate current-script configuration, TLS copies and both exports.
+#   6. Back up old dedicated files/state, switch the unit and run real checks.
+#   7. Commit on success; otherwise restore prior files and service state.
+# The current script is authoritative on every run. Existing websites and the
+# Certbot archive/account state are retained. The daemon never receives the API
+# token. A failed switch restores the prior dedicated deployment, while valid
+# newly issued certificates and their renewal credentials remain available.
 #
 # Disable tracing before reading any credentials, even under bash -x/-v.
 set +x
@@ -53,7 +55,10 @@ LOGS=/var/log/$SERVICE
 RUNTIME=/run/$SERVICE
 SYSCTL=/etc/sysctl.d/90-$SERVICE-cloudflare-dns.conf
 work=
-startup_pending=0
+transaction_started=0
+backup_dir=
+was_active=0
+was_enabled=disabled
 
 nr_die() { printf 'Error: %s\n' "$*" >&2; exit 1; }
 nr_usage() {
@@ -73,9 +78,10 @@ one build job and the bundled selected-domain device profile.
 Certbot registers without email. Running this installer accepts the ACME CA
 terms. There is no installation confirmation or other interactive prompt.
 
-Fresh installations only: existing service/configuration files are refused.
+Repeatable installs/repairs: current-script files replace old dedicated files
+after staging and validation. A failed switch restores the prior deployment.
 The token stays in a root-only Certbot file for renewal, never in argv or the
-relay service environment. The daemon runs under a fresh non-root account with
+relay service environment. The daemon runs under a dedicated non-root account with
 read-only host files, private logs/runtime and a separate TLS certificate copy.
 Set Cloudflare A/AAAA records to DNS only and permit inbound TCP/UDP 443.
 Provider firewall rules and real-device verification remain your responsibility.
@@ -139,41 +145,107 @@ nr_check_parent_dirs() {
         done
     done
 }
-# Do not adopt a previous account, cache, log tree or unit override. An existing
-# UID may have live processes/access, and a drop-in could cancel unit sandboxing.
-# This also refuses dangling symlinks. Partial failed installations need manual
-# inspection; silently deleting/reusing their state would hide a prior problem.
-nr_fresh() {
-    local path loaded certbot_path
-    local paths=("$ETC" "$BIN" "$UNIT" "$HOOK" "$CREDS" "$WWW" "$SYSCTL" "$TOOLS" "$LOGS" "$RUNTIME" "$UNIT.d"
-        "/lib/systemd/system/$SERVICE.service" "/usr/lib/systemd/system/$SERVICE.service"
-        "/run/systemd/system/$SERVICE.service"
-        "/etc/systemd/system/$SERVICE.service.d" "/run/systemd/system/$SERVICE.service.d"
-        "/lib/systemd/system/$SERVICE.service.d" "/usr/lib/systemd/system/$SERVICE.service.d")
-    for path in "${paths[@]}"; do
-        [[ ! -e $path && ! -L $path ]] || nr_die "Existing installation/file: $path. Fresh installs only."
-        nr_check_parent_dirs "$path"
-    done
-    if id -u "$SERVICE" >/dev/null 2>&1 || getent group "$SERVICE" >/dev/null; then
-        nr_die 'Fresh installation requires an unused service user and group name.'
+nr_check_account() {
+    local entry name ignored uid gid gecos home shell members aliases group_entry primary users groups item
+    entry=$(getent passwd "$SERVICE" || true)
+    group_entry=$(getent group "$SERVICE" || true)
+    if [[ -z $entry ]]; then
+        if [[ -n $group_entry ]]; then
+            IFS=: read -r name ignored gid members <<< "$group_entry"
+            [[ $gid =~ ^[0-9]+$ && $gid != 0 && -z $members ]] || nr_die 'Existing dedicated group is not safe to reuse.'
+            aliases=$(getent group | awk -F: -v gid="$gid" '$3 == gid {n++} END {print n+0}')
+            users=$(getent passwd | awk -F: -v gid="$gid" '$4 == gid {n++} END {print n+0}')
+            [[ $aliases == 1 && $users == 0 ]] || nr_die 'Existing dedicated group is shared by another identity.'
+        fi
+        return
     fi
-    loaded=$(systemctl show "$SERVICE" --property=LoadState --value) || nr_die 'Cannot inspect systemd.'
-    [[ -z $loaded || $loaded == not-found ]] || nr_die "An existing $SERVICE unit is loaded."
-    certbot_path=$(type -P certbot || true)
-    [[ -z $certbot_path || $certbot_path == /usr/bin/certbot ]] || nr_die 'Do not mix snap/pip Certbot with apt Certbot; resolve the existing installation first.'
-    # /proc is available before iproute2 is installed. TCP state 0A is LISTEN;
-    # UDP sockets of any state bound to 443 also conflict with QUIC.
+    IFS=: read -r name ignored uid gid gecos home shell <<< "$entry"
+    [[ $uid =~ ^[0-9]+$ && $gid =~ ^[0-9]+$ && $uid != 0 && $gid != 0 ]] || nr_die 'Dedicated account must not be privileged.'
+    [[ $home == /nonexistent || $home == /var/lib/$SERVICE ]] || nr_die 'Existing service account has an unrelated home directory.'
+    case $shell in /usr/sbin/nologin|/sbin/nologin|/bin/false|/usr/bin/false) ;; *) nr_die 'Existing service account has a login shell.' ;; esac
+    [[ -n $group_entry ]] || nr_die 'Dedicated primary group is missing.'
+    IFS=: read -r name ignored primary members <<< "$group_entry"
+    [[ $primary == "$gid" && -z $members && $(id -gn "$SERVICE") == "$SERVICE" ]] || nr_die 'Existing service account/group is shared or mismatched.'
+    aliases=$(getent passwd | awk -F: -v uid="$uid" '$3 == uid {n++} END {print n+0}')
+    users=$(getent passwd | awk -F: -v gid="$gid" '$4 == gid {n++} END {print n+0}')
+    [[ $aliases == 1 && $users == 1 ]] || nr_die 'Existing service UID/GID is shared by another account.'
+    aliases=$(getent group | awk -F: -v gid="$gid" '$3 == gid {n++} END {print n+0}')
+    [[ $aliases == 1 ]] || nr_die 'Existing primary GID has another group alias.'
+    groups=$(id -G "$SERVICE")
+    for item in $groups; do [[ $item == "$gid" ]] || nr_die 'Dedicated account has supplementary groups.'; done
+}
+# Kept as an alias for older callers; existing safe accounts are now accepted.
+nr_require_new_account() { nr_check_account; }
+# A root-owned leaf is insufficient when another service can rename it through
+# a writable parent. In particular, file_server follows symlinks: replacing the
+# web root could otherwise expose files readable by the relay account. Check
+# both lexical and resolved ancestors so a symlink cannot hide an unsafe parent.
+# Refuse unsafe shared directories instead of changing their ownership or mode.
+nr_check_leaf() {
+    local path=$1 kind=$2 owner mode metadata service_uid=0
+    nr_check_parent_dirs "$path"
+    [[ ! -L $path ]] || nr_die "Refusing an unknown installation symlink: $path."
+    [[ -e $path ]] || return 0
+    metadata=$(stat -Lc '%u %a' -- "$path") || nr_die "Cannot inspect $path."
+    read -r owner mode <<< "$metadata"
+    [[ $mode =~ ^[0-7]{3,4}$ ]] && (( (8#$mode & 0022) == 0 )) || nr_die "Dedicated path is group/other writable: $path."
+    case $kind in
+        file) [[ -f $path && $owner == 0 ]] || nr_die "Dedicated file is not a root-owned regular file: $path." ;;
+        private) [[ -f $path && $owner == 0 ]] && (( (8#$mode & 0077) == 0 )) || nr_die "Private export/token is not root-only: $path." ;;
+        rootdir) [[ -d $path && $owner == 0 ]] || nr_die "Dedicated directory is not root-owned: $path." ;;
+        statedir)
+            service_uid=$(id -u "$SERVICE" 2>/dev/null || printf 0)
+            [[ -d $path && ( $owner == 0 || $owner == "$service_uid" ) ]] || nr_die "Dedicated state/runtime directory has an unrelated owner: $path." ;;
+    esac
+}
+nr_port_inodes() {
     local sockets=(/proc/net/tcp /proc/net/udp) file
     for file in /proc/net/tcp6 /proc/net/udp6; do [[ ! -r $file ]] || sockets+=("$file"); done
-    for file in "${sockets[@]}"; do
-        [[ -r $file ]] || nr_die "Cannot inspect listening sockets: $file is unreadable."
+    for file in "${sockets[@]}"; do [[ -r $file ]] || nr_die "Cannot inspect listening sockets: $file."; done
+    awk 'FNR > 1 && $2 ~ /:01BB$/ && (FILENAME ~ /udp/ || $4 == "0A") {print $10}' "${sockets[@]}"
+}
+nr_pid_socket_inodes() {
+    local pid=$1 fd target
+    [[ -d /proc/$pid/fd && -r /proc/$pid/fd ]] || nr_die 'Cannot inspect the dedicated service socket ownership.'
+    for fd in /proc/"$pid"/fd/*; do
+        target=$(readlink -- "$fd" 2>/dev/null || true)
+        if [[ $target =~ ^socket:\[([0-9]+)\]$ ]]; then printf '%s\n' "${BASH_REMATCH[1]}"; fi
     done
-    local port_state
-    port_state=$(awk 'FNR > 1 && $2 ~ /:01BB$/ && (FILENAME ~ /udp/ || $4 == "0A") {busy=1} END {print busy+0}' "${sockets[@]}") \
-        || nr_die 'Cannot inspect listening sockets; port availability is unknown.'
-    if [[ $port_state != 0 ]]; then
-        nr_die 'TCP or UDP port 443 is busy. Stop the conflicting service yourself.'
-    fi
+}
+# The running dedicated unit may keep 443 during a long rebuild. Every occupied
+# inode must belong to its actual MainPID; never stop or kill a different server.
+nr_ports() {
+    local occupied pid owned inode found item
+    occupied=$(nr_port_inodes) || nr_die 'Cannot inspect listening sockets; port availability is unknown.'
+    [[ -n $occupied ]] || return 0
+    pid=$(systemctl show "$SERVICE" --property=MainPID --value) || nr_die 'Cannot inspect dedicated service MainPID.'
+    [[ $pid =~ ^[0-9]+$ && $pid != 0 ]] || nr_die 'TCP or UDP 443 belongs to another process; no other service was stopped.'
+    owned=$(nr_pid_socket_inodes "$pid") || nr_die 'Cannot establish service socket ownership.'
+    while IFS= read -r inode; do
+        [[ $inode =~ ^[0-9]+$ ]] || nr_die 'Invalid kernel socket record.'
+        found=0
+        while IFS= read -r item; do [[ $inode != "$item" ]] || found=1; done <<< "$owned"
+        (( found )) || nr_die 'TCP or UDP 443 belongs to another process; no other service was stopped.'
+    done <<< "$occupied"
+}
+# Compatibility name retained for existing usage/tests; this is now a safe
+# installation preflight, not an existence-based fresh-install gate.
+# Permit safe prior deployments and interrupted attempts; never require users to
+# delete paths one by one. Unknown symlinks, writable roots and shared accounts
+# are still rejected, because replacement must not affect another workload.
+nr_fresh() {
+    local path dropin entry
+    nr_check_account
+    for path in "$ETC" "$TLS" "$EXPORTS" "$TOOLS" "$TOOLS/backups" "$WWW"; do nr_check_leaf "$path" rootdir; done
+    for path in "$LOGS" "$RUNTIME"; do nr_check_leaf "$path" statedir; done
+    for path in "$BIN" "$UNIT" "$CONFIG" "$SYSCTL" "$HOOK"; do nr_check_leaf "$path" file; done
+    for path in "$CREDS" "$PROFILE" "$CLIENT_CONFIG"; do nr_check_leaf "$path" private; done
+    for dropin in "$UNIT.d" "/run/systemd/system/$SERVICE.service.d" "/usr/lib/systemd/system/$SERVICE.service.d" "/lib/systemd/system/$SERVICE.service.d"; do
+        nr_check_leaf "$dropin" rootdir
+        [[ -d $dropin ]] || continue
+        while IFS= read -r entry; do nr_check_leaf "$entry" file; done < <(find -P "$dropin" -mindepth 1 -maxdepth 1 -print)
+    done
+    nr_ports
 }
 # Ignore per-user curl configuration, retaining HTTPS/TLS verification, proxy
 # routing and configured CA trust. Artifact checksums are checked before use.
@@ -199,31 +271,109 @@ nr_new_file() {
     chmod "$mode" "$path"
     chown root:"$group" "$path"
 }
-# Stop only this fresh candidate if its startup/readiness interval failed.
-# Preserve the first command's failure even if cleanup also fails, and remove
-# only this run's scratch directory. Persistent credentials/partial files remain
-# for diagnosis: deleting a Certbot renewal source could break future renewal.
-nr_cleanup() {
-    local status=$? cleanup_status=0
-    trap - EXIT
-    if (( startup_pending )); then
-        if ! systemctl disable --now "$SERVICE" >/dev/null 2>&1; then
-            printf 'Warning: failed to stop/disable candidate %s; inspect it manually.\n' "$SERVICE" >&2
-            cleanup_status=1
+# Dedicated files participate in a rollback transaction. Certificates, ACME
+# accounts, websites and logs remain in place: remote issuance cannot be undone
+# by restoring a configuration file. Backups are root-only and retained.
+nr_rollback() {
+    local failed=0 index=0 path existed type prior
+    if ! systemctl stop "$SERVICE" >/dev/null 2>&1; then
+        # A missing/previously incomplete unit may legitimately have nothing to
+        # stop. A still-active process is an actual rollback failure.
+        if systemctl is-active --quiet "$SERVICE"; then failed=1; fi
+    fi
+    while IFS=$'\t' read -r index existed type path; do
+        if [[ $type == dir ]]; then
+            [[ ! -e $path ]] || rm -rf -- "$path" || failed=1
+            if [[ $existed == 1 ]]; then cp -a -- "$backup_dir/files/$index" "$path" || failed=1; fi
+        elif [[ $existed == 1 ]]; then
+            prior=$(mktemp "${path%/*}/.${path##*/}.restore.XXXXXXXX") || { failed=1; continue; }
+            if cp -a -- "$backup_dir/files/$index" "$prior" && mv -fT -- "$prior" "$path"; then :; else
+                rm -f -- "$prior"; failed=1
+            fi
+        else
+            rm -f -- "$path" || failed=1
+        fi
+    done < "$backup_dir/manifest"
+    systemctl daemon-reload || failed=1
+    # Remove candidate enablement first. In particular, restoring an originally
+    # runtime-only enable must not leave the candidate's persistent wants link.
+    if ! systemctl disable "$SERVICE" >/dev/null 2>&1; then
+        if systemctl is-enabled --quiet "$SERVICE"; then failed=1; fi
+    fi
+    case $was_enabled in
+        enabled) systemctl enable "$SERVICE" >/dev/null 2>&1 || failed=1 ;;
+        enabled-runtime) systemctl enable --runtime "$SERVICE" >/dev/null 2>&1 || failed=1 ;;
+    esac
+    if (( was_active )); then
+        if [[ -x $BIN && -f $CONFIG ]]; then
+            systemctl start "$SERVICE" || failed=1
+        else
+            printf 'Warning: the previous deployment was already missing binary/config/unit files; its disk baseline was restored but it cannot be restarted.\n' >&2
+            failed=1
         fi
     fi
+    (( failed == 0 ))
+}
+nr_cleanup() {
+    local status=$?
+    trap - EXIT
+    if (( transaction_started )); then
+        if nr_rollback; then
+            printf 'The candidate failed; dedicated files and prior active/enabled state were restored.\n' >&2
+        else
+            printf 'Rollback was incomplete; inspect private backup %s and journalctl -u %s.\n' "$backup_dir" "$SERVICE" >&2
+        fi
+        (( status != 0 )) || status=1
+    fi
     if [[ -n $work ]] && ! rm -rf -- "$work"; then
-        printf 'Warning: could not remove scratch directory %s.\n' "$work" >&2
-        cleanup_status=1
+        printf 'Warning: could not remove private scratch directory %s.\n' "$work" >&2
+        (( status != 0 )) || status=1
     fi
-    if (( status == 0 && cleanup_status != 0 )); then status=1; fi
-    if (( status )); then
-        printf 'Deployment incomplete (exit %s). No existing installation was replaced.\n' "$status" >&2
-        printf 'Packages, certificates and partial files may remain. Inspect the last completed step before retrying.\n' >&2
-        printf 'If already generated, the credential-bearing device profile is %s.\n' "$PROFILE" >&2
-    fi
+    if (( status )); then printf 'Deployment incomplete (exit %s). Private backup: %s\n' "$status" "${backup_dir:-not needed before file replacement}" >&2; fi
     exit "$status"
 }
+# Copy into a same-filesystem temporary file, then rename. Replacing the pathname
+# never truncates the executable inode still in use by the previous process.
+nr_atomic_install() {
+    local source=$1 destination=$2 mode=$3 group=${4:-root} temporary
+    nr_check_parent_dirs "$destination"
+    [[ ! -L $destination ]] || nr_die "Refusing installation symlink: $destination."
+    temporary=$(mktemp "${destination%/*}/.${destination##*/}.install.XXXXXXXX")
+    if install -o root -g "$group" -m "$mode" -- "$source" "$temporary" && mv -fT -- "$temporary" "$destination"; then :; else
+        rm -f -- "$temporary"
+        nr_die "Atomic installation failed: $destination."
+    fi
+}
+nr_backup() {
+    local path index=0 existed type canonical seen=$'\n'
+    was_active=0
+    if systemctl is-active --quiet "$SERVICE"; then was_active=1; fi
+    was_enabled=$(systemctl is-enabled "$SERVICE" 2>/dev/null || true)
+    was_enabled=${was_enabled:-disabled}
+    nr_check_leaf "$TOOLS/backups" rootdir
+    install -d -o root -g root -m 700 "$TOOLS/backups"
+    backup_dir=$(mktemp -d "$TOOLS/backups/deployment-$(date -u +%Y%m%d-%H%M%S).XXXXXXXX")
+    install -d -m 700 "$backup_dir/files"
+    : > "$backup_dir/manifest"
+    local paths=("$BIN" "$CONFIG" "$UNIT" "$PROFILE" "$CLIENT_CONFIG" "$SYSCTL" "$HOOK"
+        "$TLS/fullchain.pem" "$TLS/privkey.pem" "$UNIT.d" "/run/systemd/system/$SERVICE.service.d"
+        "/usr/lib/systemd/system/$SERVICE.service.d" "/lib/systemd/system/$SERVICE.service.d")
+    for path in "${paths[@]}"; do
+        canonical=$(readlink -m -- "$path")
+        [[ $seen != *$'\n'"$canonical"$'\n'* ]] || continue
+        seen+="$canonical"$'\n'
+        type=file; [[ $path != *.service.d ]] || type=dir
+        existed=0
+        if [[ -e $path ]]; then existed=1; cp -a -- "$path" "$backup_dir/files/$index"; fi
+        printf '%s\t%s\t%s\t%s\n' "$index" "$existed" "$type" "$path" >> "$backup_dir/manifest"
+        index=$((index + 1))
+    done
+    printf 'active=%s\nenabled=%s\n' "$was_active" "$was_enabled" > "$backup_dir/service-state"
+    printf 'Private deployment backup: %s\n' "$backup_dir"
+    transaction_started=1
+}
+# Inspect adjacent module/replacement records in `go version -m` output. Merely
+# finding a module name is insufficient: the binary must use its patched source.
 # Compile a private copy of the checkout with its committed Cargo.lock. Build
 # output and toolchain/cache files stay outside the source and daemon paths.
 # Unset inherited cross-build/compiler hooks; the configured proxy/CA remains.
@@ -255,8 +405,8 @@ nr_build() {
     export CARGO_HTTP_SSL_VERIFY=true
     export CARGO_REGISTRIES_CRATES_IO_PROTOCOL=sparse
     export CARGO_REGISTRIES_CRATES_IO_INDEX=sparse+https://index.crates.io/
-    export CARGO_HOME=$TOOLS/cargo RUSTUP_HOME=$TOOLS/rustup RUSTUP_TOOLCHAIN=1.99.1
-    export CARGO_TARGET_DIR=$TOOLS/target
+    export CARGO_HOME=$work/cargo RUSTUP_HOME=$work/rustup RUSTUP_TOOLCHAIN=1.99.1
+    export CARGO_TARGET_DIR=$work/target
     export PATH="$CARGO_HOME/bin:$PATH"
     "$work/rustup-init" -y --no-modify-path --profile minimal --default-toolchain "$RUSTUP_TOOLCHAIN"
     (cd "$work/source"; "$CARGO_HOME/bin/cargo" build --locked --release --bin network-relay --target "$triple" --jobs "$jobs")
@@ -369,21 +519,18 @@ nr_profile_args() {
         (( count > 0 )) || nr_die 'Refusing an empty selected-domain profile.'
     fi
 }
-# Fresh installs must own a new, independent identity. Re-check immediately
-# before useradd as well as during preflight to avoid adopting a racing account.
-# Do not try to sanitize someone else's groups, shell, home or live processes.
+# Reuse only the independently checked non-login, unshared identity. Account
+# creation happens before staging but does not stop the currently running unit.
 nr_account() {
-    if id -u "$SERVICE" >/dev/null 2>&1 || getent group "$SERVICE" >/dev/null; then
-        nr_die 'Fresh installation requires an unused service user and group name.'
+    nr_check_account
+    if ! id -u "$SERVICE" >/dev/null 2>&1; then
+        if getent group "$SERVICE" >/dev/null; then
+            useradd --system --gid "$SERVICE" --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin "$SERVICE"
+        else
+            useradd --system --user-group --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin "$SERVICE"
+        fi
     fi
-    useradd --system --user-group --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin "$SERVICE"
-    [[ $(id -u "$SERVICE") != 0 && $(id -g "$SERVICE") != 0 && $(id -gn "$SERVICE") == "$SERVICE" ]] || nr_die 'Refusing a privileged or mismatched service account.'
-    local primary_group group_id groups
-    primary_group=$(id -g "$SERVICE")
-    groups=$(id -G "$SERVICE")
-    for group_id in $groups; do
-        [[ $group_id == "$primary_group" ]] || nr_die 'The service account must not have supplementary groups.'
-    done
+    nr_check_account
 }
 # Export the same account used by both server and Apple profile. This format is
 # accepted by the Rust GUI importer and headless client. Loopback-only SOCKS does
@@ -420,100 +567,281 @@ nr_generate_password() {
         fi
     done
 }
-# Obtain certificates as root, prepare a service-readable pair and an Argon2id
-# user, then validate/start a fresh sandboxed deployment. Root-only credentials
-# and client exports are kept separate from the public website and TLS copies.
-nr_deploy() {
-    local relay_password account key current response ready=0
-    local cli=("$work/$SERVICE") path
-    # Re-check ancestors after compilation, which may take a long time. Never
-    # adopt an untrusted web/config/state parent even if preflight was earlier.
-    for path in "$ETC" "$BIN" "$UNIT" "$EXPORTS" "$WWW" "$SYSCTL" "$TOOLS" "$LOGS" "$RUNTIME" "$CREDS" "$HOOK"; do
-        nr_check_parent_dirs "$path"
+# Read only the installer's root-private TOML, never source/eval it. Reusing a
+# trusted same-domain 22-character password avoids breaking existing clients;
+# all configuration and the Argon2id server hash are still regenerated.
+nr_recover_credentials() {
+    local old_domain old_user old_password
+    [[ -f $CLIENT_CONFIG ]] || return 1
+    old_domain=$(sed -n 's|^uri_template = "https://\([^/]*\)/.well-known/masque/udp/{target_host}/{target_port}/"$|\1|p' "$CLIENT_CONFIG")
+    old_user=$(sed -n 's/^username = "\([A-Za-z0-9_-][A-Za-z0-9_.-]*\)"$/\1/p' "$CLIENT_CONFIG")
+    old_password=$(sed -n 's/^password = "\([A-Za-z0-9+/]*\)"$/\1/p' "$CLIENT_CONFIG")
+    [[ $old_domain == "$domain" && $old_user == "$device_user" && ${#old_password} == 22 ]] || return 1
+    [[ $old_password =~ [A-Z] && $old_password =~ [a-z] && $old_password =~ [0-9] && $old_password =~ [+/] ]] || return 1
+    relay_password=$old_password
+    credentials_reused=1
+}
+# Normal Certbot live/ files are symlinks into archive/. They are read, not
+# replaced here. Validate the leaf's dates, hostname, trusted chain and key pair
+# before declaring a certificate reusable. Offline validation cannot prove that
+# Cloudflare permissions or future ACME requests will succeed.
+nr_certificate_valid() {
+    local certificate=$1 key=$2 certificate_key private_key
+    [[ -f $certificate && -f $key ]] || return 1
+    openssl x509 -in "$certificate" -noout -checkend 0 >/dev/null 2>&1 || return 1
+    openssl x509 -in "$certificate" -noout -checkhost "$domain" >/dev/null 2>&1 || return 1
+    openssl verify -purpose sslserver -verify_hostname "$domain" -untrusted "$certificate" "$certificate" >/dev/null 2>&1 || return 1
+    certificate_key=$(openssl x509 -in "$certificate" -noout -pubkey 2>/dev/null | openssl pkey -pubin -outform DER 2>/dev/null | sha256sum) || return 1
+    private_key=$(openssl pkey -in "$key" -passin pass: -pubout -outform DER 2>/dev/null | sha256sum) || return 1
+    [[ $certificate_key == "$private_key" ]]
+}
+# Certbot 1.21/2.1 (Ubuntu 22.04 / Debian 12) do not provide reconfigure. Preserve
+# account/server/archive/file metadata and change only this lineage's renewal
+# parameters, with a private backup. Inserting at the section start keeps these
+# scalars out of any old [[webroot_map]] child section. None disables an old
+# installer or per-lineage shell hook without modifying global hooks/lineages.
+# This follows Certbot's advanced renewal-file editing mechanism; `certificates`
+# checks storage/INI readability, not actual DNS authorization. A later optional
+# `certbot renew --dry-run --cert-name DOMAIN` can exercise staging renewal.
+nr_renewal_text() {
+    awk -v credentials="$CREDS" '
+        function parameters() {
+            print "authenticator = dns-cloudflare"
+            print "installer = None"
+            print "dns_cloudflare_credentials = " credentials
+            print "dns_cloudflare_propagation_seconds = 60"
+            print "pref_challs = dns-01,"
+            print "autorenew = True"
+            print "pre_hook = None"
+            print "post_hook = None"
+            print "renew_hook = None"
+            print "deploy_hook = None"
+        }
+        /^[[:space:]]*\[renewalparams\][[:space:]]*([#;].*)?$/ {
+            if (seen++) exit 43
+            print; parameters(); in_renewal=1; next
+        }
+        /^[[:space:]]*\[/ { in_renewal=0 }
+        in_renewal && /^[[:space:]]*(authenticator|installer|dns_cloudflare_credentials|dns_cloudflare_propagation_seconds|pref_challs|autorenew|pre_hook|post_hook|renew_hook|deploy_hook)[[:space:]]*=/ {next}
+        {print}
+        END {if (!seen) {print ""; print "[renewalparams]"; parameters()}}
+    ' "$1"
+}
+# A missing renewal file can be reconstructed only for a complete managed
+# Certbot layout and one unambiguous existing Let's Encrypt account. Arbitrary
+# external PEM files or lost/multiple accounts need their original metadata;
+# never reissue an otherwise valid certificate merely to hide that loss.
+nr_reconstruct_renewal() {
+    local lineage=$CERT_ROOT/live/$domain archive=$CERT_ROOT/archive/$domain name target resolved account count=0 version
+    resolved=$(readlink -f -- "$archive") || nr_die 'Valid certificate exists but its Certbot archive is missing; restore its renewal metadata.'
+    for name in cert privkey chain fullchain; do
+        [[ -L $lineage/$name.pem && -f $lineage/$name.pem ]] || nr_die 'Valid certificate exists but a complete managed Certbot lineage is missing; restore its renewal metadata.'
+        target=$(readlink -f -- "$lineage/$name.pem") || nr_die 'Cannot resolve existing Certbot certificate files.'
+        [[ $target == "$resolved/"* ]] || nr_die 'Existing certificate files do not belong to this Certbot archive.'
     done
+    local accounts=$CERT_ROOT/accounts/acme-v02.api.letsencrypt.org/directory
+    if [[ -d $accounts ]]; then
+        while IFS= read -r target; do
+            name=${target##*/}
+            [[ $name =~ ^[a-f0-9]{32,64}$ && -f $target/regr.json && -f $target/private_key.json && -f $target/meta.json ]] || continue
+            account=$name; count=$((count + 1))
+        done < <(find -P "$accounts" -mindepth 1 -maxdepth 1 -type d -print)
+    fi
+    (( count == 1 )) || nr_die 'Valid certificate was not reissued, but its missing renewal file needs an unambiguous existing ACME account; restore the original renewal metadata.'
+    version=$("$CERTBOT" --version); version=${version#certbot }
+    [[ $version =~ ^[0-9]+([.][0-9]+)+$ ]] || nr_die 'Cannot determine Certbot version for renewal-file recovery.'
+    cat <<EOF
+version = $version
+archive_dir = $archive
+cert = $lineage/cert.pem
+privkey = $lineage/privkey.pem
+chain = $lineage/chain.pem
+fullchain = $lineage/fullchain.pem
+
+[renewalparams]
+account = $account
+server = https://acme-v02.api.letsencrypt.org/directory
+EOF
+}
+# The API source is domain-specific so a new hostname cannot overwrite another
+# lineage's old credential binding. Preserve Certbot accounts/archive/live state.
+# Back up this domain's renewal configuration and credential before updating it;
+# successful issuance is persistent ACME state, outside the service transaction.
+nr_prepare_certificate() {
+    local lineage=$CERT_ROOT/live/$domain renewal=$CERT_ROOT/renewal/$domain.conf cert_backup previous=0
+    local reused=0 parser_output
+    nr_check_leaf "$CREDS" private
+    nr_check_leaf "$renewal" file
+    install -d -o root -g root -m 700 "$TOOLS/backups"
+    cert_backup=$(mktemp -d "$TOOLS/backups/certificate-$(date -u +%Y%m%d-%H%M%S).XXXXXXXX")
+    if [[ -e $CREDS ]]; then cp -a -- "$CREDS" "$cert_backup/credentials.ini"; fi
+    if [[ -e $renewal ]]; then cp -a -- "$renewal" "$cert_backup/renewal.conf"; previous=1; fi
+    printf 'Private certificate-state backup: %s\n' "$cert_backup"
+    printf 'dns_cloudflare_api_token = %s\n' "$cf_token" > "$work/credentials.ini"
+    chmod 600 "$work/credentials.ini"
+    unset cf_token
+    [[ -d $CERT_ROOT ]] || install -d -m 700 "$CERT_ROOT"
+    nr_atomic_install "$work/credentials.ini" "$CREDS" 600
+    if nr_certificate_valid "$lineage/fullchain.pem" "$lineage/privkey.pem"; then
+        reused=1
+        printf 'Existing valid certificate for %s is reused; no certonly/renewal request is made.\n' "$domain"
+        if (( previous )); then cp -a -- "$renewal" "$work/renewal-base.conf"; else nr_reconstruct_renewal > "$work/renewal-base.conf"; fi
+    else
+        printf 'No valid matching certificate/key pair for %s; requesting DNS-01 issuance.\n' "$domain"
+        # force-renewal is confined to this invalid/missing-certificate branch;
+        # it is never used to migrate an already valid lineage's authenticator.
+        "$CERTBOT" certonly --config-dir "$CERT_ROOT" --non-interactive --agree-tos --register-unsafely-without-email \
+            --dns-cloudflare --dns-cloudflare-credentials "$CREDS" --dns-cloudflare-propagation-seconds 60 \
+            --preferred-challenges dns-01 --cert-name "$domain" -d "$domain" --force-renewal
+        nr_certificate_valid "$lineage/fullchain.pem" "$lineage/privkey.pem" || nr_die 'Certbot returned without a valid matching certificate/key pair.'
+        [[ -f $renewal && ! -L $renewal ]] || nr_die 'Certbot did not create a renewal configuration.'
+        cp -a -- "$renewal" "$work/renewal-base.conf"
+    fi
+    nr_renewal_text "$work/renewal-base.conf" > "$work/renewal.conf"
+    install -d -m 755 "$CERT_ROOT/renewal"
+    nr_atomic_install "$work/renewal.conf" "$renewal" 600
+    # `certificates` never requests a certificate. Verify it can read the updated
+    # managed layout and selects this exact lineage before touching the server.
+    if "$CERTBOT" certificates --config-dir "$CERT_ROOT" --cert-name "$domain" --non-interactive > "$work/certificate-check.log" 2>&1; then
+        parser_output=$(sed -n 's/^[[:space:]]*Certificate Name: //p' "$work/certificate-check.log")
+        if [[ $parser_output == "$domain" ]]; then return 0; fi
+    fi
+    # A valid pre-existing renewal configuration remains recoverable on parser
+    # failure. Do not pretend that a readable certificate alone proves renewal.
+    if (( previous )); then nr_atomic_install "$cert_backup/renewal.conf" "$renewal" 600; fi
+    nr_die "Certbot cannot read the updated renewal metadata; inspect private backup $cert_backup."
+}
+# Stage both certificate copies, configuration and exports before stopping the
+# old unit. The candidate is exposed read-only at a stable runtime mount so the
+# actual service UID can validate it without traversing root-only build caches.
+nr_prepare() {
+    local candidate=$work/candidate validation_root=/run/$SERVICE-candidate
+    install -d -o root -g "$SERVICE" -m 750 "$candidate"
+    install -d -o root -g root -m 700 "$work/exports"
+    install -o root -g root -m 755 "$work/$SERVICE" "$candidate/$SERVICE"
+    install -o root -g "$SERVICE" -m 640 "$CERT_ROOT/live/$domain/fullchain.pem" "$candidate/fullchain.pem"
+    install -o root -g "$SERVICE" -m 640 "$CERT_ROOT/live/$domain/privkey.pem" "$candidate/privkey.pem"
+    credentials_reused=0
+    if nr_recover_credentials; then
+        printf 'Reusing the existing private client password; configuration follows the current script.\n'
+    else
+        relay_password=$(nr_generate_password)
+        printf 'A new 22-character relay password was generated; refresh old clients from the new exports.\n'
+    fi
+    account=$(printf '%s\n' "$relay_password" | "$work/$SERVICE" passwd --name "$device_user" --stdin)
+    [[ $account == *'[[user]]'* && $account == *'password_hash = "$argon2id$'* ]] || nr_die 'Unexpected Argon2id password hash output.'
+    nr_config_text > "$work/config"
+    (
+        local TLS=$validation_root
+        nr_config_text > "$candidate/relay.toml"
+    )
+    chmod 640 "$candidate/relay.toml"
+    chown root:"$SERVICE" "$candidate/relay.toml"
+    nr_unit_text > "$work/unit"
+    nr_hook_text > "$work/hook"
+    chmod 644 "$work/unit"; chmod 700 "$work/hook"
+    (
+        local PROFILE=$work/exports/device.mobileconfig
+        nr_profile_args
+        printf '%s\n' "$relay_password" | "$work/$SERVICE" "${profile_args[@]}"
+    )
+    nr_client_config_text > "$work/exports/network-relay-rs-client.toml"
+    chmod 600 "$work/exports/"*
+    systemd-run --no-ask-password --unit="$SERVICE-validate" --collect --wait --pipe --service-type=exec \
+        --property="User=$SERVICE" --property="Group=$SERVICE" --property=UMask=0077 \
+        --property="RuntimeDirectory=$SERVICE-validate" --property=RuntimeDirectoryMode=0700 \
+        --property="BindReadOnlyPaths=$candidate:$validation_root" \
+        "$validation_root/$SERVICE" serve --config "$validation_root/relay.toml" --check
+}
+# A first install may have no unit yet: systemctl stop then returns "not loaded".
+# That is harmless only when the dedicated service is inactive and every 443
+# socket is free. Never hide a real stop failure or kill an unrelated listener.
+nr_stop_service() {
+    if ! systemctl stop "$SERVICE" >/dev/null 2>&1; then
+        if systemctl is-active --quiet "$SERVICE"; then nr_die 'Cannot stop the existing relay service.'; fi
+    fi
+    if systemctl is-active --quiet "$SERVICE"; then nr_die 'The existing relay service did not stop.'; fi
+    local occupied
+    occupied=$(nr_port_inodes) || nr_die 'Cannot verify that 443 was released.'
+    [[ -z $occupied ]] || nr_die 'TCP/UDP 443 is still occupied; no unrelated process was stopped.'
+}
+# The current script replaces dedicated files after a validated build/stage.
+# Retain old websites/logs/ACME state; preserve complete file and unit-state
+# backups. On failure after the switch, restore old files and active/enabled
+# state. A missing old binary/config from manual deletion is honestly reported.
+nr_deploy() {
+    local relay_password account key current response ready=0 attempt path index existed type
+    nr_fresh
     nr_account
+    # Shared parents are never chmodded. Only create absent standard directories
+    # after their existing ancestors have passed the root-ownership checks.
+    for path in "$BIN" "$UNIT" "$SYSCTL" "$HOOK"; do
+        if [[ ! -d ${path%/*} ]]; then install -d -o root -g root -m 755 "${path%/*}"; fi
+    done
     install -d -o root -g "$SERVICE" -m 750 "$ETC" "$TLS"
     install -d -o root -g root -m 700 "$EXPORTS"
     [[ -d ${WWW%/*} ]] || install -d -m 755 "${WWW%/*}"
-    install -d -m 755 "$WWW"
-    printf '<!doctype html>\n<title>Welcome</title>\n<h1>Welcome</h1>\n' | nr_new_file "$WWW/index.html" 644
-    [[ -d $CERT_ROOT ]] || install -d -m 700 "$CERT_ROOT"
-    printf 'dns_cloudflare_api_token = %s\n' "$cf_token" | nr_new_file "$CREDS" 600
-    unset cf_token
-    "$CERTBOT" certonly --non-interactive --agree-tos --register-unsafely-without-email \
-        --dns-cloudflare --dns-cloudflare-credentials "$CREDS" --dns-cloudflare-propagation-seconds 60 \
-        --preferred-challenges dns-01 --cert-name "$domain" -d "$domain" --keep-until-expiring
-    install -d -m 755 "${HOOK%/*}"
-    nr_hook_text | nr_new_file "$HOOK" 700
-    "$HOOK"
-    relay_password=$(nr_generate_password)
-    # A 22-character password cannot use the server's 24+ character fast-hash
-    # path. Existing --stdin mode uses Argon2id and prints only the account hash.
-    # Feed plaintext through stdin; it is never an external command argument.
-    account=$(printf '%s\n' "$relay_password" | "${cli[@]}" passwd --name "$device_user" --stdin)
-    [[ $account == *'[[user]]'* && $account == *'password_hash = "$argon2id$'* ]] || nr_die 'Unexpected Rust password hash output.'
-    nr_config_text | nr_new_file "$CONFIG" 640 "$SERVICE"
-    nr_profile_args
-    printf '%s\n' "$relay_password" | "${cli[@]}" "${profile_args[@]}"
-    chmod 600 "$PROFILE"
-    install -m 755 "$work/$SERVICE" "$BIN"
-    nr_unit_text | nr_new_file "$UNIT" 644
-    # This validates config/TLS/website as the real UID, before touching service
-    # state. It does not reproduce every mount/syscall restriction of the unit.
-    runuser -u "$SERVICE" -- "$BIN" serve --config "$CONFIG" --check
-    # Only raise existing socket-buffer ceilings used by QUIC/UDP, never lower
-    # them. Containers may reject sysctl; report that rather than claim tuning
-    # worked. The persistent file may still take effect after a later reboot.
-    # This is socket-buffer tuning, not a firewall package or firewall rule.
+    if [[ ! -e $WWW ]]; then install -d -m 755 "$WWW"; fi
+    if [[ -z $(find -P "$WWW" -mindepth 1 -maxdepth 1 -print -quit) ]]; then
+        printf '<!doctype html>\n<title>Welcome</title>\n<h1>Welcome</h1>\n' | nr_new_file "$WWW/index.html" 644
+    fi
+    nr_prepare_certificate
+    nr_prepare
+    nr_ports
     {
-        printf '# UDP buffer limits for the Cloudflare DNS relay deployment.\n'
+        printf '# UDP buffer limits for Network Relay.\n'
         for key in net.core.rmem_max net.core.wmem_max; do
             current=$(sysctl -n "$key")
-            [[ $current =~ ^[0-9]+$ ]] || nr_die 'Cannot read UDP buffer limits.'
+            [[ $current =~ ^[0-9]+$ ]] || nr_die 'Cannot read socket-buffer ceilings.'
             (( current >= 8388608 )) || current=8388608
             printf '%s = %s\n' "$key" "$current"
         done
-    } | nr_new_file "$SYSCTL" 644
-    sysctl -p "$SYSCTL" || printf 'Warning: UDP buffer tuning was denied; using system defaults.\n'
-    # Retain the root-only token/Certbot renewal configuration for future runs.
-    # The long-running relay unit has no API token and cannot read those sources.
-    systemctl enable --now certbot.timer
+    } > "$work/sysctl"
+    nr_backup
+    # Stop using the old unit/drop-ins before removing their dedicated overrides.
+    # Missing units from first or partially deleted installs are handled safely.
+    nr_stop_service
+    while IFS=$'\t' read -r index existed type path; do
+        if [[ $type == dir && -d $path ]]; then rm -rf -- "$path"; fi
+    done < "$backup_dir/manifest"
+    nr_atomic_install "$work/$SERVICE" "$BIN" 755
+    nr_atomic_install "$work/config" "$CONFIG" 640 "$SERVICE"
+    nr_atomic_install "$work/candidate/fullchain.pem" "$TLS/fullchain.pem" 640 "$SERVICE"
+    nr_atomic_install "$work/candidate/privkey.pem" "$TLS/privkey.pem" 640 "$SERVICE"
+    nr_atomic_install "$work/unit" "$UNIT" 644
+    nr_atomic_install "$work/hook" "$HOOK" 700
+    nr_atomic_install "$work/sysctl" "$SYSCTL" 644
     systemctl daemon-reload
-    # Until trusted local HTTPS is ready, failures stop/disable this candidate.
-    # Existing installations have already been rejected; none is stopped here.
-    startup_pending=1
-    systemctl enable --now "$SERVICE"
-    # Preserve the real hostname/SNI while connecting to loopback. TLS chain
-    # and hostname verification remain enabled; this does not test public access.
+    systemctl enable "$SERVICE"
+    systemctl start "$SERVICE"
     for ((attempt=0; attempt<30; attempt++)); do
-        if response=$(curl --disable --noproxy '*' --fail --silent --show-error --max-time 3 \
-            --resolve "$domain:443:127.0.0.1" "https://$domain/" 2>/dev/null); then
-            if [[ $response == *'<h1>Welcome</h1>'* ]]; then ready=1; break; fi
-        fi
+        systemctl is-active --quiet "$SERVICE" || nr_die 'Candidate stopped during HTTPS readiness; restoring the previous deployment.'
+        if curl --disable --noproxy '*' --silent --show-error --output /dev/null --max-time 3 \
+            --resolve "$domain:443:127.0.0.1" "https://$domain/" 2>/dev/null; then ready=1; break; fi
         sleep 1
     done
-    (( ready )) || nr_die "Local TLS/website check failed; inspect journalctl -u $SERVICE."
-    # A later protocol error may be an outbound-network restriction. Keep the
-    # HTTPS-ready service for diagnosis and retain the pre-created Apple profile.
-    startup_pending=0
-    printf 'Local HTTPS works. Protected device profile: %s\n' "$PROFILE"
-    cli=("$BIN")
-    if ! printf '%s\n' "$relay_password" | "${cli[@]}" check --server "$domain" --address 127.0.0.1 --user "$device_user"; then
-        nr_die "Server remains running, but protocol checks failed. Check outbound TCP 80/UDP 53 and journalctl -u $SERVICE. Do not rerun this fresh installer."
+    (( ready )) || nr_die 'Trusted HTTPS readiness failed; restoring the previous deployment.'
+    if ! printf '%s\n' "$relay_password" | "$BIN" check --server "$domain" --address 127.0.0.1 --user "$device_user"; then
+        nr_die 'Protocol checks failed; restoring the previous deployment.'
     fi
-    # Publish this credential-bearing TOML only after all protocol checks pass.
-    nr_client_config_text | nr_new_file "$CLIENT_CONFIG" 600
+    nr_atomic_install "$work/exports/device.mobileconfig" "$PROFILE" 600
+    nr_atomic_install "$work/exports/network-relay-rs-client.toml" "$CLIENT_CONFIG" 600
+    systemctl enable --now certbot.timer
+    [[ $(systemctl is-enabled certbot.timer) == enabled ]] || nr_die 'Certbot renewal timer is not enabled at boot.'
+    systemctl is-active --quiet certbot.timer || nr_die 'Certbot renewal timer is not active.'
+    [[ $(systemctl is-enabled "$SERVICE") == enabled ]] || nr_die 'Relay is not enabled at boot.'
+    systemctl is-active --quiet "$SERVICE" || nr_die 'Relay is not active after protocol checks.'
     unset relay_password
-    printf 'All built-in TCP/UDP checks passed. Verify external access on a real device.\n'
-    printf 'Download %s over SSH, install it, then delete the profile copies.\n' "$PROFILE"
-    printf 'Rust client configuration: %s (same credentials; mode 600).\n' "$CLIENT_CONFIG"
-    printf 'Download it over SSH; import into Network Relay RS or use network-relay-rs --config FILE.\n'
-    printf 'Keep %s for automatic renewal.\n' "$CREDS"
-    printf 'Test renewal: sudo certbot renew --dry-run --cert-name %s\n' "$domain"
+    transaction_started=0
+    sysctl -p "$SYSCTL" || printf 'Warning: socket-buffer tuning was denied; existing runtime settings remain.\n'
+    printf 'All TCP/UDP checks passed; %s and certbot.timer are active and enabled at boot.\n' "$SERVICE"
+    printf 'Apple profile: %s; Rust client TOML: %s (root-only, mode 600).\n' "$PROFILE" "$CLIENT_CONFIG"
+    printf 'Keep %s and Certbot archive/account state for automatic DNS renewal.\n' "$CREDS"
+    printf 'Private deployment backup: %s. Optional staging renewal test: certbot renew --dry-run --cert-name %s\n' "$backup_dir" "$domain"
 }
 # Only these two values are interactive. An inherited CF_API_TOKEN can supply
-# the token directly; otherwise read it silently. Reject an existing Certbot
-# lineage rather than inherit an unknown challenge/renewal configuration.
+# the token directly; otherwise read it silently. Existing Certbot state is
+# inspected separately, with valid certificates reused and DNS renewal updated.
 # Accept the legacy token alphabet and newer cfut_/cfat_ prefixes, including
 # their documented maximum body length. This is only syntax validation, not a
 # remote permission check. Diagnostics must not echo a rejected secret value.
@@ -523,10 +851,7 @@ nr_token_valid() {
 nr_inputs() {
     nr_ask 'Relay domain'; domain=${REPLY,,}; domain=${domain%.}
     nr_domain "$domain" || nr_die 'Invalid DNS hostname; omit scheme, port and wildcard.'
-    local path
-    for path in "$CERT_ROOT/live/$domain" "$CERT_ROOT/archive/$domain" "$CERT_ROOT/renewal/$domain.conf"; do
-        [[ ! -e $path && ! -L $path ]] || nr_die "Existing certificate lineage: $path. Review renewal settings manually."
-    done
+    CREDS=$CERT_ROOT/$SERVICE-cloudflare-$domain.ini
     printf 'Use a zone-scoped token with Zone:DNS:Edit and Zone:Zone:Read.\n'
     if [[ -z $cf_token ]]; then
         read -r -s -p 'CF_API_TOKEN (hidden): ' cf_token </dev/tty || nr_die 'Could not read token.'
@@ -599,6 +924,12 @@ nr_main() {
         ca-certificates curl certbot python3-certbot-dns-cloudflare build-essential pkg-config iproute2 openssl
     plugins=$("$CERTBOT" plugins)
     [[ $plugins == *dns-cloudflare* ]] || nr_die 'The apt Certbot cannot load dns-cloudflare.'
+    if nr_certificate_valid "$CERT_ROOT/live/$domain/fullchain.pem" "$CERT_ROOT/live/$domain/privkey.pem"; then
+        printf 'Certificate check: a currently valid matching certificate exists; it will be retained.\n'
+    else
+        printf 'Certificate check: DNS-01 issuance is needed after the candidate build.\n'
+    fi
+    nr_check_leaf "$TOOLS" rootdir
     install -d -m 700 "$TOOLS"
     work=$(mktemp -d "$TOOLS/build.XXXXXXXX")
     # Install traps only after this run owns a unique scratch directory.

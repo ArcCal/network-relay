@@ -3,8 +3,126 @@
 # Requires Debian 12+ or Ubuntu 24.04+, Bash 4+, systemd and amd64/arm64.
 # Run from the complete checkout on the server. --plan makes no changes.
 # Token permissions: Zone:DNS:Edit and Zone:Zone:Read for the selected zone.
-# Keep DNS-only A/AAAA records pointing here; allow inbound TCP/UDP 443.
+# Direct client access uses TCP/UDP 443; DNS-01 has no A/AAAA target prerequisite.
 # DNS validation does not need inbound port 80. No Python helper is used.
+#
+# Maintainer contract: requirements and deployment lessons
+# ========================================================
+# Keep these notes when maintaining this installer. They distinguish observed
+# failures, required behavior and remaining verification limits.
+#
+# Required behavior
+# -----------------
+# - Keep a clearly named executable Bash installer in the repository root.
+#   Modify this installer, not application code or shared source templates.
+#   Read repository design/deployment documentation before making changes.
+# - Support Debian 12+ and Ubuntu 24.04+ without an artificial upper version cap.
+#   Detect native amd64/arm64 and build the corresponding pinned server.
+# - Accept only the domain and hidden CF_API_TOKEN as terminal input. An inherited
+#   token can skip its prompt. Do not ask for email, username, build jobs, profile
+#   scope, password or confirmation. Keep apt/Git/helper commands noninteractive.
+# - Use Cloudflare DNS-01. It validates TXT records and requires appropriate
+#   zone-scoped token permissions, not an A/AAAA record pointing at this machine.
+#   Do not add a public-IP lookup or DNS-to-host IP equality prerequisite.
+# - Support install, upgrade and repair on every run. The current script governs
+#   dedicated configuration/unit files; validate and automatically replace them.
+#   Reuse a safe dedicated account and create it only when absent. Existing files,
+#   directories or accounts are not errors by themselves. Keep genuine conflicts
+#   (unsafe shared identities/parents, foreign listeners) distinct from existence.
+# - Retain valid managed certificates, matching keys, issuer metadata and ACME
+#   accounts. Do not force issuance just because the installer runs again.
+#   Missing/invalid certificates need issuance; renewal when due stays enabled.
+#   Never delete certificate state merely to make an installation look new.
+# - Use a cryptographically random 22-character password with uppercase, lowercase,
+#   digits and + or /. Reuse a compatible private client record when possible.
+#   Keep server, Apple profile and Rust Network Relay RS TOML credentials aligned.
+#   If plaintext credentials are unrecoverable, generate new ones and explain
+#   that old clients need the refreshed configuration. Export both files privately.
+# - Run the daemon as its dedicated non-root user with restricted groups and only
+#   necessary capabilities. Protect DNS tokens, TLS keys, client exports and
+#   backups; keep secrets out of argv/logs and outside the public web directory.
+#   Preserve certificate renewal/reload and required TCP/UDP traffic.
+# - Do not install UFW or another firewall, add firewall rules, or configure VPN
+#   tunnel pools/NAT as a side effect of installing this application relay.
+# - Persist binaries, configuration, credentials and certificate state. Reserve
+#   /run for systemd-recreated transient data. Require active service state,
+#   persistent enabled state and successful HTTPS/protocol checks before success.
+#   Retain automatic restart and certificate renewal across host reboots.
+# - Build and validate the candidate while the prior service remains running.
+#   Back up dedicated files privately; stop only the old dedicated unit, verify
+#   443 is free, and install atomically. On failure restore files and the prior
+#   active/enabled state, including runtime-only enablement. Preserve ACME state
+#   and unrelated services. Backups cannot recover files deleted before the run.
+#
+# Earlier failures and remedies
+# -----------------------------
+# 1. Fresh-only checks rejected each existing file, directory and account, forcing
+#    manual deletion and risking certificate loss. Inspect/reuse safe resources
+#    and replace managed files transactionally; support interrupted installs.
+# 2. systemd-run tried to execute /run/<service>-candidate/<binary> before its
+#    BindReadOnlyPaths namespace existed. It resolves the first executable in the
+#    HOST namespace. Use the host's /usr/bin/env -- entry point to exec the mapped
+#    candidate inside the unit, retaining --wait to propagate failures. Never
+#    expose the root-only work tree to work around a namespace/permission error.
+# 3. The old mock mapped paths before checking the host executable and hid that
+#    real ARM deployment failure. Test host lookup, then namespace execution,
+#    argument/credential preservation and nonzero exits; reproduce the real CLI
+#    behavior where possible. A passing mock alone is not deployment evidence.
+# 4. Stopping a missing old unit may return exit 5 during a first/partial install.
+#    Continue only if it is inactive and 443 is free. Treat a live listener/failed
+#    stop as a genuine problem. Stop with the OLD unit before replacing drop-ins
+#    or unit content; never terminate another service to steal its port.
+# 5. A long hexadecimal password did not meet the requested length/classes. It
+#    was not insecure merely for being hexadecimal. The application fast-hash
+#    mode requires 24+ characters, so the requested 22-character password uses the
+#    supported Argon2id stdin mode. Never expose plaintext in command arguments.
+# 6. Earlier firewall handling and generic paths did not match the deployment
+#    requirements. Keep firewall management out, and use dedicated binary/config/
+#    account/state names instead of altering a general-purpose installation.
+# 7. Hardening must fit the actual process: check filesystem needs, credential
+#    copy timing, dynamic libraries and reload helpers. Do not grant broad write
+#    access or extra privileges simply to silence a sandbox failure.
+#
+# Lesson from an external installer's DNS gate
+# --------------------------------------------
+# An external script refused installation unless the DNS-only A record matched
+# one detected public IPv4. That is inappropriate as a Cloudflare DNS-01 issuance
+# prerequisite: the CA checks _acme-challenge TXT records, not that IP endpoint.
+# A/AAAA may point elsewhere or be absent. IPv6-only DNS, multiple records, NAT,
+# multiple NICs and VPN/proxy egress also make one IPv4 comparison unreliable.
+# Its log alone does not prove the detected IP was wrong; DNS may truly point
+# elsewhere. Do not reproduce that issuance gate. Cloudflare proxy/grey-cloud
+# routing choices are also separate from TXT-based domain authorization.
+#
+# Verification limits and maintenance improvements
+# ------------------------------------------------
+# - A certificate proves domain authorization, not public routing or client
+#   connectivity. Current HTTPS/relay checks connect to 127.0.0.1 with real
+#   hostname/SNI and bypass public DNS. Report their local scope accurately;
+#   do not turn this observation into a new A/AAAA installation prerequisite.
+# - Current built-in test targets are example.com:80 and 1.1.1.1:53. Restricted
+#   egress or no IPv4 route may fail them while other destinations work. Diagnose
+#   target reachability before blaming DNS/certificates or changing server policy.
+# - Distinguish config validation, active/enabled state, offline unit checks,
+#   mocks and actual end-to-end/reboot tests. Never claim a real reboot, public
+#   ACME flow or a deployment on every OS version without actually testing it.
+#   Keep regressions for reruns, partial repair, certificate reuse, canonical
+#   replacement, boot paths, secrets and failed-switch restoration.
+# - journalctl -f waits for new entries; Ctrl+C exits the viewer. Missing old
+#   units, skipped recent storage cleaning and renewal-information messages are
+#   not by themselves deployment failures. Several available certificate chains
+#   do not mean several separate certificate requests.
+#
+# Rust-specific requirements
+# --------------------------
+# Build the pinned native GNU Rust server. Install apt Certbot and its Cloudflare
+# DNS plugin. Keep per-domain renewal tokens root-only and expose only active TLS
+# copies to network-relay. Skip certonly for an already valid matching lineage.
+# Retain archive/live/account files, compatible DNS renewal parameters, the root
+# deploy hook and persistently enabled certbot.timer. Do not force issuance merely
+# to migrate renewal settings on older Certbot versions.
+# The native GNU binary may need its loader/NSS libraries and /bin/kill for HUP
+# reload. Do not blindly copy static Go's binary-only execution restriction.
 #
 # Repeatable deployment/repair sequence:
 #   1. Check the host, dedicated path ownership, account and socket ownership.

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Interactive repeatable deployment: native Linux build + Certbot Cloudflare DNS-01.
-# Requires Debian 12+ or Ubuntu 22.04+, Bash 4+, systemd and amd64/arm64.
+# Requires Debian 12+ or Ubuntu 24.04+, Bash 4+, systemd and amd64/arm64.
 # Run from the complete checkout on the server. --plan makes no changes.
 # Token permissions: Zone:DNS:Edit and Zone:Zone:Read for the selected zone.
 # Keep DNS-only A/AAAA records pointing here; allow inbound TCP/UDP 443.
@@ -71,7 +71,7 @@ only for the relay domain and hidden CF_API_TOKEN. Install apt
 Certbot with its Cloudflare DNS plugin, obtain a DNS-01 certificate, configure
 renewal/reload, systemd, a website and a protected Apple device profile, then
 run HTTPS and TCP/UDP protocol checks, then generate a private Rust client TOML.
-Debian 12+ or Ubuntu 22.04+, systemd 249+ and 5 GiB free under /opt required.
+Debian 12+ or Ubuntu 24.04+, systemd 249+ and 5 GiB free under /opt required.
 
 Defaults: user iphone, a generated 22-character mixed-case/digit/symbol password,
 one build job and the bundled selected-domain device profile.
@@ -104,9 +104,9 @@ nr_host() {
     case $ID in
         debian) (( 10#$major >= 12 )) || nr_die 'Debian 12+ is required.' ;;
         ubuntu)
-            [[ $VERSION_ID == *.* ]] || nr_die 'Ubuntu 22.04+ is required.'
-            (( 10#$major > 22 || (10#$major == 22 && 10#$minor >= 4) )) || nr_die 'Ubuntu 22.04+ is required.' ;;
-        *) nr_die 'Only Debian 12+ and Ubuntu 22.04+ are supported.' ;;
+            [[ $VERSION_ID == *.* ]] || nr_die 'Ubuntu 24.04+ is required.'
+            (( 10#$major > 24 || (10#$major == 24 && 10#$minor >= 4) )) || nr_die 'Ubuntu 24.04+ is required.' ;;
+        *) nr_die 'Only Debian 12+ and Ubuntu 24.04+ are supported.' ;;
     esac
 }
 # Accept only a bare ASCII DNS hostname. Reject URLs, addresses, wildcards and
@@ -595,7 +595,7 @@ nr_certificate_valid() {
     private_key=$(openssl pkey -in "$key" -passin pass: -pubout -outform DER 2>/dev/null | sha256sum) || return 1
     [[ $certificate_key == "$private_key" ]]
 }
-# Certbot 1.21/2.1 (Ubuntu 22.04 / Debian 12) do not provide reconfigure. Preserve
+# Certbot 2.1 (Debian 12) does not provide reconfigure. Preserve existing
 # account/server/archive/file metadata and change only this lineage's renewal
 # parameters, with a private backup. Inserting at the section start keeps these
 # scalars out of any old [[webroot_map]] child section. None disables an old
@@ -747,11 +747,14 @@ nr_prepare() {
     )
     nr_client_config_text > "$work/exports/network-relay-rs-client.toml"
     chmod 600 "$work/exports/"*
+    # systemd-run resolves its first executable in the host namespace, before
+    # BindReadOnlyPaths exists. Start the host's env, which execs the candidate
+    # inside the unit namespace; --wait still propagates validation failures.
     systemd-run --no-ask-password --unit="$SERVICE-validate" --collect --wait --pipe --service-type=exec \
         --property="User=$SERVICE" --property="Group=$SERVICE" --property=UMask=0077 \
         --property="RuntimeDirectory=$SERVICE-validate" --property=RuntimeDirectoryMode=0700 \
         --property="BindReadOnlyPaths=$candidate:$validation_root" \
-        "$validation_root/$SERVICE" serve --config "$validation_root/relay.toml" --check
+        /usr/bin/env -- "$validation_root/$SERVICE" serve --config "$validation_root/relay.toml" --check
 }
 # A first install may have no unit yet: systemctl stop then returns "not loaded".
 # That is harmless only when the dedicated service is inactive and every 443

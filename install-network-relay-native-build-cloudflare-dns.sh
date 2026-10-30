@@ -113,6 +113,22 @@
 #   not by themselves deployment failures. Several available certificate chains
 #   do not mean several separate certificate requests.
 #
+# Cross-installer audit lessons
+# -----------------------------
+# - Check lock directories and single-link files before opening; append instead
+#   of truncating. Disable allexport and inherited secret export attributes.
+# - Distinct masks/wants links can resolve to the same leaf. Deduplicate only
+#   parent aliases in backups, and verify canonical unit IDs before stopping.
+# - Publish TLS pairs as validated immutable generations with one current-link
+#   switch and a publication lock; retain old generations for backup recovery.
+#   Recheck the desired source after locking so queued old hooks cannot overwrite
+#   a new domain. Installation and rollback share that publication critical section.
+#   SIGHUP notification is asynchronous, not proof of certificate consumption.
+# - Exclude a work tree nested inside the checkout before copying the source;
+#   compiler temporary files belong inside private staging, not inherited TMPDIR.
+# - A qualified daemon account still needs a locked password and non-writable
+#   NSS home; changing that home never moves or chowns the previous directory.
+#
 # Rust-specific requirements
 # --------------------------
 # Build the pinned native GNU Rust server. Install apt Certbot and its Cloudflare
@@ -140,6 +156,9 @@
 # Disable tracing before reading any credentials, even under bash -x/-v.
 set +x
 set +v
+set +a
+# Remove inherited export attributes before local scopes can shadow these names.
+export -n cf_token relay_password account candidate old_password
 
 # Use trusted system tools when executed as root. Sourcing helpers for tests
 # leaves PATH unchanged; proxy and CA trust variables are deliberately retained.
@@ -177,6 +196,7 @@ transaction_started=0
 backup_dir=
 was_active=0
 was_enabled=disabled
+tls_lock=
 
 nr_die() { printf 'Error: %s\n' "$*" >&2; exit 1; }
 nr_usage() {
@@ -188,7 +208,7 @@ Build this checkout for the server's native amd64/arm64 architecture. Prompt
 only for the relay domain and hidden CF_API_TOKEN. Install apt
 Certbot with its Cloudflare DNS plugin, obtain a DNS-01 certificate, configure
 renewal/reload, systemd, a website and a protected Apple device profile, then
-run HTTPS and TCP/UDP protocol checks, then generate a private Rust client TOML.
+stage private client exports, then publish them after HTTPS and TCP/UDP checks.
 Debian 12+ or Ubuntu 24.04+, systemd 249+ and 5 GiB free under /opt required.
 
 Defaults: user iphone, a generated 22-character mixed-case/digit/symbol password,
@@ -201,7 +221,8 @@ after staging and validation. A failed switch restores the prior deployment.
 The token stays in a root-only Certbot file for renewal, never in argv or the
 relay service environment. The daemon runs under a dedicated non-root account with
 read-only host files, private logs/runtime and a separate TLS certificate copy.
-Set Cloudflare A/AAAA records to DNS only and permit inbound TCP/UDP 443.
+DNS-01 needs no A/AAAA records or IP match. Direct domain-based clients need
+DNS-only records routing here; permit inbound TCP/UDP 443.
 Provider firewall rules and real-device verification remain your responsibility.
 EOF
 }
@@ -316,11 +337,130 @@ nr_check_leaf() {
             [[ -d $path && ( $owner == 0 || $owner == "$service_uid" ) ]] || nr_die "Dedicated state/runtime directory has an unrelated owner: $path." ;;
     esac
 }
-nr_port_inodes() {
+# A /dev/null mask is a managed unit state, not an unknown installation link.
+# Runtime units and wants links must participate in the same repair transaction.
+nr_check_unit() {
+    local path=$1
+    nr_check_parent_dirs "$path"
+    if [[ -L $path ]]; then
+        [[ $(readlink -- "$path") == /dev/null && $(stat -c %u -- "$path") == 0 ]] || nr_die "Unsafe dedicated unit link: $path."
+    else
+        nr_check_leaf "$path" file
+    fi
+}
+nr_unit_paths() {
+    printf '%s\n' "$UNIT" "/run/systemd/system/$SERVICE.service" \
+        "/etc/systemd/system/multi-user.target.wants/$SERVICE.service" \
+        "/run/systemd/system/multi-user.target.wants/$SERVICE.service"
+}
+# Never follow a planted lock link or truncate its target. /run is trusted;
+# the private directory and single-link lock must already have safe ownership.
+nr_acquire_lock() {
+    local directory=/run/$SERVICE-native-cloudflare-install lock
+    nr_check_parent_dirs "$directory/lock"
+    [[ ! -L $directory ]] || nr_die 'Installer lock directory must not be a symlink.'
+    if [[ -e $directory ]]; then
+        [[ -d $directory && $(stat -c '%u:%a' -- "$directory") == 0:700 ]] || nr_die 'Unsafe installer lock directory.'
+    else
+        install -d -o root -g root -m 700 "$directory"
+    fi
+    lock=$directory/lock
+    [[ ! -L $lock && ( ! -e $lock || ( -f $lock && $(stat -c '%u:%h:%a' -- "$lock") == 0:1:600 ) ) ]] || nr_die 'Unsafe installer lock file.'
+    exec {install_lock}>>"$lock"
+    flock -n "$install_lock" || nr_die 'Another installer is running.'
+}
+# The publisher lock stays at a stable inode. Use it for the install/rollback
+# critical section as well as renewal, and release it before starting a unit.
+nr_lock_tls() {
+    local lock=$TLS/.publish.lock
+    nr_check_leaf "$TLS" rootdir
+    [[ ! -L $lock && ( ! -e $lock || ( -f $lock && $(stat -c '%u:%h:%a' -- "$lock") == 0:1:600 ) ) ]] || nr_die 'Unsafe certificate publication lock.'
+    if [[ -n $tls_lock ]]; then
+        [[ $(stat -Lc '%d:%i' -- "/proc/self/fd/$tls_lock") == $(stat -c '%d:%i' -- "$lock") ]] || nr_die 'Certificate publication lock changed.'
+    else
+        exec {tls_lock}>>"$lock"
+    fi
+    flock -x "$tls_lock"
+}
+nr_unlock_tls() {
+    if [[ -n $tls_lock ]]; then exec {tls_lock}>&-; tls_lock=; fi
+}
+nr_port_records() {
     local sockets=(/proc/net/tcp /proc/net/udp) file
     for file in /proc/net/tcp6 /proc/net/udp6; do [[ ! -r $file ]] || sockets+=("$file"); done
     for file in "${sockets[@]}"; do [[ -r $file ]] || nr_die "Cannot inspect listening sockets: $file."; done
-    awk 'FNR > 1 && $2 ~ /:01BB$/ && (FILENAME ~ /udp/ || $4 == "0A") {print $10}' "${sockets[@]}"
+    awk 'FNR > 1 && $2 ~ /:01BB$/ && (FILENAME ~ /udp/ || $4 == "0A") {
+        printf "%s\t%s\t%s\n", (FILENAME ~ /udp/ ? "UDP" : "TCP"), $2, $10
+    }' "${sockets[@]}"
+}
+nr_port_inodes() {
+    nr_port_records | awk -F '\t' '{print $3}'
+}
+# Convert Linux's little-endian socket-table addresses for diagnostics when ss
+# is unavailable. Supported amd64/arm64 hosts use this kernel representation.
+nr_endpoint_text() {
+    local address=${1%:*} reordered='' part index result=''
+    if [[ $address =~ ^[a-fA-F0-9]{8}$ ]]; then
+        printf '%d.%d.%d.%d:443' "0x${address:6:2}" "0x${address:4:2}" "0x${address:2:2}" "0x${address:0:2}"
+    elif [[ $address =~ ^[a-fA-F0-9]{32}$ ]]; then
+        for ((index=0; index<32; index+=8)); do
+            part=${address:index:8}
+            reordered+=${part:6:2}${part:4:2}${part:2:2}${part:0:2}
+        done
+        for ((index=0; index<32; index+=4)); do
+            [[ -z $result ]] || result+=:
+            result+=${reordered:index:4}
+        done
+        printf '[%s]:443' "$result"
+    else
+        printf '%s' "$1"
+    fi
+}
+# Fallback ownership lookup is read-only. Report executable/PID rather than
+# full command lines, which could contain secrets from an old manual launch.
+nr_socket_owners() {
+    local inode=$1 link pid executable name seen=$'\n' found=0
+    [[ $inode =~ ^[0-9]+$ ]] || return 1
+    while IFS= read -r link; do
+        pid=${link#/proc/}; pid=${pid%%/*}
+        [[ $pid =~ ^[0-9]+$ && $seen != *$'\n'"$pid"$'\n'* ]] || continue
+        seen+="$pid"$'\n'
+        executable=$(readlink -- "/proc/$pid/exe" 2>/dev/null || printf unavailable)
+        name=$(cat "/proc/$pid/comm" 2>/dev/null || printf unavailable)
+        printf '    PID=%s process=%q executable=%q\n' "$pid" "$name" "$executable" >&2
+        found=1
+    done < <(find -P /proc/[0-9]*/fd -maxdepth 1 -type l -lname "socket:\[$inode\]" -print 2>/dev/null)
+    (( found )) || printf '    Owner unavailable in this PID namespace (socket inode %s).\n' "$inode" >&2
+}
+# Every conflict prints both protocols, even if only one is occupied. ss gives
+# readable listener addresses and PID/process details; /proc remains a fallback
+# on a minimal host before iproute2 is installed. Never install/stop anything
+# merely to produce these diagnostics.
+nr_report_ports() {
+    local records protocol item address inode output reported
+    records=$(nr_port_records) || return 1
+    for protocol in TCP UDP; do
+        printf '%s 443:\n' "$protocol" >&2
+        reported=0
+        if command -v ss >/dev/null 2>&1; then
+            if [[ $protocol == TCP ]]; then
+                output=$(ss -H -ltnp '( sport = :443 )' 2>/dev/null) || output=
+            else
+                output=$(ss -H -aunp '( sport = :443 )' 2>/dev/null) || output=
+            fi
+            # Process names in ss output can contain terminal control bytes.
+            if [[ -n $output ]]; then printf '%s\n' "$output" | LC_ALL=C sed -n 'l 0' >&2; reported=1; fi
+        fi
+        if (( !reported )); then
+            while IFS=$'\t' read -r item address inode; do
+                [[ $item == "$protocol" ]] || continue
+                printf '  local=%s\n' "$(nr_endpoint_text "$address")" >&2
+                nr_socket_owners "$inode"
+                reported=1
+            done <<< "$records"
+            if (( !reported )); then printf '  Not occupied.\n' >&2; fi
+        fi
+    done
 }
 nr_pid_socket_inodes() {
     local pid=$1 fd target
@@ -332,18 +472,35 @@ nr_pid_socket_inodes() {
 }
 # The running dedicated unit may keep 443 during a long rebuild. Every occupied
 # inode must belong to its actual MainPID; never stop or kill a different server.
+# A unit name may resolve through a vendor alias to an unrelated workload.
+# Its MainPID is not ours merely because show was called with our alias.
+nr_unit_identity() {
+    local identity
+    identity=$(systemctl show "$SERVICE" --property=Id --value 2>/dev/null || true)
+    if [[ -n $identity && $identity != "$SERVICE.service" ]]; then
+        printf 'Error: the relay unit name aliases a different service; that workload was not stopped.\n' >&2
+        return 1
+    fi
+}
 nr_ports() {
+    nr_unit_identity || return 1
     local occupied pid owned inode found item
     occupied=$(nr_port_inodes) || nr_die 'Cannot inspect listening sockets; port availability is unknown.'
     [[ -n $occupied ]] || return 0
     pid=$(systemctl show "$SERVICE" --property=MainPID --value) || nr_die 'Cannot inspect dedicated service MainPID.'
-    [[ $pid =~ ^[0-9]+$ && $pid != 0 ]] || nr_die 'TCP or UDP 443 belongs to another process; no other service was stopped.'
+    if [[ ! $pid =~ ^[0-9]+$ || $pid == 0 ]]; then
+        nr_report_ports || true
+        nr_die 'TCP or UDP 443 belongs to another process; no other service was stopped.'
+    fi
     owned=$(nr_pid_socket_inodes "$pid") || nr_die 'Cannot establish service socket ownership.'
     while IFS= read -r inode; do
         [[ $inode =~ ^[0-9]+$ ]] || nr_die 'Invalid kernel socket record.'
         found=0
         while IFS= read -r item; do [[ $inode != "$item" ]] || found=1; done <<< "$owned"
-        (( found )) || nr_die 'TCP or UDP 443 belongs to another process; no other service was stopped.'
+        if (( !found )); then
+            nr_report_ports || true
+            nr_die 'TCP or UDP 443 belongs to another process; no other service was stopped.'
+        fi
     done <<< "$occupied"
 }
 # Compatibility name retained for existing usage/tests; this is now a safe
@@ -352,12 +509,23 @@ nr_ports() {
 # delete paths one by one. Unknown symlinks, writable roots and shared accounts
 # are still rejected, because replacement must not affect another workload.
 nr_fresh() {
+    nr_unit_identity || return 1
     local path dropin entry
     nr_check_account
     for path in "$ETC" "$TLS" "$EXPORTS" "$TOOLS" "$TOOLS/backups" "$WWW"; do nr_check_leaf "$path" rootdir; done
     for path in "$LOGS" "$RUNTIME"; do nr_check_leaf "$path" statedir; done
-    for path in "$BIN" "$UNIT" "$CONFIG" "$SYSCTL" "$HOOK"; do nr_check_leaf "$path" file; done
-    for path in "$CREDS" "$PROFILE" "$CLIENT_CONFIG"; do nr_check_leaf "$path" private; done
+    for path in "$BIN" "$CONFIG" "$SYSCTL" "$HOOK"; do nr_check_leaf "$path" file; done
+    nr_check_unit "$UNIT"
+    nr_check_unit "/run/systemd/system/$SERVICE.service"
+    local link
+    while IFS= read -r link; do
+        [[ $link == *.wants/* ]] || continue
+        nr_check_parent_dirs "$link"
+        if [[ -e $link || -L $link ]]; then
+            [[ -L $link && $(stat -c %u -- "$link") == 0 ]] || nr_die "Unsafe dedicated enablement entry: $link."
+        fi
+    done < <(nr_unit_paths)
+    for path in "$CREDS" "$PROFILE" "$CLIENT_CONFIG" "$TLS/.desired-source"; do nr_check_leaf "$path" private; done
     for dropin in "$UNIT.d" "/run/systemd/system/$SERVICE.service.d" "/usr/lib/systemd/system/$SERVICE.service.d" "/lib/systemd/system/$SERVICE.service.d"; do
         nr_check_leaf "$dropin" rootdir
         [[ -d $dropin ]] || continue
@@ -393,12 +561,18 @@ nr_new_file() {
 # accounts, websites and logs remain in place: remote issuance cannot be undone
 # by restoring a configuration file. Backups are root-only and retained.
 nr_rollback() {
+    nr_lock_tls || return 1
     local failed=0 index=0 path existed type prior
-    if ! systemctl stop "$SERVICE" >/dev/null 2>&1; then
-        # A missing/previously incomplete unit may legitimately have nothing to
-        # stop. A still-active process is an actual rollback failure.
-        if systemctl is-active --quiet "$SERVICE"; then failed=1; fi
+    # A mask removal may expose a foreign vendor alias. Never stop that target,
+    # but still restore our recorded pathname entries, including the old mask.
+    if nr_unit_identity; then
+        if ! systemctl stop "$SERVICE" >/dev/null 2>&1; then
+            if systemctl is-active --quiet "$SERVICE"; then failed=1; fi
+        fi
     fi
+    for prior in /etc/systemd/system/multi-user.target.wants/$SERVICE.service /run/systemd/system/multi-user.target.wants/$SERVICE.service; do
+        rm -f -- "$prior" || failed=1
+    done
     while IFS=$'\t' read -r index existed type path; do
         if [[ $type == dir ]]; then
             [[ ! -e $path ]] || rm -rf -- "$path" || failed=1
@@ -412,24 +586,26 @@ nr_rollback() {
             rm -f -- "$path" || failed=1
         fi
     done < "$backup_dir/manifest"
+    nr_unlock_tls
     systemctl daemon-reload || failed=1
-    # Remove candidate enablement first. In particular, restoring an originally
-    # runtime-only enable must not leave the candidate's persistent wants link.
-    if ! systemctl disable "$SERVICE" >/dev/null 2>&1; then
-        if systemctl is-enabled --quiet "$SERVICE"; then failed=1; fi
-    fi
-    case $was_enabled in
-        enabled) systemctl enable "$SERVICE" >/dev/null 2>&1 || failed=1 ;;
-        enabled-runtime) systemctl enable --runtime "$SERVICE" >/dev/null 2>&1 || failed=1 ;;
-    esac
+    # Saved persistent/runtime wants entries establish the previous enablement;
+    # do not issue enable against a newly exposed foreign alias during recovery.
     if (( was_active )); then
         if [[ -x $BIN && -f $CONFIG ]]; then
-            systemctl start "$SERVICE" || failed=1
+            if nr_unit_identity; then
+                systemctl start "$SERVICE" || failed=1
+                systemctl is-active --quiet "$SERVICE" || failed=1
+            else
+                failed=1
+            fi
         else
             printf 'Warning: the previous deployment was already missing binary/config/unit files; its disk baseline was restored but it cannot be restarted.\n' >&2
             failed=1
         fi
     fi
+    if (( !was_active )) && systemctl is-active --quiet "$SERVICE"; then failed=1; fi
+    prior=$(systemctl is-enabled "$SERVICE" 2>/dev/null || true)
+    [[ $prior == "$was_enabled" || ( $was_enabled == not-found && -z $prior ) ]] || failed=1
     (( failed == 0 ))
 }
 nr_cleanup() {
@@ -473,22 +649,24 @@ nr_backup() {
     backup_dir=$(mktemp -d "$TOOLS/backups/deployment-$(date -u +%Y%m%d-%H%M%S).XXXXXXXX")
     install -d -m 700 "$backup_dir/files"
     : > "$backup_dir/manifest"
-    local paths=("$BIN" "$CONFIG" "$UNIT" "$PROFILE" "$CLIENT_CONFIG" "$SYSCTL" "$HOOK"
+    local paths=("$BIN" "$CONFIG" "$UNIT" "/run/systemd/system/$SERVICE.service"
+        "/etc/systemd/system/multi-user.target.wants/$SERVICE.service"
+        "/run/systemd/system/multi-user.target.wants/$SERVICE.service"
+        "$PROFILE" "$CLIENT_CONFIG" "$SYSCTL" "$HOOK" "$TLS/current" "$TLS/.desired-source"
         "$TLS/fullchain.pem" "$TLS/privkey.pem" "$UNIT.d" "/run/systemd/system/$SERVICE.service.d"
         "/usr/lib/systemd/system/$SERVICE.service.d" "/lib/systemd/system/$SERVICE.service.d")
     for path in "${paths[@]}"; do
-        canonical=$(readlink -m -- "$path")
+        canonical=$(readlink -m -- "${path%/*}")/${path##*/}
         [[ $seen != *$'\n'"$canonical"$'\n'* ]] || continue
         seen+="$canonical"$'\n'
         type=file; [[ $path != *.service.d ]] || type=dir
         existed=0
-        if [[ -e $path ]]; then existed=1; cp -a -- "$path" "$backup_dir/files/$index"; fi
+        if [[ -e $path || -L $path ]]; then existed=1; cp -a -- "$path" "$backup_dir/files/$index"; fi
         printf '%s\t%s\t%s\t%s\n' "$index" "$existed" "$type" "$path" >> "$backup_dir/manifest"
         index=$((index + 1))
     done
     printf 'active=%s\nenabled=%s\n' "$was_active" "$was_enabled" > "$backup_dir/service-state"
     printf 'Private deployment backup: %s\n' "$backup_dir"
-    transaction_started=1
 }
 # Inspect adjacent module/replacement records in `go version -m` output. Merely
 # finding a module name is insufficient: the binary must use its patched source.
@@ -499,8 +677,13 @@ nr_build() {
     local jobs=$1 expected url
     mkdir "$work/source"
     # Build a snapshot; leave the caller's tracked files and lockfiles untouched.
-    tar -C "$REPO" --exclude=.git --exclude=target --exclude=__pycache__ --exclude=.venv \
-        --exclude='relay-servers-*' -cf - . | tar -C "$work/source" -xf -
+    local -a snapshot_excludes=(--exclude=.git --exclude=target --exclude=__pycache__ --exclude=.venv --exclude='relay-servers-*')
+    # A checkout placed directly under /opt may contain this run's work tree.
+    # Exclude it before tar sees its own growing source copy.
+    if [[ $work == "${REPO%/}/"* ]]; then snapshot_excludes+=(--exclude="./${work#"${REPO%/}/"}"); fi
+    tar -C "$REPO" "${snapshot_excludes[@]}" -cf - . | tar -C "$work/source" -xf -
+    mkdir -m 700 "$work/tmp"
+    export TMPDIR=$work/tmp
     local env_name
     # Ignore inherited compiler/linker/runner overrides without printing values.
     # Preserve HTTP(S)_PROXY, CA trust and platform Git authentication bindings.
@@ -534,29 +717,130 @@ nr_build() {
 # Certbot runs this hook as root after successful renewal. The daemon cannot
 # enter Certbot's directory or read its Cloudflare token; it reads only copies
 # of its active certificate/key, owned by root and readable by its own group.
-# Stage both first so a missing new key cannot replace only the old certificate.
-# Reload through systemd/SIGHUP after replacement; other lineages do nothing.
+# Validate and publish an immutable generation under a serialized current link.
+# Reload through systemd/SIGHUP; a failed notification restores the old link.
+# SIGHUP is asynchronous: local final health checks remain necessary.
 nr_hook_text() {
-    cat <<EOF
-#!/bin/sh
-set -eu
+    printf '#!/usr/bin/env bash\nset -Eeuo pipefail\nset +x\nset +v\nset +a\n'
+    printf 'lineage=%q\ndomain=%q\ndir=%q\nservice=%q\narchive=%q\n' "$CERT_ROOT/live/$domain" "$domain" "$TLS" "$SERVICE" "$CERT_ROOT/archive"
+    cat <<'HOOK'
 PATH=/usr/sbin:/usr/bin:/sbin:/bin
 export PATH
 umask 077
-lineage=$CERT_ROOT/live/$domain
-[ "\${RENEWED_LINEAGE:-\$lineage}" = "\$lineage" ] || exit 0
-dir=$TLS
-trap 'rm -f "\$dir/.fullchain.pem.new" "\$dir/.privkey.pem.new"' EXIT HUP INT TERM
-for file in fullchain.pem privkey.pem; do
-    install -o root -g $SERVICE -m 640 "\$lineage/\$file" "\$dir/.\$file.new"
-done
-for file in fullchain.pem privkey.pem; do
-    mv -f "\$dir/.\$file.new" "\$dir/\$file"
-done
-if systemctl is-active --quiet $SERVICE; then
-    systemctl reload $SERVICE
+[[ ${RENEWED_LINEAGE:-$lineage} == "$lineage" ]] || exit 0
+[[ $# == 0 || ( $# == 1 && $1 == --no-reload ) ]] || { printf 'Unknown certificate hook argument.\n' >&2; exit 1; }
+fail() { printf 'Certificate publication failed: %s\n' "$*" >&2; exit 1; }
+# Recheck at the signal boundary as well as before staging: another root
+# operation may have changed a unit alias while this hook waited or validated.
+reload_service() {
+    local identity
+    identity=$(systemctl show "$service" --property=Id --value 2>/dev/null || true)
+    if [[ $identity != "$service.service" ]]; then
+        printf 'Refusing certificate reload through a foreign or unidentified unit alias.\n' >&2
+        return 1
+    fi
+    systemctl reload "$service"
+}
+root_chain() {
+    local path=$1
+    while :; do
+        [[ ! -L $path && -d $path && $(stat -c %u -- "$path") == 0 ]] || fail 'Unsafe certificate directory.'
+        (( (8#$(stat -c %a -- "$path") & 0022) == 0 )) || fail 'Writable certificate directory.'
+        [[ $path != / ]] || break
+        path=${path%/*}; [[ -n $path ]] || path=/
+    done
+}
+root_chain "$lineage"
+root_chain "$dir"
+identity=$(systemctl show "$service" --property=Id --value 2>/dev/null || true)
+[[ -z $identity || $identity == "$service.service" ]] || fail 'The relay unit aliases another service.'
+lock=$dir/.publish.lock
+[[ ! -L $lock && ( ! -e $lock || ( -f $lock && $(stat -c '%u:%h:%a' -- "$lock") == 0:1:600 ) ) ]] || fail 'Unsafe certificate publication lock.'
+if [[ -n ${NR_TLS_LOCK_FD:-} ]]; then
+    [[ ${1:-} == --no-reload && $NR_TLS_LOCK_FD =~ ^[0-9]+$ ]] || fail 'Invalid inherited publication lock.'
+    [[ $(stat -Lc '%d:%i' -- "/proc/self/fd/$NR_TLS_LOCK_FD") == $(stat -c '%d:%i' -- "$lock") ]] || fail 'Inherited publication lock does not match.'
+    publication_lock=$NR_TLS_LOCK_FD
+else
+    exec {publication_lock}>>"$lock"
 fi
-EOF
+# flock on an inherited duplicate uses the same open-file description and
+# cannot deadlock the installer that already owns this lock.
+flock -x "$publication_lock"
+unset NR_TLS_LOCK_FD
+marker=$dir/.desired-source
+[[ ! -L $marker && -f $marker && $(stat -c '%u:%h:%a' -- "$marker") == 0:1:600 ]] || fail 'Unsafe or missing desired certificate source.'
+expected=$(printf '%s\n%s' "$lineage" "$domain")
+# A hook queued before a domain/source replacement must not publish afterwards.
+[[ $(cat -- "$marker") == "$expected" ]] || exit 0
+previous=
+if [[ -e $dir/current || -L $dir/current ]]; then
+    [[ -L $dir/current && $(stat -c %u -- "$dir/current") == 0 ]] || fail 'Unsafe current certificate entry.'
+    previous=$(readlink -- "$dir/current")
+    [[ $previous =~ ^generation[.][A-Za-z0-9]+$ ]] || fail 'Current certificate points outside managed generations.'
+    if [[ -e $dir/$previous || -L $dir/$previous ]]; then
+        root_chain "$dir/$previous"
+    else
+        # A deleted managed mirror is a repair case; Certbot originals below
+        # still determine whether a new complete generation may be published.
+        previous=
+    fi
+fi
+generation=$(mktemp -d "$dir/generation.XXXXXXXX")
+link=$dir/.current-${generation##*/}
+published=0
+cleanup() {
+    local result=$? recovery=0
+    trap - EXIT
+    if (( result != 0 && published )); then
+        if [[ -n $previous ]]; then
+            ln -s -- "$previous" "$link" && mv -fT -- "$link" "$dir/current" || recovery=1
+        else
+            rm -f -- "$dir/current" || recovery=1
+        fi
+        # A failed SIGHUP notification does not prove that the process loaded
+        # the candidate. Restore the old disk generation and notify again.
+        if [[ -n $previous ]] && systemctl is-active --quiet "$service"; then
+            reload_service || recovery=1
+        fi
+        (( recovery == 0 )) || printf 'Certificate recovery incomplete; retained generation: %s\n' "$generation" >&2
+    fi
+    rm -f -- "$link"
+    if (( !published )); then rm -rf -- "$generation"; fi
+    exit "$result"
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+for file in fullchain.pem privkey.pem; do
+    source=$lineage/$file
+    [[ $(stat -c %u -- "$source") == 0 ]] || fail 'Certificate source is not root-owned.'
+    resolved=$(readlink -e -- "$source") || fail 'Missing certificate source.'
+    [[ $resolved == "$archive/"* || $resolved == "$source" ]] || fail 'Certificate source leaves the managed archive.'
+    root_chain "${resolved%/*}"
+    [[ ! -L $resolved && -f $resolved && $(stat -c '%u:%h' -- "$resolved") == 0:1 ]] || fail 'Unsafe certificate source file.'
+    (( (8#$(stat -c %a -- "$resolved") & 0022) == 0 )) || fail 'Certificate source has extra writers.'
+    install -o root -g "$service" -m 640 -- "$resolved" "$generation/$file"
+done
+cert=$generation/fullchain.pem
+key=$generation/privkey.pem
+openssl x509 -in "$cert" -noout -checkend 0 >/dev/null 2>&1 || fail 'Certificate is expired or malformed.'
+openssl verify -purpose sslserver -verify_hostname "$domain" -untrusted "$cert" "$cert" >/dev/null 2>&1 || fail 'Certificate hostname, validity or trust check failed.'
+certificate_key=$(openssl x509 -in "$cert" -pubkey -noout | openssl pkey -pubin -outform DER | sha256sum) || fail 'Cannot read certificate key.'
+private_key=$(openssl pkey -in "$key" -passin pass: -pubout -outform DER | sha256sum) || fail 'Cannot read private key.'
+[[ $certificate_key == "$private_key" ]] || fail 'Certificate and private key do not match.'
+chown root:"$service" "$generation"
+chmod 750 "$generation"
+ln -s -- "${generation##*/}" "$link"
+mv -fT -- "$link" "$dir/current"
+published=1
+if [[ ${1:-} != --no-reload ]] && systemctl is-active --quiet "$service"; then
+    reload_service || fail 'Service reload failed; restoring the preceding generation.'
+    systemctl is-active --quiet "$service" || fail 'Service stopped after reload.'
+fi
+# Keep immutable generations for transaction backups, including a generation
+# referenced by a previous installer's saved current link. Root may retire old
+# backups/generations together; never prune keys behind a recoverable backup.
+HOOK
 }
 # Keep server configuration/TLS outside home directories because ProtectHome
 # hides them. Unspecified relay policies retain the server's reviewed defaults.
@@ -566,8 +850,8 @@ nr_config_text() {
 listen = "[::]:443"
 log_dir = "$LOGS"
 [tls]
-cert = "$TLS/fullchain.pem"
-key = "$TLS/privkey.pem"
+cert = "$TLS/current/fullchain.pem"
+key = "$TLS/current/privkey.pem"
 [web]
 root = "$WWW"
 [relay]
@@ -649,6 +933,10 @@ nr_account() {
         fi
     fi
     nr_check_account
+    nr_check_leaf /nonexistent rootdir
+    usermod --home /nonexistent --lock "$SERVICE"
+    [[ $(getent passwd "$SERVICE" | cut -d: -f6) == /nonexistent ]] || nr_die 'Cannot establish a non-writable service home.'
+    [[ $(passwd -S "$SERVICE") == "$SERVICE L "* ]] || nr_die 'Cannot lock the dedicated service login password.'
 }
 # Export the same account used by both server and Apple profile. This format is
 # accepted by the Rust GUI importer and headless client. Loopback-only SOCKS does
@@ -675,6 +963,7 @@ EOF
 # The alphabet needs no TOML/XML/Basic-auth escaping and contains no colon.
 nr_generate_password() {
     local candidate
+    export -n candidate
     while :; do
         candidate=$(openssl rand -base64 18) || return
         [[ $candidate =~ ^[A-Za-z0-9+/]{24}$ ]] || nr_die 'OpenSSL returned invalid password material.'
@@ -837,8 +1126,9 @@ nr_prepare() {
     install -d -o root -g "$SERVICE" -m 750 "$candidate"
     install -d -o root -g root -m 700 "$work/exports"
     install -o root -g root -m 755 "$work/$SERVICE" "$candidate/$SERVICE"
-    install -o root -g "$SERVICE" -m 640 "$CERT_ROOT/live/$domain/fullchain.pem" "$candidate/fullchain.pem"
-    install -o root -g "$SERVICE" -m 640 "$CERT_ROOT/live/$domain/privkey.pem" "$candidate/privkey.pem"
+    install -d -o root -g "$SERVICE" -m 750 "$candidate/current"
+    install -o root -g "$SERVICE" -m 640 "$CERT_ROOT/live/$domain/fullchain.pem" "$candidate/current/fullchain.pem"
+    install -o root -g "$SERVICE" -m 640 "$CERT_ROOT/live/$domain/privkey.pem" "$candidate/current/privkey.pem"
     credentials_reused=0
     if nr_recover_credentials; then
         printf 'Reusing the existing private client password; configuration follows the current script.\n'
@@ -878,13 +1168,17 @@ nr_prepare() {
 # That is harmless only when the dedicated service is inactive and every 443
 # socket is free. Never hide a real stop failure or kill an unrelated listener.
 nr_stop_service() {
+    nr_unit_identity || return 1
     if ! systemctl stop "$SERVICE" >/dev/null 2>&1; then
         if systemctl is-active --quiet "$SERVICE"; then nr_die 'Cannot stop the existing relay service.'; fi
     fi
     if systemctl is-active --quiet "$SERVICE"; then nr_die 'The existing relay service did not stop.'; fi
     local occupied
     occupied=$(nr_port_inodes) || nr_die 'Cannot verify that 443 was released.'
-    [[ -z $occupied ]] || nr_die 'TCP/UDP 443 is still occupied; no unrelated process was stopped.'
+    if [[ -n $occupied ]]; then
+        nr_report_ports || true
+        nr_die 'TCP/UDP 443 is still occupied; no unrelated process was stopped.'
+    fi
 }
 # The current script replaces dedicated files after a validated build/stage.
 # Retain old websites/logs/ACME state; preserve complete file and unit-state
@@ -892,6 +1186,8 @@ nr_stop_service() {
 # state. A missing old binary/config from manual deletion is honestly reported.
 nr_deploy() {
     local relay_password account key current response ready=0 attempt path index existed type
+    # Clear an inherited export attribute as well as disabling bash -a above.
+    export -n relay_password account
     nr_fresh
     nr_account
     # Shared parents are never chmodded. Only create absent standard directories
@@ -918,21 +1214,36 @@ nr_deploy() {
             printf '%s = %s\n' "$key" "$current"
         done
     } > "$work/sysctl"
+    nr_lock_tls
     nr_backup
-    # Stop using the old unit/drop-ins before removing their dedicated overrides.
-    # Missing units from first or partially deleted installs are handled safely.
+    # Lock waits and private backup copies can take time. Prove ownership again
+    # before the first deployed mutation, without stopping anything on conflict.
+    nr_ports
+    transaction_started=1
+    printf '%s\n%s\n' "$CERT_ROOT/live/$domain" "$domain" > "$work/desired-source"
+    nr_atomic_install "$work/desired-source" "$TLS/.desired-source" 600
+    # PID 1 cannot stop a locally masked unit until its managed mask is replaced.
+    # Retain the loaded old unit for ordinary upgrades; repair only actual masks.
+    local unit_path
+    for unit_path in "$UNIT" "/run/systemd/system/$SERVICE.service"; do
+        if [[ -L $unit_path && $(readlink -- "$unit_path") == /dev/null ]]; then rm -- "$unit_path"; fi
+    done
+    systemctl daemon-reload
     nr_stop_service
+    rm -f -- "/run/systemd/system/$SERVICE.service"
     while IFS=$'\t' read -r index existed type path; do
         if [[ $type == dir && -d $path ]]; then rm -rf -- "$path"; fi
     done < "$backup_dir/manifest"
     nr_atomic_install "$work/$SERVICE" "$BIN" 755
     nr_atomic_install "$work/config" "$CONFIG" 640 "$SERVICE"
-    nr_atomic_install "$work/candidate/fullchain.pem" "$TLS/fullchain.pem" 640 "$SERVICE"
-    nr_atomic_install "$work/candidate/privkey.pem" "$TLS/privkey.pem" 640 "$SERVICE"
     nr_atomic_install "$work/unit" "$UNIT" 644
     nr_atomic_install "$work/hook" "$HOOK" 700
+    NR_TLS_LOCK_FD=$tls_lock "$HOOK" --no-reload
     nr_atomic_install "$work/sysctl" "$SYSCTL" 644
+    nr_unlock_tls
     systemctl daemon-reload
+    # Replace only this unit's stale enablement entries after recording them.
+    rm -f -- "/etc/systemd/system/multi-user.target.wants/$SERVICE.service" "/run/systemd/system/multi-user.target.wants/$SERVICE.service"
     systemctl enable "$SERVICE"
     systemctl start "$SERVICE"
     for ((attempt=0; attempt<30; attempt++)); do
@@ -1017,9 +1328,7 @@ nr_main() {
     umask 077
     command -v flock >/dev/null || nr_die 'flock from util-linux is required.'
     # A persistent root-owned lock directory serializes competing installers.
-    install -d -m 700 "/run/$SERVICE-native-cloudflare-install"
-    exec {install_lock}>"/run/$SERVICE-native-cloudflare-install/lock"
-    flock -n "$install_lock" || nr_die 'Another installer is running.'
+    nr_acquire_lock
     nr_fresh
     nr_inputs
     nr_noninteractive
@@ -1027,7 +1336,7 @@ nr_main() {
     scope=selected
     jobs=1
     printf 'Defaults: user iphone, one build job, bundled selected-domain profile.\n'
-    printf 'Set DNS-only A/AAAA records to this server; open TCP/UDP 443 in the provider firewall.\n'
+    printf 'DNS-01 needs no A/AAAA records. For direct clients, route DNS-only records here and allow TCP/UDP 443.\n'
     printf 'This installs packages, builds this checkout, stores the token root-only,\naccepts Let\047s Encrypt terms, and enables the service and certbot.timer.\n'
     # This script requires the complete checkout, including local transport
     # patches and the repository unit template; it is not a standalone bundle.

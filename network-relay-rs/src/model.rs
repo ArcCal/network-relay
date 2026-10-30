@@ -229,6 +229,27 @@ impl Configuration {
     pub fn selected_server_mut(&mut self) -> Option<&mut Server> {
         self.selected_index().map(|i| &mut self.servers[i])
     }
+    /// Keep an unchanged current connection when saving new or imported profiles.
+    /// Replacing that connection requires an explicit Connect.
+    pub fn preparing_connection_save(&self, current: &Self, imported_servers: bool) -> (Self, bool) {
+        let selected_is_new = self
+            .selected_server()
+            .is_some_and(|selected| !current.servers.iter().any(|server| server.id == selected.id));
+        if !imported_servers && !selected_is_new {
+            return (self.clone(), true);
+        }
+        let mut next = self.clone();
+        let Some(previous) =
+            current.selected_server().filter(|old| self.servers.iter().any(|server| server.id == old.id))
+        else {
+            return (next, false);
+        };
+        next.selected_server_id = Some(previous.id);
+        let mut comparison = current.clone();
+        comparison.servers = self.servers.clone();
+        comparison.selected_server_id = Some(previous.id);
+        (next, client_change(current, &comparison) == ClientChange::None)
+    }
     pub fn proxy_address(&self) -> String {
         socket_address(self.listen_address.trim(), self.port)
     }

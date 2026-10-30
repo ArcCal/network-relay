@@ -147,6 +147,26 @@ public struct Configuration: Codable, Equatable {
         return new
     }
 
+    /// Saving new or imported profiles preserves an unchanged current connection.
+    /// A replacement of that connection waits for an explicit Connect instead.
+    public func preparingConnectionSave(
+        from current: Configuration, importedServers: Bool
+    ) -> (configuration: Configuration, allowReconnect: Bool) {
+        let selectedIsNew = selectedServer.map { selected in
+            !current.servers.contains { $0.id == selected.id }
+        } ?? false
+        guard importedServers || selectedIsNew else { return (self, true) }
+        var next = self
+        guard let previous = current.selectedServer?.id, servers.contains(where: { $0.id == previous }) else {
+            return (next, false)
+        }
+        next.selectedServerID = previous
+        var comparison = current
+        comparison.servers = servers
+        comparison.selectedServerID = previous
+        return (next, clientChange(from: current, to: comparison) == .none)
+    }
+
     // MARK: The settings file
 
     private enum CodingKeys: String, CodingKey {

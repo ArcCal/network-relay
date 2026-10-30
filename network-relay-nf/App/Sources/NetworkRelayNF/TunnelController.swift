@@ -30,10 +30,10 @@ final class TunnelController: ObservableObject {
         }
     }
     @discardableResult
-    func save(_ new: Configuration) throws -> Bool {
+    func save(_ new: Configuration, retryFailed: Bool = false, allowReconnect: Bool = true) throws -> Bool {
         try new.check()
         try Store.save(new)
-        let reconnecting = adopt(new)
+        let reconnecting = adopt(new, retryFailed: retryFailed, allowReconnect: allowReconnect)
         appendLog(["\(timestamp()) INFO app: Settings saved\(reconnecting ? "; reconnecting with the changed parameters; existing proxy sessions will end" : "")"])
         return reconnecting
     }
@@ -41,7 +41,7 @@ final class TunnelController: ObservableObject {
         var new = configuration; new.selectedServerID = id
         guard new.selectedServer?.id != configuration.selectedServer?.id else { return }
         guard saveChoice(new) else { return }
-        let reconnecting = adopt(new)
+        let reconnecting = adopt(new, retryFailed: true)
         appendLog(["\(timestamp()) INFO app: Server selected: \(new.selectedServer?.title ?? "none")\(reconnecting ? "; reconnecting; existing proxy sessions will end" : "")"])
     }
     func setLogLevel(_ level: LogLevel) {
@@ -59,14 +59,28 @@ final class TunnelController: ObservableObject {
         }
     }
     @discardableResult
-    private func adopt(_ new: Configuration) -> Bool {
+    private func adopt(_ new: Configuration, retryFailed: Bool = false, allowReconnect: Bool = true) -> Bool {
         let change = clientChange(from: configuration, to: new)
+        let selectedChanged = configuration.selectedServer?.id != new.selectedServer?.id
         let levelChanged = configuration.logLevel != new.logLevel
         configuration = new
         if levelChanged { client?.setLogLevel(new.logLevel) }
+        guard !quitting else { return false }
+        if !allowReconnect {
+            restartAfterExit = false
+            stopClient()
+            return false
+        }
+        if client == nil {
+            if retryFailed, case .failed = status, change != .disconnect, change == .reconnect || selectedChanged {
+                connect()
+                return true
+            }
+            return false
+        }
         // A choice made while an explicit Disconnect is finishing must
         // not request another connection. Pending automatic restarts may update it.
-        guard client != nil, !quitting, !stopping || restartAfterExit else { return false }
+        guard !stopping || restartAfterExit else { return false }
         switch change {
         case .none: return false
         case .reconnect:

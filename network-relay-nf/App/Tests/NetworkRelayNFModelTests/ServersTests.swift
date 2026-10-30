@@ -21,6 +21,58 @@ final class ServersTests: XCTestCase {
         XCTAssertNil(Configuration().selectedServer)
     }
 
+    func testSavingNewAndImportedServersKeepsAnUnchangedCurrentConnection() {
+        let current = both
+        var draft = current
+        let added = Server(domain: "new.example.com", username: "user", password: "pw")
+        draft.servers.append(added)
+        draft.selectedServerID = added.id
+        for imported in [false, true] {
+            let saved = draft.preparingConnectionSave(from: current, importedServers: imported)
+            XCTAssertEqual(saved.configuration.selectedServerID, tokyo.id)
+            XCTAssertEqual(saved.configuration.servers, draft.servers)
+            XCTAssertTrue(saved.allowReconnect)
+        }
+        draft.selectedServerID = frankfurt.id
+        let imported = draft.preparingConnectionSave(from: current, importedServers: true)
+        XCTAssertEqual(imported.configuration.selectedServerID, tokyo.id)
+        XCTAssertTrue(imported.allowReconnect)
+    }
+
+    func testReplacingOrChangingTheImportedCurrentServerWaitsForConnect() {
+        let current = both
+        var replacement = Configuration(servers: [frankfurt], selectedServerID: frankfurt.id)
+        XCTAssertFalse(replacement.preparingConnectionSave(from: current, importedServers: true).allowReconnect)
+        replacement = current
+        replacement.servers[0].password = "imported-password"
+        replacement.selectedServerID = frankfurt.id
+        let changed = replacement.preparingConnectionSave(from: current, importedServers: true)
+        XCTAssertFalse(changed.allowReconnect)
+        XCTAssertEqual(changed.configuration.selectedServerID, tokyo.id)
+        replacement = current
+        replacement.port = 1081
+        XCTAssertTrue(replacement.preparingConnectionSave(from: current, importedServers: true).allowReconnect,
+                      "Application edits retain their ordinary Save behavior")
+        XCTAssertTrue(replacement.preparingConnectionSave(from: current, importedServers: false).allowReconnect,
+                      "Ordinary edits still reconnect on Save")
+        XCTAssertFalse(current.preparingConnectionSave(from: Configuration(), importedServers: false).allowReconnect,
+                       "The first saved server waits for Connect")
+    }
+
+    func testImportingInactiveOrDisplayOnlyChangesKeepsTheCurrentConnection() {
+        let current = both
+        var draft = current
+        draft.servers[0].name = "Renamed"
+        draft.servers[1].password = "inactive-password"
+        draft.logLevel = .detailed
+        draft.port = 1081
+        let saved = draft.preparingConnectionSave(from: current, importedServers: true)
+        XCTAssertTrue(saved.allowReconnect)
+        XCTAssertEqual(saved.configuration.selectedServerID, tokyo.id)
+        XCTAssertEqual(clientChange(from: current, to: saved.configuration), .reconnect,
+                       "The application port still applies on Save")
+    }
+
     func testTheClientRunsWithTheServerConnectedToAndTheProxy() throws {
         // As the single server of 1.3 did: the same configuration file
         // network-relay-nf-core's own tests read.

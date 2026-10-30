@@ -28,6 +28,59 @@ fn temporary_folder() -> std::path::PathBuf {
 }
 
 #[test]
+fn saving_new_and_imported_profiles_keeps_an_unchanged_current_connection() {
+    let current = configuration();
+    let active = current.selected_server_id;
+    let mut draft = current.clone();
+    let added = server("new.example.com");
+    draft.selected_server_id = Some(added.id);
+    draft.servers.push(added);
+    for imported in [false, true] {
+        let (saved, allow_reconnect) = draft.preparing_connection_save(&current, imported);
+        assert_eq!(saved.selected_server_id, active);
+        assert_eq!(saved.servers, draft.servers);
+        assert!(allow_reconnect);
+    }
+    draft.selected_server_id = Some(draft.servers[1].id);
+    let (saved, allow_reconnect) = draft.preparing_connection_save(&current, true);
+    assert_eq!(saved.selected_server_id, active);
+    assert!(allow_reconnect);
+}
+
+#[test]
+fn imported_replacement_or_active_settings_change_waits_for_connect() {
+    let current = configuration();
+    let mut draft = current.clone();
+    draft.servers.remove(0);
+    assert!(!draft.preparing_connection_save(&current, true).1);
+    draft = current.clone();
+    draft.servers[0].password = "imported-password".into();
+    draft.selected_server_id = Some(draft.servers[1].id);
+    let (changed, allow_reconnect) = draft.preparing_connection_save(&current, true);
+    assert!(!allow_reconnect);
+    assert_eq!(changed.selected_server_id, current.selected_server_id);
+    draft = current.clone();
+    draft.port = 1081;
+    assert!(draft.preparing_connection_save(&current, true).1, "application edits retain their ordinary Save behavior");
+    assert!(draft.preparing_connection_save(&current, false).1, "ordinary edits still reconnect on Save");
+    assert!(!current.preparing_connection_save(&Configuration::default(), false).1);
+}
+
+#[test]
+fn imported_inactive_and_display_only_changes_keep_the_current_connection() {
+    let current = configuration();
+    let mut draft = current.clone();
+    draft.servers[0].name = "Renamed".into();
+    draft.servers[1].password = "inactive-password".into();
+    draft.log_level = LogLevel::Detailed;
+    draft.port = 1081;
+    let (saved, allow_reconnect) = draft.preparing_connection_save(&current, true);
+    assert!(allow_reconnect);
+    assert_eq!(saved.selected_server_id, current.selected_server_id);
+    assert_eq!(client_change(&current, &saved), ClientChange::Reconnect, "the application port still applies on Save");
+}
+
+#[test]
 fn selected_server_and_blank_draft_keep_their_identity() {
     let mut c = configuration();
     let first = c.servers[0].id;

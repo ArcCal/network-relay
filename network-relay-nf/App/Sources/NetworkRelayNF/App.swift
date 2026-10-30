@@ -299,9 +299,9 @@ struct Draft: Equatable {
     var connectOnLaunch = false
     /// Only an imported log level overrides the choice made in the Log tab.
     var importedLogLevel: LogLevel?
-    /// The server to connect through once saved, chosen by an import that
-    /// replaced everything.
+    /// The requested saved selection; a new or imported choice never connects by itself.
     var selectAfterSave: UUID?
+    var importedServers = false
     var loaded = false
 
     init() {}
@@ -358,7 +358,7 @@ struct SettingsForm: View {
                                 Text(server.title).tag(Optional(server.id))
                             }
                         }
-                        .help("Saved server choices apply immediately. A running proxy reconnects; a disconnected proxy stays disconnected. Other edits still need Save.")
+                        .help("Saved server choices apply immediately to running or failed connections. A manually disconnected proxy stays disconnected. Other edits still need Save.")
                         TextField("Name", text: field(\.name), prompt: Text("Optional, such as Tokyo"))
                         TextField("Domain", text: field(\.domain), prompt: Text("vpn.example.com"))
                         TextField("IP", text: field(\.serverIP), prompt: Text("Optional"))
@@ -371,7 +371,7 @@ struct SettingsForm: View {
                                 Text(transport.title).tag(transport)
                             }
                         }
-                        .help("Saved servers apply this choice immediately; the active proxy reconnects.")
+                        .help("Saved servers apply this choice immediately to running or failed connections. A manually disconnected proxy stays disconnected.")
                         if draft.servers[editedIndex!].transport == .auto {
                             Text("Where UDP 443 is blocked, HTTP/3 waits 5 seconds before switching to TCP; when only TCP works, HTTP/2 is faster.")
                                 .font(.caption)
@@ -530,7 +530,7 @@ struct SettingsForm: View {
         var new = tunnel.configuration
         new.selectedServerID = id
         do {
-            let reconnecting = try tunnel.save(new)
+            let reconnecting = try tunnel.save(new, retryFailed: true)
             draft.editing = id
             draft.selectAfterSave = nil
             message = .note(reconnecting
@@ -558,7 +558,7 @@ struct SettingsForm: View {
             || new.servers[saved].transport != transport else { return }
         new.servers[saved].transport = transport
         do {
-            let reconnecting = try tunnel.save(new)
+            let reconnecting = try tunnel.save(new, retryFailed: true)
             draft.servers[edited].transport = transport
             message = .note(reconnecting
                 ? "Transport applied; reconnecting. Other changes still need Save."
@@ -634,13 +634,16 @@ struct SettingsForm: View {
                 new.selectedServerID = current
             }
             new.selectedServerID = new.selectedServer?.id
-            let reconnecting = try tunnel.save(new)
+            let prepared = new.preparingConnectionSave(from: tunnel.configuration, importedServers: draft.importedServers)
+            new = prepared.configuration
+            let reconnecting = try tunnel.save(new, allowReconnect: prepared.allowReconnect)
             draft.servers = new.servers
             if !draft.servers.contains(where: { $0.id == draft.editing }) {
                 draft.editing = new.selectedServer?.id
             }
             draft.port = String(new.port)
             draft.selectAfterSave = nil
+            draft.importedServers = false
             draft.importedLogLevel = nil
             message = .done(reconnecting ? "Saved; reconnecting with the new settings" : "Saved")
         } catch {
@@ -689,6 +692,7 @@ struct SettingsForm: View {
             }
         }
         if scope != .application {
+            draft.importedServers = true
             let previousIDs = Set(base.servers.map(\.id))
             base.add(serversOf: imported, replacing: replace)
             draft.servers = base.servers

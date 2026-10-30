@@ -82,6 +82,7 @@ struct App {
     editing: Option<Uuid>,
     select_after_save: Option<Uuid>,
     imported_log_level: bool,
+    imported_servers: bool,
     application: Id,
     delegate: Id,
     window: Id,
@@ -262,6 +263,7 @@ impl App {
             editing,
             select_after_save: None,
             imported_log_level: false,
+            imported_servers: false,
             application,
             delegate,
             window,
@@ -365,13 +367,16 @@ impl App {
             SAVE => {
                 self.read_editor()?;
                 let saved = prepare_save(&self.draft, &self.controller.config, self.select_after_save);
-                self.controller.apply(saved)?;
+                let (saved, allow_reconnect) =
+                    saved.preparing_connection_save(&self.controller.config, self.imported_servers);
+                self.controller.apply_saved(saved, allow_reconnect)?;
                 self.draft = self.controller.config.clone();
                 if !self.draft.servers.iter().any(|server| Some(server.id) == self.editing) {
                     self.editing = self.draft.selected_server_id;
                 }
                 self.select_after_save = None;
                 self.imported_log_level = false;
+                self.imported_servers = false;
                 self.show_editor();
                 self.message("Saved");
             }
@@ -383,7 +388,7 @@ impl App {
                     if self.controller.config.servers.iter().any(|server| server.id == id) {
                         let mut config = self.controller.config.clone();
                         config.selected_server_id = Some(id);
-                        self.controller.apply(config)?;
+                        self.controller.apply_choice(config)?;
                         self.select_after_save = None;
                         self.message("Server applied. Other changes still need Save.");
                     } else {
@@ -399,7 +404,7 @@ impl App {
                     self.read_server_fields();
                     let mut config = self.controller.config.clone();
                     config.selected_server_id = Some(id);
-                    self.controller.apply(config)?;
+                    self.controller.apply_choice(config)?;
                     self.editing = Some(id);
                     self.select_after_save = None;
                     self.show_server_editor();
@@ -414,7 +419,7 @@ impl App {
                     let mut config = self.controller.config.clone();
                     if let Some(server) = config.servers.iter_mut().find(|server| server.id == id) {
                         server.transport = mode;
-                        self.controller.apply(config)?;
+                        self.controller.apply_choice(config)?;
                         self.message("Transport applied. Other changes still need Save.");
                     } else {
                         self.message("Transport selected; save this new server before connecting.");
@@ -585,6 +590,7 @@ impl App {
             let replace = choice == 1;
             let old_ids = self.draft.servers.iter().map(|server| server.id).collect::<Vec<_>>();
             self.draft.import_servers(&imported, replace);
+            self.imported_servers = true;
             if replace {
                 self.editing = self.draft.selected_server().map(|server| server.id);
                 self.select_after_save = self.editing;

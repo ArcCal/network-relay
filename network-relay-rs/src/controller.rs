@@ -265,20 +265,38 @@ impl Controller {
         }
     }
     pub fn apply(&mut self, new: Configuration) -> Result<()> {
+        self.apply_settings(new, false, true)
+    }
+    pub fn apply_choice(&mut self, new: Configuration) -> Result<()> {
+        self.apply_settings(new, true, true)
+    }
+    pub fn apply_saved(&mut self, new: Configuration, allow_reconnect: bool) -> Result<()> {
+        self.apply_settings(new, false, allow_reconnect)
+    }
+    fn apply_settings(&mut self, new: Configuration, retry_failed: bool, allow_reconnect: bool) -> Result<()> {
         new.check()?;
         if let Some(path) = &self.store {
             new.save(path)?;
         }
         let old = self.config.core_config().ok();
         let next = new.core_config().ok();
+        let selected_changed =
+            self.config.selected_server().map(|server| server.id) != new.selected_server().map(|server| server.id);
         let changed = old.as_ref().map(config_identity) != next.as_ref().map(config_identity);
         let level_changed = new.log_level != self.config.log_level;
         self.config = new;
         if level_changed && let Some(w) = &self.worker {
             w.level.store(level_number(self.config.log_level), Ordering::Relaxed);
         }
-        let should_restart = changed && self.worker.is_some() && (!self.stopping || self.restart) && next.is_some();
-        if changed && self.worker.is_some() && (!self.stopping || self.restart) {
+        let retry = retry_failed && matches!(self.status, Status::Failed(_)) && self.worker.is_none();
+        let should_restart = allow_reconnect
+            && (changed || (retry && selected_changed))
+            && (retry || (self.worker.is_some() && (!self.stopping || self.restart)))
+            && next.is_some();
+        if !allow_reconnect {
+            self.restart = false;
+            self.stop_worker();
+        } else if changed && self.worker.is_some() && (!self.stopping || self.restart) {
             self.restart = should_restart;
             self.stop_worker();
         }
@@ -291,6 +309,9 @@ impl Controller {
             }
             .into(),
         );
+        if retry && should_restart {
+            self.connect();
+        }
         Ok(())
     }
     pub fn set_log_level(&mut self, level: LogLevel) -> Result<()> {
@@ -582,5 +603,77 @@ mod tests {
         assert_eq!(c.logs().iter().filter(|line| line.text.contains("Connecting to ")).count(), 1);
         assert!(std::net::TcpListener::bind(("127.0.0.1", port)).is_ok());
         assert_eq!(c.status, Status::Stopped);
+    }
+
+    #[test]
+    fn manual_server_and_transport_choices_retry_a_failed_connection() {
+        for choice_kind in 0..3 {
+            let (mut c, _relay, port) = pending_tls_controller();
+            let occupied = std::net::TcpListener::bind(("127.0.0.1", port)).unwrap();
+            let mut second = c.config.servers[0].clone();
+            second.id = uuid::Uuid::new_v4();
+            if choice_kind == 0 {
+                second.domain = second.domain.replace("relay.test", "other.test");
+            }
+            c.config.servers.push(second.clone());
+            c.connect();
+            wait_until(&mut c, |c| c.worker.is_none() && matches!(c.status, Status::Failed(_)));
+            drop(occupied);
+            let mut choice = c.config.clone();
+            if choice_kind == 1 {
+                choice.servers[0].transport = crate::model::Transport::Http1;
+            } else {
+                choice.selected_server_id = Some(second.id);
+            }
+            c.apply_choice(choice).unwrap();
+            assert!(c.worker.is_some());
+            assert_eq!(c.status, Status::Connecting);
+            wait_until(&mut c, |c| c.logs().iter().any(|line| line.text.contains("SOCKS TCP listener ready")));
+            c.disconnect();
+            wait_until(&mut c, |c| c.worker.is_none());
+        }
+    }
+
+    #[test]
+    fn save_and_choices_after_explicit_disconnect_do_not_retry_failure() {
+        let (mut c, _relay, port) = pending_tls_controller();
+        let occupied = std::net::TcpListener::bind(("127.0.0.1", port)).unwrap();
+        c.connect();
+        wait_until(&mut c, |c| c.worker.is_none() && matches!(c.status, Status::Failed(_)));
+        drop(occupied);
+        let mut changed = c.config.clone();
+        changed.servers[0].transport = crate::model::Transport::Http1;
+        c.apply(changed).unwrap();
+        assert!(c.worker.is_none());
+        assert!(matches!(c.status, Status::Failed(_)));
+        c.disconnect();
+        let mut choice = c.config.clone();
+        choice.servers[0].transport = crate::model::Transport::H3;
+        c.apply_choice(choice).unwrap();
+        assert!(c.worker.is_none());
+        assert_eq!(c.status, Status::Stopped);
+    }
+
+    #[test]
+    fn imported_replacement_cancels_a_pending_restart_until_explicit_connect() {
+        let (mut c, _relay, port) = pending_tls_controller();
+        c.connect();
+        wait_until(&mut c, |c| c.logs().iter().any(|line| line.text.contains("SOCKS TCP listener ready")));
+        let mut choice = c.config.clone();
+        choice.servers[0].transport = crate::model::Transport::Http1;
+        c.apply_choice(choice).unwrap();
+        let mut replacement = c.config.clone();
+        replacement.servers[0].id = uuid::Uuid::new_v4();
+        replacement.selected_server_id = Some(replacement.servers[0].id);
+        let (replacement, allow_reconnect) = replacement.preparing_connection_save(&c.config, true);
+        assert!(!allow_reconnect);
+        c.apply_saved(replacement, allow_reconnect).unwrap();
+        wait_until(&mut c, |c| c.worker.is_none());
+        assert_eq!(c.logs().iter().filter(|line| line.text.contains("Connecting to ")).count(), 1);
+        assert!(std::net::TcpListener::bind(("127.0.0.1", port)).is_ok());
+        c.connect();
+        assert!(c.worker.is_some());
+        c.disconnect();
+        wait_until(&mut c, |c| c.worker.is_none());
     }
 }

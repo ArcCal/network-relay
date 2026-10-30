@@ -112,7 +112,12 @@ async fn session(client: Arc<Client>, mut io: native::Io, peer: SocketAddr) -> R
                 Ok(mut opened) => {
                     reply(&mut io, 0, None).await?;
                     tracing::debug!(%peer, host=%target.host, port=target.port, transport=opened.transport, "SOCKS CONNECT ready");
-                    if let Err(e) = tokio::io::copy_bidirectional(&mut io, &mut opened.stream).await
+                    if let Err(e) = crate::traffic::copy_bidirectional(
+                        &mut io,
+                        &mut opened.stream,
+                        &client.bridge.traffic,
+                    )
+                    .await
                     {
                         // A failed tunnel, such as one whose destination
                         // reset, resets the program's connection as the
@@ -249,7 +254,7 @@ async fn udp_association(
                             let mut flow=UdpFlow::new(opened.stream);
                             loop {
                                 tokio::select! {
-                                    payload=rx.recv() => { let Some(payload)=payload else { break; }; flow.send(&payload).await?; }
+                                    payload=rx.recv() => { let Some(payload)=payload else { break; }; flow.send(&payload).await?; client.bridge.traffic.uploaded(payload.len()); }
                                     payload=flow.recv() => {
                                         let Some(payload)=payload? else { break; };
                                         // Bound SOCKS UDP packet size, including the address header.
@@ -269,6 +274,7 @@ async fn udp_association(
                 if let Some(source)=source {
                     let mut packet=vec![0,0,0]; target.encode(&mut packet); packet.extend_from_slice(&payload);
                     socket.send_to(&packet,source).await?;
+                    client.bridge.traffic.downloaded(payload.len());
                 }
             }
             _=tasks.join_next(), if !tasks.is_empty() => {},

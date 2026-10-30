@@ -80,6 +80,33 @@ profiles preserve a matching existing password; a first import may therefore
 require the user to enter credentials before connecting. Each server keeps NF's
 admission probe target so NF exports pass through RS without loss.
 
+## Live traffic
+
+Only the main window has a Live Traffic card, below server selection and above
+the proxy address. A 38-point caption content area, 12-point padding, 10-point
+corners and a subdued background match the NF component. It shows the actual
+running node and upload/download byte rates formatted by
+`NSByteCountFormatter` with binary units. Idle windows show `No active traffic`;
+missing telemetry shows `Speed unavailable`. Disconnect, terminal failure and
+quit hide it immediately. The menu-bar panel has no traffic component. There
+are no history, total or reset controls.
+
+Independent per-run counters measure SOCKS payload accepted for forwarding.
+TCP counts completed buffered writes after the CONNECT reply. UDP counts payload
+accepted by relay writes or the existing local native-send queue, excluding
+invalid/dropped packets, SOCKS envelopes, handshakes, admission probes and HTTP
+framing. These are logical proxy payload rates, not wire usage or proof of
+destination delivery. The backend's older diagnostic stream counters are not
+used because they include both local and relay I/O.
+
+The worker samples cumulative counters with monotonic elapsed nanoseconds.
+Approximately one-second rate windows reset on a first sample, counter/clock
+rollback or a gap over three seconds. Run ownership prevents a pending selected
+profile from relabeling traffic from an earlier run. Telemetry failure resets
+only its sampler; the connection and reconnection policy are unchanged.
+Portable Core, model, UI-typecheck and controller tests cover these decisions;
+actual macOS appearance and framework execution remain separate checks.
+
 ## Compatibility target
 
 Each of network-relay and caddy-network-relay must be tested independently.

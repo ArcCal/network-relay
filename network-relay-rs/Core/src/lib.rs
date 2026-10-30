@@ -10,6 +10,7 @@ pub mod proto;
 pub mod quic;
 pub mod socks;
 pub mod stream;
+pub mod traffic;
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 

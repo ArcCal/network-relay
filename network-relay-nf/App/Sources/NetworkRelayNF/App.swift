@@ -284,8 +284,39 @@ struct StatusColumn: View {
             .animation(reduceMotion ? nil : .easeInOut(duration: 0.25), value: tunnel.status)
             Spacer()
             ServerPicker()
+            if let node = tunnel.trafficNodeName {
+                LiveTrafficCard(node: node, traffic: tunnel.traffic)
+            }
             ProxyRow(settings: tunnel.settings)
         }
+    }
+}
+
+struct LiveTrafficCard: View {
+    let node: String
+    let traffic: LiveTraffic
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Live Traffic").font(.caption).foregroundStyle(.secondary)
+            Group {
+                if traffic.state == .active {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(node).font(.body).foregroundStyle(.primary)
+                            .lineLimit(1).truncationMode(.middle).help(node)
+                        Text("\u{2191} \(formattedTrafficRate(traffic.uploadBytesPerSecond))   \u{2193} \(formattedTrafficRate(traffic.downloadBytesPerSecond))")
+                            .font(.caption).foregroundStyle(.secondary).lineLimit(1).monospacedDigit()
+                    }
+                } else {
+                    Text(traffic.state == .unavailable ? "Speed unavailable" : "No active traffic")
+                        .font(.body).foregroundStyle(.secondary)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(height: 38, alignment: .leading)
+        }
+        .padding(12)
+        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 10))
     }
 }
 

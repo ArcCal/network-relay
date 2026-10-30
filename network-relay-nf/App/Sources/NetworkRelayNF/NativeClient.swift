@@ -9,6 +9,8 @@ enum NativeUpdate {
     case log([String])
     case connected
     case reconnecting(String)
+    case traffic(TrafficSnapshot)
+    case trafficUnavailable
     case exited(Int32, String?)
 }
 
@@ -27,6 +29,8 @@ final class NativeClient {
     private var pendingConnections: [ObjectIdentifier: (UInt64, NWConnection)] = [:]
     private var level: LogLevel
     private var logTimer: DispatchSourceTimer?
+    private var lastTrafficAt = ProcessInfo.processInfo.systemUptime
+    private var trafficUnavailable = false
     private var pendingLogs: [String] = []
     private let runID: String
     private let update: @MainActor (NativeUpdate) -> Void
@@ -126,7 +130,15 @@ final class NativeClient {
         queue.async { [self] in
             let timer = DispatchSource.makeTimerSource(queue: queue)
             timer.schedule(deadline: .now() + .milliseconds(100), repeating: .milliseconds(100))
-            timer.setEventHandler { [weak self] in self?.flushLogs() }
+            timer.setEventHandler { [weak self] in
+                guard let self else { return }
+                flushLogs()
+                if handle != nil, !trafficUnavailable,
+                   ProcessInfo.processInfo.systemUptime - lastTrafficAt > 3 {
+                    trafficUnavailable = true
+                    notify(.trafficUnavailable)
+                }
+            }
             logTimer = timer; timer.resume()
         }
         // This worker keeps the instance alive until the protocol runtime exits.
@@ -227,6 +239,15 @@ final class NativeClient {
             flushLogs()
             if event.flags == 1 { notify(.connected) }
             else { notify(.reconnecting(String(decoding: event.data, as: UTF8.self))) }
+        case 22:
+            guard let sample = TrafficSnapshot(uploadBytes: event.id, downloadBytes: event.token, elapsedData: event.data) else {
+                trafficUnavailable = true
+                notify(.trafficUnavailable)
+                return
+            }
+            lastTrafficAt = ProcessInfo.processInfo.systemUptime
+            trafficUnavailable = false
+            notify(.traffic(sample))
         case 99:
             flushLogs()
             let error = event.data.isEmpty ? nil : String(decoding: event.data, as: UTF8.self)

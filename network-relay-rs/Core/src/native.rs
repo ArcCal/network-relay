@@ -30,6 +30,9 @@ pub const OPEN_UDP: u32 = 9;
 pub const SEND_UDP: u32 = 10;
 pub const LOG: u32 = 20;
 pub const STATUS: u32 = 21;
+/// Payload totals: id=upload, token=download, flags=0; data is exactly the
+/// eight little-endian bytes of monotonic elapsed nanoseconds for this run.
+pub const TRAFFIC: u32 = 22;
 pub const EXIT: u32 = 99;
 pub const READY: u32 = 101;
 pub const DATA: u32 = 102;
@@ -91,6 +94,7 @@ pub struct Resource {
 }
 pub struct Bridge {
     pub events: mpsc::Sender<Event>,
+    pub traffic: crate::traffic::Traffic,
     pub resources: Mutex<HashMap<u64, Resource>>,
     ids: AtomicU64,
     pub stop: CancellationToken,
@@ -100,6 +104,7 @@ impl Bridge {
     pub fn new(events: mpsc::Sender<Event>) -> Arc<Self> {
         Arc::new(Self {
             events,
+            traffic: crate::traffic::Traffic::default(),
             resources: Mutex::new(HashMap::new()),
             ids: AtomicU64::new(1),
             stop: CancellationToken::new(),

@@ -1,5 +1,6 @@
 pub mod controller;
 pub mod model;
+pub mod traffic;
 #[cfg(any(target_os = "macos", feature = "ui-typecheck"))]
 pub mod ui;
 

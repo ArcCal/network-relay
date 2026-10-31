@@ -56,7 +56,7 @@ class TokenInputTests(unittest.TestCase):
             path.write_text(saved)
             path.chmod(0o600)
         # The real dedicated-path check is exercised separately as root.
-        command = ('nr_check_leaf() { printf "checked:%s:%s\\n" "$2" "$1" >&2; }; CERT_ROOT="$1"; cf_token=; '
+        command = ('nr_check_parent_dirs() { printf "checked:parents:%s\\n" "$1" >&2; }; CERT_ROOT="$1"; cf_token=; '
                    'nr_inputs; if [[ $cf_token == "$2" ]]; then echo token-selected; fi')
         return subprocess.run(['bash', '-c', 'source "$1"; shift; ' + command, 'test', str(self.script),
                                str(self.certs), SAVED], input=data, capture_output=True, text=True, timeout=30)
@@ -67,7 +67,7 @@ class TokenInputTests(unittest.TestCase):
         self.assertIn('token-selected', result.stdout)
         # Bash prints read -p prompts only for terminal input, so the prompt
         # wording is not observable through this pipe.
-        self.assertIn('checked:private:', result.stderr)
+        self.assertIn('checked:parents:', result.stderr)
         self.assertNotIn(SAVED, result.stdout + result.stderr)
 
     def test_typed_token_takes_precedence_over_saved_token(self):
@@ -87,19 +87,35 @@ class TokenInputTests(unittest.TestCase):
         self.assertIn('Expected a Cloudflare API Token', result.stderr)
         self.assertNotIn('bad token', result.stdout + result.stderr)
 
-    @unittest.skipUnless(os.geteuid() == 0, 'the real dedicated-path check requires root-owned parents')
-    def test_group_readable_saved_token_is_refused(self):
+    def real_inputs(self, mode, owner=0, link=False):
         with tempfile.TemporaryDirectory(dir='/root') as private:
             certs = Path(private) / 'letsencrypt'
             certs.mkdir(mode=0o700)
             path = certs / 'network-relay-cloudflare-relay.example.com.ini'
-            path.write_text(f'dns_cloudflare_api_token = {SAVED}\n')
-            path.chmod(0o640)
-            command = 'CERT_ROOT="$1"; cf_token=; nr_inputs'
-            result = subprocess.run(['bash', '-c', 'source "$1"; shift; ' + command, 'test', str(self.script),
-                                     str(certs)], input='relay.example.com\n\n', capture_output=True, text=True)
-            self.assertNotEqual(result.returncode, 0)
-            self.assertIn('not root-only', result.stderr)
+            source = certs / 'elsewhere.ini' if link else path
+            source.write_text(f'dns_cloudflare_api_token = {SAVED}\n')
+            source.chmod(mode)
+            os.chown(source, owner, owner)
+            if link:
+                path.symlink_to(source)
+            command = 'CERT_ROOT="$1"; cf_token=; nr_inputs; if [[ $cf_token == "$2" ]]; then echo token-selected; fi'
+            return subprocess.run(['bash', '-c', 'source "$1"; shift; ' + command, 'test', str(self.script),
+                                   str(certs), SAVED], input='relay.example.com\n\n', capture_output=True, text=True)
+
+    @unittest.skipUnless(os.geteuid() == 0, 'the real dedicated-path check requires root-owned parents')
+    def test_loose_mode_saved_token_is_reused_and_reported(self):
+        result = self.real_inputs(0o640)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('token-selected', result.stdout)
+        self.assertIn('rewritten root-only', result.stderr)
+        self.assertNotIn(SAVED, result.stderr)
+
+    @unittest.skipUnless(os.geteuid() == 0, 'creating a foreign-owned file requires root')
+    def test_foreign_owned_or_linked_saved_token_is_never_read(self):
+        for kwargs in ({'mode': 0o600, 'owner': 65534}, {'mode': 0o600, 'link': True}):
+            result = self.real_inputs(**kwargs)
+            self.assertNotEqual(result.returncode, 0, kwargs)
+            self.assertNotIn('token-selected', result.stdout)
             self.assertNotIn(SAVED, result.stdout + result.stderr)
 
 
@@ -124,6 +140,118 @@ class PortRecheckTests(unittest.TestCase):
         enable = body.index('systemctl enable "$SERVICE"')
         start = body.index('systemctl start "$SERVICE"')
         self.assertIn('nr_ports_free', body[enable:start])
+
+
+@unittest.skipUnless(os.geteuid() == 0, 'dedicated-path checks require root-owned parents')
+class SameNameRepairTests(unittest.TestCase):
+    """Real files under a private root-owned directory; nothing outside it."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(dir='/root')
+        self.base = Path(self.tmp.name)
+        self.outside = self.base / 'unrelated'
+        self.outside.mkdir()
+        (self.outside / 'data').write_text('keep')
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def shell(self, command, *args):
+        return subprocess.run(['bash', '-c', 'source "$1"; shift; ' + command, 'test', str(SCRIPT), *args],
+                               capture_output=True, text=True, timeout=30)
+
+    def test_symlinked_or_misplaced_files_are_replaced_without_writing_through(self):
+        source = self.base / 'new'
+        source.write_text('new')
+        linked = self.base / 'linked'
+        linked.symlink_to(self.outside / 'data')
+        directory = self.base / 'was-directory'
+        directory.mkdir()
+        (directory / 'inside').write_text('old')
+        for destination in (linked, directory):
+            result = self.shell('nr_atomic_install "$1" "$2" 644', str(source), str(destination))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertFalse(destination.is_symlink())
+            self.assertEqual(destination.read_text(), 'new')
+        self.assertEqual((self.outside / 'data').read_text(), 'keep', 'a link target must never be written')
+        aside = [p for p in self.base.iterdir() if p.name.startswith('was-directory.replaced-')]
+        self.assertEqual(len(aside), 1)
+        self.assertEqual((aside[0] / 'inside').read_text(), 'old', 'a displaced directory is kept, not deleted')
+
+    def test_directories_get_only_their_own_mode_fixed_and_files_are_set_aside(self):
+        loose = self.base / 'loose'
+        loose.mkdir()
+        (loose / 'child').mkdir(mode=0o777)
+        os.chmod(loose, 0o777)
+        os.chmod(loose / 'child', 0o777)
+        result = self.shell('nr_repair_dir "$1" root 750', str(loose))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(loose.stat().st_mode & 0o777, 0o750)
+        self.assertEqual((loose / 'child').stat().st_mode & 0o777, 0o777, 'repair must not be recursive')
+        stale = self.base / 'stale'
+        stale.write_text('stale')
+        self.assertEqual(self.shell('nr_repair_dir "$1" root 700', str(stale)).returncode, 0)
+        self.assertTrue(stale.is_dir())
+        self.assertTrue(any(p.read_text() == 'stale' for p in self.base.glob('stale.replaced-*')))
+
+    def test_symlinked_dedicated_directory_is_reported_not_followed(self):
+        link = self.base / 'etc-link'
+        link.symlink_to(self.outside)
+        os.chmod(self.outside, 0o777)
+        result = self.shell('nr_repair_dir "$1" root 750', str(link))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('symlink', result.stderr)
+        self.assertEqual(self.outside.stat().st_mode & 0o777, 0o777, 'the link target must be untouched')
+
+    def test_rollback_restores_a_directory_that_occupied_a_file_path(self):
+        backup = self.base / 'backup'
+        (backup / 'files/0').mkdir(parents=True)
+        (backup / 'files/0/kept').write_text('old tree')
+        target = self.base / 'binary'
+        target.write_text('candidate')
+        (backup / 'manifest').write_text(f'0\t1\tfile\t{target}\n')
+        command = ('backup_dir="$1"; was_active=0; was_enabled=disabled; nr_lock_tls() { :; }; nr_unlock_tls() { :; }; '
+                   'nr_unit_identity() { return 1; }; systemctl() { case "$1" in is-enabled) echo disabled;; '
+                   'is-active) return 3;; esac; }; nr_rollback && echo restored')
+        result = self.shell(command, str(backup))
+        self.assertIn('restored', result.stdout, result.stderr)
+        self.assertEqual((target / 'kept').read_text(), 'old tree')
+
+
+@unittest.skipUnless(os.geteuid() == 0 and os.environ.get('NR_TEST_ACCOUNTS') == '1',
+                     'creates and deletes a temporary local account; set NR_TEST_ACCOUNTS=1 in a disposable host')
+class AccountRepairTests(unittest.TestCase):
+    def test_login_shell_home_and_supplementary_groups_are_repaired(self):
+        name = f'nrtest{os.getpid() % 100000}'
+        subprocess.run(['useradd', '--system', '--user-group', '--shell', '/bin/bash', '--home-dir', '/root',
+                        '--groups', 'adm', name], check=True)
+        try:
+            result = subprocess.run(['bash', '-c', 'source "$1"; SERVICE="$2"; nr_account && echo repaired',
+                                     'test', str(SCRIPT), name], capture_output=True, text=True, timeout=60)
+            self.assertIn('repaired', result.stdout, result.stderr)
+            entry = subprocess.run(['getent', 'passwd', name], capture_output=True, text=True).stdout.strip()
+            self.assertTrue(entry.endswith(':/nonexistent:/usr/sbin/nologin'), entry)
+            groups = subprocess.run(['id', '-Gn', name], capture_output=True, text=True).stdout.split()
+            self.assertEqual(groups, [name])
+            self.assertEqual(os.stat('/root').st_uid, 0, 'the previous home is never chowned')
+        finally:
+            subprocess.run(['userdel', '-f', name], check=False)
+            subprocess.run(['groupdel', name], check=False, stderr=subprocess.DEVNULL)
+
+    def test_shared_uid_is_still_refused(self):
+        name = f'nrshare{os.getpid() % 100000}'
+        # Share a non-root system UID; UID 0 would make cleanup depend on root
+        # processes, and a privileged leftover account must never remain.
+        uid = subprocess.run(['id', '-u', 'daemon'], capture_output=True, text=True, check=True).stdout.strip()
+        subprocess.run(['useradd', '--system', '--non-unique', '--uid', uid, '--user-group', name], check=True)
+        try:
+            result = subprocess.run(['bash', '-c', 'source "$1"; SERVICE="$2"; nr_account', 'test', str(SCRIPT), name],
+                                    capture_output=True, text=True, timeout=60)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('shared by another account', result.stderr)
+        finally:
+            subprocess.run(['userdel', '-f', name], check=False)
+            subprocess.run(['groupdel', name], check=False, stderr=subprocess.DEVNULL)
 
 
 class StandaloneTakeoverTests(unittest.TestCase):

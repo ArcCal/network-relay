@@ -63,6 +63,11 @@
 # 1. Fresh-only checks rejected each existing file, directory and account, forcing
 #    manual deletion and risking certificate loss. Inspect/reuse safe resources
 #    and replace managed files transactionally; support interrupted installs.
+#    A same-named file with a bad mode/owner, a symlinked file, or a file where
+#    a directory belongs is replaced or set aside rather than stopping the run;
+#    the same-named account gets a nologin shell, no supplementary groups and a
+#    non-writable home. Symlinked dedicated directories, unsafe shared parents,
+#    privileged or shared IDs and foreign listeners/aliases still stop the run.
 # 2. systemd-run tried to execute /run/<service>-candidate/<binary> before its
 #    BindReadOnlyPaths namespace existed. It resolves the first executable in the
 #    HOST namespace. Use the host's /usr/bin/env -- entry point to exec the mapped
@@ -314,8 +319,8 @@ nr_check_account() {
     fi
     IFS=: read -r name ignored uid gid gecos home shell <<< "$entry"
     [[ $uid =~ ^[0-9]+$ && $gid =~ ^[0-9]+$ && $uid != 0 && $gid != 0 ]] || nr_die 'Dedicated account must not be privileged.'
-    [[ $home == /nonexistent || $home == /var/lib/$SERVICE ]] || nr_die 'Existing service account has an unrelated home directory.'
-    case $shell in /usr/sbin/nologin|/sbin/nologin|/bin/false|/usr/bin/false) ;; *) nr_die 'Existing service account has a login shell.' ;; esac
+    # A login shell, another home or supplementary groups on this same-named
+    # account are repaired by nr_account (usermod; no home move or chown).
     [[ -n $group_entry ]] || nr_die 'Dedicated primary group is missing.'
     IFS=: read -r name ignored primary members <<< "$group_entry"
     [[ $primary == "$gid" && -z $members && $(id -gn "$SERVICE") == "$SERVICE" ]] || nr_die 'Existing service account/group is shared or mismatched.'
@@ -324,8 +329,18 @@ nr_check_account() {
     [[ $aliases == 1 && $users == 1 ]] || nr_die 'Existing service UID/GID is shared by another account.'
     aliases=$(getent group | awk -F: -v gid="$gid" '$3 == gid {n++} END {print n+0}')
     [[ $aliases == 1 ]] || nr_die 'Existing primary GID has another group alias.'
-    groups=$(id -G "$SERVICE")
-    for item in $groups; do [[ $item == "$gid" ]] || nr_die 'Dedicated account has supplementary groups.'; done
+}
+# After repair the identity must be exactly the dedicated non-login account.
+nr_verify_account() {
+    local entry home shell item
+    entry=$(getent passwd "$SERVICE") || nr_die 'The dedicated service account is missing.'
+    IFS=: read -r _ _ _ _ _ home shell <<< "$entry"
+    [[ $home == /nonexistent ]] || nr_die 'Cannot establish a non-writable service home.'
+    case $shell in /usr/sbin/nologin|/sbin/nologin|/bin/false|/usr/bin/false) ;; *) nr_die 'Cannot disable the service account login shell.' ;; esac
+    for item in $(id -G "$SERVICE"); do
+        [[ $item == "$(id -g "$SERVICE")" ]] || nr_die 'Cannot remove supplementary groups from the service account.'
+    done
+    [[ $(passwd -S "$SERVICE") == "$SERVICE L "* ]] || nr_die 'Cannot lock the dedicated service login password.'
 }
 # Kept as an alias for older callers; existing safe accounts are now accepted.
 nr_require_new_account() { nr_check_account; }
@@ -351,17 +366,10 @@ nr_check_leaf() {
             [[ -d $path && ( $owner == 0 || $owner == "$service_uid" ) ]] || nr_die "Dedicated state/runtime directory has an unrelated owner: $path." ;;
     esac
 }
-# A /dev/null mask is a managed unit state, not an unknown installation link.
-# Runtime units and wants links must participate in the same repair transaction.
-nr_check_unit() {
-    local path=$1
-    nr_check_parent_dirs "$path"
-    if [[ -L $path ]]; then
-        [[ $(readlink -- "$path") == /dev/null && $(stat -c %u -- "$path") == 0 ]] || nr_die "Unsafe dedicated unit link: $path."
-    else
-        nr_check_leaf "$path" file
-    fi
-}
+# Unit files, masks, runtime units and wants links of this name participate in
+# the repair transaction: they are saved, then replaced by rename or removed.
+# A unit symlink is only accepted when PID 1 resolves it to this exact unit Id
+# (nr_unit_identity); a link aliasing another service remains a conflict.
 nr_unit_paths() {
     printf '%s\n' "$UNIT" "/run/systemd/system/$SERVICE.service" \
         "/etc/systemd/system/multi-user.target.wants/$SERVICE.service" \
@@ -561,32 +569,58 @@ nr_ports() {
 # Compatibility name retained for existing usage/tests; this is now a safe
 # installation preflight, not an existence-based fresh-install gate.
 # Permit safe prior deployments and interrupted attempts; never require users to
-# delete paths one by one. Unknown symlinks, writable roots and shared accounts
-# are still rejected, because replacement must not affect another workload.
+# delete paths one by one. A same-named dedicated entry with the wrong type,
+# owner or mode (including a symlink) is replaced or repaired, never written
+# through: files are renamed over after backup, a non-directory at a directory
+# path is unlinked without touching its target, and a real directory gets only
+# its own owner/mode fixed. Unsafe shared PARENTS, foreign unit aliases, shared
+# or privileged accounts and foreign listeners are still genuine conflicts.
+nr_note_repair() {
+    local reason
+    if ! reason=$( (nr_check_leaf "$1" "$2") 2>&1 ); then
+        printf 'Will replace or repair same-named dedicated entry: %s\n' "${reason#Error: }"
+    fi
+}
 nr_fresh() {
     nr_unit_identity || return 1
-    local path dropin entry
+    local path dropin
     nr_check_account
-    for path in "$ETC" "$TLS" "$EXPORTS" "$TOOLS" "$TOOLS/backups" "$WWW"; do nr_check_leaf "$path" rootdir; done
-    for path in "$LOGS" "$RUNTIME"; do nr_check_leaf "$path" statedir; done
-    for path in "$BIN" "$CONFIG" "$SYSCTL" "$HOOK"; do nr_check_leaf "$path" file; done
-    nr_check_unit "$UNIT"
-    nr_check_unit "/run/systemd/system/$SERVICE.service"
-    local link
-    while IFS= read -r link; do
-        [[ $link == *.wants/* ]] || continue
-        nr_check_parent_dirs "$link"
-        if [[ -e $link || -L $link ]]; then
-            [[ -L $link && $(stat -c %u -- "$link") == 0 ]] || nr_die "Unsafe dedicated enablement entry: $link."
-        fi
-    done < <(nr_unit_paths)
-    for path in "$CREDS" "$PROFILE" "$CLIENT_CONFIG" "$TLS/.desired-source"; do nr_check_leaf "$path" private; done
+    for path in "$ETC" "$TLS" "$EXPORTS" "$TOOLS" "$TOOLS/backups" "$WWW" "$LOGS" "$RUNTIME" \
+        "$BIN" "$CONFIG" "$SYSCTL" "$HOOK" "$UNIT" "/run/systemd/system/$SERVICE.service" \
+        "$CREDS" "$PROFILE" "$CLIENT_CONFIG" "$TLS/.desired-source" $(nr_unit_paths); do
+        nr_check_parent_dirs "$path"
+    done
+    for path in "$ETC" "$TLS" "$EXPORTS" "$TOOLS" "$TOOLS/backups" "$WWW"; do
+        # Unlinking it before the transaction could break the running old
+        # deployment, and following it could change unrelated data.
+        [[ ! -L $path ]] || nr_die "Dedicated directory $path is a symlink; it was not followed or replaced. Make it a real directory, then rerun."
+        nr_note_repair "$path" rootdir
+    done
+    for path in "$LOGS" "$RUNTIME"; do nr_note_repair "$path" statedir; done
+    for path in "$BIN" "$CONFIG" "$SYSCTL" "$HOOK"; do nr_note_repair "$path" file; done
+    for path in "$CREDS" "$PROFILE" "$CLIENT_CONFIG" "$TLS/.desired-source"; do nr_note_repair "$path" private; done
+    # Drop-in directories are saved whole and then removed; their contents are
+    # never executed or followed by the installer.
     for dropin in "$UNIT.d" "/run/systemd/system/$SERVICE.service.d" "/usr/lib/systemd/system/$SERVICE.service.d" "/lib/systemd/system/$SERVICE.service.d"; do
-        nr_check_leaf "$dropin" rootdir
-        [[ -d $dropin ]] || continue
-        while IFS= read -r entry; do nr_check_leaf "$entry" file; done < <(find -P "$dropin" -mindepth 1 -maxdepth 1 -print)
+        nr_check_parent_dirs "$dropin/x"
     done
     nr_ports
+}
+# Make a dedicated directory usable: a stale non-directory entry at its name is
+# renamed aside (kept, never followed); a real directory gets only its own
+# owner/mode fixed, never a recursive change. Symlinks were rejected earlier.
+nr_set_aside() {
+    local aside
+    aside=$1.replaced-$(date -u +%Y%m%d%H%M%S)-$$
+    mv -T -- "$1" "$aside"
+    printf 'Moved the conflicting same-named entry %s to %s.\n' "$1" "$aside"
+}
+nr_repair_dir() {
+    local path=$1 group=$2 mode=$3
+    nr_check_parent_dirs "$path"
+    [[ ! -L $path ]] || nr_die "Dedicated directory $path is a symlink; it was not followed or replaced."
+    if [[ -e $path && ! -d $path ]]; then nr_set_aside "$path"; fi
+    install -d -o root -g "$group" -m "$mode" -- "$path"
 }
 # Ignore per-user curl configuration, retaining HTTPS/TLS verification, proxy
 # routing and configured CA trust. Artifact checksums are checked before use.
@@ -632,6 +666,9 @@ nr_rollback() {
         if [[ $type == dir ]]; then
             [[ ! -e $path ]] || rm -rf -- "$path" || failed=1
             if [[ $existed == 1 ]]; then cp -a -- "$backup_dir/files/$index" "$path" || failed=1; fi
+        elif [[ $existed == 1 && -d $backup_dir/files/$index && ! -L $backup_dir/files/$index ]]; then
+            # A directory that had occupied a file path is restored as it was.
+            rm -rf -- "$path" && cp -a -- "$backup_dir/files/$index" "$path" || failed=1
         elif [[ $existed == 1 ]]; then
             prior=$(mktemp "${path%/*}/.${path##*/}.restore.XXXXXXXX") || { failed=1; continue; }
             if cp -a -- "$backup_dir/files/$index" "$prior" && mv -fT -- "$prior" "$path"; then :; else
@@ -690,10 +727,12 @@ nr_cleanup() {
 }
 # Copy into a same-filesystem temporary file, then rename. Replacing the pathname
 # never truncates the executable inode still in use by the previous process.
+# rename(2) replaces a same-named symlink itself and never writes through it.
+# A directory at a file path is set aside (callers have already saved it).
 nr_atomic_install() {
     local source=$1 destination=$2 mode=$3 group=${4:-root} temporary
     nr_check_parent_dirs "$destination"
-    [[ ! -L $destination ]] || nr_die "Refusing installation symlink: $destination."
+    if [[ -d $destination && ! -L $destination ]]; then nr_set_aside "$destination"; fi
     temporary=$(mktemp "${destination%/*}/.${destination##*/}.install.XXXXXXXX")
     if install -o root -g "$group" -m "$mode" -- "$source" "$temporary" && mv -fT -- "$temporary" "$destination"; then :; else
         rm -f -- "$temporary"
@@ -706,8 +745,7 @@ nr_backup() {
     if systemctl is-active --quiet "$SERVICE"; then was_active=1; fi
     was_enabled=$(systemctl is-enabled "$SERVICE" 2>/dev/null || true)
     was_enabled=${was_enabled:-disabled}
-    nr_check_leaf "$TOOLS/backups" rootdir
-    install -d -o root -g root -m 700 "$TOOLS/backups"
+    nr_repair_dir "$TOOLS/backups" root 700
     backup_dir=$(mktemp -d "$TOOLS/backups/deployment-$(date -u +%Y%m%d-%H%M%S).XXXXXXXX")
     install -d -m 700 "$backup_dir/files"
     : > "$backup_dir/manifest"
@@ -996,9 +1034,10 @@ nr_account() {
     fi
     nr_check_account
     nr_check_leaf /nonexistent rootdir
-    usermod --home /nonexistent --lock "$SERVICE"
-    [[ $(getent passwd "$SERVICE" | cut -d: -f6) == /nonexistent ]] || nr_die 'Cannot establish a non-writable service home.'
-    [[ $(passwd -S "$SERVICE") == "$SERVICE L "* ]] || nr_die 'Cannot lock the dedicated service login password.'
+    # Narrow repair of this same-named identity only: no -m/-u, so the old home
+    # is neither moved nor chowned, and other accounts/groups are unchanged.
+    usermod --home /nonexistent --shell /usr/sbin/nologin --groups '' --lock "$SERVICE"
+    nr_verify_account
 }
 # Export the same account used by both server and Apple profile. This format is
 # accepted by the Rust GUI importer and headless client. Loopback-only SOCKS does
@@ -1041,7 +1080,10 @@ nr_generate_password() {
 # all configuration and the Argon2id server hash are still regenerated.
 nr_recover_credentials() {
     local old_domain old_user old_password
-    [[ -f $CLIENT_CONFIG ]] || return 1
+    # A password from a linked, foreign-owned or group/other-readable export may
+    # be exposed or planted: generate a new one rather than reuse it.
+    [[ -f $CLIENT_CONFIG && ! -L $CLIENT_CONFIG && $(stat -c '%u' -- "$CLIENT_CONFIG") == 0 ]] || return 1
+    (( (8#$(stat -c %a -- "$CLIENT_CONFIG") & 0077) == 0 )) || return 1
     old_domain=$(sed -n 's|^uri_template = "https://\([^/]*\)/.well-known/masque/udp/{target_host}/{target_port}/"$|\1|p' "$CLIENT_CONFIG")
     old_user=$(sed -n 's/^username = "\([A-Za-z0-9_-][A-Za-z0-9_.-]*\)"$/\1/p' "$CLIENT_CONFIG")
     old_password=$(sed -n 's/^password = "\([A-Za-z0-9+/]*\)"$/\1/p' "$CLIENT_CONFIG")
@@ -1139,7 +1181,8 @@ EOF
 nr_prepare_certificate() {
     local lineage=$CERT_ROOT/live/$domain renewal=$CERT_ROOT/renewal/$domain.conf cert_backup previous=0
     local reused=0 parser_output
-    nr_check_leaf "$CREDS" private
+    # The token file is replaced by rename below; a bad mode or link is repaired.
+    nr_check_parent_dirs "$CREDS"
     nr_check_leaf "$renewal" file
     install -d -o root -g root -m 700 "$TOOLS/backups"
     cert_backup=$(mktemp -d "$TOOLS/backups/certificate-$(date -u +%Y%m%d-%H%M%S).XXXXXXXX")
@@ -1306,10 +1349,16 @@ nr_deploy() {
     for path in "$BIN" "$UNIT" "$SYSCTL" "$HOOK"; do
         if [[ ! -d ${path%/*} ]]; then install -d -o root -g root -m 755 "${path%/*}"; fi
     done
-    install -d -o root -g "$SERVICE" -m 750 "$ETC" "$TLS"
-    install -d -o root -g root -m 700 "$EXPORTS"
+    nr_repair_dir "$ETC" "$SERVICE" 750
+    nr_repair_dir "$TLS" "$SERVICE" 750
+    nr_repair_dir "$EXPORTS" root 700
     [[ -d ${WWW%/*} ]] || install -d -m 755 "${WWW%/*}"
-    if [[ ! -e $WWW ]]; then install -d -m 755 "$WWW"; fi
+    # Website files are kept; only the dedicated root's own owner/mode change.
+    nr_repair_dir "$WWW" root 755
+    # systemd recreates/chowns these; a stale non-directory would block it.
+    for path in "$LOGS" "$RUNTIME"; do
+        if [[ -L $path || ( -e $path && ! -d $path ) ]]; then nr_set_aside "$path"; fi
+    done
     if [[ -z $(find -P "$WWW" -mindepth 1 -maxdepth 1 -print -quit) ]]; then
         printf '<!doctype html>\n<title>Welcome</title>\n<h1>Welcome</h1>\n' | nr_new_file "$WWW/index.html" 644
     fi
@@ -1395,8 +1444,13 @@ nr_token_valid() {
 # Read it only from the checked dedicated file and by a strict line pattern,
 # never by sourcing; the value is rewritten unchanged with the same mode.
 nr_saved_token() {
-    [[ -f $CREDS && ! -L $CREDS ]] || return 1
-    nr_check_leaf "$CREDS" private
+    nr_check_parent_dirs "$CREDS"
+    # Never read a secret through a link or from a file another account owns.
+    # A too-broad mode is only noted: the value is rewritten root-only (0600).
+    [[ -f $CREDS && ! -L $CREDS && $(stat -c %u -- "$CREDS") == 0 ]] || return 1
+    if (( (8#$(stat -c %a -- "$CREDS") & 0077) != 0 )); then
+        printf 'The saved renewal token was readable by other accounts; it will be rewritten root-only.\n' >&2
+    fi
     sed -n 's/^dns_cloudflare_api_token = \([A-Za-z0-9_-]*\)$/\1/p' "$CREDS"
 }
 nr_inputs() {
@@ -1485,8 +1539,8 @@ nr_main() {
     else
         printf 'Certificate check: DNS-01 issuance is needed; it runs concurrently with the build.\n'
     fi
-    nr_check_leaf "$TOOLS" rootdir
-    install -d -m 700 "$TOOLS"
+    nr_repair_dir "$TOOLS" root 700
+    nr_repair_dir "$TOOLS/backups" root 700
     work=$(mktemp -d "$TOOLS/build.XXXXXXXX")
     # Install traps only after this run owns a unique scratch directory.
     trap nr_cleanup EXIT

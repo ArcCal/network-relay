@@ -59,6 +59,7 @@ impl Header {
         }
     }
 
+    #[allow(clippy::type_complexity)]
     pub fn into_request_parts(
         self,
     ) -> Result<

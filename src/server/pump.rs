@@ -312,6 +312,8 @@ pub(super) async fn udp(mut tunnel: Tunnel, sock: Udp, mut ctx: TunnelCtx) {
                                     // A datagram too large for the path, say:
                                     // dropped, as UDP allows (RFC 9298 §3.1).
                                     Err(e) if udp_error_is_transient(&e) => dropped += 1,
+                                    // An egress path whose MTU shrank meanwhile.
+                                    Err(_) if data.len() > sock.max_payload() => dropped += 1,
                                     Err(e) => break (unusable(&e), Some(Abort::Failed)),
                                 },
                             // Unknown context IDs are dropped (RFC 9298 §4).

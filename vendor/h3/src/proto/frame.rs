@@ -18,6 +18,7 @@ use super::{
 #[derive(Debug, PartialEq)]
 pub enum FrameError {
     Malformed,
+    TooLarge(u64), // A frame larger than MAX_BUFFERED_PAYLOAD
     UnsupportedFrame(u64), // Known frames that should generate an error
     UnknownFrame(u64),     // Unknown frames that should be ignored
     InvalidFrameValue,
@@ -33,6 +34,7 @@ impl fmt::Display for FrameError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             FrameError::Malformed => write!(f, "frame is malformed"),
+            FrameError::TooLarge(c) => write!(f, "frame 0x{:x} is too large", c),
             FrameError::UnsupportedFrame(c) => write!(f, "frame 0x{:x} is not allowed h3", c),
             FrameError::UnknownFrame(c) => write!(f, "frame 0x{:x} ignored", c),
             FrameError::InvalidFrameValue => write!(f, "frame value is invalid"),
@@ -75,8 +77,62 @@ impl From<usize> for PayloadLen {
     }
 }
 
+/// What the header of a received frame says about buffering its payload.
+pub enum Admission {
+    /// The type and length are not all here yet.
+    Incomplete,
+    /// Decode the frame as usual.
+    Decode,
+    /// A frame of unknown type: skip its header and then `.0` bytes of
+    /// payload as they arrive, without buffering them (RFC 9114 section 9).
+    Skip(usize, usize),
+}
+
+/// The largest payload of a frame other than DATA that is buffered whole
+/// before it is decoded: twice the 32 KiB header section a relay accepts, so
+/// that larger HEADERS still get a 431, while a peer cannot make the
+/// receiver buffer an unbounded frame (RFC 9114 section 10.5).
+pub const MAX_BUFFERED_PAYLOAD: usize = 64 * 1024;
+
 impl Frame<PayloadLen> {
     pub const MAX_ENCODED_SIZE: usize = VarInt::MAX_SIZE * 7;
+
+    /// Checks a frame's header before its payload is buffered.
+    pub fn admit<T: Buf>(buf: &mut T) -> Result<Admission, FrameError> {
+        let start = buf.remaining();
+        let (Ok(ty), Ok(len)) = (FrameType::decode(buf), buf.get_var()) else {
+            return Ok(Admission::Incomplete);
+        };
+        let header = start - buf.remaining();
+        match ty {
+            // DATA payloads are streamed; WebTransport streams have no length.
+            FrameType::DATA | FrameType::WEBTRANSPORT_BI_STREAM => Ok(Admission::Decode),
+            //= https://www.rfc-editor.org/rfc/rfc9114#section-7.2.8
+            //# These frame
+            //# types MUST NOT be sent, and their receipt MUST be treated as a
+            //# connection error of type H3_FRAME_UNEXPECTED.
+            FrameType::H2_PRIORITY
+            | FrameType::H2_PING
+            | FrameType::H2_WINDOW_UPDATE
+            | FrameType::H2_CONTINUATION => Err(FrameError::UnsupportedFrame(ty.0)),
+            // A single push or stream ID (section 7.2): more is malformed (7.1).
+            FrameType::CANCEL_PUSH | FrameType::GOAWAY | FrameType::MAX_PUSH_ID
+                if len > VarInt::MAX_SIZE as u64 =>
+            {
+                Err(FrameError::Malformed)
+            }
+            FrameType::HEADERS
+            | FrameType::SETTINGS
+            | FrameType::PUSH_PROMISE
+            | FrameType::CANCEL_PUSH
+            | FrameType::GOAWAY
+            | FrameType::MAX_PUSH_ID => match usize::try_from(len) {
+                Ok(len) if len <= MAX_BUFFERED_PAYLOAD => Ok(Admission::Decode),
+                _ => Err(FrameError::TooLarge(ty.0)),
+            },
+            _ => Ok(Admission::Skip(header, usize::try_from(len).unwrap_or(usize::MAX))),
+        }
+    }
 
     /// Decodes a Frame from the stream according to <https://www.rfc-editor.org/rfc/rfc9114#section-7.1>
     pub fn decode<T: Buf>(buf: &mut T) -> Result<Self, FrameError> {

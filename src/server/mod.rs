@@ -308,9 +308,12 @@ impl Relay {
     }
 
     /// Whether a new QUIC connection from an unvalidated address should
-    /// first be sent a Retry: only when handshakes arrive faster than usual.
+    /// first be sent a Retry: when handshakes arrive faster than usual, or
+    /// when half the connection slots are taken. Handshakes from spoofed
+    /// addresses at any rate below the first could otherwise hold the
+    /// slots, shared with HTTP/2 and HTTP/1.1, for HEADER_TIMEOUT each.
     fn handshake_needs_retry(&self) -> bool {
-        !self.inner.handshakes.lock().unwrap().try_take(1.0, Instant::now())
+        self.inner.connections.half_full() || !self.inner.handshakes.lock().unwrap().try_take(1.0, Instant::now())
     }
 }
 

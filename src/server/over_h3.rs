@@ -470,6 +470,7 @@ impl Relay {
         };
         let (opened, mut ctx) = match opened {
             Ok(o) => o,
+            Err(refusal @ Refusal::MalformedRequest) => return reject_malformed(stream, &refusal).await,
             Err(refusal) => return send_refusal(stream, &refusal, self.send_stall()).await,
         };
         ctx.peer_closed = peer_closed;
@@ -617,6 +618,21 @@ async fn send_refusal(mut stream: H3Stream, refusal: &Refusal, stall: std::time:
         .body(())
         .expect("valid");
     send_response(&mut stream, resp, Bytes::new(), stall).await;
+}
+
+/// A malformed request is a stream error of type H3_MESSAGE_ERROR (RFC 9298
+/// section 3.4, RFC 9114 section 4.1.2); the 400 sent first is optional,
+/// and resetting the stream may discard it.
+async fn reject_malformed(mut stream: H3Stream, refusal: &Refusal) {
+    let resp = Response::builder()
+        .status(refusal.status())
+        .header(DATE, http_date())
+        .header("proxy-status", refusal.proxy_status())
+        .body(())
+        .expect("valid");
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(1), stream.send_response(resp)).await;
+    stream.stop_stream(h3::error::Code::H3_MESSAGE_ERROR);
+    stream.stop_sending(h3::error::Code::H3_MESSAGE_ERROR);
 }
 
 /// Sends a complete response. A client that leaves it unread (no flow

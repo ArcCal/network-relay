@@ -361,7 +361,10 @@ impl Policy {
                     if !egress.available() {
                         return Err(unavailable());
                     }
-                    found.map_err(|e| Refusal::DnsError(e.to_string()))
+                    found.map_err(|e| match e.kind() {
+                        std::io::ErrorKind::TimedOut => Refusal::DnsTimeout,
+                        _ => Refusal::DnsError(e.to_string()),
+                    })
                 };
                 match tokio::time::timeout(DNS_TIMEOUT, lookup).await {
                     Err(_) => return Err(Refusal::DnsTimeout),
@@ -698,6 +701,10 @@ mod tests {
             assert!(local.iter().all(|a| a.ip().is_loopback() && a.port() == 80), "{local:?}");
             let error = open.resolve(&t("does-not-exist.invalid", 80), e, async {}).await.unwrap_err();
             assert!(matches!(error, Refusal::DnsError(_)), "{error:?}");
+            // An egress whose lookup timed out reports dns_timeout (RFC 9209
+            // section 2.3.2), as the system resolver's timeout does.
+            let slow = TestEgress::new().failing("slow.example", std::io::ErrorKind::TimedOut);
+            assert_eq!(open.resolve(&t("slow.example", 80), Some(&slow), async {}).await, Err(Refusal::DnsTimeout));
         }
 
         #[tokio::test]

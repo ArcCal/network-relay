@@ -11,20 +11,18 @@ description = "Experimental Network Relay server with mandatory Cloudflare WARP 
 license = "MIT OR Apache-2.0"
 
 [dependencies]
-nix = { version = "0.31", default-features = false, features = ["term"] }
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 # The relay itself: the server, its configuration and its helper commands.
 network-relay = { path = ".." }
 warp-masque-egress = { path = "crates/warp-egress" }
+toml = "0.9"
+tracing = "0.1"
+
+[dev-dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "signal", "sync", "io-util"] }
-toml = "0.9"
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-
-[dev-dependencies]
 warp-masque-egress = { path = "crates/warp-egress", features = ["test-support"] }
 base64 = "0.22"
 h2 = "0.4"

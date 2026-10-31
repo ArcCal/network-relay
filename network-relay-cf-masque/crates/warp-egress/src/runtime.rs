@@ -258,7 +258,7 @@ impl DatagramIo for ConnectedUdp {
             // Only one task may own smoltcp's send waker at a time.
             let _write = tokio::select! {
                 lock = self.write.lock() => lock,
-                _ = self.stack.closed() => return self.stack.check_available().map(|()| 0),
+                _ = self.stack.closed() => return Err(self.stack.check_available().err().unwrap_or_else(|| io::ErrorKind::NotConnected.into())),
             };
             self.stack.check_available()?;
             self.socket.send_to(data, self.peer).await?;
@@ -270,7 +270,7 @@ impl DatagramIo for ConnectedUdp {
         Box::pin(async move {
             let _read = tokio::select! {
                 lock = self.read.lock() => lock,
-                _ = self.stack.closed() => return self.stack.check_available().map(|()| 0),
+                _ = self.stack.closed() => return Err(self.stack.check_available().err().unwrap_or_else(|| io::ErrorKind::NotConnected.into())),
             };
             let mut ignored = 0;
             loop {

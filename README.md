@@ -919,6 +919,7 @@ A device usually keeps just one HTTP/3 connection to the relay, carrying many re
 | RFC 9298 Proxying UDP in HTTP | CONNECT-UDP: request format on all three HTTP versions, URI templates, datagram format |
 | RFC 9297 HTTP Datagrams and the Capsule Protocol | HTTP datagrams, capsules, the `Capsule-Protocol` header |
 | RFC 9110 §9.3.6, RFC 9113 §8.5, RFC 9114 §4.4 | CONNECT and error handling on the three HTTP versions |
+| RFC 9112 section 3.2, RFC 9931 | HTTP/1.1 Host and request targets; closing the connection after a refused CONNECT |
 | RFC 8441, RFC 9220 | Extended CONNECT on HTTP/2 and HTTP/3 |
 | RFC 9209 | `Proxy-Status` error information |
 | RFC 8305 | Happy Eyeballs for connecting to targets |

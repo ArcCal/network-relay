@@ -2376,7 +2376,9 @@ async fn unsupported_and_malformed_proxy_requests_get_errors_once_authenticated(
     let auth_header = auth::basic_authorization(ALICE.0, ALICE.1);
 
     // HTTP/3: a protocol this relay does not implement gets 501; a UDP
-    // proxying request whose scheme is not https gets 400 (RFC 9298 §3.4).
+    // proxying request whose scheme is not https is malformed (RFC 9298
+    // section 3.4): a stream error of type H3_MESSAGE_ERROR (RFC 9114
+    // section 4.1.2), whether or not the optional 400 gets through first.
     let (mut sender, _conn, _driver) = raw_h3(&relay, true).await;
     let websocket = Request::builder()
         .method(Method::CONNECT)
@@ -2398,7 +2400,20 @@ async fn unsupported_and_malformed_proxy_requests_get_errors_once_authenticated(
         .body(())
         .unwrap();
     let mut stream = sender.send_request(http_scheme).await.unwrap();
-    assert_eq!(within("400", stream.recv_response()).await.unwrap().status(), StatusCode::BAD_REQUEST);
+    let error = within("H3_MESSAGE_ERROR", async {
+        match stream.recv_response().await {
+            Ok(response) => {
+                assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+                stream.recv_data().await.map(|_| ()).unwrap_err()
+            }
+            Err(error) => error,
+        }
+    })
+    .await;
+    assert!(
+        matches!(error, h3::error::StreamError::RemoteTerminate { code } if code == h3::error::Code::H3_MESSAGE_ERROR),
+        "{error:?}"
+    );
     // Without credentials, the same requests get the website.
     let anonymous = Request::builder()
         .method(Method::CONNECT)
@@ -2428,8 +2443,20 @@ async fn unsupported_and_malformed_proxy_requests_get_errors_once_authenticated(
         .extension(h2::ext::Protocol::from(network_relay::proto::CONNECT_UDP_PROTOCOL))
         .body(())
         .unwrap();
+    // HTTP/2: likewise a stream error of type PROTOCOL_ERROR (RFC 9113
+    // section 8.1.1) after the optional 400; the client may see only the reset.
     let (response, _send) = h2.send_request(req, false).unwrap();
-    assert_eq!(within("HTTP/2 400", response).await.unwrap().status(), StatusCode::BAD_REQUEST);
+    let error = within("PROTOCOL_ERROR", async {
+        match response.await {
+            Ok(response) => {
+                assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+                response.into_body().data().await.expect("a reset, not EOF").unwrap_err()
+            }
+            Err(error) => error,
+        }
+    })
+    .await;
+    assert_eq!(error.reason(), Some(h2::Reason::PROTOCOL_ERROR));
 
     // HTTP/1.1 (RFC 9298 §3.2): connect-udp without "Connection: Upgrade",
     // or with a method other than GET, is malformed: 400, not the website.
@@ -2928,6 +2955,18 @@ async fn http3_push_control_frames_are_checked() {
             "{frame:02x?}: {closed:?}"
         );
     }
+    // A well-formed GOAWAY on a request stream is exactly H3_FRAME_UNEXPECTED,
+    // for a server as for a client (RFC 9114 section 7.2.6, erratum 7780).
+    let conn = ep.connect_with(cfg.clone(), relay.addr, "relay.test").unwrap().await.unwrap();
+    let mut control = conn.open_uni().await.unwrap();
+    control.write_all(&[0x00, 0x04, 0x00]).await.unwrap();
+    let (mut request, _response) = conn.open_bi().await.unwrap();
+    request.write_all(&[0x07, 0x01, 0x00]).await.unwrap();
+    let closed = within("H3_FRAME_UNEXPECTED", conn.closed()).await;
+    assert!(
+        matches!(closed, quinn::ConnectionError::ApplicationClosed(ref c) if c.error_code.into_inner() == unexpected),
+        "{closed:?}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -3236,4 +3275,192 @@ async fn datagrams_too_large_for_the_egress_path_are_dropped() {
     tunnel.send_datagram(datagram::udp_payload(&[2; 100])).unwrap();
     let Event::Datagram(p) = within("echo", tunnel.next_event()).await.unwrap() else { panic!("closed") };
     assert_eq!(&p[1..], [2; 100], "the larger datagram was dropped, the flow kept");
+}
+
+/// Reads everything until the peer closes, within [`WAIT`].
+async fn read_to_close<S: tokio::io::AsyncRead + Unpin>(stream: &mut S) -> String {
+    let mut out = Vec::new();
+    let _ = within("connection close", stream.read_to_end(&mut out)).await;
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+#[tokio::test]
+async fn http1_rejected_connect_closes_the_connection() {
+    // RFC 9931 section 8 (updating RFC 9112): a proxy MUST close the
+    // connection when rejecting a CONNECT, without processing any further
+    // request on it, whether or not the request asked for "close".
+    let relay = TestRelay::start("").await;
+    let ca = network_relay::tls::client_config(Some(&relay.env.path("ca.pem")), &[b"http/1.1"]).unwrap();
+    let connector = tokio_rustls::TlsConnector::from(std::sync::Arc::new(ca));
+    let auth = auth::basic_authorization(ALICE.0, ALICE.1);
+    let closed = {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        l.local_addr().unwrap()
+    };
+    let smuggled = "GET / HTTP/1.1\r\nHost: relay.test\r\n\r\n";
+    let cases = [
+        // No credentials: the website's answer.
+        "CONNECT 127.0.0.1:443 HTTP/1.1\r\nHost: 127.0.0.1:443\r\n\r\n".to_string(),
+        // Authenticated but refused: port 25 is blocked.
+        format!("CONNECT 127.0.0.1:25 HTTP/1.1\r\nHost: 127.0.0.1:25\r\nProxy-Authorization: {auth}\r\n\r\n"),
+        // Authenticated, destination refuses the connection.
+        format!("CONNECT {closed} HTTP/1.1\r\nHost: {closed}\r\nProxy-Authorization: {auth}\r\n\r\n"),
+        // The same for connect-udp upgrades: without credentials (the
+        // website answers 200 for its home page), and refused.
+        "GET / HTTP/1.1\r\nHost: relay.test\r\nConnection: Upgrade\r\nUpgrade: connect-udp\r\n\r\n".to_string(),
+        format!(
+            "GET /.well-known/masque/udp/127.0.0.1/25/ HTTP/1.1\r\nHost: relay.test\r\nConnection: Upgrade\r\n\
+             Upgrade: connect-udp\r\nCapsule-Protocol: ?1\r\nProxy-Authorization: {auth}\r\n\r\n"
+        ),
+    ];
+    for request in cases {
+        let tcp = tokio::net::TcpStream::connect(relay.addr).await.unwrap();
+        let mut tls = connector.connect("relay.test".try_into().unwrap(), tcp).await.unwrap();
+        tls.write_all(format!("{request}{smuggled}").as_bytes()).await.unwrap();
+        let out = read_to_close(&mut tls).await;
+        assert_eq!(out.matches("HTTP/1.1 ").count(), 1, "{request:?} -> {out:?}");
+        assert!(!out.starts_with("HTTP/1.1 101"), "{request:?} -> {out:?}");
+    }
+}
+
+/// This process's resident memory, in bytes.
+fn resident_bytes() -> u64 {
+    let status = std::fs::read_to_string("/proc/self/status").unwrap();
+    let kib: u64 =
+        status.lines().find_map(|l| l.strip_prefix("VmRSS:")).unwrap().trim().trim_end_matches(" kB").parse().unwrap();
+    kib * 1024
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn http3_frames_are_never_buffered_without_bound() {
+    // A frame's payload is buffered whole only up to a bound; frames of
+    // unknown types are ignored (RFC 9114 section 9) by discarding their
+    // payload as it arrives. Otherwise one unauthenticated client could make
+    // the relay hold any amount of memory (section 10.5).
+    let relay = TestRelay::start("").await;
+    let tls = network_relay::tls::client_config(Some(&relay.env.path("ca.pem")), &[b"h3"]).unwrap();
+    let crypto = quinn::crypto::rustls::QuicClientConfig::try_from(tls).unwrap();
+    let cfg = quinn::ClientConfig::new(std::sync::Arc::new(crypto));
+    let ep = quinn::Endpoint::client("127.0.0.1:0".parse().unwrap()).unwrap();
+    let open = || async {
+        let conn = ep.connect_with(cfg.clone(), relay.addr, "relay.test").unwrap().await.unwrap();
+        let mut control = conn.open_uni().await.unwrap();
+        control.write_all(&[0x00, 0x04, 0x00]).await.unwrap();
+        (conn, control)
+    };
+    let frame_header = |ty: u64, len: u64| {
+        let mut b = bytes::BytesMut::new();
+        network_relay::proto::varint::encode(ty, &mut b);
+        network_relay::proto::varint::encode(len, &mut b);
+        b.freeze()
+    };
+
+    // HEADERS that announces 2^40 bytes: refused from its header alone.
+    let (conn, _control) = open().await;
+    let (mut request, _response) = conn.open_bi().await.unwrap();
+    request.write_all(&frame_header(0x01, 1 << 40)).await.unwrap();
+    let closed = within("H3_EXCESSIVE_LOAD", conn.closed()).await;
+    let excessive = h3::error::Code::H3_EXCESSIVE_LOAD.value();
+    assert!(
+        matches!(closed, quinn::ConnectionError::ApplicationClosed(ref c) if c.error_code.into_inner() == excessive),
+        "{closed:?}"
+    );
+
+    // 256 MiB in a reserved frame on the control stream is discarded as it
+    // arrives, and the connection keeps working. Resident memory is this
+    // whole process's, which other tests share: a relay that buffered the
+    // frame would grow by at least 256 MiB, far more than they allocate.
+    let (conn, mut control) = open().await;
+    let before = resident_bytes();
+    control.write_all(&frame_header(0x21, 1 << 40)).await.unwrap();
+    let zeros = vec![0u8; 64 * 1024];
+    within("256 MiB of an unknown frame", async {
+        for _ in 0..4096 {
+            control.write_all(&zeros).await.unwrap();
+        }
+    })
+    .await;
+    let grown = resident_bytes().saturating_sub(before);
+    assert!(grown < 128 << 20, "resident memory grew by {} MiB", grown >> 20);
+    // And on a request stream, an unknown frame before HEADERS is skipped.
+    let get = [(":method", "GET"), (":scheme", "https"), (":authority", "relay.test"), (":path", "/")];
+    let (mut send, mut recv) = conn.open_bi().await.unwrap();
+    send.write_all(&frame_header(0x21, 1 << 20)).await.unwrap();
+    for _ in 0..16 {
+        send.write_all(&zeros).await.unwrap();
+    }
+    let block = qpack_literal(&get);
+    let mut headers = frame_header(0x01, block.len() as u64).to_vec();
+    headers.extend_from_slice(&block);
+    send.write_all(&headers).await.unwrap();
+    let mut first = [0u8; 1];
+    within("response HEADERS", recv.read_exact(&mut first)).await.unwrap();
+    assert_eq!(first[0], 1, "a HEADERS frame");
+    assert!(conn.close_reason().is_none(), "{:?}", conn.close_reason());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn quic_clients_are_served_through_a_retry_once_half_the_slots_are_taken() {
+    // RFC 9000 section 8.1: with half the connection slots taken, a new
+    // QUIC client first proves its address with a Retry, so spoofed
+    // handshakes cannot hold slots; a real client still connects.
+    let relay = TestRelay::start("max_connections = 4\nblocked_destinations = [\"10.0.0.0/8\"]").await;
+    let tls =
+        std::sync::Arc::new(network_relay::tls::client_config(Some(&relay.env.path("ca.pem")), &[b"h2"]).unwrap());
+    let connect = || async {
+        let tcp = tokio::net::TcpStream::connect(relay.addr).await.unwrap();
+        tokio_rustls::TlsConnector::from(tls.clone()).connect("relay.test".try_into().unwrap(), tcp).await.unwrap()
+    };
+    let held = (connect().await, connect().await);
+    within("two connections", async {
+        while relay.relay.open_connections() != 2 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    let (web, _w) = http_server().await;
+    let (dns, _d) = udp_echo().await;
+    let opts = relay.options(ALICE, web, dns);
+    let mut h3 = within("HTTP/3 through a Retry", H3::connect(&opts, &opts.addresses)).await.unwrap();
+    let req = Request::builder()
+        .method(Method::CONNECT)
+        .uri(web.to_string())
+        .header("authorization", auth::basic_authorization(ALICE.0, ALICE.1))
+        .body(())
+        .unwrap();
+    let mut stream = h3.request(req).await.unwrap();
+    assert_eq!(within("CONNECT", stream.recv_response()).await.unwrap().status(), StatusCode::OK);
+    drop(held);
+}
+
+#[tokio::test]
+async fn http1_connect_needs_an_authority_form_target_and_a_valid_host() {
+    // RFC 9112 section 3.2.3: a CONNECT's request target is host:port; the
+    // Host field is not a fallback. Section 3.2: an invalid Host value gets
+    // 400. HTTP/2 and HTTP/3 refuse their equivalents too.
+    let relay = TestRelay::start("").await;
+    let (echo, _e) = echo_server().await;
+    let ca = network_relay::tls::client_config(Some(&relay.env.path("ca.pem")), &[b"http/1.1"]).unwrap();
+    let connector = tokio_rustls::TlsConnector::from(std::sync::Arc::new(ca));
+    let auth = auth::basic_authorization(ALICE.0, ALICE.1);
+    for (request, expected) in [
+        (format!("CONNECT /anything HTTP/1.1\r\nHost: {echo}\r\nProxy-Authorization: {auth}\r\n\r\n"), "400"),
+        (format!("CONNECT http://{echo}/ HTTP/1.1\r\nHost: {echo}\r\nProxy-Authorization: {auth}\r\n\r\n"), "400"),
+        (format!("CONNECT {echo} HTTP/1.1\r\nHost: bad host value\r\nProxy-Authorization: {auth}\r\n\r\n"), "400"),
+        (format!("CONNECT {echo} HTTP/1.1\r\nHost: {echo}\r\nProxy-Authorization: {auth}\r\n\r\n"), "200"),
+    ] {
+        let tcp = tokio::net::TcpStream::connect(relay.addr).await.unwrap();
+        let mut tls = connector.connect("relay.test".try_into().unwrap(), tcp).await.unwrap();
+        tls.write_all(request.as_bytes()).await.unwrap();
+        let mut head = Vec::new();
+        within("status line", async {
+            let mut byte = [0u8; 1];
+            while !head.ends_with(b"\r\n") && tls.read(&mut byte).await.unwrap() == 1 {
+                head.push(byte[0]);
+            }
+        })
+        .await;
+        let line = String::from_utf8_lossy(&head);
+        assert!(line.starts_with(&format!("HTTP/1.1 {expected}")), "{request:?}: {line}");
+    }
 }

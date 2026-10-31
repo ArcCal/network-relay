@@ -43,6 +43,8 @@ fn refusal(e: &io::Error) -> Refusal {
     match e.kind() {
         io::ErrorKind::ConnectionRefused => Refusal::ConnectionRefused,
         io::ErrorKind::TimedOut => Refusal::ConnectionTimeout,
+        // No socket for it, here or in an egress: a limit, not the route.
+        io::ErrorKind::OutOfMemory => Refusal::TooManyTunnels,
         _ => Refusal::Unreachable(e.to_string()),
     }
 }
@@ -361,6 +363,15 @@ mod tests {
 
     fn a(s: &str) -> SocketAddr {
         s.parse().unwrap()
+    }
+
+    #[test]
+    fn errors_map_to_refusals() {
+        assert_eq!(refusal(&io::ErrorKind::ConnectionRefused.into()), Refusal::ConnectionRefused);
+        assert_eq!(refusal(&io::ErrorKind::TimedOut.into()), Refusal::ConnectionTimeout);
+        // Out of sockets (an egress's socket limit, say): connection_limit_reached.
+        assert_eq!(refusal(&io::ErrorKind::OutOfMemory.into()), Refusal::TooManyTunnels);
+        assert!(matches!(refusal(&io::ErrorKind::HostUnreachable.into()), Refusal::Unreachable(_)));
     }
 
     #[test]

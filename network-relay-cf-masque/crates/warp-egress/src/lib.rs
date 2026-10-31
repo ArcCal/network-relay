@@ -24,9 +24,6 @@ mod masque;
 mod net;
 mod netstack;
 mod runtime;
-#[cfg(test)]
-#[allow(dead_code)]
-mod shutdown;
 mod varint;
 
 pub use config::WarpConfig;

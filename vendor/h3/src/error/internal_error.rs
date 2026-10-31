@@ -57,6 +57,13 @@ impl InternalConnectionError {
             //# after the identified fields or a frame payload that terminates before
             //# the end of the identified fields MUST be treated as a connection
             //# error of type H3_FRAME_ERROR.
+            //= https://www.rfc-editor.org/rfc/rfc9114#section-8.1
+            //# H3_EXCESSIVE_LOAD (0x0107):  The endpoint detected that its peer is
+            //# exhibiting a behavior that might be generating excessive load.
+            FrameProtocolError::TooLarge(ty) => InternalConnectionError {
+                code: Code::H3_EXCESSIVE_LOAD,
+                message: format!("frame 0x{:x} is larger than the receiver buffers", ty),
+            },
             FrameProtocolError::InvalidFrameValue | FrameProtocolError::Malformed => InternalConnectionError {
                 code: Code::H3_FRAME_ERROR,
                 message: "frame payload that contains additional bytes after the identified fields or a frame payload that terminates before the end of the identified fields".to_string(),

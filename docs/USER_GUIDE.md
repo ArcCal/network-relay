@@ -453,7 +453,8 @@ Record binary version, OS/architecture, selected transport, sanitized
 configuration, service status, timestamps and the exact failed check. Enable
 `[debug] log_requests = true` briefly and reload if destination evidence is
 needed. Turn it off afterwards. Logs can still expose usernames and destination
-metadata even when authentication headers are redacted. Do not share passwords,
+metadata even when authentication headers are redacted, and the values of other
+header fields, including any custom ones a profile adds. Do not share passwords,
 full mobileconfig files, private keys or WARP enrollment material.
 
 ## Upgrade, stop and remove

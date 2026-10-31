@@ -639,10 +639,12 @@ impl HeaderError {
         N: AsRef<[u8]>,
         V: AsRef<[u8]>,
     {
+        // The value may be a credential: only its length is reported, so
+        // that logging the error cannot reveal it.
         HeaderError::InvalidHeaderValue(format!(
-            "{:?} {:?}",
+            "{:?} ({} bytes)",
             String::from_utf8_lossy(name.as_ref()),
-            value.as_ref()
+            value.as_ref().len()
         ))
     }
 }

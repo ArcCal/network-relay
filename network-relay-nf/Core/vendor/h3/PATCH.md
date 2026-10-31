@@ -65,6 +65,17 @@ Original source and MIT license retained. Changes are confined to:
   asynchronously, as through Network.framework, the first frames after
   SETTINGS (a GOAWAY, or a CANCEL_PUSH that must close the connection) were
   silently ignored.
+- `frame.rs`, `proto/frame.rs`, `error/internal_error.rs`: frame payloads are
+  bounded before they are buffered, as in the relay's copy. Upstream buffered
+  a frame's whole declared payload before decoding it, whatever its type or
+  length, so a server could make the client hold any amount of memory (RFC
+  9114 section 10.5). Frames of unknown or reserved types are now discarded as
+  they arrive (section 9); the HTTP/2 frame types of section 7.2.8 are
+  H3_FRAME_UNEXPECTED from their header; a CANCEL_PUSH, GOAWAY or MAX_PUSH_ID
+  longer than one varint is H3_FRAME_ERROR (section 7.1); and other frames but
+  DATA (which is streamed) longer than 64 KiB, four times the client's 16 KiB
+  field section limit, are H3_EXCESSIVE_LOAD (section 8.1).
+  `Core/tests/frame_limits.rs` checks each case against a raw server.
 
 The relay integration tests cover trailers without FIN, empty DATA, ordinary
 half-close, bulk transfers and the malformed requests above; `proto::headers`

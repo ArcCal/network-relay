@@ -215,6 +215,8 @@ where
 #[derive(Default)]
 pub struct FrameDecoder {
     expected: Option<usize>,
+    /// Payload bytes of an unknown frame still to be discarded.
+    skip: usize,
 }
 
 impl FrameDecoder {
@@ -225,6 +227,15 @@ impl FrameDecoder {
         // Decode in a loop since we ignore unknown frames, and there may be
         // other frames already in our BufList.
         loop {
+            if self.skip > 0 {
+                let n = self.skip.min(src.remaining());
+                src.advance(n);
+                self.skip -= n;
+                if self.skip > 0 {
+                    return Ok(None);
+                }
+            }
+
             if !src.has_remaining() {
                 return Ok(None);
             }
@@ -233,6 +244,34 @@ impl FrameDecoder {
                 if src.remaining() < min {
                     return Ok(None);
                 }
+            }
+
+            // Unknown frames are skipped, and other frames' sizes checked,
+            // from their headers: no frame payload but DATA, which is
+            // streamed, is buffered beyond MAX_BUFFERED_PAYLOAD.
+            match Frame::admit(&mut src.cursor()) {
+                Ok(frame::Admission::Skip(header, len)) => {
+                    //= https://www.rfc-editor.org/rfc/rfc9114#section-9
+                    //# Implementations MUST ignore unknown or unsupported
+                    //# values in all extensible protocol elements.
+                    src.advance(header);
+                    self.skip = len;
+                    self.expected = None;
+                    continue;
+                }
+                Ok(frame::Admission::Decode | frame::Admission::Incomplete) => {}
+                Err(frame::FrameError::TooLarge(ty)) => {
+                    return Err(FrameStreamError::Proto(FrameProtocolError::TooLarge(ty)));
+                }
+                Err(frame::FrameError::UnsupportedFrame(ty)) => {
+                    return Err(FrameStreamError::Proto(FrameProtocolError::ForbiddenFrame(
+                        ty,
+                    )));
+                }
+                Err(frame::FrameError::Malformed) => {
+                    return Err(FrameStreamError::Proto(FrameProtocolError::Malformed));
+                }
+                Err(_) => {}
             }
 
             let (pos, decoded) = {
@@ -293,6 +332,9 @@ impl FrameDecoder {
                 Err(frame::FrameError::Malformed) => {
                     return Err(FrameStreamError::Proto(FrameProtocolError::Malformed));
                 }
+                Err(frame::FrameError::TooLarge(ty)) => {
+                    return Err(FrameStreamError::Proto(FrameProtocolError::TooLarge(ty)));
+                }
             }
         }
     }
@@ -310,6 +352,7 @@ pub enum FrameStreamError {
 /// Protocol specific errors that can occur while decoding frames in a stream
 pub enum FrameProtocolError {
     Malformed,
+    TooLarge(u64),       // A frame larger than the receiver buffers
     ForbiddenFrame(u64), // Known (http2) frames that should generate an error
     InvalidFrameValue,
     Settings(SettingsError),
@@ -397,6 +440,75 @@ mod tests {
             Ok(Some(Frame::Data(PayloadLen(4))))
         );
         assert_matches!(decoder.decode(&mut buf), Ok(None));
+    }
+
+    #[test]
+    fn unknown_frames_are_discarded_as_they_arrive() {
+        let mut decoder = FrameDecoder::default();
+        let mut buf = BufList::new();
+        let mut header = BytesMut::new();
+        FrameType::RESERVED.encode(&mut header);
+        VarInt::from_u64(1 << 40).unwrap().encode(&mut header);
+        buf.push(header.freeze());
+        buf.push(Bytes::from(vec![0u8; 100_000]));
+        assert_matches!(decoder.decode(&mut buf), Ok(None));
+        assert!(!buf.has_remaining(), "the payload is not kept");
+        buf.push(Bytes::from(vec![0u8; 100_000]));
+        assert_matches!(decoder.decode(&mut buf), Ok(None));
+        assert!(!buf.has_remaining());
+    }
+
+    #[test]
+    fn unknown_frame_split_across_buffers_then_a_frame() {
+        let mut decoder = FrameDecoder::default();
+        let mut wire = BytesMut::new();
+        FrameType::RESERVED.encode(&mut wire);
+        VarInt::from_u32(5).encode(&mut wire);
+        wire.put_slice(b"12345");
+        Frame::headers(&b"salut"[..]).encode_with_payload(&mut wire);
+        let mut buf = BufList::new();
+        buf.push(wire.split_to(4).freeze());
+        assert_matches!(decoder.decode(&mut buf), Ok(None));
+        buf.push(wire.freeze());
+        assert_matches!(decoder.decode(&mut buf), Ok(Some(Frame::Headers(_))));
+    }
+
+    #[test]
+    fn oversized_frames_are_refused_from_their_header() {
+        for (ty, len, expected) in [
+            (
+                FrameType::HEADERS,
+                (frame::MAX_BUFFERED_PAYLOAD + 1) as u64,
+                FrameProtocolError::TooLarge(0x1),
+            ),
+            (
+                FrameType::SETTINGS,
+                1 << 40,
+                FrameProtocolError::TooLarge(0x4),
+            ),
+            (FrameType::GOAWAY, 9, FrameProtocolError::Malformed),
+            (FrameType::MAX_PUSH_ID, 9, FrameProtocolError::Malformed),
+            (
+                FrameType::H2_PING,
+                1 << 40,
+                FrameProtocolError::ForbiddenFrame(0x6),
+            ),
+        ] {
+            let mut header = BytesMut::new();
+            ty.encode(&mut header);
+            VarInt::from_u64(len).unwrap().encode(&mut header);
+            let mut buf = BufList::from(header);
+            let mut decoder = FrameDecoder::default();
+            assert_matches!(decoder.decode(&mut buf), Err(FrameStreamError::Proto(e)) if e == expected);
+        }
+        // HEADERS up to the bound are buffered and decoded as before.
+        let mut buf = BytesMut::new();
+        Frame::headers(vec![b'x'; frame::MAX_BUFFERED_PAYLOAD]).encode_with_payload(&mut buf);
+        let mut buf = BufList::from(buf);
+        assert_matches!(
+            FrameDecoder::default().decode(&mut buf),
+            Ok(Some(Frame::Headers(_)))
+        );
     }
 
     // FrameStream

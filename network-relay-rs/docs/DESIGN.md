@@ -73,6 +73,11 @@ HTTP/2 caches one TLS connection the same way. Each stream keeps its own
 2 MiB receive window and the shared connection window is not a limit, so an
 unread flow cannot stall its siblings. A 20-second PING keepalive ends a
 silently dead connection, as QUIC keep-alive and idle timeout do for HTTP/3.
+The vendored h3 buffers no frame payload but DATA beyond 64 KiB, four times
+the 16 KiB field section the client accepts: frames of unknown types are
+discarded as they arrive, and a longer HEADERS, SETTINGS or other known frame
+closes the connection with H3_EXCESSIVE_LOAD (RFC 9114 section 10.5), so a
+server cannot make the client hold unbounded memory.
 
 NF exports are imported only through an explicit user action. RS never loads
 NF's private JSON store automatically and never edits it. Imported password-free

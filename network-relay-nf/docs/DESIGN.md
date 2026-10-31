@@ -99,6 +99,12 @@ resolved after the server idle-stream-0 and client probe-lifecycle fixes. Actual
 are logged and range-checked. Complete local stream direction/initiator checks
 and modern NetworkConnection<QUIC> evaluation are deferred.
 
+The vendored h3 buffers no frame payload but DATA beyond 64 KiB, four times
+the 16 KiB field section the client accepts: frames of unknown types are
+discarded as they arrive, and a longer HEADERS, SETTINGS or other known frame
+closes the connection with H3_EXCESSIVE_LOAD (RFC 9114 section 10.5), so a
+server cannot make the client hold unbounded memory.
+
 ## Native QUIC evidence and repair method
 
 This section is a historical record of older builds. The disconnect it describes

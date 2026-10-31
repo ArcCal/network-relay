@@ -15,7 +15,8 @@ use tokio::sync::{mpsc, oneshot};
 use tracing::debug;
 
 use super::{
-    http_date, pump, ConnInfo, Incoming, Kind, Opened, Relay, HEADER_TIMEOUT, MAX_STREAMS, MAX_STREAMS_UNAUTHENTICATED,
+    http_date, pump, Cancellation, ConnInfo, Incoming, Kind, Opened, Relay, HEADER_TIMEOUT, MAX_STREAMS,
+    MAX_STREAMS_UNAUTHENTICATED,
 };
 use crate::certs::CertStore;
 use crate::policy::Refusal;
@@ -469,6 +470,7 @@ impl Relay {
         };
         let (opened, mut ctx) = match opened {
             Ok(o) => o,
+            Err(refusal @ Refusal::MalformedRequest) => return reject_malformed(stream, &refusal).await,
             Err(refusal) => return send_refusal(stream, &refusal, self.send_stall()).await,
         };
         ctx.peer_closed = peer_closed;
@@ -478,8 +480,8 @@ impl Relay {
         }
         let sent = tokio::select! {
             biased;
-            _ = ctx.cancelled() => {
-                cancel(&mut stream);
+            why = ctx.cancelled() => {
+                cancel_tunnel(&mut stream, why);
                 false
             },
             Ok(()) = &mut bad_datagram => {
@@ -499,7 +501,7 @@ impl Relay {
                 let (reply_tx, reply_rx) = oneshot::channel();
                 let sender = tokio::select! {
                     biased;
-                    _ = ctx.cancelled() => return cancel(&mut stream),
+                    why = ctx.cancelled() => return cancel_tunnel(&mut stream, why),
                     sender = async {
                         sender_tx.send((stream_id, reply_tx)).await.ok()?;
                         reply_rx.await.ok()
@@ -568,6 +570,18 @@ fn cancel(stream: &mut H3Stream) {
     stream.stop_sending(h3::error::Code::H3_REQUEST_CANCELLED);
 }
 
+/// Cancels a tunnel's request: as [`cancel`], unless its egress failed,
+/// which to the client is a failed destination connection (RFC 9114 section 4.4).
+fn cancel_tunnel(stream: &mut H3Stream, why: Cancellation) {
+    match why {
+        Cancellation::Cancelled => cancel(stream),
+        Cancellation::EgressFailed => {
+            stream.stop_stream(h3::error::Code::H3_CONNECT_ERROR);
+            stream.stop_sending(h3::error::Code::H3_CONNECT_ERROR);
+        }
+    }
+}
+
 /// A receiver that never yields a value, to disarm a datagram notification
 /// that was already handled (a completed oneshot must not be polled again).
 fn closed_receiver() -> oneshot::Receiver<()> {
@@ -604,6 +618,21 @@ async fn send_refusal(mut stream: H3Stream, refusal: &Refusal, stall: std::time:
         .body(())
         .expect("valid");
     send_response(&mut stream, resp, Bytes::new(), stall).await;
+}
+
+/// A malformed request is a stream error of type H3_MESSAGE_ERROR (RFC 9298
+/// section 3.4, RFC 9114 section 4.1.2); the 400 sent first is optional,
+/// and resetting the stream may discard it.
+async fn reject_malformed(mut stream: H3Stream, refusal: &Refusal) {
+    let resp = Response::builder()
+        .status(refusal.status())
+        .header(DATE, http_date())
+        .header("proxy-status", refusal.proxy_status())
+        .body(())
+        .expect("valid");
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(1), stream.send_response(resp)).await;
+    stream.stop_stream(h3::error::Code::H3_MESSAGE_ERROR);
+    stream.stop_sending(h3::error::Code::H3_MESSAGE_ERROR);
 }
 
 /// Sends a complete response. A client that leaves it unread (no flow

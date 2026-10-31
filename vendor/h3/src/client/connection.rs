@@ -142,6 +142,21 @@ where
     T: quic::OpenStreams<B>,
     B: Buf,
 {
+    /// The peer's settings after its SETTINGS frame arrives, or `None` before.
+    ///
+    /// The connection driver must be polled to receive these settings. RFC 9297
+    /// section 2.1.1 requires datagram support before the first HTTP datagram.
+    pub fn peer_settings(&self) -> Option<crate::config::Settings> {
+        ConnectionState::peer_settings(self)
+    }
+
+    /// The diagnostic for the error that ended this connection, if any.
+    ///
+    /// The connection driver and stream operations retain their typed errors.
+    pub fn connection_error(&self) -> Option<String> {
+        self.get_conn_error().map(|error| format!("{error:?}"))
+    }
+
     /// Send an HTTP/3 request to the server
     #[cfg_attr(feature = "tracing", instrument(skip_all, level = "trace"))]
     pub async fn send_request(

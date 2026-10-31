@@ -1,0 +1,17 @@
+[package]
+name = "independent-warp-consumer"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dependencies]
+warp-masque-egress = { path = "../../crates/warp-egress" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-util"] }
+anyhow = "1"
+
+# The h3 client extensions WARP needs are in network-relay's vendored h3.
+[patch."https://github.com/hyperium/h3"]
+h3 = { path = "../../../vendor/h3" }
+h3-quinn = { path = "../../../vendor/h3-quinn" }

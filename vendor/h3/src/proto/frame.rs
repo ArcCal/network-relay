@@ -18,6 +18,7 @@ use super::{
 #[derive(Debug, PartialEq)]
 pub enum FrameError {
     Malformed,
+    TooLarge(u64), // A frame larger than MAX_BUFFERED_PAYLOAD
     UnsupportedFrame(u64), // Known frames that should generate an error
     UnknownFrame(u64),     // Unknown frames that should be ignored
     InvalidFrameValue,
@@ -33,6 +34,7 @@ impl fmt::Display for FrameError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             FrameError::Malformed => write!(f, "frame is malformed"),
+            FrameError::TooLarge(c) => write!(f, "frame 0x{:x} is too large", c),
             FrameError::UnsupportedFrame(c) => write!(f, "frame 0x{:x} is not allowed h3", c),
             FrameError::UnknownFrame(c) => write!(f, "frame 0x{:x} ignored", c),
             FrameError::InvalidFrameValue => write!(f, "frame value is invalid"),
@@ -75,8 +77,62 @@ impl From<usize> for PayloadLen {
     }
 }
 
+/// What the header of a received frame says about buffering its payload.
+pub enum Admission {
+    /// The type and length are not all here yet.
+    Incomplete,
+    /// Decode the frame as usual.
+    Decode,
+    /// A frame of unknown type: skip its header and then `.0` bytes of
+    /// payload as they arrive, without buffering them (RFC 9114 section 9).
+    Skip(usize, usize),
+}
+
+/// The largest payload of a frame other than DATA that is buffered whole
+/// before it is decoded: twice the 32 KiB header section a relay accepts, so
+/// that larger HEADERS still get a 431, while a peer cannot make the
+/// receiver buffer an unbounded frame (RFC 9114 section 10.5).
+pub const MAX_BUFFERED_PAYLOAD: usize = 64 * 1024;
+
 impl Frame<PayloadLen> {
     pub const MAX_ENCODED_SIZE: usize = VarInt::MAX_SIZE * 7;
+
+    /// Checks a frame's header before its payload is buffered.
+    pub fn admit<T: Buf>(buf: &mut T) -> Result<Admission, FrameError> {
+        let start = buf.remaining();
+        let (Ok(ty), Ok(len)) = (FrameType::decode(buf), buf.get_var()) else {
+            return Ok(Admission::Incomplete);
+        };
+        let header = start - buf.remaining();
+        match ty {
+            // DATA payloads are streamed; WebTransport streams have no length.
+            FrameType::DATA | FrameType::WEBTRANSPORT_BI_STREAM => Ok(Admission::Decode),
+            //= https://www.rfc-editor.org/rfc/rfc9114#section-7.2.8
+            //# These frame
+            //# types MUST NOT be sent, and their receipt MUST be treated as a
+            //# connection error of type H3_FRAME_UNEXPECTED.
+            FrameType::H2_PRIORITY
+            | FrameType::H2_PING
+            | FrameType::H2_WINDOW_UPDATE
+            | FrameType::H2_CONTINUATION => Err(FrameError::UnsupportedFrame(ty.0)),
+            // A single push or stream ID (section 7.2): more is malformed (7.1).
+            FrameType::CANCEL_PUSH | FrameType::GOAWAY | FrameType::MAX_PUSH_ID
+                if len > VarInt::MAX_SIZE as u64 =>
+            {
+                Err(FrameError::Malformed)
+            }
+            FrameType::HEADERS
+            | FrameType::SETTINGS
+            | FrameType::PUSH_PROMISE
+            | FrameType::CANCEL_PUSH
+            | FrameType::GOAWAY
+            | FrameType::MAX_PUSH_ID => match usize::try_from(len) {
+                Ok(len) if len <= MAX_BUFFERED_PAYLOAD => Ok(Admission::Decode),
+                _ => Err(FrameError::TooLarge(ty.0)),
+            },
+            _ => Ok(Admission::Skip(header, usize::try_from(len).unwrap_or(usize::MAX))),
+        }
+    }
 
     /// Decodes a Frame from the stream according to <https://www.rfc-editor.org/rfc/rfc9114#section-7.1>
     pub fn decode<T: Buf>(buf: &mut T) -> Result<Self, FrameError> {
@@ -421,7 +477,8 @@ impl SettingId {
                 | SettingId::ENABLE_CONNECT_PROTOCOL
                 | SettingId::ENABLE_WEBTRANSPORT
                 | SettingId::WEBTRANSPORT_MAX_SESSIONS
-                | SettingId::H3_DATAGRAM,
+                | SettingId::H3_DATAGRAM
+                | SettingId::H3_DATAGRAM_DRAFT00,
         )
     }
 
@@ -464,6 +521,8 @@ setting_identifiers! {
     ENABLE_CONNECT_PROTOCOL = 0x8,
     // https://datatracker.ietf.org/doc/html/rfc9297#name-http-3-setting
     H3_DATAGRAM = 0x33,
+    // draft-ietf-masque-h3-datagram-00, still used by Cloudflare WARP.
+    H3_DATAGRAM_DRAFT00 = 0x276,
     // https://datatracker.ietf.org/doc/html/draft-ietf-webtrans-http3/#section-8.2
     ENABLE_WEBTRANSPORT = 0x2B603742,
     // https://datatracker.ietf.org/doc/html/draft-ietf-webtrans-http3/#section-8.2
@@ -502,6 +561,21 @@ impl Settings {
     pub const MAX_ENCODED_SIZE: usize = SETTINGS_LEN * 2 * VarInt::MAX_SIZE;
 
     pub fn insert(&mut self, id: SettingId, value: u64) -> Result<(), SettingsError> {
+        // RFC 9297 section 2.1.1 and RFC 9220 section 3 (via RFC 8441
+        // section 3) only permit 0 or 1.
+        // Cloudflare's recognized draft-00 identifier has the same restriction
+        // (draft-ietf-masque-h3-datagram-00 section 5).
+        if value > 1
+            && matches!(
+                id,
+                SettingId::H3_DATAGRAM
+                    | SettingId::ENABLE_CONNECT_PROTOCOL
+                    | SettingId::H3_DATAGRAM_DRAFT00
+            )
+        {
+            return Err(SettingsError::InvalidSettingValue(id, value));
+        }
+
         if self.len >= self.entries.len() {
             return Err(SettingsError::Exceeded);
         }
@@ -737,6 +811,109 @@ mod tests {
             Frame::Settings(Settings::default()),
             &[4, 0],
             Frame::Settings(Settings::default()),
+        );
+    }
+
+    #[test]
+    fn duplicate_draft00_setting_retains_settings_error() {
+        let wire = [4, 6, 0x42, 0x76, 1, 0x42, 0x76, 1];
+        assert_matches!(
+            Frame::decode(&mut Cursor::new(wire)),
+            Err(FrameError::Settings(SettingsError::Repeated(
+                SettingId::H3_DATAGRAM_DRAFT00
+            )))
+        );
+    }
+
+    #[test]
+    fn boolean_settings_reject_non_boolean_wire_values() {
+        for id in [
+            SettingId::H3_DATAGRAM,
+            SettingId::ENABLE_CONNECT_PROTOCOL,
+            SettingId::H3_DATAGRAM_DRAFT00,
+        ] {
+            for value in [2, 63, 64, (1 << 62) - 1] {
+                let mut payload = Vec::new();
+                id.encode(&mut payload);
+                payload.write_var(value);
+                let mut wire = vec![4];
+                wire.write_var(payload.len() as u64);
+                wire.extend_from_slice(&payload);
+                assert_eq!(
+                    Frame::decode(&mut Cursor::new(wire)).unwrap_err(),
+                    FrameError::Settings(SettingsError::InvalidSettingValue(id, value)),
+                    "setting {id:?} accepted non-boolean value {value}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn boolean_settings_accept_zero_and_one_with_unknown_values_ignored() {
+        for value in [0, 1] {
+            let mut settings = Settings::default();
+            for id in [
+                SettingId::H3_DATAGRAM,
+                SettingId::ENABLE_CONNECT_PROTOCOL,
+                SettingId::H3_DATAGRAM_DRAFT00,
+            ] {
+                settings.insert(id, value).unwrap();
+            }
+            settings.insert(SettingId(0x21), (1 << 62) - 1).unwrap();
+            let mut wire = Vec::new();
+            settings.encode(&mut wire);
+            let decoded = Frame::decode(&mut Cursor::new(wire)).unwrap();
+            let Frame::Settings(decoded) = decoded else {
+                panic!("not SETTINGS")
+            };
+            assert_eq!(decoded.len, 3);
+            for id in [
+                SettingId::H3_DATAGRAM,
+                SettingId::ENABLE_CONNECT_PROTOCOL,
+                SettingId::H3_DATAGRAM_DRAFT00,
+            ] {
+                assert_eq!(decoded.get(id), Some(value));
+            }
+            assert_eq!(decoded.get(SettingId(0x21)), None);
+        }
+    }
+
+    #[test]
+    fn boolean_settings_reject_invalid_local_insert_without_consuming_capacity() {
+        let mut settings = Settings::default();
+        for id in [
+            SettingId::H3_DATAGRAM,
+            SettingId::ENABLE_CONNECT_PROTOCOL,
+            SettingId::H3_DATAGRAM_DRAFT00,
+        ] {
+            assert_eq!(
+                settings.insert(id, 2),
+                Err(SettingsError::InvalidSettingValue(id, 2))
+            );
+        }
+        assert_eq!(settings.len, 0);
+    }
+
+    #[test]
+    fn all_supported_settings_including_draft00_fit_and_decode() {
+        let mut settings = Settings::default();
+        for id in [
+            SettingId::MAX_HEADER_LIST_SIZE,
+            SettingId::QPACK_MAX_TABLE_CAPACITY,
+            SettingId::QPACK_MAX_BLOCKED_STREAMS,
+            SettingId::ENABLE_CONNECT_PROTOCOL,
+            SettingId::ENABLE_WEBTRANSPORT,
+            SettingId::WEBTRANSPORT_MAX_SESSIONS,
+            SettingId::H3_DATAGRAM,
+            SettingId::H3_DATAGRAM_DRAFT00,
+        ] {
+            settings.insert(id, 1).unwrap();
+        }
+        let mut wire = Vec::new();
+        settings.encode(&mut wire);
+        assert_matches!(
+            Frame::decode(&mut Cursor::new(wire)),
+            Ok(Frame::Settings(decoded)) if decoded == settings
         );
     }
 

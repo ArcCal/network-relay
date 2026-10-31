@@ -177,6 +177,11 @@ impl Connections {
     pub fn open(&self) -> usize {
         self.state.lock().unwrap().0
     }
+
+    /// Whether at least half of all connection slots are taken.
+    pub fn half_full(&self) -> bool {
+        self.open() * 2 >= self.max_total
+    }
 }
 
 /// Concurrent tunnels per user.
@@ -623,6 +628,18 @@ mod tests {
         drop(p1);
         assert_eq!(limits.open(), 2);
         assert!(limits.try_acquire(b).is_some());
+    }
+
+    #[test]
+    fn half_full_counts_open_connections() {
+        let limits = Connections::new(4, 4);
+        let a: IpAddr = "192.0.2.1".parse().unwrap();
+        let p1 = limits.try_acquire(a).unwrap();
+        assert!(!limits.half_full());
+        let _p2 = limits.try_acquire(a).unwrap();
+        assert!(limits.half_full());
+        drop(p1);
+        assert!(!limits.half_full());
     }
 
     #[test]

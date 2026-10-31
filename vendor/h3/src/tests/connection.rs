@@ -29,6 +29,95 @@ use super::h3_quinn;
 use super::{init_tracing, Pair};
 
 #[tokio::test]
+async fn client_extensions_share_received_settings_and_connection_failure() {
+    let mut pair = Pair::default();
+    let server = pair.server();
+    let client_fut = async {
+        let (mut driver, mut sender) = client::builder()
+            .enable_datagram(true)
+            .enable_datagram_draft00(true)
+            .build::<_, _, Bytes>(pair.client().await)
+            .await
+            .unwrap();
+        let cloned = sender.clone();
+        assert!(sender.peer_settings().is_none());
+        assert!(cloned.peer_settings().is_none());
+        assert!(sender.connection_error().is_none());
+
+        let drive = async { future::poll_fn(|cx| driver.poll_close(cx)).await };
+        let request = async {
+            loop {
+                if let Some(settings) = sender.peer_settings() {
+                    assert!(settings.enable_datagram());
+                    assert!(settings.enable_datagram_draft00());
+                    assert!(cloned.peer_settings().unwrap().enable_datagram_draft00());
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+            let mut request = Request::builder()
+                .method(http::Method::CONNECT)
+                .uri("https://cloudflareaccess.com/")
+                .body(())
+                .unwrap();
+            request
+                .extensions_mut()
+                .insert(crate::ext::Protocol::from_static("cf-connect-ip"));
+            let mut stream = sender.send_request(request).await.unwrap();
+            stream.finish().await.unwrap();
+        };
+        let (error, ()) = tokio::join!(drive, request);
+        assert_matches!(
+            error,
+            ConnectionError::Remote(ConnectionErrorIncoming::ApplicationClose { error_code, .. })
+                if error_code == Code::H3_ID_ERROR.value()
+        );
+        assert!(sender.connection_error().is_some());
+        assert_eq!(sender.connection_error(), cloned.connection_error());
+    };
+    let server_fut = async {
+        let conn = server.endpoint.accept().await.unwrap().await.unwrap();
+        let closer = conn.clone();
+        let mut builder = server::builder();
+        builder.enable_datagram(true);
+        builder.config.settings.enable_datagram_draft00 = true;
+        let mut incoming = builder
+            .build::<_, Bytes>(h3_quinn::Connection::new(conn))
+            .await
+            .unwrap();
+        let resolver = incoming.accept().await.unwrap().unwrap();
+        let (request, _stream) = resolver.resolve_request().await.unwrap();
+        assert_eq!(request.method(), http::Method::CONNECT);
+        assert_eq!(request.uri().scheme_str(), Some("https"));
+        assert_eq!(
+            request.uri().authority().unwrap().as_str(),
+            "cloudflareaccess.com"
+        );
+        assert_eq!(request.uri().path(), "/");
+        assert!(request.extensions().get::<crate::ext::Protocol>().is_none());
+        assert_eq!(
+            request
+                .extensions()
+                .get::<crate::ext::OtherProtocol>()
+                .unwrap()
+                .as_str(),
+            "cf-connect-ip"
+        );
+        assert!(incoming.settings().enable_datagram());
+        assert!(incoming.settings().enable_datagram_draft00());
+        closer.close(
+            quinn::VarInt::from_u32(Code::H3_ID_ERROR.value() as u32),
+            b"extension regression",
+        );
+    };
+    tokio::time::timeout(Duration::from_secs(5), async {
+        tokio::join!(client_fut, server_fut)
+    })
+    .await
+    .expect("client extension regression completed");
+}
+
+#[tokio::test]
 async fn connect() {
     let mut pair = Pair::default();
     let mut server = pair.server();

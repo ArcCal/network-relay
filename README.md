@@ -3,7 +3,7 @@
 A server for the **built-in "Network Relay"** feature of iPhone, iPad and Mac.
 
 **Practical manual:** [installation, profiles, administration, desktop clients,
-troubleshooting and test evidence](docs/USER_GUIDE.md).
+WARP variant, troubleshooting and test evidence](docs/USER_GUIDE.md).
 
 **Latest release: [1.5](https://github.com/ArcCal/network-relay/releases/tag/1.5)** (program version `1.5.0`). Source archives are available on the release page. The current standalone installers and their SHA-256 files are in the repository root; the source installer builds the bundled program on the VPS. The automatic installers support **Debian 12/13 x86_64**; use the manual installation for arm64.
 
@@ -919,6 +919,7 @@ A device usually keeps just one HTTP/3 connection to the relay, carrying many re
 | RFC 9298 Proxying UDP in HTTP | CONNECT-UDP: request format on all three HTTP versions, URI templates, datagram format |
 | RFC 9297 HTTP Datagrams and the Capsule Protocol | HTTP datagrams, capsules, the `Capsule-Protocol` header |
 | RFC 9110 §9.3.6, RFC 9113 §8.5, RFC 9114 §4.4 | CONNECT and error handling on the three HTTP versions |
+| RFC 9112 section 3.2, RFC 9931 | HTTP/1.1 Host and request targets; closing the connection after a refused CONNECT |
 | RFC 8441, RFC 9220 | Extended CONNECT on HTTP/2 and HTTP/3 |
 | RFC 9209 | `Proxy-Status` error information |
 | RFC 8305 | Happy Eyeballs for connecting to targets |
@@ -943,7 +944,7 @@ its results.
 
 | Script | Run on | Builds | Results (default) |
 |---|---|---|---|
-| `build-linux-servers-on-linux.sh` | Debian 13 or Ubuntu 26.04, x64 or arm64 | `network-relay` and `caddy-network-relay` (with Cloudflare DNS) for Linux x64 and arm64 | `./relay-servers-*` |
+| `build-linux-servers-on-linux.sh` | Debian 13 or Ubuntu 26.04, x64 or arm64 | `network-relay`, `network-relay-cf-masque` and `caddy-network-relay` (with Cloudflare DNS) for Linux x64 and arm64 | `./relay-servers-*` |
 | `build-linux-clients-on-linux.sh` | Debian 13 or Ubuntu 26.04, x64 or arm64 | the headless Network Relay RS client for Linux x64 and arm64 | `./network-relay-linux-clients-*` |
 | `build-macos-gui-clients-on-macos.sh` | Apple silicon Mac, macOS 27+ and Xcode 27+ | the Network Relay NF and RS apps | `~/Desktop/Network-Relay-Builds/network-relay-macos-gui-*` |
 | `build-all-targets-on-macos.sh` | Apple silicon Mac, macOS 27+ and Xcode 27+ | everything above, plus the RS client for macOS arm64 | `~/Desktop/Network-Relay-Builds/network-relay-all-*` |
@@ -970,7 +971,7 @@ cargo test
 ```
 
 - **Unit tests**: URI templates, capsule and datagram formats, target parsing and blocklists, authentication and caching, profile format, the website, logging and more.
-- **In-process integration tests** (`tests/in_process.rs`): a real relay and client in one process, over real TLS, QUIC and TCP on the loopback interface, relaying to local TCP and UDP services. They cover TCP and UDP on all three HTTP versions, bulk data and half-close, seeing the website with a wrong password, blocklists and port restrictions, Proxy-Status when the target is unreachable, dropping connections after a user is deleted, the connection limits overall, per user and per address, per-user byte rates, idle connections, client certificates, the server's own addresses, QUIC path MTU growth, and early datagrams.
+- **In-process integration tests** (`tests/in_process.rs`): a real relay and client in one process, over real TLS, QUIC and TCP on the loopback interface, relaying to local TCP and UDP services. They cover TCP and UDP on all three HTTP versions, bulk data and half-close, seeing the website with a wrong password, blocklists and port restrictions, Proxy-Status when the target is unreachable, dropping connections after a user is deleted, the connection limits overall, per user and per address, per-user byte rates, idle connections, client certificates, the server's own addresses, QUIC path MTU growth, and early datagrams. With `NETWORK_RELAY_TEST_EGRESS=loopback cargo test --test in_process` every tunnel instead goes through an egress (the `egress` interface network-relay-cf-masque uses for WARP), which leads back to the loopback interface; a few further tests cover what only an egress does.
 - **Independent interoperability tests**: after `cargo build --locked`, run `python3 tests/interop/run.py` with Go 1.26.x, OpenSSL and curl on PATH. It starts a temporary trusted-TLS relay and local targets, runs the existing quic-go/masque-go H3 client and applicable curl H1/H2 checks, then cleans up. CI runs the same fixture; H2 checks explicitly report NOT APPLICABLE when curl lacks proxy-side H2 support. For external-server checks and the project's own `network-relay check`, see [docs/design.md](docs/design.md#7-interoperability-tests).
 
 GitHub Actions runs format, clippy, deployment, independent interoperability and vendored HTTP/3 tests on PRs and pushes to `main`. Published releases and manual workflow runs additionally test and build Linux x86_64 and arm64 packages (arm64 under qemu); published releases receive the packages automatically.

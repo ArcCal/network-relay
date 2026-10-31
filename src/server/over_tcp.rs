@@ -20,6 +20,7 @@ use tracing::{debug, warn};
 
 use super::{http_date, pump, ConnInfo, Incoming, Kind, Opened, Relay, HEADER_TIMEOUT, MAX_STREAMS_HTTP2};
 use crate::certs::CertStore;
+use crate::policy::Refusal;
 use crate::proto::{CAPSULE_PROTOCOL_HEADER, CONNECT_UDP_PROTOCOL};
 use crate::tunnel::Tunnel;
 use crate::{sys, tls, web};
@@ -30,6 +31,15 @@ pub fn tcp_tls_config(certs: Arc<CertStore>, client_certificates: bool) -> Resul
 }
 
 type Builder = hyper::server::conn::http1::Builder;
+
+/// Whether an HTTP/1.1 request offers an upgrade to connect-udp.
+fn asks_for_udp_upgrade<B>(req: &Request<B>) -> bool {
+    req.headers()
+        .get_all(UPGRADE)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .any(|v| v.split(',').any(|t| t.trim().eq_ignore_ascii_case(CONNECT_UDP_PROTOCOL)))
+}
 
 fn builder() -> Builder {
     let mut builder = Builder::new();
@@ -189,7 +199,23 @@ impl Relay {
                     let (relay, info) = (relay.clone(), info.clone());
                     async move {
                         let _active = info.request_started();
-                        Ok::<_, Infallible>(relay.handle_http(info, req).await)
+                        let is_connect = req.method() == Method::CONNECT;
+                        let is_upgrade = asks_for_udp_upgrade(&req);
+                        let mut resp = relay.handle_http(info, req).await;
+                        // RFC 9931 section 8: a proxy MUST close the connection
+                        // when it rejects a CONNECT, so that nothing the client
+                        // sent after it is read as another request. A rejected
+                        // connect-udp upgrade is closed for the same reason
+                        // (RFC 9931 section 6.3).
+                        let accepted = if is_connect {
+                            resp.status().is_success()
+                        } else {
+                            resp.status() == StatusCode::SWITCHING_PROTOCOLS
+                        };
+                        if (is_connect || is_upgrade) && !accepted {
+                            resp.headers_mut().insert(CONNECTION, http::HeaderValue::from_static("close"));
+                        }
+                        Ok::<_, Infallible>(resp)
                     }
                 });
                 let connection = builder.serve_connection(TokioIo::new(io), service).with_upgrades();
@@ -348,14 +374,21 @@ impl Relay {
         let (opened, mut ctx) = match opened {
             Ok(o) => o,
             Err(refusal) => {
-                response.send_response(
+                // A malformed request is a stream error of type
+                // PROTOCOL_ERROR after its 400 (RFC 9298 section 3.4, RFC
+                // 9113 section 8.1.1).
+                let malformed = refusal == Refusal::MalformedRequest;
+                let mut send = response.send_response(
                     Response::builder()
                         .status(refusal.status())
                         .header(DATE, http_date())
                         .header("proxy-status", refusal.proxy_status())
                         .body(())?,
-                    true,
+                    !malformed,
                 )?;
+                if malformed {
+                    send.send_reset(h2::Reason::PROTOCOL_ERROR);
+                }
                 return Ok(());
             }
         };
@@ -391,7 +424,12 @@ impl Relay {
         // RFC 9112 §3.2: an HTTP/1.1 request without exactly one Host field
         // gets 400, as from any web server; RFC 9298 §3.2 asks the same of
         // CONNECT-UDP requests.
-        if req.version() == http::Version::HTTP_11 && req.headers().get_all(HOST).iter().count() != 1 {
+        // section 3.2 also asks for 400 when the Host value is invalid; an empty
+        // one is valid (for a target URI without authority).
+        let bad_host = req.headers().get(HOST).is_some_and(|host| {
+            !host.is_empty() && host.to_str().ok().and_then(|h| h.parse::<http::uri::Authority>().ok()).is_none()
+        });
+        if bad_host || req.version() == http::Version::HTTP_11 && req.headers().get_all(HOST).iter().count() != 1 {
             return Response::builder()
                 .status(StatusCode::BAD_REQUEST)
                 .header(CONNECTION, "close")
@@ -422,11 +460,10 @@ impl Relay {
         } else {
             None
         };
-        let authority = req.uri().authority().map(|a| a.as_str().to_string()).or_else(|| {
-            // HTTP/1.1 CONNECT carries the target as the request target,
-            // which hyper parses into the authority; Host is a fallback.
-            is_connect.then(|| req.headers().get(HOST)?.to_str().ok().map(str::to_string))?
-        });
+        // A CONNECT's request target is in authority form, host and port
+        // only (RFC 9112 section 3.2.3); in any other form it names no target.
+        let authority_form = req.uri().scheme().is_none() && req.uri().path_and_query().is_none();
+        let authority = req.uri().authority().filter(|_| !is_connect || authority_form).map(|a| a.as_str().to_string());
         let path_and_query = req.uri().path_and_query().map_or_else(|| "/".to_string(), |p| p.as_str().to_string());
         let settings = self.settings();
         let incoming = Incoming {

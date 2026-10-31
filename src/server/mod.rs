@@ -14,7 +14,7 @@ mod pump;
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::time::{Duration, Instant};
@@ -22,7 +22,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use http::header::{HeaderName, HeaderValue, AUTHORIZATION, PROXY_AUTHORIZATION};
 use http::{HeaderMap, Method};
-use tokio::net::{TcpListener, TcpStream, UdpSocket};
+use tokio::net::TcpListener;
 use tokio::signal::unix::{signal, SignalKind};
 use tokio::sync::{watch, Notify, OwnedSemaphorePermit, Semaphore};
 use tracing::{debug, info, warn};
@@ -30,6 +30,7 @@ use tracing::{debug, info, warn};
 use crate::auth::{self, Authenticator, CacheTag, Denied, User};
 use crate::certs::{CertStore, Schedule};
 use crate::config::{Config, Web};
+use crate::egress::Egress;
 use crate::limits::{Budget, Connections, KeyedLimit, MemoryBudget, MemoryPermit, TokenBucket, UserSlot, UserTunnels};
 use crate::policy::{Policy, Refusal, Target};
 use crate::proto::{UriTemplate, CONNECT_TCP_PROTOCOL, CONNECT_UDP_PROTOCOL};
@@ -106,6 +107,8 @@ impl Settings {
 }
 
 struct Inner {
+    /// Where tunnels lead instead of the host network, if anywhere.
+    egress: Option<Arc<dyn Egress>>,
     /// Replaced by a reload; open tunnels watch it so that a destination
     /// the new rules block is cut off.
     settings: watch::Sender<Arc<Settings>>,
@@ -160,6 +163,16 @@ fn load_site(
 
 impl Relay {
     pub fn new(config: &Config) -> Result<Self> {
+        Self::build(config, None)
+    }
+
+    /// A relay whose tunnels all go through `egress`: name lookups,
+    /// TCP connections and UDP flows. Nothing falls back to the host network.
+    pub fn with_egress(config: &Config, egress: Arc<dyn Egress>) -> Result<Self> {
+        Self::build(config, Some(egress))
+    }
+
+    fn build(config: &Config, egress: Option<Arc<dyn Egress>>) -> Result<Self> {
         config.validate()?;
         let alt_svc = HeaderValue::try_from(format!("h3=\":{}\"; ma=86400", config.listen.port())).expect("valid");
         let max_tunnels = config.relay.max_tunnels();
@@ -169,6 +182,7 @@ impl Relay {
         let connection_memory = crate::limits::connection_memory(available_memory);
         Ok(Self {
             inner: Arc::new(Inner {
+                egress,
                 settings: watch::Sender::new(Arc::new(Settings::new(config)?)),
                 auth: Arc::new(Authenticator::new(&config.users)?),
                 site: RwLock::new(load_site(config.web.as_ref(), &consumed, &memory)?),
@@ -282,10 +296,24 @@ impl Relay {
         }
     }
 
+    /// Resolves once the egress is lost; never without one.
+    fn egress_failed(&self) -> impl std::future::Future<Output = ()> + Send + 'static {
+        let egress = self.inner.egress.clone();
+        async move {
+            match egress {
+                Some(egress) => egress.failed().await,
+                None => std::future::pending().await,
+            }
+        }
+    }
+
     /// Whether a new QUIC connection from an unvalidated address should
-    /// first be sent a Retry: only when handshakes arrive faster than usual.
+    /// first be sent a Retry: when handshakes arrive faster than usual, or
+    /// when half the connection slots are taken. Handshakes from spoofed
+    /// addresses at any rate below the first could otherwise hold the
+    /// slots, shared with HTTP/2 and HTTP/1.1, for HEADER_TIMEOUT each.
     fn handshake_needs_retry(&self) -> bool {
-        !self.inner.handshakes.lock().unwrap().try_take(1.0, Instant::now())
+        self.inner.connections.half_full() || !self.inner.handshakes.lock().unwrap().try_take(1.0, Instant::now())
     }
 }
 
@@ -528,8 +556,8 @@ struct Authorized {
 
 /// A tunnel's destination socket.
 enum Opened {
-    Tcp(TcpStream),
-    Udp(UdpSocket),
+    Tcp(connect::Tcp),
+    Udp(connect::Udp),
 }
 
 impl Opened {
@@ -544,7 +572,7 @@ impl Opened {
     /// a destination that was already connected (RFC 9113/9114 CONNECT).
     fn abort(&self) {
         if let Self::Tcp(tcp) = self {
-            let _ = socket2::SockRef::from(tcp).set_linger(Some(Duration::ZERO));
+            tcp.abort();
         }
     }
 }
@@ -557,6 +585,8 @@ struct TunnelCtx {
     destination: SocketAddr,
     conn: Arc<ConnInfo>,
     auth: Arc<Authenticator>,
+    /// Resolves if the egress is lost; never without one.
+    egress_failed: std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>,
     changes: watch::Receiver<u64>,
     /// The settings in force; a reload whose rules block `destination`
     /// ends the tunnel.
@@ -570,15 +600,37 @@ struct TunnelCtx {
     _memory: MemoryPermit,
 }
 
+/// Why a tunnel was ended from outside its streams.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Cancellation {
+    /// The client cancelled, the user was revoked or a reload blocked the
+    /// destination.
+    Cancelled,
+    /// The egress the tunnel went through is gone: for the client, the
+    /// destination connection failed.
+    EgressFailed,
+}
+
+impl Cancellation {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Cancelled => "client cancelled or user revoked",
+            Self::EgressFailed => "egress unavailable",
+        }
+    }
+}
+
 impl TunnelCtx {
     /// Cancellation must remain observable even after one direction has FIN'd.
-    async fn cancelled(&mut self) {
+    async fn cancelled(&mut self) -> Cancellation {
         tokio::select! {
-            _ = wait_for_revocation(&self.auth, &self.user, &mut self.changes) => {}
+            _ = wait_for_revocation(&self.auth, &self.user, &mut self.changes) => Cancellation::Cancelled,
             _ = wait_for_block(&mut self.settings, self.destination) => {
                 debug!(user = %self.user.name, target = %self.target, "destination blocked by a reload");
+                Cancellation::Cancelled
             }
-            _ = &mut self.peer_closed => {}
+            _ = &mut self.peer_closed => Cancellation::Cancelled,
+            _ = &mut self.egress_failed => Cancellation::EgressFailed,
         }
     }
 }
@@ -780,13 +832,14 @@ impl Relay {
                 let any = self.inner.dns_lookups.clone().acquire_owned().await.expect("never closed");
                 (mine, any)
             };
-            let addrs = settings.policy.resolve(&target, lookup_permit).await?;
+            let egress = self.inner.egress.as_ref();
+            let addrs = settings.policy.resolve(&target, egress.map(|e| e.as_ref()), lookup_permit).await?;
             if !self.inner.auth.is_current(&a.user) {
                 return Err(Refusal::UserRevoked);
             }
             match a.kind {
-                Kind::Tcp => Ok(Opened::Tcp(connect::tcp(&addrs, settings.connect_timeout).await?)),
-                Kind::Udp => Ok(Opened::Udp(connect::udp(&addrs).await?)),
+                Kind::Tcp => Ok(Opened::Tcp(connect::open_tcp(egress, &addrs, settings.connect_timeout).await?)),
+                Kind::Udp => Ok(Opened::Udp(connect::open_udp(egress, &addrs, settings.connect_timeout).await?)),
                 // Their target is always a refusal, returned above.
                 Kind::Unsupported => Err(Refusal::UnsupportedProtocol),
                 Kind::Malformed => Err(Refusal::MalformedRequest),
@@ -795,6 +848,7 @@ impl Relay {
         let opened = tokio::select! {
             biased;
             _ = wait_for_revocation(&self.inner.auth, &a.user, &mut changes) => return Err(Refusal::UserRevoked),
+            _ = self.egress_failed() => return Err(Refusal::Unreachable("egress unavailable".into())),
             opened = connecting => opened?,
         };
         if !self.inner.auth.is_current(&a.user) {
@@ -814,6 +868,7 @@ impl Relay {
             destination,
             conn: conn.clone(),
             auth: self.inner.auth.clone(),
+            egress_failed: Box::pin(self.egress_failed()),
             changes,
             settings: settings_rx,
             peer_closed: Box::pin(std::future::pending()),
@@ -831,15 +886,46 @@ fn http_date() -> HeaderValue {
     HeaderValue::try_from(chrono::Utc::now().format("%a, %d %b %Y %H:%M:%S GMT").to_string()).expect("valid date")
 }
 
+/// Reads the configuration file again, on SIGHUP.
+pub type ConfigLoader = Arc<dyn Fn(&Path) -> Result<Config> + Send + Sync>;
+
+/// A server built on this one, as network-relay-cf-masque is.
+pub struct Variant {
+    /// Program name and version, for the log.
+    pub name: &'static str,
+    pub version: &'static str,
+    /// Where every tunnel goes (see [`Relay::with_egress`]). Once it is
+    /// lost, the server drains its connections as on SIGTERM and stops with
+    /// an error.
+    pub egress: Arc<dyn Egress>,
+    /// Reads the configuration file, which may hold more than [`Config`].
+    pub load_config: ConfigLoader,
+}
+
 /// Runs the server until SIGINT or SIGTERM. `config` was loaded from
 /// `config_path`, which SIGHUP reads again.
 pub async fn run(config_path: PathBuf, config: Config) -> Result<()> {
+    serve(config_path, config, None).await
+}
+
+/// Runs a [`Variant`] of the server, as [`run`] does.
+pub async fn run_variant(config_path: PathBuf, config: Config, variant: Variant) -> Result<()> {
+    serve(config_path, config, Some(variant)).await
+}
+
+async fn serve(config_path: PathBuf, config: Config, variant: Option<Variant>) -> Result<()> {
+    let (name, version) =
+        variant.as_ref().map_or(("network-relay", env!("CARGO_PKG_VERSION")), |v| (v.name, v.version));
+    let (egress, load_config): (_, ConfigLoader) = match variant {
+        Some(v) => (Some(v.egress), v.load_config),
+        None => (None, Arc::new(Config::load)),
+    };
     sys::raise_open_file_limit(
         config.relay.max_tunnels().saturating_mul(2).saturating_add(config.relay.max_connections()).saturating_add(1024)
             as _,
     );
     let certs = CertStore::open(&config.tls.cert, &config.tls.key)?;
-    let relay = Relay::new(&config)?;
+    let relay = Relay::build(&config, egress)?;
     let udp = sys::bind_udp(config.listen).with_context(|| format!("listening on UDP {}", config.listen))?;
     let (rcv, snd) = sys::grow_buffers(socket2::SockRef::from(&udp), 8 << 20);
     if rcv < 4 << 20 {
@@ -874,18 +960,22 @@ pub async fn run(config_path: PathBuf, config: Config) -> Result<()> {
         open_files = sys::open_file_limit().unwrap_or(0),
         max_tunnels = relay.inner.max_tunnels,
         max_connections = config.relay.max_connections(),
-        "network-relay {} ready (HTTP/3 on UDP, HTTP/2 and HTTP/1.1 on TCP)",
-        env!("CARGO_PKG_VERSION")
+        "{name} {version} ready (HTTP/3 on UDP, HTTP/2 and HTTP/1.1 on TCP)",
     );
     if config.users.is_empty() {
-        warn!("no [[user]] configured: every request gets the website; add one with `network-relay passwd`");
+        warn!("no [[user]] configured: every request gets the website; add one with `{name} passwd`");
     }
+    let egress_failed = relay.egress_failed();
+    tokio::pin!(egress_failed);
+    // Losing the egress ends every tunnel as failed; the connections still
+    // work, so they get to report that before they are closed.
+    let mut egress_lost = false;
     // None for a requested shutdown; otherwise the task that ended. None of
     // these tasks returns on its own, so an exit (a panic, say) must not leave
     // the process running without a listener: fail and let systemd restart it.
     let failed = loop {
         tokio::select! {
-            _ = sighup.recv() => match Config::load(&config_path) {
+            _ = sighup.recv() => match load_config(&config_path) {
                 Ok(c) => {
                     match relay.reload(&c) {
                         Ok(()) => info!(users = c.users.len(), "reloaded users, destination rules, timeouts and website"),
@@ -914,9 +1004,13 @@ pub async fn run(config_path: PathBuf, config: Config) -> Result<()> {
             },
             _ = sigterm.recv() => { info!("SIGTERM received, shutting down"); break None; }
             _ = tokio::signal::ctrl_c() => { info!("interrupted, shutting down"); break None; }
-            r = &mut quic_task => break Some(("HTTP/3 listener", r)),
-            r = &mut tcp_task => break Some(("HTTP/2 and HTTP/1.1 listener", r)),
-            r = &mut reload_task => break Some(("certificate reload task", r)),
+            r = &mut quic_task => break Some(format!("the HTTP/3 listener stopped unexpectedly: {r:?}")),
+            r = &mut tcp_task => break Some(format!("the HTTP/2 and HTTP/1.1 listener stopped unexpectedly: {r:?}")),
+            r = &mut reload_task => break Some(format!("the certificate reload task stopped unexpectedly: {r:?}")),
+            _ = &mut egress_failed => {
+                egress_lost = true;
+                break Some("the egress is gone; no tunnel can be opened".into());
+            }
         }
     };
     reload_task.abort();
@@ -926,7 +1020,7 @@ pub async fn run(config_path: PathBuf, config: Config) -> Result<()> {
     // their requests (RFC 9113 §6.8, RFC 9114 §5.2), then are closed with
     // H3_NO_ERROR. A failed listener skips the wait.
     endpoint.set_server_config(None);
-    if failed.is_none() {
+    if failed.is_none() || egress_lost {
         relay.begin_shutdown();
         let open = relay.open_connections();
         if open > 0 {
@@ -945,7 +1039,7 @@ pub async fn run(config_path: PathBuf, config: Config) -> Result<()> {
     let _ = tokio::time::timeout(Duration::from_secs(2), endpoint.wait_idle()).await;
     match failed {
         None => Ok(()),
-        Some((what, result)) => anyhow::bail!("the {what} stopped unexpectedly: {result:?}"),
+        Some(why) => anyhow::bail!("{why}"),
     }
 }
 

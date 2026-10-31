@@ -1,0 +1,44 @@
+# One application configuration: relay settings/users and WARP enrollment.
+# Replace the WARP placeholders and protect this file with chmod 600.
+# Relay settings and credentials use the standard Network Relay formats.
+listen = "127.0.0.1:8443"
+[tls]
+cert = "examples/tls/fullchain.pem"
+key = "examples/tls/privkey.pem"
+[web]
+root = "examples/site"
+[relay]
+udp_template = "/.well-known/masque/udp/{target_host}/{target_port}/"
+# Reserve userspace sockets for DNS and connecting/closing TCP flows.
+max_tunnels = 48
+max_tunnels_per_user = 32
+# Defaults retain destination/port restrictions. Do not disable them for production.
+connect_timeout_secs = 10
+udp_idle_timeout_secs = 300
+[debug]
+log_requests = false
+# Append existing [[user]] entries, or use the app's passwd helper.
+
+[warp]
+# Egress mode; independent of client-facing HTTP/1.1, HTTP/2 and HTTP/3.
+transport = "h2"
+# Defaults: IPv4 outer endpoint 162.159.198.2:443, DNS 1.1.1.1:53 inside WARP,
+# keepalive 15 seconds, idle timeout 30 seconds. No automatic mode fallback.
+
+[warp.registration]
+# Copy these three values from your existing WARP MASQUE enrollment.
+private_key = "REPLACE_WITH_ENROLLED_BASE64_P256_PKCS8_PRIVATE_KEY"
+endpoint_public_key = """-----BEGIN PUBLIC KEY-----
+REPLACE_WITH_ENROLLED_PUBLIC_KEY_BASE64
+-----END PUBLIC KEY-----
+"""
+tunnel_ipv4 = "172.16.0.2"
+# The enrollment's IPv6 values. Without them the server warns at start and
+# carries IPv4 only: IPv6 destinations are unreachable and the H3 tunnel
+# cannot use an IPv6 endpoint.
+# tunnel_ipv6 = "2606:4700:110:88ca:7332:13e4:5a18:e3d9"
+# endpoint_v6 = "[2606:4700:103::2]:0"
+# device_id, access_token and license are optional metadata and can be omitted.
+# For H3 egress, change warp.transport to "h3" and add the enrolled endpoint:
+# endpoint_v4 = "162.159.198.2:0"
+# Port zero in an enrollment endpoint selects the default port 443.

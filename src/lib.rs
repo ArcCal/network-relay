@@ -6,8 +6,10 @@
 pub mod auth;
 pub mod certs;
 pub mod check;
+pub mod cli;
 pub mod config;
 pub mod connect;
+pub mod egress;
 pub mod identity;
 pub mod limits;
 pub mod logging;

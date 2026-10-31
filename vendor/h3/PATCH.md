@@ -43,6 +43,9 @@ Original source and MIT license retained. Changes are confined to:
   so is a MAX_PUSH_ID smaller than one received before (section 7.2.7).
   Upstream ignored both frames; `tests/connection.rs` covers both and an
   increasing MAX_PUSH_ID.
+- `proto/headers.rs`: the error for an invalid field value names the field and
+  the value's length, not its bytes, which can be a credential and reached the
+  relay's logs.
 - `proto/headers.rs`: `TE: trailers` is matched without regard to case, as
   ABNF literals are (RFC 5234 section 2.3).
 - `server/request.rs`: the 431 answer to a request whose field section is
@@ -68,6 +71,31 @@ Original source and MIT license retained. Changes are confined to:
   asynchronously, as through Network.framework, the first frames after
   SETTINGS (a GOAWAY, or a CANCEL_PUSH that must close the connection) were
   silently ignored.
+
+- `frame.rs`, `proto/frame.rs`, `error/internal_error.rs`: frame payloads are
+  bounded before they are buffered. Upstream buffered a frame's whole declared
+  payload before decoding it, whatever its type or length, so one peer could
+  make the receiver hold any amount of memory (RFC 9114 section 10.5). Frames
+  of unknown or reserved types are now discarded as they arrive (section 9);
+  the HTTP/2 frame types of section 7.2.8 are H3_FRAME_UNEXPECTED from their
+  header; a CANCEL_PUSH, GOAWAY or MAX_PUSH_ID longer than one varint is
+  H3_FRAME_ERROR (section 7.1); and other frames but DATA (which is streamed)
+  longer than 64 KiB, twice the relay's header section limit, are
+  H3_EXCESSIVE_LOAD (section 8.1). Header sections between the limit and
+  64 KiB still get the 431 answer below.
+- `proto/frame.rs`: SETTINGS_H3_DATAGRAM (RFC 9297 section 2.1.1) and
+  SETTINGS_ENABLE_CONNECT_PROTOCOL (RFC 9220 section 3, RFC 8441 section 3)
+  only take the values 0 and 1; any other value is a connection error of type
+  H3_SETTINGS_ERROR. Upstream accepted any value and read it as a boolean.
+- Client extensions used by network-relay-cf-masque for its Cloudflare WARP
+  egress, all off unless a client asks for them: `ext.rs` adds
+  `Protocol::from_static` for an outbound vendor `:protocol` (`cf-connect-ip`)
+  without changing how received tokens are parsed; `proto/frame.rs`,
+  `config.rs` and `client/builder.rs` recognize, and optionally send, the
+  draft-00 datagram setting `0x276` (draft-ietf-masque-h3-datagram-00
+  section 5, also only 0 or 1); `shared_state.rs` and `client/connection.rs`
+  expose the peer's SETTINGS once they have arrived and the error that ended
+  the connection. A server never sends `0x276` and treats it as before.
 
 The relay integration tests cover trailers without FIN, empty DATA, ordinary
 half-close, bulk transfers and the malformed requests above; `proto::headers`

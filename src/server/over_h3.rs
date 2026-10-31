@@ -15,7 +15,8 @@ use tokio::sync::{mpsc, oneshot};
 use tracing::debug;
 
 use super::{
-    http_date, pump, ConnInfo, Incoming, Kind, Opened, Relay, HEADER_TIMEOUT, MAX_STREAMS, MAX_STREAMS_UNAUTHENTICATED,
+    http_date, pump, Cancellation, ConnInfo, Incoming, Kind, Opened, Relay, HEADER_TIMEOUT, MAX_STREAMS,
+    MAX_STREAMS_UNAUTHENTICATED,
 };
 use crate::certs::CertStore;
 use crate::policy::Refusal;
@@ -478,8 +479,8 @@ impl Relay {
         }
         let sent = tokio::select! {
             biased;
-            _ = ctx.cancelled() => {
-                cancel(&mut stream);
+            why = ctx.cancelled() => {
+                cancel_tunnel(&mut stream, why);
                 false
             },
             Ok(()) = &mut bad_datagram => {
@@ -499,7 +500,7 @@ impl Relay {
                 let (reply_tx, reply_rx) = oneshot::channel();
                 let sender = tokio::select! {
                     biased;
-                    _ = ctx.cancelled() => return cancel(&mut stream),
+                    why = ctx.cancelled() => return cancel_tunnel(&mut stream, why),
                     sender = async {
                         sender_tx.send((stream_id, reply_tx)).await.ok()?;
                         reply_rx.await.ok()
@@ -566,6 +567,18 @@ async fn receive_side_closed(stream: &mut H3Stream) -> bool {
 fn cancel(stream: &mut H3Stream) {
     stream.stop_stream(h3::error::Code::H3_REQUEST_CANCELLED);
     stream.stop_sending(h3::error::Code::H3_REQUEST_CANCELLED);
+}
+
+/// Cancels a tunnel's request: as [`cancel`], unless its egress failed,
+/// which to the client is a failed destination connection (RFC 9114 section 4.4).
+fn cancel_tunnel(stream: &mut H3Stream, why: Cancellation) {
+    match why {
+        Cancellation::Cancelled => cancel(stream),
+        Cancellation::EgressFailed => {
+            stream.stop_stream(h3::error::Code::H3_CONNECT_ERROR);
+            stream.stop_sending(h3::error::Code::H3_CONNECT_ERROR);
+        }
+    }
 }
 
 /// A receiver that never yields a value, to disarm a datagram notification

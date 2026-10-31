@@ -3,7 +3,8 @@
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::{Buf, Bytes};
@@ -14,6 +15,7 @@ use network_relay::auth;
 use network_relay::certs::CertStore;
 use network_relay::check::{self, Options, H3};
 use network_relay::config::{Config, UserEntry};
+use network_relay::egress;
 use network_relay::proto::datagram;
 use network_relay::proto::{capsule, CapsuleDecoder};
 use network_relay::server::{self, Relay};
@@ -461,6 +463,106 @@ fn init_logging() {
 
 // ---------------------------------------------------------------- fixtures
 
+/// An egress to this host's own network, as the relay's own sockets would
+/// reach it, that can be made to fail.
+struct LoopbackEgress {
+    lost: tokio::sync::watch::Sender<bool>,
+    lookups: AtomicUsize,
+    tcp: AtomicUsize,
+    udp: AtomicUsize,
+    /// UDP payloads longer than this are reported as too large.
+    max_payload: usize,
+}
+
+impl LoopbackEgress {
+    fn new() -> Arc<Self> {
+        Self::with_max_payload(65_507)
+    }
+
+    fn with_max_payload(max_payload: usize) -> Arc<Self> {
+        Arc::new(Self {
+            lost: tokio::sync::watch::Sender::new(false),
+            lookups: AtomicUsize::new(0),
+            tcp: AtomicUsize::new(0),
+            udp: AtomicUsize::new(0),
+            max_payload,
+        })
+    }
+
+    fn fail(&self) {
+        self.lost.send_replace(true);
+    }
+}
+
+struct LoopbackUdp {
+    sock: UdpSocket,
+    max_payload: usize,
+}
+
+impl egress::DatagramIo for LoopbackUdp {
+    fn send<'a>(&'a self, data: &'a [u8]) -> egress::IoFuture<'a, usize> {
+        Box::pin(self.sock.send(data))
+    }
+
+    fn recv<'a>(&'a self, data: &'a mut [u8]) -> egress::IoFuture<'a, usize> {
+        Box::pin(self.sock.recv(data))
+    }
+
+    fn local_addr(&self) -> std::io::Result<SocketAddr> {
+        self.sock.local_addr()
+    }
+
+    fn peer_addr(&self) -> std::io::Result<SocketAddr> {
+        self.sock.peer_addr()
+    }
+
+    fn max_payload(&self) -> usize {
+        self.max_payload
+    }
+}
+
+impl egress::Egress for LoopbackEgress {
+    fn resolve<'a>(&'a self, host: &'a str) -> egress::IoFuture<'a, Vec<std::net::IpAddr>> {
+        self.lookups.fetch_add(1, Ordering::Relaxed);
+        Box::pin(async move { Ok(tokio::net::lookup_host((host, 0)).await?.map(|a| a.ip()).collect()) })
+    }
+
+    fn connect_tcp(&self, peer: SocketAddr) -> egress::IoFuture<'_, egress::TcpStream> {
+        self.tcp.fetch_add(1, Ordering::Relaxed);
+        Box::pin(async move {
+            let tcp = tokio::net::TcpStream::connect(peer).await?;
+            let (local, peer) = (tcp.local_addr()?, tcp.peer_addr()?);
+            // Resets when closed, as a kernel socket with no linger time does.
+            let handle = socket2::SockRef::from(&tcp).try_clone()?;
+            let abort = Arc::new(move || {
+                let _ = handle.set_linger(Some(Duration::ZERO));
+            });
+            Ok(egress::TcpStream::new(tcp, local, peer, abort))
+        })
+    }
+
+    fn connect_udp(&self, peer: SocketAddr) -> egress::IoFuture<'_, egress::UdpSocket> {
+        self.udp.fetch_add(1, Ordering::Relaxed);
+        let max_payload = self.max_payload;
+        Box::pin(async move {
+            let sock = UdpSocket::bind(if peer.is_ipv6() { "[::]:0" } else { "0.0.0.0:0" }).await?;
+            sock.connect(peer).await?;
+            Ok(egress::UdpSocket(Arc::new(LoopbackUdp { sock, max_payload })))
+        })
+    }
+
+    fn available(&self) -> bool {
+        !*self.lost.borrow()
+    }
+
+    fn failed(&self) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> {
+        let mut lost = self.lost.subscribe();
+        Box::pin(async move {
+            let _ = lost.wait_for(|lost| *lost).await;
+        })
+    }
+}
+
 /// A private CA standing in for a public one, and a certificate for
 /// `relay.test`.
 fn write_certificates(dir: &std::path::Path) {
@@ -525,6 +627,7 @@ async fn bind_pair() -> (std::net::UdpSocket, TcpListener) {
 struct TestRelay {
     env: Env,
     relay: Relay,
+    egress: Option<Arc<LoopbackEgress>>,
     addr: SocketAddr,
     users: Vec<UserEntry>,
     tasks: Vec<JoinHandle<()>>,
@@ -546,21 +649,37 @@ impl TestRelay {
         Self::start_with(relay_toml, vec![user(ALICE.0, ALICE.1)]).await
     }
 
+    /// With NETWORK_RELAY_TEST_EGRESS=loopback, every test's tunnels go
+    /// through a [`LoopbackEgress`] instead of the host network directly.
     async fn start_with(relay_toml: &str, users: Vec<UserEntry>) -> Self {
+        let egress =
+            (std::env::var("NETWORK_RELAY_TEST_EGRESS").as_deref() == Ok("loopback")).then(LoopbackEgress::new);
+        Self::start_full(relay_toml, users, egress).await
+    }
+
+    /// A relay whose tunnels go through `egress`.
+    async fn start_with_egress(relay_toml: &str, egress: Arc<LoopbackEgress>) -> Self {
+        Self::start_full(relay_toml, vec![user(ALICE.0, ALICE.1)], Some(egress)).await
+    }
+
+    async fn start_full(relay_toml: &str, users: Vec<UserEntry>, egress: Option<Arc<LoopbackEgress>>) -> Self {
         init_logging();
         let env = Env::new();
         let (udp, tcp) = bind_pair().await;
         let addr = udp.local_addr().unwrap();
         let config = config(&env, addr, relay_toml, &users);
         let certs = CertStore::open(&config.tls.cert, &config.tls.key).unwrap();
-        let relay = Relay::new(&config).unwrap();
+        let relay = match &egress {
+            Some(egress) => Relay::with_egress(&config, egress.clone()).unwrap(),
+            None => Relay::new(&config).unwrap(),
+        };
         let client_certificates = config.tls.client_certificates;
         let endpoint = server::quic_endpoint(certs.clone(), udp, client_certificates).unwrap();
         let tasks = vec![
             tokio::spawn(relay.clone().serve_quic(endpoint)),
             tokio::spawn(relay.clone().serve_tcp(tcp, server::tcp_tls_config(certs, client_certificates).unwrap())),
         ];
-        Self { env, relay, addr, users, tasks }
+        Self { env, relay, egress, addr, users, tasks }
     }
 
     fn options(&self, (user, password): (&str, &str), tcp_target: SocketAddr, udp_target: SocketAddr) -> Options {
@@ -1227,7 +1346,8 @@ async fn every_transport_relays_tcp_and_udp() {
             assert!(detail.contains("echoed"), "{}: {detail}", o.name);
         }
     }
-    assert_eq!(relay.relay.active_tunnels(), 0, "every tunnel was closed");
+    // The relay releases a tunnel just after the client has finished with it.
+    wait_for_tunnels(&relay, 0).await;
 }
 
 #[tokio::test]
@@ -3011,4 +3131,109 @@ async fn http3_request_headers_over_the_limit_get_431_and_no_error_stop() {
     let rest = within("431 response and FIN", recv.read_to_end(64 * 1024)).await.unwrap();
     assert!(!rest.is_empty(), "the HEADERS frame of the 431 response");
     assert_eq!(stop_sending_code(&mut send).await, Some(h3::error::Code::H3_NO_ERROR.value()));
+}
+
+// ------------------------------------------------------------------ egress
+
+#[tokio::test]
+async fn an_egress_carries_names_tcp_and_udp_on_every_transport() {
+    let egress = LoopbackEgress::new();
+    let relay = TestRelay::start_with_egress("", egress.clone()).await;
+    let (web, _w) = http_server().await;
+    let (dns, _d) = udp_echo().await;
+    let mut opts = relay.options(ALICE, web, dns);
+    // A name: the egress, not the system resolver, looks it up.
+    opts.tcp_target = format!("localhost:{}", web.port());
+    let outcomes = within("checks", check::run(&opts)).await;
+    assert_eq!(outcomes.len(), 7);
+    for o in &outcomes {
+        o.result.as_ref().unwrap_or_else(|e| panic!("{}: {e:#}", o.name));
+    }
+    // HTTP/3, HTTP/2 and HTTP/1.1 each open a TCP tunnel and a UDP flow.
+    assert!(egress.lookups.load(Ordering::Relaxed) >= 3, "{}", egress.lookups.load(Ordering::Relaxed));
+    assert!(egress.tcp.load(Ordering::Relaxed) >= 3);
+    assert!(egress.udp.load(Ordering::Relaxed) >= 3);
+    // The relay releases a tunnel just after the client has finished with it.
+    wait_for_tunnels(&relay, 0).await;
+    assert!(relay.egress.is_some());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn losing_the_egress_fails_open_tunnels_and_refuses_new_ones() {
+    let egress = LoopbackEgress::new();
+    let relay = TestRelay::start_with_egress("", egress.clone()).await;
+    let (echo, _e) = echo_server().await;
+    let (udp, _u) = udp_echo().await;
+    let auth_header = auth::basic_authorization(ALICE.0, ALICE.1);
+    let target = echo.to_string();
+    let (_sender, conn, _h3_driver) = raw_h3(&relay, true).await;
+    let tcp = [(":method", "CONNECT"), (":authority", target.as_str()), ("authorization", auth_header.as_str())];
+    let path = format!("/.well-known/masque/udp/127.0.0.1/{}/", udp.port());
+    let udp_flow = [
+        (":method", "CONNECT"),
+        (":protocol", "connect-udp"),
+        (":scheme", "https"),
+        (":authority", "relay.test"),
+        (":path", path.as_str()),
+        ("capsule-protocol", "?1"),
+        ("authorization", auth_header.as_str()),
+    ];
+    let (mut h3_tcp, _r1) = raw_h3_open(&conn, &tcp).await;
+    let (mut h3_udp, _r2) = raw_h3_open(&conn, &udp_flow).await;
+    let (mut h2, _h2_driver) = raw_h2(&relay).await;
+    let connect = || {
+        Request::builder()
+            .method(Method::CONNECT)
+            .uri(target.clone())
+            .header("authorization", auth_header.clone())
+            .body(())
+            .unwrap()
+    };
+    let (response, _h2_send) = h2.send_request(connect(), false).unwrap();
+    let response = within("HTTP/2 CONNECT", response).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let mut h2_recv = response.into_body();
+    wait_for_tunnels(&relay, 3).await;
+
+    egress.fail();
+    // The destination connection failed (RFC 9114 section 4.4, RFC 9113
+    // section 8.5), even for the UDP flow and tunnels that carry no data.
+    let failed = h3::error::Code::H3_CONNECT_ERROR.value();
+    assert_eq!(stop_sending_code(&mut h3_tcp).await, Some(failed), "HTTP/3 TCP tunnel");
+    assert_eq!(stop_sending_code(&mut h3_udp).await, Some(failed), "HTTP/3 UDP flow");
+    let error = within("HTTP/2 reset", h2_recv.data()).await.expect("reset, not EOF").unwrap_err();
+    assert_eq!(error.reason(), Some(h2::Reason::CONNECT_ERROR));
+    wait_for_tunnels(&relay, 0).await;
+
+    // Nothing falls back to the host network.
+    let opened = egress.tcp.load(Ordering::Relaxed);
+    let (response, _send) = h2.send_request(connect(), true).unwrap();
+    let response = within("refusal", response).await.unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    assert_eq!(egress.tcp.load(Ordering::Relaxed), opened, "no connection attempt");
+}
+
+#[tokio::test]
+async fn datagrams_too_large_for_the_egress_path_are_dropped() {
+    let egress = LoopbackEgress::with_max_payload(100);
+    let relay = TestRelay::start_with_egress("", egress.clone()).await;
+    let (echo, _e) = udp_echo().await;
+    let opts = relay.options(ALICE, echo, echo);
+    let mut h3 = H3::connect(&opts, &opts.addresses).await.unwrap();
+    let path = format!("/.well-known/masque/udp/127.0.0.1/{}/", echo.port());
+    let req = Request::builder()
+        .method(Method::CONNECT)
+        .uri(format!("https://relay.test:{}{path}", relay.addr.port()))
+        .header("capsule-protocol", "?1")
+        .header("authorization", auth::basic_authorization(ALICE.0, ALICE.1))
+        .extension(h3::ext::Protocol::CONNECT_UDP)
+        .body(())
+        .unwrap();
+    let mut stream = h3.request(req).await.unwrap();
+    assert_eq!(stream.recv_response().await.unwrap().status(), StatusCode::OK);
+    let (mut tunnel, _filter) = h3.udp_tunnel(stream);
+    tunnel.send_datagram(datagram::udp_payload(&[1; 101])).unwrap();
+    tunnel.send_datagram(datagram::udp_payload(&[2; 100])).unwrap();
+    let Event::Datagram(p) = within("echo", tunnel.next_event()).await.unwrap() else { panic!("closed") };
+    assert_eq!(&p[1..], [2; 100], "the larger datagram was dropped, the flow kept");
 }

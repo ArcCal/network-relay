@@ -421,7 +421,8 @@ impl SettingId {
                 | SettingId::ENABLE_CONNECT_PROTOCOL
                 | SettingId::ENABLE_WEBTRANSPORT
                 | SettingId::WEBTRANSPORT_MAX_SESSIONS
-                | SettingId::H3_DATAGRAM,
+                | SettingId::H3_DATAGRAM
+                | SettingId::H3_DATAGRAM_DRAFT00,
         )
     }
 
@@ -464,6 +465,8 @@ setting_identifiers! {
     ENABLE_CONNECT_PROTOCOL = 0x8,
     // https://datatracker.ietf.org/doc/html/rfc9297#name-http-3-setting
     H3_DATAGRAM = 0x33,
+    // draft-ietf-masque-h3-datagram-00, still used by Cloudflare WARP.
+    H3_DATAGRAM_DRAFT00 = 0x276,
     // https://datatracker.ietf.org/doc/html/draft-ietf-webtrans-http3/#section-8.2
     ENABLE_WEBTRANSPORT = 0x2B603742,
     // https://datatracker.ietf.org/doc/html/draft-ietf-webtrans-http3/#section-8.2
@@ -502,6 +505,21 @@ impl Settings {
     pub const MAX_ENCODED_SIZE: usize = SETTINGS_LEN * 2 * VarInt::MAX_SIZE;
 
     pub fn insert(&mut self, id: SettingId, value: u64) -> Result<(), SettingsError> {
+        // RFC 9297 section 2.1.1 and RFC 9220 section 3 (via RFC 8441
+        // section 3) only permit 0 or 1.
+        // Cloudflare's recognized draft-00 identifier has the same restriction
+        // (draft-ietf-masque-h3-datagram-00 section 5).
+        if value > 1
+            && matches!(
+                id,
+                SettingId::H3_DATAGRAM
+                    | SettingId::ENABLE_CONNECT_PROTOCOL
+                    | SettingId::H3_DATAGRAM_DRAFT00
+            )
+        {
+            return Err(SettingsError::InvalidSettingValue(id, value));
+        }
+
         if self.len >= self.entries.len() {
             return Err(SettingsError::Exceeded);
         }
@@ -737,6 +755,109 @@ mod tests {
             Frame::Settings(Settings::default()),
             &[4, 0],
             Frame::Settings(Settings::default()),
+        );
+    }
+
+    #[test]
+    fn duplicate_draft00_setting_retains_settings_error() {
+        let wire = [4, 6, 0x42, 0x76, 1, 0x42, 0x76, 1];
+        assert_matches!(
+            Frame::decode(&mut Cursor::new(wire)),
+            Err(FrameError::Settings(SettingsError::Repeated(
+                SettingId::H3_DATAGRAM_DRAFT00
+            )))
+        );
+    }
+
+    #[test]
+    fn boolean_settings_reject_non_boolean_wire_values() {
+        for id in [
+            SettingId::H3_DATAGRAM,
+            SettingId::ENABLE_CONNECT_PROTOCOL,
+            SettingId::H3_DATAGRAM_DRAFT00,
+        ] {
+            for value in [2, 63, 64, (1 << 62) - 1] {
+                let mut payload = Vec::new();
+                id.encode(&mut payload);
+                payload.write_var(value);
+                let mut wire = vec![4];
+                wire.write_var(payload.len() as u64);
+                wire.extend_from_slice(&payload);
+                assert_eq!(
+                    Frame::decode(&mut Cursor::new(wire)).unwrap_err(),
+                    FrameError::Settings(SettingsError::InvalidSettingValue(id, value)),
+                    "setting {id:?} accepted non-boolean value {value}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn boolean_settings_accept_zero_and_one_with_unknown_values_ignored() {
+        for value in [0, 1] {
+            let mut settings = Settings::default();
+            for id in [
+                SettingId::H3_DATAGRAM,
+                SettingId::ENABLE_CONNECT_PROTOCOL,
+                SettingId::H3_DATAGRAM_DRAFT00,
+            ] {
+                settings.insert(id, value).unwrap();
+            }
+            settings.insert(SettingId(0x21), (1 << 62) - 1).unwrap();
+            let mut wire = Vec::new();
+            settings.encode(&mut wire);
+            let decoded = Frame::decode(&mut Cursor::new(wire)).unwrap();
+            let Frame::Settings(decoded) = decoded else {
+                panic!("not SETTINGS")
+            };
+            assert_eq!(decoded.len, 3);
+            for id in [
+                SettingId::H3_DATAGRAM,
+                SettingId::ENABLE_CONNECT_PROTOCOL,
+                SettingId::H3_DATAGRAM_DRAFT00,
+            ] {
+                assert_eq!(decoded.get(id), Some(value));
+            }
+            assert_eq!(decoded.get(SettingId(0x21)), None);
+        }
+    }
+
+    #[test]
+    fn boolean_settings_reject_invalid_local_insert_without_consuming_capacity() {
+        let mut settings = Settings::default();
+        for id in [
+            SettingId::H3_DATAGRAM,
+            SettingId::ENABLE_CONNECT_PROTOCOL,
+            SettingId::H3_DATAGRAM_DRAFT00,
+        ] {
+            assert_eq!(
+                settings.insert(id, 2),
+                Err(SettingsError::InvalidSettingValue(id, 2))
+            );
+        }
+        assert_eq!(settings.len, 0);
+    }
+
+    #[test]
+    fn all_supported_settings_including_draft00_fit_and_decode() {
+        let mut settings = Settings::default();
+        for id in [
+            SettingId::MAX_HEADER_LIST_SIZE,
+            SettingId::QPACK_MAX_TABLE_CAPACITY,
+            SettingId::QPACK_MAX_BLOCKED_STREAMS,
+            SettingId::ENABLE_CONNECT_PROTOCOL,
+            SettingId::ENABLE_WEBTRANSPORT,
+            SettingId::WEBTRANSPORT_MAX_SESSIONS,
+            SettingId::H3_DATAGRAM,
+            SettingId::H3_DATAGRAM_DRAFT00,
+        ] {
+            settings.insert(id, 1).unwrap();
+        }
+        let mut wire = Vec::new();
+        settings.encode(&mut wire);
+        assert_matches!(
+            Frame::decode(&mut Cursor::new(wire)),
+            Ok(Frame::Settings(decoded)) if decoded == settings
         );
     }
 

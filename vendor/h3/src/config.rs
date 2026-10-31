@@ -39,6 +39,8 @@ pub struct Settings {
     pub(crate) enable_extended_connect: bool,
     /// Enable HTTP Datagrams, see https://datatracker.ietf.org/doc/rfc9297/ for details
     pub(crate) enable_datagram: bool,
+    /// Advertise the draft-00 HTTP/3 datagram setting used by Cloudflare WARP.
+    pub(crate) enable_datagram_draft00: bool,
     /// The maximum number of concurrent streams that can be opened by the peer.
     pub(crate) max_webtransport_sessions: u64,
 }
@@ -65,6 +67,10 @@ impl From<&frame::Settings> for Settings {
                 .get(frame::SettingId::ENABLE_CONNECT_PROTOCOL)
                 .map(|value| value != 0)
                 .unwrap_or(defaults.enable_extended_connect),
+            enable_datagram_draft00: settings
+                .get(frame::SettingId::H3_DATAGRAM_DRAFT00)
+                .map(|value| value != 0)
+                .unwrap_or(defaults.enable_datagram_draft00),
         }
     }
 }
@@ -84,6 +90,7 @@ impl TryFrom<Config> for frame::Settings {
                     enable_webtransport,
                     enable_extended_connect,
                     enable_datagram,
+                    enable_datagram_draft00,
                     max_webtransport_sessions,
                 },
         } = value;
@@ -125,6 +132,9 @@ impl TryFrom<Config> for frame::Settings {
             enable_webtransport as u64,
         )?;
         settings.insert(frame::SettingId::H3_DATAGRAM, enable_datagram as u64)?;
+        if enable_datagram_draft00 {
+            settings.insert(frame::SettingId::H3_DATAGRAM_DRAFT00, 1)?;
+        }
         settings.insert(
             frame::SettingId::WEBTRANSPORT_MAX_SESSIONS,
             max_webtransport_sessions,
@@ -141,6 +151,7 @@ impl Default for Settings {
             enable_webtransport: false,
             enable_extended_connect: false,
             enable_datagram: false,
+            enable_datagram_draft00: false,
             max_webtransport_sessions: 0,
         }
     }
@@ -156,6 +167,14 @@ impl Settings {
     /// Enable HTTP Datagrams, see https://datatracker.ietf.org/doc/rfc9297/ for details
     pub fn enable_datagram(&self) -> bool {
         self.enable_datagram
+    }
+
+    /// Whether the peer enabled SETTINGS_H3_DATAGRAM_00 (identifier `0x276`).
+    ///
+    /// This is the setting from draft-ietf-masque-h3-datagram-00, independently
+    /// of the standardized HTTP datagram setting exposed by [`Self::enable_datagram`].
+    pub fn enable_datagram_draft00(&self) -> bool {
+        self.enable_datagram_draft00
     }
 
     /// https://www.rfc-editor.org/info/rfc8441 defines an extended CONNECT method in Section 4,
@@ -175,5 +194,49 @@ impl Default for Config {
             send_settings: true,
             settings: Default::default(),
         }
+    }
+}
+
+#[cfg(test)]
+mod patch_tests {
+    use super::*;
+    use bytes::Bytes;
+
+    #[test]
+    fn draft00_datagram_setting_wire_roundtrip_and_default() {
+        for (standard, draft) in [(false, false), (true, false), (false, true), (true, true)] {
+            let mut config = Config::default();
+            config.send_grease = false;
+            config.settings.enable_datagram = standard;
+            config.settings.enable_datagram_draft00 = draft;
+            let settings = frame::Settings::try_from(config).unwrap();
+            assert_eq!(
+                settings.get(frame::SettingId::H3_DATAGRAM),
+                Some(standard as u64)
+            );
+            assert_eq!(
+                settings.get(frame::SettingId::H3_DATAGRAM_DRAFT00),
+                draft.then_some(1)
+            );
+
+            let mut wire = Vec::new();
+            settings.encode(&mut wire);
+            let frame::Frame::Settings(decoded) =
+                frame::Frame::decode(&mut Bytes::from(wire)).unwrap()
+            else {
+                panic!("expected SETTINGS frame");
+            };
+            let peer = Settings::from(&decoded);
+            assert_eq!(peer.enable_datagram(), standard);
+            assert_eq!(peer.enable_datagram_draft00(), draft);
+        }
+    }
+
+    #[test]
+    fn peer_draft00_zero_is_disabled() {
+        let mut wire = frame::Settings::default();
+        wire.insert(frame::SettingId::H3_DATAGRAM_DRAFT00, 0)
+            .unwrap();
+        assert!(!Settings::from(&wire).enable_datagram_draft00());
     }
 }

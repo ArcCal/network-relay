@@ -105,6 +105,15 @@ impl Builder {
         self
     }
 
+    /// Also advertise SETTINGS_H3_DATAGRAM_00 (`0x276`) for draft-00 peers.
+    ///
+    /// This opt-in setting is independent of [`Self::enable_datagram`]. Unknown
+    /// settings are ignored by peers according to RFC 9114 section 7.2.4.1.
+    pub fn enable_datagram_draft00(&mut self, enabled: bool) -> &mut Self {
+        self.config.settings.enable_datagram_draft00 = enabled;
+        self
+    }
+
     /// Enables the extended CONNECT protocol required for various HTTP/3 extensions.
     pub fn enable_extended_connect(&mut self, value: bool) -> &mut Self {
         self.config.settings.enable_extended_connect = value;

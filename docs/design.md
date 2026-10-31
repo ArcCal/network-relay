@@ -166,13 +166,15 @@ A single crate, one program `network-relay`, five subcommands (`serve`, `passwd`
 | `limits` | Token buckets, per-address connection counts, per-user tunnel counts and traffic budgets, the memory budget, the memory-based defaults for `max_tunnels` and `max_connections` |
 | `identity` | Client certificates and PKCS#12 files for `network-relay identity` |
 | `policy` | Target parsing and checks, refusal reasons and Proxy-Status |
-| `connect` | Happy Eyeballs TCP connections, UDP sockets |
+| `connect` | Happy Eyeballs TCP connections, UDP sockets, on the host network or through an egress |
+| `egress` | The interface through which a server built on this crate (network-relay-cf-masque) carries every tunnel's name lookups, TCP connections and UDP flows instead of the host network; network-relay itself uses none |
 | `tunnel` | The CONNECT-UDP request stream (datagrams and capsules), independent of HTTP version |
 | `server/` | `mod.rs`: request classification, authentication, opening targets, connection statistics, reload, `run`; `over_h3.rs`: QUIC and HTTP/3, datagram dispatch; `over_tcp.rs`: HTTP/2 and HTTP/1.1; `h2_stream.rs`: HTTP/2 byte streams, flow control and explicit resets; `pump.rs`: moving TCP and UDP data |
 | `web` | Decoy website |
 | `certs`, `tls` | Certificate loading, periodic rereading, rustls configuration |
 | `profile`, `private_file` | Generating `.mobileconfig` files and DDM declarations, and saving them atomically with private permissions |
 | `check` | Self-check client (HTTP/3, HTTP/2, HTTP/1.1), also used by the integration tests |
+| `cli` | The `passwd`, `identity`, `profile` and `check` commands, shared with network-relay-cf-masque |
 | `logging` | Non-blocking logging (optionally split into hourly files) |
 | `sys` | Open-file limits, socket options |
 
@@ -180,7 +182,7 @@ A single crate, one program `network-relay`, five subcommands (`serve`, `passwd`
 
 Dependencies: tokio, quinn (QUIC), h3 / h3-quinn / h3-datagram (HTTP/3, pinned to a commit with CONNECT-UDP support), h2 (HTTP/2 server), hyper (HTTP/1.1 server and HTTP client), rustls (ring), argon2.
 
-`h3` and `h3-quinn` keep the source and licenses of the same upstream commit in `vendor/`, patched only for request and frame validation, request rejection, GOAWAY identifiers, cancellation notifications and stream error codes. See `PATCH.md` in each directory for the exact differences and when the patches can be removed. They have not been replaced with a different protocol implementation.
+`h3` and `h3-quinn` keep the source and licenses of the same upstream commit in `vendor/`, patched only for request and frame validation, request rejection, GOAWAY identifiers, cancellation notifications and stream error codes, plus client-only extensions used by network-relay-cf-masque's WARP egress, which a server never uses. See `PATCH.md` in each directory for the exact differences and when the patches can be removed. They have not been replaced with a different protocol implementation.
 
 ## 7. Interoperability tests
 

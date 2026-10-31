@@ -55,6 +55,8 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --locked --all-targets -- -D warnings
       - run: cargo test --locked
+      - name: Integration tests with every tunnel through an egress
+        run: NETWORK_RELAY_TEST_EGRESS=loopback cargo test --locked --test in_process
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: '3.13'

@@ -15,6 +15,7 @@ use http::StatusCode;
 use ipnet::IpNet;
 
 use crate::config::Relay;
+use crate::egress::Egress;
 
 /// Longest a name lookup may take.
 pub const DNS_TIMEOUT: Duration = Duration::from_secs(5);
@@ -331,17 +332,43 @@ impl Policy {
     /// may run at once, and holds it until the system resolver returns, even
     /// after [`DNS_TIMEOUT`] has given up on it: the resolver cannot be
     /// cancelled, so abandoned lookups still occupy a thread.
+    ///
+    /// With an `egress`, the egress looks the name up instead, within the
+    /// same [`DNS_TIMEOUT`] and holding the permit only while it does; its
+    /// answers are checked the same way.
     pub async fn resolve<P: Send + 'static>(
         &self,
         target: &Target,
+        egress: Option<&dyn Egress>,
         permit: impl std::future::Future<Output = P>,
     ) -> Result<Vec<SocketAddr>, Refusal> {
+        let unavailable = || Refusal::Unreachable("egress unavailable".into());
+        if egress.is_some_and(|e| !e.available()) {
+            return Err(unavailable());
+        }
         if self.blocked_ports.contains(&target.port) {
             return Err(Refusal::PortBlocked);
         }
-        let addrs: Vec<SocketAddr> = match target.ip() {
-            Some(ip) => vec![SocketAddr::new(ip, target.port)],
-            None => {
+        let addrs: Vec<SocketAddr> = match (target.ip(), egress) {
+            (Some(ip), _) => vec![SocketAddr::new(ip, target.port)],
+            (None, Some(egress)) => {
+                let lookup = async {
+                    let _held = permit.await;
+                    if !egress.available() {
+                        return Err(unavailable());
+                    }
+                    let found = egress.resolve(&target.host).await;
+                    if !egress.available() {
+                        return Err(unavailable());
+                    }
+                    found.map_err(|e| Refusal::DnsError(e.to_string()))
+                };
+                match tokio::time::timeout(DNS_TIMEOUT, lookup).await {
+                    Err(_) => return Err(Refusal::DnsTimeout),
+                    Ok(found) => found?.into_iter().map(|ip| SocketAddr::new(ip, target.port)).collect(),
+                }
+            }
+            (None, None) => {
                 let deadline = tokio::time::Instant::now() + DNS_TIMEOUT;
                 let held = tokio::time::timeout_at(deadline, permit).await.map_err(|_| Refusal::DnsTimeout)?;
                 let (host, port) = (target.host.clone(), target.port);
@@ -369,6 +396,9 @@ impl Policy {
         }
         if allowed.is_empty() {
             return Err(Refusal::AddressBlocked);
+        }
+        if egress.is_some_and(|e| !e.available()) {
+            return Err(unavailable());
         }
         Ok(allowed)
     }
@@ -512,28 +542,32 @@ mod tests {
     #[tokio::test]
     async fn resolution_applies_the_rules() {
         let p = policy(&["127.0.0.0/8", "::1/128"], &[25]);
-        assert_eq!(p.resolve(&t("192.0.2.1", 25), async {}).await, Err(Refusal::PortBlocked));
-        assert_eq!(p.resolve(&t("127.0.0.1", 80), async {}).await, Err(Refusal::AddressBlocked));
-        assert_eq!(p.resolve(&t("localhost", 80), async {}).await.unwrap_err(), Refusal::AddressBlocked, "rebinding");
-        assert_eq!(p.resolve(&t("192.0.2.1", 80), async {}).await, Ok(vec!["192.0.2.1:80".parse().unwrap()]));
+        assert_eq!(p.resolve(&t("192.0.2.1", 25), None, async {}).await, Err(Refusal::PortBlocked));
+        assert_eq!(p.resolve(&t("127.0.0.1", 80), None, async {}).await, Err(Refusal::AddressBlocked));
         assert_eq!(
-            p.resolve(&t("::ffff:192.0.2.1", 80), async {}).await,
+            p.resolve(&t("localhost", 80), None, async {}).await.unwrap_err(),
+            Refusal::AddressBlocked,
+            "rebinding"
+        );
+        assert_eq!(p.resolve(&t("192.0.2.1", 80), None, async {}).await, Ok(vec!["192.0.2.1:80".parse().unwrap()]));
+        assert_eq!(
+            p.resolve(&t("::ffff:192.0.2.1", 80), None, async {}).await,
             Ok(vec!["192.0.2.1:80".parse().unwrap()]),
             "mapped addresses are connected to as IPv4"
         );
         let open = policy(&[], &[]);
-        let local = open.resolve(&t("localhost", 80), async {}).await.unwrap();
+        let local = open.resolve(&t("localhost", 80), None, async {}).await.unwrap();
         assert!(local.iter().all(|a| a.ip().is_loopback() && a.port() == 80), "{local:?}");
-        let e = open.resolve(&t("does-not-exist.invalid", 80), async {}).await.unwrap_err();
+        let e = open.resolve(&t("does-not-exist.invalid", 80), None, async {}).await.unwrap_err();
         assert!(matches!(e, Refusal::DnsError(_) | Refusal::DnsTimeout | Refusal::NoAddresses), "{e:?}");
     }
 
     #[tokio::test(start_paused = true)]
     async fn name_lookups_wait_for_a_permit_within_the_dns_timeout() {
         let p = policy(&[], &[]);
-        let literal = p.resolve(&t("192.0.2.1", 80), std::future::pending::<()>()).await;
+        let literal = p.resolve(&t("192.0.2.1", 80), None, std::future::pending::<()>()).await;
         assert_eq!(literal, Ok(vec!["192.0.2.1:80".parse().unwrap()]), "an address needs no lookup");
-        let name = p.resolve(&t("example.com", 80), std::future::pending::<()>()).await;
+        let name = p.resolve(&t("example.com", 80), None, std::future::pending::<()>()).await;
         assert_eq!(name, Err(Refusal::DnsTimeout), "no permit, no lookup");
     }
 
@@ -549,5 +583,215 @@ mod tests {
         assert_eq!(Refusal::UnsupportedProtocol.status(), StatusCode::NOT_IMPLEMENTED);
         assert_eq!(Refusal::UnsupportedProtocol.proxy_status(), "network-relay; details=\"unsupported :protocol\"");
         assert_eq!(Refusal::PortBlocked.status(), StatusCode::FORBIDDEN);
+    }
+
+    /// A controlled egress resolver; it never uses the system resolver or
+    /// opens sockets.
+    mod egress_dns {
+        use super::*;
+        use crate::egress::{IoFuture, TcpStream, UdpSocket};
+        use std::collections::HashMap;
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+        enum Reply {
+            Answers(Vec<IpAddr>),
+            Error(std::io::ErrorKind),
+            Pending,
+        }
+
+        struct TestEgress {
+            replies: HashMap<&'static str, Reply>,
+            calls: Mutex<Vec<String>>,
+            available: AtomicBool,
+            active: AtomicUsize,
+            started: tokio::sync::Notify,
+        }
+
+        impl TestEgress {
+            fn new() -> Self {
+                Self {
+                    replies: HashMap::new(),
+                    calls: Mutex::default(),
+                    available: AtomicBool::new(true),
+                    active: AtomicUsize::new(0),
+                    started: tokio::sync::Notify::new(),
+                }
+            }
+
+            fn answering(mut self, host: &'static str, addresses: &[&str]) -> Self {
+                self.replies.insert(host, Reply::Answers(addresses.iter().map(|ip| ip.parse().unwrap()).collect()));
+                self
+            }
+
+            fn failing(mut self, host: &'static str, kind: std::io::ErrorKind) -> Self {
+                self.replies.insert(host, Reply::Error(kind));
+                self
+            }
+
+            fn pending(mut self, host: &'static str) -> Self {
+                self.replies.insert(host, Reply::Pending);
+                self
+            }
+
+            fn calls(&self) -> Vec<String> {
+                self.calls.lock().unwrap().clone()
+            }
+        }
+
+        struct Active<'a>(&'a AtomicUsize);
+
+        impl Drop for Active<'_> {
+            fn drop(&mut self) {
+                self.0.fetch_sub(1, Ordering::Relaxed);
+            }
+        }
+
+        impl Egress for TestEgress {
+            fn resolve<'a>(&'a self, host: &'a str) -> IoFuture<'a, Vec<IpAddr>> {
+                Box::pin(async move {
+                    self.calls.lock().unwrap().push(host.into());
+                    self.active.fetch_add(1, Ordering::Relaxed);
+                    let _active = Active(&self.active);
+                    self.started.notify_one();
+                    match self.replies.get(host) {
+                        Some(Reply::Answers(found)) => Ok(found.clone()),
+                        Some(Reply::Error(kind)) => Err(std::io::Error::new(*kind, "test resolver error")),
+                        Some(Reply::Pending) => std::future::pending().await,
+                        None => Err(std::io::Error::new(std::io::ErrorKind::NotFound, "unknown test name")),
+                    }
+                })
+            }
+
+            fn connect_tcp(&self, _: SocketAddr) -> IoFuture<'_, TcpStream> {
+                panic!("resolution must not open TCP connections")
+            }
+
+            fn connect_udp(&self, _: SocketAddr) -> IoFuture<'_, UdpSocket> {
+                panic!("resolution must not open UDP flows")
+            }
+
+            fn available(&self) -> bool {
+                self.available.load(Ordering::Acquire)
+            }
+
+            fn failed(&self) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> {
+                Box::pin(std::future::pending())
+            }
+        }
+
+        #[tokio::test]
+        async fn egress_resolution_applies_the_rules() {
+            let p = policy(&["127.0.0.0/8", "::1/128"], &[25]);
+            let egress = TestEgress::new()
+                .answering("localhost", &["127.0.0.1", "::1"])
+                .failing("does-not-exist.invalid", std::io::ErrorKind::NotFound);
+            let e = Some(&egress as &dyn Egress);
+            assert_eq!(p.resolve(&t("192.0.2.1", 25), e, async {}).await, Err(Refusal::PortBlocked));
+            assert_eq!(p.resolve(&t("smtp.example", 25), e, async {}).await, Err(Refusal::PortBlocked));
+            assert_eq!(p.resolve(&t("127.0.0.1", 80), e, async {}).await, Err(Refusal::AddressBlocked));
+            assert_eq!(p.resolve(&t("192.0.2.1", 80), e, async {}).await, Ok(vec!["192.0.2.1:80".parse().unwrap()]));
+            assert!(egress.calls().is_empty(), "addresses and blocked ports need no lookup");
+            assert_eq!(p.resolve(&t("localhost", 80), e, async {}).await, Err(Refusal::AddressBlocked), "rebinding");
+            assert_eq!(egress.calls(), ["localhost"]);
+            let open = policy(&[], &[]);
+            let local = open.resolve(&t("localhost", 80), e, async {}).await.unwrap();
+            assert!(local.iter().all(|a| a.ip().is_loopback() && a.port() == 80), "{local:?}");
+            let error = open.resolve(&t("does-not-exist.invalid", 80), e, async {}).await.unwrap_err();
+            assert!(matches!(error, Refusal::DnsError(_)), "{error:?}");
+        }
+
+        #[tokio::test]
+        async fn egress_answers_are_filtered_canonicalized_and_deduplicated_in_order() {
+            fn ours() -> std::io::Result<Vec<IpAddr>> {
+                Ok(vec!["203.0.113.5".parse().unwrap()])
+            }
+            let mut p = policy(&["127.0.0.0/8", "10.0.0.0/8"], &[]);
+            p.own = Some(Arc::new(OwnAddresses::with_reader(ours)));
+            let egress = TestEgress::new().answering(
+                "mixed.example",
+                &[
+                    "127.0.0.1",
+                    "::ffff:127.0.0.1",
+                    "64:ff9b::a00:1",
+                    "203.0.113.5",
+                    "::ffff:203.0.113.5",
+                    "64:ff9b::cb00:7105",
+                    "192.0.2.1",
+                    "::ffff:192.0.2.1",
+                    "2001:db8::1",
+                    "192.0.2.1",
+                ],
+            );
+            assert_eq!(
+                p.resolve(&t("mixed.example", 443), Some(&egress), async {}).await,
+                Ok(vec!["192.0.2.1:443".parse().unwrap(), "[2001:db8::1]:443".parse().unwrap()])
+            );
+            let empty = TestEgress::new().answering("empty.example", &[]);
+            assert_eq!(p.resolve(&t("empty.example", 80), Some(&empty), async {}).await, Err(Refusal::NoAddresses));
+        }
+
+        #[tokio::test(start_paused = true)]
+        async fn an_unavailable_egress_refuses_at_once_without_lookups() {
+            let p = policy(&[], &[]);
+            let egress = TestEgress::new();
+            egress.available.store(false, Ordering::Release);
+            let start = tokio::time::Instant::now();
+            for host in ["192.0.2.1", "example.com"] {
+                assert_eq!(
+                    p.resolve(&t(host, 80), Some(&egress), std::future::pending::<()>()).await,
+                    Err(Refusal::Unreachable("egress unavailable".into()))
+                );
+            }
+            assert_eq!(start.elapsed(), Duration::ZERO);
+            assert!(egress.calls().is_empty());
+            // Lost while waiting for a permit: no lookup starts.
+            let egress = TestEgress::new().pending("example.com");
+            let permit = async { egress.available.store(false, Ordering::Release) };
+            assert_eq!(
+                p.resolve(&t("example.com", 80), Some(&egress), permit).await,
+                Err(Refusal::Unreachable("egress unavailable".into()))
+            );
+            assert!(egress.calls().is_empty());
+        }
+
+        #[tokio::test(start_paused = true)]
+        async fn the_permit_and_the_lookup_share_one_deadline_and_release_the_permit() {
+            let p = policy(&[], &[]);
+            let egress = TestEgress::new().pending("slow.example");
+            let start = tokio::time::Instant::now();
+            let none = p.resolve(&t("slow.example", 80), Some(&egress), std::future::pending::<()>()).await;
+            assert_eq!(none, Err(Refusal::DnsTimeout), "no permit, no lookup");
+            assert_eq!(start.elapsed(), DNS_TIMEOUT);
+            assert!(egress.calls().is_empty());
+            let permits = Arc::new(tokio::sync::Semaphore::new(1));
+            let permit = async {
+                tokio::time::sleep(Duration::from_secs(4)).await;
+                permits.clone().acquire_owned().await.unwrap()
+            };
+            let start = tokio::time::Instant::now();
+            assert_eq!(p.resolve(&t("slow.example", 80), Some(&egress), permit).await, Err(Refusal::DnsTimeout));
+            assert_eq!(start.elapsed(), DNS_TIMEOUT);
+            assert_eq!(egress.calls(), ["slow.example"]);
+            assert_eq!(egress.active.load(Ordering::Relaxed), 0, "the abandoned lookup was dropped");
+            assert_eq!(permits.available_permits(), 1, "and its permit released");
+        }
+
+        #[tokio::test]
+        async fn cancelling_a_lookup_drops_it_and_releases_its_permit() {
+            let p = Arc::new(policy(&[], &[]));
+            let egress = Arc::new(TestEgress::new().pending("cancel.example"));
+            let permits = Arc::new(tokio::sync::Semaphore::new(1));
+            let lookup = tokio::spawn({
+                let (p, egress, permits) = (p.clone(), egress.clone(), permits.clone());
+                async move { p.resolve(&t("cancel.example", 80), Some(egress.as_ref()), permits.acquire_owned()).await }
+            });
+            tokio::time::timeout(Duration::from_secs(1), egress.started.notified()).await.unwrap();
+            assert_eq!(egress.active.load(Ordering::Relaxed), 1);
+            assert_eq!(permits.available_permits(), 0);
+            lookup.abort();
+            assert!(lookup.await.unwrap_err().is_cancelled());
+            assert_eq!(egress.active.load(Ordering::Relaxed), 0);
+            assert_eq!(permits.available_permits(), 1);
+        }
     }
 }

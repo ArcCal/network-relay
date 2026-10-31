@@ -79,6 +79,14 @@ pub trait ConnectionState {
             .map(Cow::Borrowed)
             .unwrap_or_default()
     }
+    /// Return the peer's settings only after its SETTINGS frame was processed.
+    ///
+    /// Unlike [`Self::settings`], this distinguishes absent settings from their
+    /// default values, as required before sending HTTP datagrams (RFC 9297).
+    fn peer_settings(&self) -> Option<Settings> {
+        self.shared_state().settings.get().copied()
+    }
+
     /// Set the connection to closing
     fn set_closing(&self) {
         self.shared_state()
@@ -99,5 +107,32 @@ pub trait ConnectionState {
     /// Returns the waker for the connection
     fn waker(&self) -> &AtomicWaker {
         &self.shared_state().waker
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ConnectionState, SharedState};
+    use crate::config::Settings;
+
+    #[test]
+    fn peer_settings_distinguishes_received_defaults_and_keeps_first_frame() {
+        let state = SharedState::default();
+        assert!(state.peer_settings().is_none());
+        assert!(!state.settings().enable_datagram());
+
+        state.set_settings(Settings::default());
+        let received = state
+            .peer_settings()
+            .expect("received SETTINGS with default values");
+        assert!(!received.enable_datagram());
+        assert!(!received.enable_datagram_draft00());
+
+        let mut different = Settings::default();
+        different.enable_datagram = true;
+        different.enable_datagram_draft00 = true;
+        state.set_settings(different);
+        assert!(!state.peer_settings().unwrap().enable_datagram());
+        assert!(!state.peer_settings().unwrap().enable_datagram_draft00());
     }
 }

@@ -69,6 +69,20 @@ Original source and MIT license retained. Changes are confined to:
   SETTINGS (a GOAWAY, or a CANCEL_PUSH that must close the connection) were
   silently ignored.
 
+- `proto/frame.rs`: SETTINGS_H3_DATAGRAM (RFC 9297 section 2.1.1) and
+  SETTINGS_ENABLE_CONNECT_PROTOCOL (RFC 9220 section 3, RFC 8441 section 3)
+  only take the values 0 and 1; any other value is a connection error of type
+  H3_SETTINGS_ERROR. Upstream accepted any value and read it as a boolean.
+- Client extensions used by network-relay-cf-masque for its Cloudflare WARP
+  egress, all off unless a client asks for them: `ext.rs` adds
+  `Protocol::from_static` for an outbound vendor `:protocol` (`cf-connect-ip`)
+  without changing how received tokens are parsed; `proto/frame.rs`,
+  `config.rs` and `client/builder.rs` recognize, and optionally send, the
+  draft-00 datagram setting `0x276` (draft-ietf-masque-h3-datagram-00
+  section 5, also only 0 or 1); `shared_state.rs` and `client/connection.rs`
+  expose the peer's SETTINGS once they have arrived and the error that ended
+  the connection. A server never sends `0x276` and treats it as before.
+
 The relay integration tests cover trailers without FIN, empty DATA, ordinary
 half-close, bulk transfers and the malformed requests above; `proto::headers`
 has unit tests for each rule (run the crate's tests with `--all-features`). Ordinary HTTP responses still allow trailers.

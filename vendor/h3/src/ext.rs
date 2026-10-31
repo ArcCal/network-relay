@@ -18,6 +18,14 @@ impl Protocol {
     /// RFC 9220 (WebSocket) protocol
     pub const WEBSOCKET: Protocol = Protocol(ProtocolInner::WebSocket);
 
+    /// Construct an outbound vendor-specific `:protocol` value.
+    ///
+    /// This does not change parsing of received protocol tokens. Valid unknown
+    /// inbound tokens continue to use [`OtherProtocol`].
+    pub const fn from_static(value: &'static str) -> Protocol {
+        Protocol(ProtocolInner::Other(value))
+    }
+
     /// Return a &str representation of the `:protocol` pseudo-header value
     #[inline]
     pub fn as_str(&self) -> &str {
@@ -26,6 +34,7 @@ impl Protocol {
             ProtocolInner::ConnectUdp => "connect-udp",
             ProtocolInner::ConnectIp => "connect-ip",
             ProtocolInner::WebSocket => "websocket",
+            ProtocolInner::Other(value) => value,
         }
     }
 }
@@ -36,6 +45,7 @@ enum ProtocolInner {
     ConnectUdp,
     ConnectIp,
     WebSocket,
+    Other(&'static str),
 }
 
 /// Error when parsing the protocol
@@ -67,5 +77,21 @@ impl FromStr for Protocol {
             "websocket" => Ok(Self(ProtocolInner::WebSocket)),
             _ => Err(InvalidProtocol),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Protocol;
+
+    #[test]
+    fn custom_static_protocol_does_not_change_received_token_parsing() {
+        const WARP: Protocol = Protocol::from_static("cf-connect-ip");
+        assert_eq!(WARP.as_str(), "cf-connect-ip");
+        assert!("cf-connect-ip".parse::<Protocol>().is_err());
+        assert_eq!(
+            "connect-ip".parse::<Protocol>().ok(),
+            Some(Protocol::CONNECT_IP)
+        );
     }
 }

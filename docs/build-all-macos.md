@@ -81,6 +81,7 @@ The exact five commit IDs are saved in `SOURCE-REVISIONS.tsv`.
 | Rust `masque-server` | Yes | Yes | — |
 | Rust `network-relay` server | Yes | Yes | — |
 | `masque-vpn-cf-masque` server | Yes | Yes | — |
+| `network-relay-cf-masque` server | Yes | Yes | — |
 | `masque-client` command-line client | Yes | — | Yes |
 | `cf-masque` command-line client | Yes | — | Yes |
 | `masque-passwd` utility | Yes | Yes | Yes |

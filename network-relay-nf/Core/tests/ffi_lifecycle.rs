@@ -1,6 +1,10 @@
 //! Public ABI lifetime, cancellation, fatal error and instance isolation.
 use network_relay_nf_core::*;
-use std::{ffi::CString, ptr};
+use std::{
+    ffi::CString,
+    ptr,
+    time::{Duration, Instant},
+};
 
 const CONFIG: &str = r#"
 uri_template = "https://127.0.0.1/.well-known/masque/udp/{target_host}/{target_port}/"
@@ -25,6 +29,10 @@ impl Instance {
         Self(handle)
     }
     fn next(&self) -> (u32, u64, u64, Vec<u8>) {
+        let (kind, id, _, flags, data) = self.next_full();
+        (kind, id, flags, data)
+    }
+    fn next_full(&self) -> (u32, u64, u64, u64, Vec<u8>) {
         let event = unsafe { nf_next_event(self.0) };
         assert!(!event.is_null());
         let value = unsafe { &*event };
@@ -33,7 +41,7 @@ impl Instance {
         } else {
             unsafe { std::slice::from_raw_parts(value.data, value.len) }.to_vec()
         };
-        let result = (value.kind, value.id, value.flags, data);
+        let result = (value.kind, value.id, value.token, value.flags, data);
         unsafe { nf_free_event(event) };
         result
     }
@@ -58,6 +66,96 @@ impl Drop for Instance {
     fn drop(&mut self) {
         unsafe { nf_destroy(self.0) }
     }
+}
+
+#[test]
+fn traffic_samples_start_at_zero_and_continue_while_native_initialization_waits() {
+    let core = Instance::start_with_level(0);
+    let initial = core.next_full();
+    assert_eq!(
+        initial,
+        (native::TRAFFIC, 0, 0, 0, 0u64.to_le_bytes().to_vec()),
+        "each run starts with an explicit zero payload sample"
+    );
+    // Leave LISTEN unanswered. The sampler must still run while native work
+    // is pending, and neither initialization nor elapsed time creates payload.
+    core.until(native::LISTEN);
+    let sample = core.next_full();
+    assert_eq!(
+        (sample.0, sample.1, sample.2, sample.3),
+        (native::TRAFFIC, 0, 0, 0)
+    );
+    let elapsed = u64::from_le_bytes(
+        sample
+            .4
+            .try_into()
+            .expect("elapsed time is exactly eight bytes"),
+    );
+    assert!(
+        elapsed >= 1_000_000_000,
+        "periodic sample arrived before one second"
+    );
+    core.stop();
+    assert_eq!(core.until(native::EXIT).2, 0);
+
+    let next_run = Instance::start_with_level(0);
+    assert_eq!(
+        next_run.next_full(),
+        (native::TRAFFIC, 0, 0, 0, 0u64.to_le_bytes().to_vec()),
+        "elapsed time and payload totals belong to one run"
+    );
+    next_run.stop();
+    assert_eq!(next_run.until(native::EXIT).2, 0);
+}
+
+#[test]
+fn a_full_event_queue_drops_traffic_samples_without_delaying_cancellation() {
+    let core = Instance::start_with_level(0);
+    core.until(native::LISTEN);
+    let bridge = unsafe { &*core.0 }.bridge.clone();
+    let mut queued = 0;
+    while bridge
+        .events
+        .try_send(native::Event {
+            kind: native::LOG,
+            id: 0,
+            token: 0,
+            flags: 0,
+            data: Default::default(),
+        })
+        .is_ok()
+    {
+        queued += 1;
+    }
+    assert!(queued > 0);
+    // Keep the queue full across the first periodic tick, then cancel while
+    // it is still full. An awaited telemetry send would prevent work teardown.
+    std::thread::sleep(Duration::from_millis(1100));
+    core.stop();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while !bridge.resources.lock().unwrap().is_empty() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    let released_without_draining = bridge.resources.lock().unwrap().is_empty();
+    // Always drain EXIT before asserting: even a failing implementation must
+    // be allowed to finish its reliable exit send before Instance is dropped.
+    let mut saw_traffic = false;
+    loop {
+        let event = core.next_full();
+        saw_traffic |= event.0 == native::TRAFFIC;
+        if event.0 == native::EXIT {
+            assert_eq!(event.3, 0);
+            break;
+        }
+    }
+    assert!(
+        released_without_draining,
+        "telemetry blocked cancellation behind a full event queue"
+    );
+    assert!(
+        !saw_traffic,
+        "a sample from a full queue must be skipped rather than queued for later"
+    );
 }
 
 #[test]

@@ -185,6 +185,41 @@ Dependencies: tokio, quinn (QUIC), h3 / h3-quinn / h3-datagram (HTTP/3, pinned t
 
 `h3` and `h3-quinn` keep the source and licenses of the same upstream commit in `vendor/`, patched only for request and frame validation, request rejection, GOAWAY identifiers, cancellation notifications and stream error codes, plus client-only extensions used by network-relay-cf-masque's WARP egress, which a server never uses. See `PATCH.md` in each directory for the exact differences and when the patches can be removed. They have not been replaced with a different protocol implementation.
 
+### 6.1 Desktop live traffic
+
+Network Relay NF and RS each show one `Live Traffic` card in the main window's
+left status area, below server/connection controls and above proxy details.
+The layout follows the functional reference in
+[Mihomo-Mac](https://github.com/ArcCal/Mihomo-Mac), with an independent
+implementation. A secondary caption title sits above a fixed 38-point content
+area, with 12-point padding and 10-point corners. Active traffic shows the
+actual running server's name on one middle-truncated line with a full-name
+tooltip, then upload and download bytes per second in binary units and
+monospaced digits. Idle windows show `No active traffic`; missing statistics
+show `Speed unavailable`. Stop, terminal failure and quit clear the card.
+
+Per-run counters measure established SOCKS TCP/UDP payload accepted at the
+proxy forwarding boundary. SOCKS handshakes and UDP headers, transport framing,
+internal probes and rejected datagrams are excluded. TCP partial I/O and UDP
+acceptance follow the existing forwarding path; collection adds no per-packet
+UI message or network operation. These counters describe proxied data, not
+all host traffic or physical-interface bytes.
+
+Samples arrive about once per second and use elapsed monotonic time, with a
+950-ms minimum window to tolerate one-hertz timer jitter. First samples,
+counter rollback, a new run or gaps over three seconds establish a fresh
+baseline. A node switch never assigns the previous worker's counters to the
+new selection. Telemetry errors and unavailable/stale samples affect only the
+card, and do not alter connection, retry or disconnect behavior.
+
+NF uses nonblocking native event 22 in its existing event layout: `id` and
+`token` contain cumulative upload/download bytes and the eight-byte
+little-endian data payload contains elapsed monotonic nanoseconds. RS samples
+its worker-owned counters and delivers snapshots through the existing
+controller channel. Both reject callbacks from retired generations. No chart,
+history, totals, reset control, new menu-bar component, persisted setting or
+server protocol is added.
+
 ## 7. Interoperability tests
 
 The automated integration tests check TCP/UDP round trips, half-close, revocation and concurrency over real TLS/QUIC connections, and also check HTTP/2 `CONNECT_ERROR` / `PROTOCOL_ERROR`, HTTP/3 `H3_DATAGRAM_ERROR`, capsule fallback when datagrams were not negotiated, large unknown capsules and empty UDP payloads. The automated no-fragmentation check reads the IPv4/IPv6 socket options; packet capture on a low-MTU link is not covered yet.

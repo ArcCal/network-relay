@@ -288,6 +288,40 @@ struct Harness {
         pass("failed persistence preserves configuration and previous restart intent")
 
         try reset()
+        let trafficOld = start()
+        trafficOld.emit(.traffic(TrafficSnapshot(uploadBytes: 0, downloadBytes: 0, elapsedNanoseconds: 0)))
+        trafficOld.emit(.traffic(TrafficSnapshot(uploadBytes: 1024, downloadBytes: 2048, elapsedNanoseconds: 1_000_000_000)))
+        check(controller.traffic.state == .active && controller.traffic.uploadBytesPerSecond == 1024,
+              "live traffic must publish one-second payload rates")
+        check(controller.trafficNodeName == first.title, "traffic must name the actual run")
+        controller.use(second.id)
+        check(controller.trafficNodeName == nil && controller.traffic.uploadBytesPerSecond == 0,
+              "pending node change must hide old traffic immediately")
+        trafficOld.emit(.traffic(TrafficSnapshot(uploadBytes: 100_000, downloadBytes: 200_000, elapsedNanoseconds: 2_000_000_000)))
+        check(controller.trafficNodeName == nil, "stopping traffic updates must be ignored")
+        trafficOld.emit(.exited(0, nil))
+        check(controller.trafficNodeName == second.title && controller.traffic.state == .idle,
+              "a new run must establish a fresh traffic baseline")
+        trafficOld.emit(.trafficUnavailable)
+        trafficOld.emit(.traffic(TrafficSnapshot(uploadBytes: 100_000, downloadBytes: 200_000, elapsedNanoseconds: 3_000_000_000)))
+        check(controller.traffic.state == .idle, "stale generation traffic must not affect the new run")
+        pass("live traffic follows the actual run and ignores stopping or stale generations")
+
+        let trafficCurrent = NativeClient.instances.last!
+        let beforeTelemetryError = NativeClient.attempts
+        trafficCurrent.emit(.trafficUnavailable)
+        check(controller.traffic.state == .unavailable && controller.status == .connecting,
+              "telemetry errors must leave the connection alone")
+        check(NativeClient.attempts == beforeTelemetryError, "telemetry errors must not reconnect")
+        trafficCurrent.emit(.traffic(TrafficSnapshot(uploadBytes: 0, downloadBytes: 0, elapsedNanoseconds: 0)))
+        trafficCurrent.emit(.traffic(TrafficSnapshot(uploadBytes: 1000, downloadBytes: 2000, elapsedNanoseconds: 1_000_000_000)))
+        check(controller.traffic.state == .active, "traffic must recover after a fresh baseline")
+        trafficCurrent.emit(.exited(1, "terminal failure"))
+        check(controller.trafficNodeName == nil && controller.traffic.uploadBytesPerSecond == 0,
+              "terminal failure must hide traffic immediately")
+        pass("telemetry failure is isolated and terminal client failure clears traffic")
+
+        try reset()
         print("RESULT \(passed) controller scenarios passed; platform UI and network transport are stubbed")
     }
 }

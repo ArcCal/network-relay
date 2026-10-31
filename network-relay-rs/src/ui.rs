@@ -6,6 +6,7 @@
 mod appkit;
 use crate::controller::{Controller, Status};
 use crate::model::{Configuration, LogLevel, Server, TransferScope, Transport};
+use crate::traffic::{LiveTraffic, TrafficState};
 use anyhow::{Context, Result, bail};
 use appkit::*;
 use std::cell::RefCell;
@@ -69,6 +70,13 @@ struct StatusViews {
     ring_layer: Id,
     server: Id,
     address: Id,
+    traffic: Option<TrafficViews>,
+}
+struct TrafficViews {
+    card: Id,
+    node: Id,
+    rates: Id,
+    body_width: f64,
 }
 struct LogViews {
     text: Id,
@@ -99,6 +107,7 @@ struct App {
     follow_latest: bool,
     last_log: String,
     last_status: String,
+    last_traffic: Option<(Option<String>, LiveTraffic)>,
 }
 
 /// Run AppKit on the calling (main) thread. The GUI never uses a socket or TLS
@@ -280,6 +289,7 @@ impl App {
             follow_latest: true,
             last_log: String::new(),
             last_status: String::new(),
+            last_traffic: None,
         };
         result.show_editor();
         result.install_main_menu();
@@ -729,6 +739,45 @@ impl App {
             enabled(status.server, !titles.is_empty());
             set_text(status.address, &self.controller.config.proxy_address());
         }
+        if self
+            .last_traffic
+            .as_ref()
+            .is_none_or(|(node, traffic)| node != &self.controller.traffic_node || traffic != &self.controller.traffic)
+        {
+            if let Some(views) = &self.main_status.traffic {
+                let visible = self.controller.traffic_node.is_some();
+                hidden(views.card, !visible);
+                frame(self.main_status.server, rect(20., if visible { 208. } else { 114. }, 260., 28.));
+                let active = self.controller.traffic.state == TrafficState::Active;
+                hidden(views.rates, !active);
+                frame(views.node, rect(0., if active { 20. } else { 10. }, views.body_width, 18.));
+                let node = if active {
+                    self.controller.traffic_node.as_deref().unwrap_or("No active traffic")
+                } else if self.controller.traffic.state == TrafficState::Unavailable {
+                    "Speed unavailable"
+                } else {
+                    "No active traffic"
+                };
+                set_text(views.node, node);
+                send1::<_, ()>(
+                    views.node,
+                    "setTextColor:",
+                    appkit::color(if active { "labelColor" } else { "secondaryLabelColor" }),
+                );
+                send1::<_, ()>(views.node, "setToolTip:", if active { string(node) } else { NIL });
+                if active {
+                    set_text(
+                        views.rates,
+                        &format!(
+                            "\u{2191} {}   \u{2193} {}",
+                            traffic_rate(self.controller.traffic.upload_bytes_per_second),
+                            traffic_rate(self.controller.traffic.download_bytes_per_second)
+                        ),
+                    );
+                }
+            }
+            self.last_traffic = Some((self.controller.traffic_node.clone(), self.controller.traffic.clone()));
+        }
         let all = self.controller.logs();
         let shown = all.iter().filter(|entry| self.controller.config.log_level.shows(&entry.text)).collect::<Vec<_>>();
         let output = shown.iter().map(|entry| entry.text.as_str()).collect::<Vec<_>>().join("\n");
@@ -908,7 +957,7 @@ unsafe fn status_views(parent: Id, delegate: Id, menu: bool) -> StatusViews {
     let brand_title = label(parent, APP_NAME, rect(62., height - 52., 230., 26.), 16., true);
     autoresize(brand, 8);
     autoresize(brand_title, 8);
-    let power_y = if menu { 226. } else { 346. };
+    let power_y = if menu { 226. } else { 356. };
     let power_x = (width - 110.) / 2.;
     let (ring, ring_layer) = ring_layer(parent, rect(power_x - 17., power_y - 17., 144., 144.));
     let power = button(parent, "⏻", rect(power_x, power_y, 110., 110.), delegate, POWER);
@@ -943,6 +992,7 @@ unsafe fn status_views(parent: Id, delegate: Id, menu: bool) -> StatusViews {
         }
     }
     let server = popup(parent, rect(20., if menu { 94. } else { 114. }, inner, 28.), delegate, STATUS_SERVER);
+    let traffic = (!menu).then(|| traffic_views(parent, rect(20., 114., inner, 82.)));
     let proxy = card(parent, rect(20., if menu { 46. } else { 40. }, inner, 62.));
     label(proxy, "SOCKS5 proxy", rect(12., 36., 205., 18.), 11., false);
     let address = label(proxy, "127.0.0.1:1080", rect(12., 12., inner - 75., 22.), 13., false);
@@ -958,7 +1008,44 @@ unsafe fn status_views(parent: Id, delegate: Id, menu: bool) -> StatusViews {
             MORE,
         );
     }
-    StatusViews { title, detail, power, ring, ring_layer, server, address }
+    StatusViews { title, detail, power, ring, ring_layer, server, address, traffic }
+}
+
+unsafe fn traffic_rate(bytes_per_second: f64) -> String {
+    let bytes = if bytes_per_second.is_finite() && bytes_per_second > 0.0 {
+        bytes_per_second.min(i64::MAX as f64) as i64
+    } else {
+        0
+    };
+    let formatted: Id = send2(class("NSByteCountFormatter"), "stringFromByteCount:countStyle:", bytes, 3_isize);
+    format!("{}/s", ns_text(formatted))
+}
+
+unsafe fn traffic_views(parent: Id, position: Rect) -> TrafficViews {
+    let container = card(parent, position);
+    send1::<_, ()>(container, "setCornerRadius:", 10.0_f64);
+    let background = color("quaternaryLabelColor");
+    let alpha: f64 = send0(background, "alphaComponent");
+    let background: Id = send1(background, "colorWithAlphaComponent:", alpha * 0.5);
+    send1::<_, ()>(container, "setFillColor:", background);
+    let width = position.size.width - 24.;
+    let title = label(container, "Live Traffic", rect(12., 56., width, 14.), 11., false);
+    send1::<_, ()>(title, "setTextColor:", color("secondaryLabelColor"));
+    let body = view(rect(12., 12., width, 38.));
+    add(container, body);
+    let node = label(body, "No active traffic", rect(0., 10., width, 18.), 13., false);
+    send1::<_, ()>(node, "setTextColor:", color("secondaryLabelColor"));
+    send1::<_, ()>(node, "setMaximumNumberOfLines:", 1_isize);
+    send1::<_, ()>(node, "setLineBreakMode:", 5_isize);
+    let rates = label(body, "", rect(0., 0., width, 16.), 11., false);
+    let font: Id = send2(class("NSFont"), "monospacedDigitSystemFontOfSize:weight:", 11_f64, 0_f64);
+    send1::<_, ()>(rates, "setFont:", font);
+    send1::<_, ()>(rates, "setTextColor:", color("secondaryLabelColor"));
+    send1::<_, ()>(rates, "setMaximumNumberOfLines:", 1_isize);
+    send1::<_, ()>(rates, "setLineBreakMode:", 4_isize);
+    hidden(rates, true);
+    hidden(container, true);
+    TrafficViews { card: container, node, rates, body_width: width }
 }
 unsafe fn settings_view(parent: Id, delegate: Id) -> Editor {
     // The settings form scrolls independently of its Save/Import/Export footer,

@@ -54,6 +54,7 @@ async fn exercise(ending: Ending, socks: bool) {
     let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(tls));
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
+    let (send_payload_tx, send_payload) = oneshot::channel();
     let (payload_read_tx, payload_read) = oneshot::channel();
     let (eof_read_tx, eof_read) = oneshot::channel();
     let server = tokio::spawn(async move {
@@ -81,6 +82,10 @@ async fn exercise(ending: Ending, socks: bool) {
             break tls;
         };
         tls.write_all(b"HTTP/1.1 200 OK\r\n\r\n").await.unwrap();
+        tls.flush().await.unwrap();
+        // Wait until the local handshake is complete so its bytes and the
+        // concurrent admission probe can be checked before any payload flows.
+        send_payload.await.unwrap();
         tls.write_all(PAYLOAD).await.unwrap();
         tls.flush().await.unwrap();
         // The reset test concerns terminal semantics, not whether a kernel
@@ -156,6 +161,13 @@ async fn exercise(ending: Ending, socks: bool) {
     } else {
         Box::new(client.open("127.0.0.1", 7, false).await.unwrap().stream)
     };
+    let before_payload = client.bridge.traffic.snapshot();
+    assert_eq!(
+        (before_payload.upload_bytes, before_payload.download_bytes),
+        (0, 0),
+        "SOCKS, CONNECT and admission-probe handshakes are not payload"
+    );
+    send_payload_tx.send(()).unwrap();
     let mut payload = vec![0; PAYLOAD.len()];
     io.read_exact(&mut payload).await.unwrap();
     assert_eq!(payload, PAYLOAD);
@@ -181,11 +193,41 @@ async fn exercise(ending: Ending, socks: bool) {
         }
     }
     server.await.unwrap();
+    let expected_upload = if socks && matches!(ending, Ending::HalfClose) {
+        UPLOAD.len() as u64
+    } else {
+        0
+    };
+    let expected_download = if socks { PAYLOAD.len() as u64 } else { 0 };
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let snapshot = client.bridge.traffic.snapshot();
+            if (snapshot.upload_bytes, snapshot.download_bytes)
+                == (expected_upload, expected_download)
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| {
+        panic!(
+            "{ending:?}, SOCKS={socks}: payload totals {:?}, expected ({expected_upload}, {expected_download})",
+            client.bridge.traffic.snapshot()
+        )
+    });
     drop(io);
     if let Some(worker) = worker {
         worker.abort();
         let _ = worker.await;
     }
+    let ended = client.bridge.traffic.snapshot();
+    assert_eq!(
+        (ended.upload_bytes, ended.download_bytes),
+        (expected_upload, expected_download),
+        "closing or aborting a flow must preserve its payload totals"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

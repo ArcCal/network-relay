@@ -1,10 +1,12 @@
 //! The GUI owns settings; a cancellable Rust runtime owns this instance's sockets.
 use crate::model::{Configuration, LogLevel};
+use crate::traffic::LiveTraffic;
 use anyhow::{Context, Result};
 use network_relay_rs_core::{
     backend::{Backend, BackendOptions},
     client::Client,
     socks,
+    traffic::TrafficSnapshot,
 };
 use std::{
     collections::VecDeque,
@@ -16,6 +18,7 @@ use std::{
         mpsc,
     },
     thread,
+    time::{Duration, Instant},
 };
 use tracing_subscriber::{Layer, layer::SubscriberExt, util::SubscriberInitExt};
 
@@ -89,6 +92,7 @@ fn runtime_filter<S: tracing::Subscriber>(level: Arc<AtomicU8>) -> impl tracing_
 enum Message {
     Log(LogEntry),
     Status(u64, String),
+    Traffic(uuid::Uuid, TrafficSnapshot),
     Exit(Result<(), String>),
 }
 struct Worker {
@@ -100,6 +104,11 @@ pub struct Controller {
     pub config: Configuration,
     pub status: Status,
     pub detail: String,
+    pub traffic: LiveTraffic,
+    pub traffic_node: Option<String>,
+    traffic_server: Option<uuid::Uuid>,
+    traffic_generation: Option<uuid::Uuid>,
+    last_traffic: Option<Instant>,
     log: VecDeque<LogEntry>,
     worker: Option<Worker>,
     tx: mpsc::Sender<Message>,
@@ -131,6 +140,11 @@ impl Controller {
             config,
             status: Status::Stopped,
             detail: String::new(),
+            traffic: LiveTraffic::default(),
+            traffic_node: None,
+            traffic_server: None,
+            traffic_generation: None,
+            last_traffic: None,
             log: VecDeque::new(),
             worker: None,
             tx,
@@ -174,6 +188,7 @@ impl Controller {
         if self.worker.is_some() {
             return;
         }
+        self.clear_traffic();
         let config = match self.config.core_config() {
             Ok(c) => c,
             Err(e) => {
@@ -181,7 +196,8 @@ impl Controller {
                 return;
             }
         };
-        let run = uuid::Uuid::new_v4().simple().to_string()[..8].to_uppercase();
+        let generation = uuid::Uuid::new_v4();
+        let run = generation.simple().to_string()[..8].to_uppercase();
         let server = self
             .config
             .selected_server()
@@ -193,6 +209,10 @@ impl Controller {
             format!("Connecting to {server}; SOCKS5 {}; {} [run={run}]", config.socks.listen[0], config.transport),
         );
         self.status = Status::Connecting;
+        self.traffic_server = self.config.selected_server().map(|server| server.id);
+        self.traffic_generation = Some(generation);
+        self.traffic_node = self.config.selected_server().map(|server| server.title().to_string());
+        self.last_traffic = Some(Instant::now());
         self.detail.clear();
         self.stopping = false;
         let tx = self.tx.clone();
@@ -216,6 +236,8 @@ impl Controller {
                     let mut backend = Backend::start(BackendOptions { ca_file })?;
                     let bridge = backend.bridge.clone();
                     let mut states = backend.status.clone();
+                    let mut sampling = tokio::time::interval(Duration::from_secs(1));
+                    sampling.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
                     let work = async {
                         let client = Arc::new(Client::new(&config, bridge.clone())?);
                         let mut listeners = Vec::new();
@@ -238,6 +260,9 @@ impl Controller {
                                     // Status messages must not be dropped by a verbose-log burst.
                                     let _ = tx.send(Message::Status(flags, text));
                                 }
+                                _ = sampling.tick() => {
+                                    let _ = tx.send(Message::Traffic(generation, bridge.traffic.snapshot()));
+                                }
                             }
                         }
                     };
@@ -257,6 +282,7 @@ impl Controller {
         self.stop_worker();
     }
     fn stop_worker(&mut self) {
+        self.clear_traffic();
         if let Some(w) = &self.worker {
             self.stopping = true;
             w.stop.cancel();
@@ -285,6 +311,11 @@ impl Controller {
         let changed = old.as_ref().map(config_identity) != next.as_ref().map(config_identity);
         let level_changed = new.log_level != self.config.log_level;
         self.config = new;
+        if let Some(server) =
+            self.traffic_server.and_then(|id| self.config.servers.iter().find(|server| server.id == id))
+        {
+            self.traffic_node = Some(server.title().to_string());
+        }
         if level_changed && let Some(w) = &self.worker {
             w.level.store(level_number(self.config.log_level), Ordering::Relaxed);
         }
@@ -333,7 +364,15 @@ impl Controller {
                     self.detail = text;
                 }
                 Message::Status(_, _) => {}
+                Message::Traffic(generation, sample)
+                    if !self.stopping && Some(generation) == self.traffic_generation =>
+                {
+                    self.last_traffic = Some(Instant::now());
+                    self.traffic.sample(sample);
+                }
+                Message::Traffic(_, _) => {}
                 Message::Exit(result) => {
+                    self.clear_traffic();
                     // Exit is emitted only after the backend has released its listeners.
                     if let Some(w) = self.worker.take() {
                         let _ = w.thread.join();
@@ -352,6 +391,13 @@ impl Controller {
                     }
                 }
             }
+        }
+        if self.worker.is_some()
+            && !self.stopping
+            && self.last_traffic.is_some_and(|sample| sample.elapsed() > Duration::from_secs(3))
+        {
+            self.traffic.unavailable();
+            self.last_traffic = None;
         }
     }
     pub fn stop(&mut self) {
@@ -390,9 +436,17 @@ impl Controller {
         Ok(())
     }
     fn fail(&mut self, error: String) {
+        self.clear_traffic();
         self.status = Status::Failed(error.clone());
         self.detail = error.clone();
         self.record(0, error);
+    }
+    fn clear_traffic(&mut self) {
+        self.traffic.reset();
+        self.traffic_node = None;
+        self.traffic_server = None;
+        self.traffic_generation = None;
+        self.last_traffic = None;
     }
     fn record(&mut self, level: u8, text: String) {
         let severity = ["ERROR", "WARN", "INFO", "DEBUG", "TRACE"][level as usize];
@@ -675,5 +729,56 @@ mod tests {
         assert!(c.worker.is_some());
         c.disconnect();
         wait_until(&mut c, |c| c.worker.is_none());
+    }
+
+    #[test]
+    fn traffic_generation_actual_node_and_failures_are_independent_of_connection_state() {
+        let (mut c, _relay, _) = pending_tls_controller();
+        c.config.servers[0].name = "Running node".into();
+        let mut equivalent = c.config.servers[0].clone();
+        equivalent.id = uuid::Uuid::new_v4();
+        equivalent.name = "Chosen node".into();
+        c.config.servers.push(equivalent.clone());
+        c.status = Status::Connecting;
+        let generation = uuid::Uuid::new_v4();
+        c.traffic_generation = Some(generation);
+        c.traffic_server = c.config.selected_server_id;
+        c.traffic_node = Some("Running node".into());
+        c.worker = Some(Worker {
+            stop: tokio_util::sync::CancellationToken::new(),
+            thread: thread::spawn(|| {}),
+            level: Arc::new(AtomicU8::new(2)),
+        });
+        let sample = |upload_bytes, download_bytes, elapsed_nanos| TrafficSnapshot {
+            upload_bytes,
+            download_bytes,
+            elapsed_nanos,
+        };
+        c.tx.send(Message::Traffic(generation, sample(0, 0, 0))).unwrap();
+        c.tx.send(Message::Traffic(generation, sample(1000, 2000, 1_000_000_000))).unwrap();
+        c.poll();
+        assert_eq!(c.traffic.upload_bytes_per_second, 1000.0);
+        let mut chosen = c.config.clone();
+        chosen.selected_server_id = Some(equivalent.id);
+        c.apply_choice(chosen).unwrap();
+        assert_eq!(c.traffic_node.as_deref(), Some("Running node"));
+        c.tx.send(Message::Traffic(uuid::Uuid::new_v4(), sample(999_999, 999_999, 2_000_000_000))).unwrap();
+        c.poll();
+        assert_eq!(c.traffic.upload_bytes_per_second, 1000.0);
+        c.last_traffic = Some(Instant::now() - Duration::from_secs(4));
+        c.poll();
+        assert_eq!(c.traffic.state, crate::traffic::TrafficState::Unavailable);
+        assert_eq!(c.status, Status::Connecting);
+        assert!(c.worker.is_some());
+        c.tx.send(Message::Traffic(generation, sample(5000, 5000, 5_000_000_000))).unwrap();
+        c.tx.send(Message::Traffic(generation, sample(6000, 7000, 6_000_000_000))).unwrap();
+        c.poll();
+        assert_eq!(c.traffic.upload_bytes_per_second, 1000.0);
+        c.disconnect();
+        c.tx.send(Message::Traffic(generation, sample(999_999, 999_999, 7_000_000_000))).unwrap();
+        c.poll();
+        assert!(c.traffic_node.is_none());
+        assert_eq!(c.traffic.upload_bytes_per_second, 0.0);
+        c.stop();
     }
 }

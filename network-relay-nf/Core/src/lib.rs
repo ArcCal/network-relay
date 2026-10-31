@@ -5,6 +5,7 @@ pub mod proto;
 pub mod quic;
 pub mod socks;
 pub mod stream;
+pub mod traffic;
 
 use bytes::Bytes;
 use serde::Deserialize;
@@ -112,6 +113,16 @@ fn filter(level: u32) -> String {
     }
 }
 
+fn traffic_event(snapshot: traffic::TrafficSnapshot) -> native::Event {
+    native::Event {
+        kind: native::TRAFFIC,
+        id: snapshot.upload_bytes,
+        token: snapshot.download_bytes,
+        flags: 0,
+        data: Bytes::copy_from_slice(&snapshot.elapsed_nanos.to_le_bytes()),
+    }
+}
+
 /// Returns an opaque instance, or null for invalid input. Caller owns its lifetime.
 /// # Safety
 /// `input` must be null or point to a valid NUL-terminated UTF-8 string for this call.
@@ -164,6 +175,9 @@ pub unsafe extern "C" fn nf_start(input: *const c_char, level: u32) -> *mut Hand
             .enable_time()
             .build()
             .expect("protocol runtime");
+        let _ = thread_bridge
+            .events
+            .try_send(traffic_event(traffic::TrafficSnapshot::default()));
         let result = runtime.block_on(async {
             let work = async {
                 let client = client::Client::new(&config, thread_bridge.clone())?;
@@ -177,8 +191,25 @@ pub unsafe extern "C" fn nf_start(input: *const c_char, level: u32) -> *mut Hand
             // Poll work first so a completed native failure is not hidden by
             // a simultaneous stop. Bridge::emit can itself report Interrupted
             // after a requested stop; that is cancellation, not a fatal error.
-            let result =
-                tokio::select! {biased; r=work=>r, _=thread_bridge.stop.cancelled()=>Ok(())};
+            let mut samples = tokio::time::interval_at(
+                tokio::time::Instant::now() + std::time::Duration::from_secs(1),
+                std::time::Duration::from_secs(1),
+            );
+            samples.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            tokio::pin!(work);
+            let result = loop {
+                tokio::select! {
+                    biased;
+                    result = &mut work => break result,
+                    _ = thread_bridge.stop.cancelled() => break Ok(()),
+                    _ = samples.tick() => {
+                        // A slow UI may miss a sample; cumulative totals and
+                        // elapsed time make the next rate correct without
+                        // putting telemetry on the protocol's critical path.
+                        let _ = thread_bridge.events.try_send(traffic_event(thread_bridge.traffic.snapshot()));
+                    }
+                }
+            };
             match result {
                 Err(e) if thread_bridge.stop.is_cancelled() && interrupted(&e) => Ok(()),
                 other => other,

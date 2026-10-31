@@ -157,6 +157,31 @@ outside this repair. If native evidence is unavailable or a minimal repair canno
 be established, record the limitation
 instead of declaring the fault fixed or rewriting the transport.
 
+## Live traffic
+
+The main window shows one Live Traffic card below server selection and above the
+proxy address. Its caption uses a 38-point content area, 12-point padding and a
+10-point corner radius. It shows the actual running node and binary upload and
+download byte rates using the platform byte formatter. Idle windows show
+`No active traffic`; missing or invalid telemetry shows `Speed unavailable`.
+Disconnect, terminal failure and quit hide the card immediately. The menu-bar
+panel has no traffic component, and there are no totals, history or reset controls.
+
+Counters belong to one client run. They measure SOCKS TCP and UDP payload accepted
+for forwarding, excluding SOCKS handshakes, invalid or dropped datagrams, admission
+probes, HTTP/Capsule framing and transport overhead. A successful buffered write
+or queued native UDP send counts as accepted forwarding; it does not prove that
+the destination received the data. Native socket behavior is unchanged.
+
+The core emits nonblocking cumulative snapshots as event 22: upload bytes in
+`id`, download bytes in `token`, zero `flags` and an eight-byte little-endian
+monotonic elapsed-nanosecond value in `data`. No C ABI layout changes. The display
+averages approximately one-second windows. First samples, counter rollback,
+clock reset and gaps over three seconds establish a fresh baseline. Generation
+checks reject old-run updates. Telemetry failure resets only its sampler and
+never stops or reconnects the client. Portable counter, rate and lifecycle tests
+cover these boundaries; native Mac appearance remains a separate check.
+
 ## Isolation and UI
 
 Bundle identifier: `com.arccal.network-relay-nf`. Executable/module:

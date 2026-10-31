@@ -10,6 +10,9 @@ final class TunnelController: ObservableObject {
     @Published private(set) var status: Status = .stopped
     @Published private(set) var configuration: Configuration
     @Published private(set) var log: [String] = []
+    @Published private(set) var traffic = LiveTraffic()
+    @Published private(set) var trafficNodeName: String?
+    private var trafficServerID: UUID?
     private var client: NativeClient?
     private var generation = UUID()
     private var stopping = false
@@ -64,6 +67,9 @@ final class TunnelController: ObservableObject {
         let selectedChanged = configuration.selectedServer?.id != new.selectedServer?.id
         let levelChanged = configuration.logLevel != new.logLevel
         configuration = new
+        if let id = trafficServerID, let server = new.servers.first(where: { $0.id == id }) {
+            trafficNodeName = server.title
+        }
         if levelChanged { client?.setLogLevel(new.logLevel) }
         guard !quitting else { return false }
         if !allowReconnect {
@@ -96,10 +102,13 @@ final class TunnelController: ObservableObject {
     func toggle() { if client != nil { disconnect() } else { connect() } }
     func connect() {
         guard client == nil, !quitting else { return }
+        clearTraffic()
         do {
             let input = try clientConfiguration(settings, password: configuration.password)
             let run = UUID(); generation = run
             status = .connecting; stopping = false
+            trafficServerID = configuration.selectedServer?.id
+            trafficNodeName = configuration.selectedServer?.title
             let server = configuration.selectedServer.map { $0.name.isEmpty ? $0.domain : $0.name } ?? ""
             appendLog(["\(timestamp()) INFO app: Connecting to \(server); SOCKS5 \(settings.proxyAddress); \(settings.transport.title) [run=\(run.uuidString.prefix(8))]"])
             client = try NativeClient(configuration: input, level: configuration.logLevel, id: run) { [weak self] update in
@@ -107,6 +116,7 @@ final class TunnelController: ObservableObject {
                 received(update)
             }
         } catch {
+            clearTraffic()
             status = .failed(error.localizedDescription)
             appendLog(["\(timestamp()) ERROR app: \(error.localizedDescription)"])
         }
@@ -118,12 +128,14 @@ final class TunnelController: ObservableObject {
         stopClient()
     }
     private func stopClient() {
+        clearTraffic()
         guard let client else { status = .stopped; return }
         stopping = true
         client.stop()
     }
     /// AppKit waits asynchronously for this instance to release its sockets.
     func requestQuit() -> NSApplication.TerminateReply {
+        clearTraffic()
         appendLog(["\(timestamp()) INFO app: Quit requested"])
         restartAfterExit = false; quitting = true
         guard client != nil else {
@@ -133,7 +145,7 @@ final class TunnelController: ObservableObject {
         stopClient()
         return .terminateLater
     }
-    func stopForQuit() { restartAfterExit = false; quitting = true; client?.stop() }
+    func stopForQuit() { clearTraffic(); restartAfterExit = false; quitting = true; client?.stop() }
     func eraseEverythingAndQuit() { eraseOnQuit = true; NSApp.terminate(nil) }
 
     private func received(_ update: NativeUpdate) {
@@ -141,7 +153,12 @@ final class TunnelController: ObservableObject {
         case .log(let lines): appendLog(lines)
         case .connected: if !stopping { status = .connected }
         case .reconnecting(let why): if !stopping { status = .reconnecting(why) }
+        case .traffic(let sample):
+            if !stopping, !quitting, trafficNodeName != nil { traffic.sample(sample) }
+        case .trafficUnavailable:
+            if !stopping, !quitting, trafficNodeName != nil { traffic.unavailable() }
         case .exited(let code, let error):
+            clearTraffic()
             client = nil
             if stopping || code == 0 {
                 status = .stopped
@@ -159,6 +176,11 @@ final class TunnelController: ObservableObject {
                 restartAfterExit = false; connect()
             }
         }
+    }
+    private func clearTraffic() {
+        traffic.reset()
+        trafficNodeName = nil
+        trafficServerID = nil
     }
     private func appendLog(_ lines: [String]) {
         appendClientLog(lines, to: &log)

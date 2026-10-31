@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import subprocess
 import tempfile
+import time
 import unittest
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -84,7 +85,7 @@ class TokenInputTests(unittest.TestCase):
     def test_malformed_saved_token_is_not_used(self):
         result = self.inputs('relay.example.com\n\n', 'dns_cloudflare_api_token = bad token\n')
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn('Expected a Cloudflare API Token', result.stderr)
+        self.assertIn('No safe saved renewal token', result.stderr)
         self.assertNotIn('bad token', result.stdout + result.stderr)
 
     def real_inputs(self, mode, owner=0, link=False):
@@ -178,30 +179,20 @@ class SameNameRepairTests(unittest.TestCase):
         self.assertEqual(len(aside), 1)
         self.assertEqual((aside[0] / 'inside').read_text(), 'old', 'a displaced directory is kept, not deleted')
 
-    def test_directories_get_only_their_own_mode_fixed_and_files_are_set_aside(self):
+    def test_unsafe_or_linked_dedicated_directories_are_refused_not_adopted(self):
+        # Content of a directory another account could write may be planted;
+        # a top-level chmod would adopt it, so the preflight check refuses it.
         loose = self.base / 'loose'
         loose.mkdir()
-        (loose / 'child').mkdir(mode=0o777)
         os.chmod(loose, 0o777)
-        os.chmod(loose / 'child', 0o777)
-        result = self.shell('nr_repair_dir "$1" root 750', str(loose))
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(loose.stat().st_mode & 0o777, 0o750)
-        self.assertEqual((loose / 'child').stat().st_mode & 0o777, 0o777, 'repair must not be recursive')
-        stale = self.base / 'stale'
-        stale.write_text('stale')
-        self.assertEqual(self.shell('nr_repair_dir "$1" root 700', str(stale)).returncode, 0)
-        self.assertTrue(stale.is_dir())
-        self.assertTrue(any(p.read_text() == 'stale' for p in self.base.glob('stale.replaced-*')))
-
-    def test_symlinked_dedicated_directory_is_reported_not_followed(self):
         link = self.base / 'etc-link'
         link.symlink_to(self.outside)
         os.chmod(self.outside, 0o777)
-        result = self.shell('nr_repair_dir "$1" root 750', str(link))
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn('symlink', result.stderr)
-        self.assertEqual(self.outside.stat().st_mode & 0o777, 0o777, 'the link target must be untouched')
+        for path in (loose, link):
+            result = self.shell('nr_check_leaf "$1" rootdir', str(path))
+            self.assertNotEqual(result.returncode, 0, path)
+        self.assertEqual(loose.stat().st_mode & 0o777, 0o777, 'refusal must not change the directory')
+        self.assertEqual(self.outside.stat().st_mode & 0o777, 0o777, 'a link target must be untouched')
 
     def test_rollback_restores_a_directory_that_occupied_a_file_path(self):
         backup = self.base / 'backup'
@@ -235,6 +226,36 @@ class AccountRepairTests(unittest.TestCase):
             self.assertEqual(groups, [name])
             self.assertEqual(os.stat('/root').st_uid, 0, 'the previous home is never chowned')
         finally:
+            subprocess.run(['userdel', '-f', name], check=False)
+            subprocess.run(['groupdel', name], check=False, stderr=subprocess.DEVNULL)
+
+    def test_account_in_use_is_repaired_and_its_home_change_deferred(self):
+        # usermod refuses a home change while a process runs as the account,
+        # as the old relay does during an upgrade; the run must not abort.
+        name = f'nrbusy{os.getpid() % 100000}'
+        subprocess.run(['useradd', '--system', '--user-group', '--shell', '/bin/bash', '--home-dir',
+                        f'/var/lib/{name}', '--groups', 'adm', name], check=True)
+        process = subprocess.Popen(['sleep', '60'], user=name)
+        try:
+            result = subprocess.run(['bash', '-c', 'source "$1"; SERVICE="$2"; nr_account && '
+                                     'echo "repaired pending=$account_home_pending"', 'test', str(SCRIPT), name],
+                                    capture_output=True, text=True, timeout=60)
+            self.assertIn('repaired pending=1', result.stdout, result.stderr)
+            entry = subprocess.run(['getent', 'passwd', name], capture_output=True, text=True).stdout.strip()
+            self.assertTrue(entry.endswith(f':/var/lib/{name}:/usr/sbin/nologin'), entry)
+            groups = subprocess.run(['id', '-Gn', name], capture_output=True, text=True).stdout.split()
+            self.assertEqual(groups, [name])
+            process.kill()
+            process.wait()
+            # After the previous instances stop, the deferred change succeeds.
+            result = subprocess.run(['bash', '-c', 'source "$1"; SERVICE="$2"; nr_account && '
+                                     'echo "repaired pending=$account_home_pending"', 'test', str(SCRIPT), name],
+                                    capture_output=True, text=True, timeout=60)
+            self.assertIn('repaired pending=0', result.stdout, result.stderr)
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.wait()
             subprocess.run(['userdel', '-f', name], check=False)
             subprocess.run(['groupdel', name], check=False, stderr=subprocess.DEVNULL)
 
@@ -287,9 +308,16 @@ class StandaloneTakeoverTests(unittest.TestCase):
         return self.shell('nr_is_relay_pid "$1"', str(process.pid)).returncode == 0
 
     def test_only_exact_executable_and_managed_config_are_positive(self):
-        for args in (['serve'], ['serve', '--config', self.config], ['serve', '-c', self.config],
+        for args in (['serve', '--config', self.config], ['serve', '-c', self.config],
                      ['serve', '--config=' + self.config], ['serve', '-c' + self.config]):
             self.assertTrue(self.identified(self.start(*args)), args)
+        # A bare `serve` uses clap's default path, which is only this
+        # deployment when CONFIG is that default.
+        bare = self.start('serve')
+        self.assertFalse(self.identified(bare))
+        result = subprocess.run(['bash', '-c', 'source "$1"; BIN="$2"; CONFIG=/etc/network-relay/relay.toml; '
+                                 'nr_is_relay_pid "$3"', 'test', str(SCRIPT), str(self.binary), str(bare.pid)])
+        self.assertEqual(result.returncode, 0)
         other = self.base / 'copy' / 'network-relay'
         other.parent.mkdir()
         other.write_bytes(self.binary.read_bytes())
@@ -299,6 +327,22 @@ class StandaloneTakeoverTests(unittest.TestCase):
                              (['serve', '-c=' + self.config], None), (['passwd'], None),
                              (['serve', '--config', self.config], other)):
             self.assertFalse(self.identified(self.start(*args, binary=binary)), (args, binary))
+
+    @unittest.skipUnless(os.geteuid() == 0, 'creating a mount namespace requires root')
+    def test_process_in_another_mount_namespace_is_never_identified(self):
+        # A container shows its own path in /proc/PID/exe; identical path and
+        # argv must not make another deployment's relay a takeover target.
+        process = subprocess.Popen(['unshare', '-m', '--propagation', 'private', str(self.binary),
+                                    'serve', '--config', self.config])
+        self.processes.append(process)
+        for _ in range(50):
+            if os.readlink(f'/proc/{process.pid}/ns/mnt') != os.readlink('/proc/self/ns/mnt'):
+                break
+            time.sleep(0.02)
+        self.assertFalse(self.identified(process))
+        result = self.shell('nr_stop_standalone && echo none')
+        self.assertIn('none', result.stdout)
+        self.assertIsNone(process.poll(), 'a process in another namespace must never be signalled')
 
     def test_unlinked_old_binary_is_still_identified(self):
         process = self.start('serve', '--config', self.config)
@@ -312,13 +356,31 @@ class StandaloneTakeoverTests(unittest.TestCase):
         replacement.rename(self.binary)
 
     def test_takeover_stops_identified_instances_and_spares_others(self):
-        ours = self.start('serve')
+        ours = self.start('serve', '--config', self.config)
         foreign = self.start('serve', '--config', '/etc/other.toml')
         result = self.shell('nr_stop_standalone && echo stopped')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('Sent TERM', result.stdout)
         self.assertIsNotNone(ours.wait(timeout=5))
         self.assertIsNone(foreign.poll(), 'an unidentified process must never be signalled')
+
+
+class AptLockRetryTests(unittest.TestCase):
+    def apt(self, script):
+        command = ('sleep() { echo slept >&2; }; attempts=0; apt-get() { attempts=$((attempts+1)); ' + script +
+                   '; }; nr_apt update; echo "status=$? attempts=$attempts"')
+        return run(command)
+
+    def test_held_list_lock_is_retried_until_free(self):
+        result = self.apt('if (( attempts < 3 )); then echo "E: Could not get lock /var/lib/apt/lists/lock. '
+                          'It is held by process 1 (apt-get)" >&2; return 100; fi; return 0')
+        self.assertIn('status=0 attempts=3', result.stdout, result.stderr)
+        self.assertEqual(result.stderr.count('slept'), 2)
+
+    def test_other_failures_are_not_retried(self):
+        result = self.apt('echo "E: Unable to locate package nonexistent" >&2; return 100')
+        self.assertIn('status=100 attempts=1', result.stdout)
+        self.assertNotIn('slept', result.stderr)
 
 
 class ConcurrentCertificateTests(unittest.TestCase):
@@ -336,6 +398,18 @@ class ConcurrentCertificateTests(unittest.TestCase):
         self.assertNotIn('after-failure', result.stdout + result.stderr, 'errexit must apply inside the job')
         self.assertNotIn('continued', result.stdout)
         self.assertIn('Certificate preparation failed', result.stderr)
+
+    def test_ctrl_c_to_the_process_group_does_not_stop_the_certificate_request(self):
+        with tempfile.TemporaryDirectory() as work:
+            # The outer shell HANDLES INT (a handler is not inherited, unlike
+            # an ignored signal), so only the job's own disposition protects it.
+            command = ('work="$1"; nr_prepare_certificate() { sleep 1; echo issued; }; '
+                       'nr_certificate_job & certificate_job=$!; sleep 0.3; kill -INT -- -$$; '
+                       'status=129; while (( status > 128 )) && kill -0 "$certificate_job" 2>/dev/null; do '
+                       'wait "$certificate_job"; status=$?; done; cat "$work/certificate.log"')
+            result = subprocess.run(['setsid', 'bash', '-c', 'trap : INT; source "$1"; shift; ' + command, 'test',
+                                     str(SCRIPT), work], capture_output=True, text=True, timeout=30)
+            self.assertIn('issued', result.stdout, result.stderr)
 
     def test_success_output_is_shown_after_the_wait(self):
         result = self.run_job('echo reused-certificate')

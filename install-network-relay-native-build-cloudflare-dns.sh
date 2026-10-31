@@ -63,11 +63,13 @@
 # 1. Fresh-only checks rejected each existing file, directory and account, forcing
 #    manual deletion and risking certificate loss. Inspect/reuse safe resources
 #    and replace managed files transactionally; support interrupted installs.
-#    A same-named file with a bad mode/owner, a symlinked file, or a file where
-#    a directory belongs is replaced or set aside rather than stopping the run;
+#    A same-named file with a bad mode/owner, a symlinked file, or a directory
+#    where a file belongs is replaced or set aside rather than stopping the run;
 #    the same-named account gets a nologin shell, no supplementary groups and a
-#    non-writable home. Symlinked dedicated directories, unsafe shared parents,
-#    privileged or shared IDs and foreign listeners/aliases still stop the run.
+#    non-writable home (changed after the old relay stops when it is in use).
+#    Unsafe or symlinked dedicated directories (their content may be planted),
+#    unit files, wants links and drop-ins, unsafe shared parents, privileged or
+#    shared IDs and foreign listeners/aliases still stop the run.
 # 2. systemd-run tried to execute /run/<service>-candidate/<binary> before its
 #    BindReadOnlyPaths namespace existed. It resolves the first executable in the
 #    HOST namespace. Use the host's /usr/bin/env -- entry point to exec the mapped
@@ -141,8 +143,14 @@
 #   /proc exe (also when deleted) and complete argv, never a truncated comm.
 # - Recheck 443 immediately before the start as well as after the stop.
 # - Certificate preparation runs concurrently with the build. errexit does not
-#   apply inside if/|| contexts, so the job runs as a plain subshell command;
-#   cleanup waits for it because background jobs ignore SIGINT here.
+#   apply inside if/|| contexts, so the job runs as a plain subshell command.
+#   The job ignores Ctrl+C (an interrupted Certbot can lose an issued
+#   certificate); cleanup waits for it and ignores further signals until done.
+# - apt-get's DPkg::Lock::Timeout does not cover the package-list or archive
+#   locks; retry only those lock failures, for a bounded time.
+# - Takeover identification also requires this installer's namespaces and root
+#   and excludes processes of other systemd service units (containers can show
+#   identical paths and argv).
 #
 # Rust-specific requirements
 # --------------------------
@@ -213,6 +221,7 @@ was_active=0
 was_enabled=disabled
 tls_lock=
 certificate_job=
+account_home_pending=0
 
 nr_die() { printf 'Error: %s\n' "$*" >&2; exit 1; }
 nr_usage() {
@@ -304,7 +313,7 @@ nr_check_parent_dirs() {
     done
 }
 nr_check_account() {
-    local entry name ignored uid gid gecos home shell members aliases group_entry primary users groups item
+    local entry name ignored uid gid gecos home shell members aliases group_entry primary users
     entry=$(getent passwd "$SERVICE" || true)
     group_entry=$(getent group "$SERVICE" || true)
     if [[ -z $entry ]]; then
@@ -335,7 +344,7 @@ nr_verify_account() {
     local entry home shell item
     entry=$(getent passwd "$SERVICE") || nr_die 'The dedicated service account is missing.'
     IFS=: read -r _ _ _ _ _ home shell <<< "$entry"
-    [[ $home == /nonexistent ]] || nr_die 'Cannot establish a non-writable service home.'
+    (( account_home_pending )) || [[ $home == /nonexistent ]] || nr_die 'Cannot establish a non-writable service home.'
     case $shell in /usr/sbin/nologin|/sbin/nologin|/bin/false|/usr/bin/false) ;; *) nr_die 'Cannot disable the service account login shell.' ;; esac
     for item in $(id -G "$SERVICE"); do
         [[ $item == "$(id -g "$SERVICE")" ]] || nr_die 'Cannot remove supplementary groups from the service account.'
@@ -366,10 +375,17 @@ nr_check_leaf() {
             [[ -d $path && ( $owner == 0 || $owner == "$service_uid" ) ]] || nr_die "Dedicated state/runtime directory has an unrelated owner: $path." ;;
     esac
 }
-# Unit files, masks, runtime units and wants links of this name participate in
-# the repair transaction: they are saved, then replaced by rename or removed.
-# A unit symlink is only accepted when PID 1 resolves it to this exact unit Id
-# (nr_unit_identity); a link aliasing another service remains a conflict.
+# A /dev/null mask is a managed unit state, not an unknown installation link.
+# Runtime units and wants links must participate in the same repair transaction.
+nr_check_unit() {
+    local path=$1
+    nr_check_parent_dirs "$path"
+    if [[ -L $path ]]; then
+        [[ $(readlink -- "$path") == /dev/null && $(stat -c %u -- "$path") == 0 ]] || nr_die "Unsafe dedicated unit link: $path."
+    else
+        nr_check_leaf "$path" file
+    fi
+}
 nr_unit_paths() {
     printf '%s\n' "$UNIT" "/run/systemd/system/$SERVICE.service" \
         "/etc/systemd/system/multi-user.target.wants/$SERVICE.service" \
@@ -471,17 +487,17 @@ nr_report_ports() {
                 output=$(ss -H -aunp '( sport = :443 )' 2>/dev/null) || output=
             fi
             # Process names in ss output can contain terminal control bytes.
-            if [[ -n $output ]]; then printf '%s\n' "$output" | LC_ALL=C sed -n 'l 0' >&2; reported=1; fi
+            if [[ -n $output ]]; then printf '%s\n' "$output" | LC_ALL=C sed -n 'l 0' >&2; fi
         fi
-        if (( !reported )); then
-            while IFS=$'\t' read -r item address inode; do
-                [[ $item == "$protocol" ]] || continue
-                printf '  local=%s\n' "$(nr_endpoint_text "$address")" >&2
-                nr_socket_owners "$inode"
-                reported=1
-            done <<< "$records"
-            if (( !reported )); then printf '  Not occupied.\n' >&2; fi
-        fi
+        # ss prints truncated process names only; always add each socket's
+        # owning PID and executable path from /proc (never command lines).
+        while IFS=$'\t' read -r item address inode; do
+            [[ $item == "$protocol" ]] || continue
+            printf '  local=%s\n' "$(nr_endpoint_text "$address")" >&2
+            nr_socket_owners "$inode"
+            reported=1
+        done <<< "$records"
+        if (( !reported )); then printf '  Not occupied.\n' >&2; fi
     done
 }
 nr_pid_socket_inodes() {
@@ -510,12 +526,13 @@ nr_unit_identity() {
 # naming this deployment's file (clap's default path is that same file). Any
 # other option, --check, a relative or different config is not ownership proof.
 nr_is_relay_pid() {
-    local pid=$1 executable argument index configurations=0 selected=$CONFIG
+    local pid=$1 executable argument index configurations=0 selected=/etc/network-relay/relay.toml
     local -a arguments=()
     [[ $pid =~ ^[1-9][0-9]*$ && $pid != 1 && $pid != "$$" && $pid != "$BASHPID" ]] || return 1
     executable=$(readlink -- "/proc/$pid/exe" 2>/dev/null) || return 1
     executable=${executable% (deleted)}
     [[ $executable == "$BIN" ]] || return 1
+    nr_same_host_process "$pid" || return 1
     {
         while IFS= read -r -d '' argument; do arguments+=("$argument"); done < "/proc/$pid/cmdline"
     } 2>/dev/null || return 1
@@ -535,6 +552,32 @@ nr_is_relay_pid() {
     done
     (( configurations <= 1 )) && [[ $selected == "$CONFIG" ]]
 }
+# /proc/PID/exe shows a path inside the process's own mount namespace, so a
+# relay in a container can look identical to this deployment's. Require this
+# installer's mount, PID and network namespaces and root directory. A process
+# supervised by another systemd service unit belongs to that unit: it is
+# reported as a port owner, never signalled.
+nr_same_host_process() {
+    local pid=$1 namespace line group='' part unit=''
+    local -a parts=()
+    for namespace in mnt pid net; do
+        [[ $(readlink -- "/proc/$pid/ns/$namespace" 2>/dev/null) == "$(readlink -- "/proc/self/ns/$namespace")" ]] || return 1
+    done
+    [[ $(readlink -- "/proc/$pid/root" 2>/dev/null) == / ]] || return 1
+    {
+        while IFS= read -r line; do
+            case $line in
+                0::*) group=${line#0::}; break ;;
+                *:name=systemd:*) group=${line#*:name=systemd:} ;;
+            esac
+        done < "/proc/$pid/cgroup"
+    } 2>/dev/null || return 1
+    IFS=/ read -r -a parts <<< "$group"
+    for part in "${parts[@]}"; do
+        if [[ $part == *.service || $part == *.scope ]]; then unit=$part; fi
+    done
+    [[ $unit != *.service || $unit == "$SERVICE.service" ]]
+}
 nr_standalone_pids() {
     local directory
     for directory in /proc/[0-9]*; do
@@ -543,7 +586,7 @@ nr_standalone_pids() {
 }
 nr_ports() {
     nr_unit_identity || return 1
-    local occupied pid pids owned= sockets inode found item
+    local occupied pid pids owned='' sockets inode found item
     occupied=$(nr_port_inodes) || nr_die 'Cannot inspect listening sockets; port availability is unknown.'
     [[ -n $occupied ]] || return 0
     pid=$(systemctl show "$SERVICE" --property=MainPID --value) || nr_die 'Cannot inspect dedicated service MainPID.'
@@ -583,44 +626,44 @@ nr_note_repair() {
 }
 nr_fresh() {
     nr_unit_identity || return 1
-    local path dropin
+    local path dropin entry link
     nr_check_account
-    for path in "$ETC" "$TLS" "$EXPORTS" "$TOOLS" "$TOOLS/backups" "$WWW" "$LOGS" "$RUNTIME" \
-        "$BIN" "$CONFIG" "$SYSCTL" "$HOOK" "$UNIT" "/run/systemd/system/$SERVICE.service" \
-        "$CREDS" "$PROFILE" "$CLIENT_CONFIG" "$TLS/.desired-source" $(nr_unit_paths); do
-        nr_check_parent_dirs "$path"
+    # Dedicated DIRECTORIES must already be safe. Another account that could
+    # write one may have planted content in it; a top-level chmod/chown would
+    # adopt that content, so they are refused as before, never "repaired".
+    for path in "$ETC" "$TLS" "$EXPORTS" "$TOOLS" "$TOOLS/backups" "$WWW"; do nr_check_leaf "$path" rootdir; done
+    for path in "$LOGS" "$RUNTIME"; do nr_check_leaf "$path" statedir; done
+    # Same-named dedicated FILES with a bad mode/owner or a symlink are only
+    # reported here: they are saved and then replaced by rename.
+    for path in "$BIN" "$CONFIG" "$SYSCTL" "$HOOK"; do nr_check_parent_dirs "$path"; nr_note_repair "$path" file; done
+    for path in "$CREDS" "$PROFILE" "$CLIENT_CONFIG" "$TLS/.desired-source"; do
+        nr_check_parent_dirs "$path"; nr_note_repair "$path" private
     done
-    for path in "$ETC" "$TLS" "$EXPORTS" "$TOOLS" "$TOOLS/backups" "$WWW"; do
-        # Unlinking it before the transaction could break the running old
-        # deployment, and following it could change unrelated data.
-        [[ ! -L $path ]] || nr_die "Dedicated directory $path is a symlink; it was not followed or replaced. Make it a real directory, then rerun."
-        nr_note_repair "$path" rootdir
-    done
-    for path in "$LOGS" "$RUNTIME"; do nr_note_repair "$path" statedir; done
-    for path in "$BIN" "$CONFIG" "$SYSCTL" "$HOOK"; do nr_note_repair "$path" file; done
-    for path in "$CREDS" "$PROFILE" "$CLIENT_CONFIG" "$TLS/.desired-source"; do nr_note_repair "$path" private; done
-    # Drop-in directories are saved whole and then removed; their contents are
-    # never executed or followed by the installer.
+    # Stopping the old unit runs its ExecStop= lines, drop-ins included, as
+    # root: unit files, masks, wants links and drop-ins keep their strict checks.
+    nr_check_unit "$UNIT"
+    nr_check_unit "/run/systemd/system/$SERVICE.service"
+    while IFS= read -r link; do
+        [[ $link == *.wants/* ]] || continue
+        nr_check_parent_dirs "$link"
+        if [[ -e $link || -L $link ]]; then
+            [[ -L $link && $(stat -c %u -- "$link") == 0 ]] || nr_die "Unsafe dedicated enablement entry: $link."
+        fi
+    done < <(nr_unit_paths)
     for dropin in "$UNIT.d" "/run/systemd/system/$SERVICE.service.d" "/usr/lib/systemd/system/$SERVICE.service.d" "/lib/systemd/system/$SERVICE.service.d"; do
-        nr_check_parent_dirs "$dropin/x"
+        nr_check_leaf "$dropin" rootdir
+        [[ -d $dropin ]] || continue
+        while IFS= read -r entry; do nr_check_leaf "$entry" file; done < <(find -P "$dropin" -mindepth 1 -maxdepth 1 -print)
     done
     nr_ports
 }
-# Make a dedicated directory usable: a stale non-directory entry at its name is
-# renamed aside (kept, never followed); a real directory gets only its own
-# owner/mode fixed, never a recursive change. Symlinks were rejected earlier.
+# A directory occupying a dedicated FILE path is kept under another name, never
+# deleted or followed; the deployment backup also holds a copy.
 nr_set_aside() {
     local aside
     aside=$1.replaced-$(date -u +%Y%m%d%H%M%S)-$$
     mv -T -- "$1" "$aside"
     printf 'Moved the conflicting same-named entry %s to %s.\n' "$1" "$aside"
-}
-nr_repair_dir() {
-    local path=$1 group=$2 mode=$3
-    nr_check_parent_dirs "$path"
-    [[ ! -L $path ]] || nr_die "Dedicated directory $path is a symlink; it was not followed or replaced."
-    if [[ -e $path && ! -d $path ]]; then nr_set_aside "$path"; fi
-    install -d -o root -g "$group" -m "$mode" -- "$path"
 }
 # Ignore per-user curl configuration, retaining HTTPS/TLS verification, proxy
 # routing and configured CA trust. Artifact checksums are checked before use.
@@ -703,9 +746,11 @@ nr_rollback() {
 nr_cleanup() {
     local status=$?
     trap - EXIT
-    # Never delete scratch files under a running Certbot request. Without job
-    # control, Bash's background jobs ignore SIGINT, so an interrupted run waits
-    # for that bounded ACME request instead of abandoning partial ACME state.
+    # A second Ctrl+C or TERM must not abort rollback or leave the scratch
+    # token file behind; finish cleanup with these signals ignored.
+    trap '' INT TERM HUP
+    # Never delete scratch files under a running Certbot request; the job
+    # ignores Ctrl+C, so wait for that bounded request to finish.
     if [[ -n $certificate_job ]] && kill -0 "$certificate_job" 2>/dev/null; then
         printf 'Waiting for the running certificate request to finish...\n' >&2
     fi
@@ -745,7 +790,8 @@ nr_backup() {
     if systemctl is-active --quiet "$SERVICE"; then was_active=1; fi
     was_enabled=$(systemctl is-enabled "$SERVICE" 2>/dev/null || true)
     was_enabled=${was_enabled:-disabled}
-    nr_repair_dir "$TOOLS/backups" root 700
+    nr_check_leaf "$TOOLS/backups" rootdir
+    install -d -o root -g root -m 700 "$TOOLS/backups"
     backup_dir=$(mktemp -d "$TOOLS/backups/deployment-$(date -u +%Y%m%d-%H%M%S).XXXXXXXX")
     install -d -m 700 "$backup_dir/files"
     : > "$backup_dir/manifest"
@@ -1036,8 +1082,23 @@ nr_account() {
     nr_check_leaf /nonexistent rootdir
     # Narrow repair of this same-named identity only: no -m/-u, so the old home
     # is neither moved nor chowned, and other accounts/groups are unchanged.
-    usermod --home /nonexistent --shell /usr/sbin/nologin --groups '' --lock "$SERVICE"
+    # Shell, supplementary groups and password lock have no in-use check.
+    usermod --shell /usr/sbin/nologin --groups '' --lock "$SERVICE"
+    nr_account_home
     nr_verify_account
+}
+# usermod refuses a home change while any process runs as the account, e.g.
+# the old relay during an upgrade. The change then waits until the previous
+# instances are stopped inside the transaction (it is not rolled back).
+nr_account_home() {
+    local home
+    home=$(getent passwd "$SERVICE" | cut -d: -f6)
+    account_home_pending=0
+    [[ $home != /nonexistent ]] || return 0
+    if ! usermod --home /nonexistent "$SERVICE" 2>/dev/null; then
+        account_home_pending=1
+        printf 'The service account is in use; its home changes after the previous relay stops.\n'
+    fi
 }
 # Export the same account used by both server and Apple profile. This format is
 # accepted by the Rust GUI importer and headless client. Loopback-only SOCKS does
@@ -1229,7 +1290,10 @@ nr_prepare_certificate() {
 nr_certificate_job() {
     local status=0
     set +e
-    ( set -e; nr_prepare_certificate ) > "$work/certificate.log" 2>&1
+    # Ctrl+C must not stop Certbot between issuance and saving the lineage,
+    # which would lose an issued certificate; the ignored disposition is
+    # inherited by Certbot. Cleanup waits for this bounded request instead.
+    ( set -e; trap '' INT; nr_prepare_certificate ) > "$work/certificate.log" 2>&1
     status=$?
     if (( status )); then
         printf 'Certificate preparation failed; the installer stops after the running build:\n' >&2
@@ -1302,8 +1366,9 @@ nr_stop_service() {
     nr_stop_standalone
     nr_ports_free
 }
-# Recheck identity immediately before each signal so an exited relay's reused
-# numeric PID is not signalled. TERM first, KILL only after a bounded grace.
+# Recheck identity immediately before each signal; this narrows, but cannot
+# close, the window in which an exited relay's PID is reused (Bash has no
+# pidfd). TERM first, KILL only after a bounded grace.
 nr_signal_standalone() {
     local signal=$1 pid
     while IFS= read -r pid; do
@@ -1349,16 +1414,10 @@ nr_deploy() {
     for path in "$BIN" "$UNIT" "$SYSCTL" "$HOOK"; do
         if [[ ! -d ${path%/*} ]]; then install -d -o root -g root -m 755 "${path%/*}"; fi
     done
-    nr_repair_dir "$ETC" "$SERVICE" 750
-    nr_repair_dir "$TLS" "$SERVICE" 750
-    nr_repair_dir "$EXPORTS" root 700
+    install -d -o root -g "$SERVICE" -m 750 "$ETC" "$TLS"
+    install -d -o root -g root -m 700 "$EXPORTS"
     [[ -d ${WWW%/*} ]] || install -d -m 755 "${WWW%/*}"
-    # Website files are kept; only the dedicated root's own owner/mode change.
-    nr_repair_dir "$WWW" root 755
-    # systemd recreates/chowns these; a stale non-directory would block it.
-    for path in "$LOGS" "$RUNTIME"; do
-        if [[ -L $path || ( -e $path && ! -d $path ) ]]; then nr_set_aside "$path"; fi
-    done
+    if [[ ! -e $WWW ]]; then install -d -m 755 "$WWW"; fi
     if [[ -z $(find -P "$WWW" -mindepth 1 -maxdepth 1 -print -quit) ]]; then
         printf '<!doctype html>\n<title>Welcome</title>\n<h1>Welcome</h1>\n' | nr_new_file "$WWW/index.html" 644
     fi
@@ -1389,6 +1448,11 @@ nr_deploy() {
     done
     systemctl daemon-reload
     nr_stop_service
+    if (( account_home_pending )); then
+        usermod --home /nonexistent "$SERVICE" || nr_die 'Cannot change the service account home after stopping the previous relay.'
+        account_home_pending=0
+        nr_verify_account
+    fi
     rm -f -- "/run/systemd/system/$SERVICE.service"
     while IFS=$'\t' read -r index existed type path; do
         if [[ $type == dir && -d $path ]]; then rm -rf -- "$path"; fi
@@ -1441,17 +1505,24 @@ nr_token_valid() {
     [[ $1 =~ ^[A-Za-z0-9_-]{35,50}$ || $1 =~ ^cf(ut|at)_[A-Za-z0-9_-]{32,256}$ ]]
 }
 # A rerun may press Enter to keep this domain's saved root-only renewal token.
-# Read it only from the checked dedicated file and by a strict line pattern,
-# never by sourcing; the value is rewritten unchanged with the same mode.
-nr_saved_token() {
-    nr_check_parent_dirs "$CREDS"
+# Read it only from the dedicated file and by a strict line pattern, never by
+# sourcing; it is then rewritten root-only (0600). Return 1 without a usable
+# token, so the caller reports it instead of a misleading syntax error.
+nr_saved_token_usable() {
     # Never read a secret through a link or from a file another account owns.
-    # A too-broad mode is only noted: the value is rewritten root-only (0600).
-    [[ -f $CREDS && ! -L $CREDS && $(stat -c %u -- "$CREDS") == 0 ]] || return 1
+    [[ -f $CREDS && ! -L $CREDS && $(stat -c %u -- "$CREDS") == 0 ]]
+}
+nr_saved_token() {
+    local token
+    export -n token
+    nr_check_parent_dirs "$CREDS"
+    nr_saved_token_usable || return 1
+    token=$(sed -n 's/^dns_cloudflare_api_token = \([A-Za-z0-9_-]*\)$/\1/p' "$CREDS")
+    [[ -n $token ]] || return 1
     if (( (8#$(stat -c %a -- "$CREDS") & 0077) != 0 )); then
-        printf 'The saved renewal token was readable by other accounts; it will be rewritten root-only.\n' >&2
+        printf 'The saved renewal token was accessible to other accounts; it is rewritten root-only. Consider rotating it at Cloudflare.\n' >&2
     fi
-    sed -n 's/^dns_cloudflare_api_token = \([A-Za-z0-9_-]*\)$/\1/p' "$CREDS"
+    printf '%s\n' "$token"
 }
 nr_inputs() {
     nr_ask 'Relay domain'; domain=${REPLY,,}; domain=${domain%.}
@@ -1459,7 +1530,7 @@ nr_inputs() {
     CREDS=$CERT_ROOT/$SERVICE-cloudflare-$domain.ini
     printf 'Use a zone-scoped token with Zone:DNS:Edit and Zone:Zone:Read.\n'
     if [[ -z $cf_token ]]; then
-        if [[ -f $CREDS && ! -L $CREDS ]]; then
+        if nr_saved_token_usable; then
             read -r -s -p 'CF_API_TOKEN (hidden; Enter keeps the saved renewal token): ' cf_token </dev/tty || nr_die 'Could not read token.'
         else
             read -r -s -p 'CF_API_TOKEN (hidden): ' cf_token </dev/tty || nr_die 'Could not read token.'
@@ -1478,6 +1549,25 @@ nr_noninteractive() {
     exec </dev/null
     export GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=/bin/false SSH_ASKPASS=/bin/false
     export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a APT_LISTCHANGES_FRONTEND=none
+}
+# DPkg::Lock::Timeout makes apt-get wait only for the dpkg locks. The package
+# list and archive locks (held by apt-daily's own update at boot) still fail at
+# once, so retry exactly that failure for up to 30 minutes. Other errors are
+# returned immediately; apt's output is shown after each attempt.
+nr_apt() {
+    local attempt status errors
+    errors=$(mktemp) || return
+    for ((attempt=1; ; attempt++)); do
+        status=0
+        apt-get "$@" 2> "$errors" || status=$?
+        cat -- "$errors" >&2
+        if (( status == 0 )) || (( attempt >= 180 )) || ! grep -Eq '^E: (Could not get lock|Unable to lock)' "$errors"; then
+            rm -f -- "$errors"
+            return "$status"
+        fi
+        printf 'Another package manager holds an apt lock; retrying in 10 seconds...\n' >&2
+        sleep 10
+    done
 }
 # Check the manager version before credentials or installation: do not silently
 # rely on a sandbox directive that an older manager would ignore as unknown.
@@ -1527,7 +1617,7 @@ nr_main() {
     [[ $free_kib =~ ^[0-9]+$ ]] && (( free_kib >= 5*1024*1024 )) || nr_die 'At least 5 GiB free under /opt is required.'
     # Bound dpkg-lock waits, retry downloads and preserve existing conffiles.
     # The installation list deliberately contains no firewall package.
-    local apt=(apt-get -o DPkg::Lock::Timeout=1800 -o Acquire::Retries=3
+    local apt=(nr_apt -o DPkg::Lock::Timeout=1800 -o Acquire::Retries=3
         -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold)
     "${apt[@]}" update
     "${apt[@]}" install -y --no-install-recommends \
@@ -1539,8 +1629,10 @@ nr_main() {
     else
         printf 'Certificate check: DNS-01 issuance is needed; it runs concurrently with the build.\n'
     fi
-    nr_repair_dir "$TOOLS" root 700
-    nr_repair_dir "$TOOLS/backups" root 700
+    nr_check_leaf "$TOOLS" rootdir
+    install -d -m 700 "$TOOLS"
+    nr_check_leaf "$TOOLS/backups" rootdir
+    install -d -o root -g root -m 700 "$TOOLS/backups"
     work=$(mktemp -d "$TOOLS/build.XXXXXXXX")
     # Install traps only after this run owns a unique scratch directory.
     trap nr_cleanup EXIT

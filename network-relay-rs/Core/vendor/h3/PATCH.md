@@ -13,6 +13,8 @@ Original source and MIT license retained. Changes are confined to:
   with H3_FRAME_UNEXPECTED, without waiting for FIN (RFC 9114 section 4.4).
   Empty DATA frames no longer report end-of-body.
 - `Cargo.toml`: make the README and development dependency paths standalone.
+- `tests/mod.rs`: `#[rustfmt::skip]` on the `h3_quinn` module, which is not
+  vendored here, so `cargo fmt` can format this workspace member.
 - `proto/headers.rs`, `server/request.rs`, `ext.rs`: requests are checked as
   RFC 9114 sections 4.3, 4.3.1 and 4.4 and RFC 8441 section 4 require, and
   malformed ones get H3_MESSAGE_ERROR: a pseudo-header field twice, `:status`

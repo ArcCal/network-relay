@@ -703,13 +703,25 @@ async fn client_push_frames_keep_their_other_errors() {
         // MAX_PUSH_ID is never sent by a server (section 7.2.7).
         (&[0x0d, 0x01, 0x00][..], None, Code::H3_FRAME_UNEXPECTED),
         // PUSH_PROMISE is not permitted on the control stream (section 7.2.5).
-        (&[0x05, 0x02, 0x00, 0xd9][..], None, Code::H3_FRAME_UNEXPECTED),
+        (
+            &[0x05, 0x02, 0x00, 0xd9][..],
+            None,
+            Code::H3_FRAME_UNEXPECTED,
+        ),
         // CANCEL_PUSH on a request stream (section 7.2.3).
-        (&[][..], Some(&[0x03, 0x01, 0x00][..]), Code::H3_FRAME_UNEXPECTED),
+        (
+            &[][..],
+            Some(&[0x03, 0x01, 0x00][..]),
+            Code::H3_FRAME_UNEXPECTED,
+        ),
         // A payload longer than its push ID (section 7.1).
         (&[0x03, 0x02, 0x00, 0x00][..], None, Code::H3_FRAME_ERROR),
         // A payload that ends inside its push ID (section 7.1).
-        (&[0x03, 0x01, 0x40, 0x07, 0x01, 0x00][..], None, Code::H3_FRAME_ERROR),
+        (
+            &[0x03, 0x01, 0x40, 0x07, 0x01, 0x00][..],
+            None,
+            Code::H3_FRAME_ERROR,
+        ),
     ] {
         assert_eq!(
             client_close_code(control, response).await,

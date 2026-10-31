@@ -6,6 +6,8 @@
 // concerned, but quic traits wouldn't match between the "h3" crate that
 // comes before h3_quinn and the one that comes after and runs the tests
 #[allow(unexpected_cfgs)]
+// h3-quinn is not vendored next to this copy; rustfmt must not open it.
+#[rustfmt::skip]
 #[path = "../../../h3-quinn/src/lib.rs"]
 mod h3_quinn;
 

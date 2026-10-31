@@ -77,9 +77,7 @@ impl Header {
         //# in responses; pseudo-header fields defined for responses MUST NOT
         //# appear in requests.
         if self.pseudo.status.is_some() {
-            return Err(HeaderError::MalformedRequest(
-                ":status in a request".into(),
-            ));
+            return Err(HeaderError::MalformedRequest(":status in a request".into()));
         }
         let method = self.pseudo.method.ok_or(HeaderError::MissingMethod)?;
         let has_protocol = self.pseudo.protocol.is_some() || self.pseudo.other_protocol.is_some();
@@ -141,15 +139,31 @@ impl Header {
         //# The only exception to this is the TE header field, which MAY be
         //# present in an HTTP/3 request header; when it is, it MUST NOT contain
         //# any value other than "trailers".
-        for name in ["connection", "keep-alive", "proxy-connection", "transfer-encoding", "upgrade"] {
+        for name in [
+            "connection",
+            "keep-alive",
+            "proxy-connection",
+            "transfer-encoding",
+            "upgrade",
+        ] {
             if self.fields.contains_key(name) {
-                return Err(HeaderError::MalformedRequest(format!("connection-specific field {}", name)));
+                return Err(HeaderError::MalformedRequest(format!(
+                    "connection-specific field {}",
+                    name
+                )));
             }
         }
         // "trailers" is a literal of the TE grammar (RFC 9110 section 10.1.4),
         // and ABNF literals match without regard to case (RFC 5234 section 2.3).
-        if self.fields.get_all("te").iter().any(|v| !v.as_bytes().eq_ignore_ascii_case(b"trailers")) {
-            return Err(HeaderError::MalformedRequest("TE other than trailers".into()));
+        if self
+            .fields
+            .get_all("te")
+            .iter()
+            .any(|v| !v.as_bytes().eq_ignore_ascii_case(b"trailers"))
+        {
+            return Err(HeaderError::MalformedRequest(
+                "TE other than trailers".into(),
+            ));
         }
 
         let mut uri = Uri::builder();
@@ -335,13 +349,21 @@ impl TryFrom<Vec<HeaderField>> for Header {
                 //= https://www.rfc-editor.org/rfc/rfc9114#section-4.3.1
                 //# All HTTP/3 requests MUST include exactly one value for the :method,
                 //# :scheme, and :path pseudo-header fields
-                Field::Method(_) if pseudo.method.is_some() => return Err(HeaderError::DuplicatePseudo),
-                Field::Scheme(_) if pseudo.scheme.is_some() => return Err(HeaderError::DuplicatePseudo),
+                Field::Method(_) if pseudo.method.is_some() => {
+                    return Err(HeaderError::DuplicatePseudo)
+                }
+                Field::Scheme(_) if pseudo.scheme.is_some() => {
+                    return Err(HeaderError::DuplicatePseudo)
+                }
                 Field::Authority(_) if pseudo.authority.is_some() => {
                     return Err(HeaderError::DuplicatePseudo)
                 }
-                Field::Path(_) if pseudo.path.is_some() => return Err(HeaderError::DuplicatePseudo),
-                Field::Status(_) if pseudo.status.is_some() => return Err(HeaderError::DuplicatePseudo),
+                Field::Path(_) if pseudo.path.is_some() => {
+                    return Err(HeaderError::DuplicatePseudo)
+                }
+                Field::Status(_) if pseudo.status.is_some() => {
+                    return Err(HeaderError::DuplicatePseudo)
+                }
                 Field::Protocol(_) | Field::OtherProtocol(_)
                     if pseudo.protocol.is_some() || pseudo.other_protocol.is_some() =>
                 {
@@ -472,9 +494,9 @@ impl Field {
 /// An RFC 9110 section 5.6.2 token.
 fn is_token(value: &[u8]) -> bool {
     !value.is_empty()
-        && value.iter().all(|c| {
-            c.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(c)
-        })
+        && value
+            .iter()
+            .all(|c| c.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(c))
 }
 
 fn try_value<N, V, R>(name: N, value: V) -> Result<R, HeaderError>
@@ -892,13 +914,27 @@ mod tests {
         //# malformed
         let ok = request(&[(":method", "CONNECT"), (":authority", "example.com:443")]).unwrap();
         let (method, uri, ..) = ok.into_request_parts().unwrap();
-        assert_eq!((method, uri.authority().unwrap().as_str()), (Method::CONNECT, "example.com:443"));
+        assert_eq!(
+            (method, uri.authority().unwrap().as_str()),
+            (Method::CONNECT, "example.com:443")
+        );
         for extra in [(":scheme", "https"), (":path", "/")] {
-            let h = request(&[(":method", "CONNECT"), extra, (":authority", "example.com:443")]).unwrap();
-            assert_matches!(h.into_request_parts(), Err(HeaderError::MalformedRequest(_)));
+            let h = request(&[
+                (":method", "CONNECT"),
+                extra,
+                (":authority", "example.com:443"),
+            ])
+            .unwrap();
+            assert_matches!(
+                h.into_request_parts(),
+                Err(HeaderError::MalformedRequest(_))
+            );
         }
         let host_only = request(&[(":method", "CONNECT"), ("host", "example.com:443")]).unwrap();
-        assert_matches!(host_only.into_request_parts(), Err(HeaderError::MissingAuthority));
+        assert_matches!(
+            host_only.into_request_parts(),
+            Err(HeaderError::MissingAuthority)
+        );
     }
 
     #[test]
@@ -918,11 +954,29 @@ mod tests {
         let (_, _, protocol, other, _) = request(&full).unwrap().into_request_parts().unwrap();
         assert_eq!((protocol, other), (Some(Protocol::CONNECT_UDP), None));
         for skip in [2, 3, 4] {
-            let partial: Vec<_> = full.iter().enumerate().filter(|(i, _)| *i != skip).map(|(_, f)| *f).collect();
-            assert!(request(&partial).unwrap().into_request_parts().is_err(), "without {:?}", full[skip]);
+            let partial: Vec<_> = full
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| *i != skip)
+                .map(|(_, f)| *f)
+                .collect();
+            assert!(
+                request(&partial).unwrap().into_request_parts().is_err(),
+                "without {:?}",
+                full[skip]
+            );
         }
-        let get = [(":method", "GET"), (":protocol", "connect-udp"), (":scheme", "https"), (":path", "/"), (":authority", "a")];
-        assert_matches!(request(&get).unwrap().into_request_parts(), Err(HeaderError::MalformedRequest(_)));
+        let get = [
+            (":method", "GET"),
+            (":protocol", "connect-udp"),
+            (":scheme", "https"),
+            (":path", "/"),
+            (":authority", "a"),
+        ];
+        assert_matches!(
+            request(&get).unwrap().into_request_parts(),
+            Err(HeaderError::MalformedRequest(_))
+        );
     }
 
     #[test]
@@ -948,20 +1002,57 @@ mod tests {
         //# All HTTP/3 requests MUST include exactly one value for the :method,
         //# :scheme, and :path pseudo-header fields, unless the request is a
         //# CONNECT request
-        let missing_path = request(&[(":method", "GET"), (":scheme", "https"), (":authority", "a")]).unwrap();
-        assert_matches!(missing_path.into_request_parts(), Err(HeaderError::MalformedRequest(_)));
-        let missing_scheme = request(&[(":method", "GET"), (":path", "/"), (":authority", "a")]).unwrap();
-        assert_matches!(missing_scheme.into_request_parts(), Err(HeaderError::MalformedRequest(_)));
+        let missing_path = request(&[
+            (":method", "GET"),
+            (":scheme", "https"),
+            (":authority", "a"),
+        ])
+        .unwrap();
+        assert_matches!(
+            missing_path.into_request_parts(),
+            Err(HeaderError::MalformedRequest(_))
+        );
+        let missing_scheme =
+            request(&[(":method", "GET"), (":path", "/"), (":authority", "a")]).unwrap();
+        assert_matches!(
+            missing_scheme.into_request_parts(),
+            Err(HeaderError::MalformedRequest(_))
+        );
         for twice in [":method", ":scheme", ":path", ":authority"] {
-            let mut fields = vec![(":method", "GET"), (":scheme", "https"), (":path", "/"), (":authority", "a")];
+            let mut fields = vec![
+                (":method", "GET"),
+                (":scheme", "https"),
+                (":path", "/"),
+                (":authority", "a"),
+            ];
             let value = fields.iter().find(|(n, _)| *n == twice).unwrap().1;
             fields.insert(1, (twice, value));
-            assert_matches!(request(&fields), Err(HeaderError::DuplicatePseudo), "{}", twice);
+            assert_matches!(
+                request(&fields),
+                Err(HeaderError::DuplicatePseudo),
+                "{}",
+                twice
+            );
         }
-        let empty_path = request(&[(":method", "GET"), (":scheme", "https"), (":path", ""), (":authority", "a")]);
+        let empty_path = request(&[
+            (":method", "GET"),
+            (":scheme", "https"),
+            (":path", ""),
+            (":authority", "a"),
+        ]);
         assert!(empty_path.map_or(true, |h| h.into_request_parts().is_err()));
-        let status = request(&[(":method", "GET"), (":scheme", "https"), (":path", "/"), (":authority", "a"), (":status", "200")]).unwrap();
-        assert_matches!(status.into_request_parts(), Err(HeaderError::MalformedRequest(_)));
+        let status = request(&[
+            (":method", "GET"),
+            (":scheme", "https"),
+            (":path", "/"),
+            (":authority", "a"),
+            (":status", "200"),
+        ])
+        .unwrap();
+        assert_matches!(
+            status.into_request_parts(),
+            Err(HeaderError::MalformedRequest(_))
+        );
     }
 
     #[test]
@@ -970,7 +1061,12 @@ mod tests {
         //= type=test
         //# any message containing connection-specific fields MUST be treated
         //# as malformed.
-        let base = [(":method", "GET"), (":scheme", "https"), (":path", "/"), (":authority", "a")];
+        let base = [
+            (":method", "GET"),
+            (":scheme", "https"),
+            (":path", "/"),
+            (":authority", "a"),
+        ];
         for field in [
             ("connection", "keep-alive"),
             ("keep-alive", "timeout=5"),
@@ -981,12 +1077,21 @@ mod tests {
         ] {
             let mut fields = base.to_vec();
             fields.push(field);
-            assert_matches!(request(&fields).unwrap().into_request_parts(), Err(HeaderError::MalformedRequest(_)), "{:?}", field);
+            assert_matches!(
+                request(&fields).unwrap().into_request_parts(),
+                Err(HeaderError::MalformedRequest(_)),
+                "{:?}",
+                field
+            );
         }
         for te in ["trailers", "Trailers"] {
             let mut fields = base.to_vec();
             fields.push(("te", te));
-            assert!(request(&fields).unwrap().into_request_parts().is_ok(), "TE: {} is allowed", te);
+            assert!(
+                request(&fields).unwrap().into_request_parts().is_ok(),
+                "TE: {} is allowed",
+                te
+            );
         }
     }
 }

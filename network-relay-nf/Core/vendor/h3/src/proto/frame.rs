@@ -672,16 +672,28 @@ mod tests {
         //# H3_FRAME_ERROR.
         for wire in [[3, 2, 0, 0], [7, 2, 0, 0], [13, 2, 0, 0]] {
             let mut buf = Cursor::new(&wire);
-            assert_matches!(Frame::decode(&mut buf), Err(FrameError::Malformed), "{wire:?}");
+            assert_matches!(
+                Frame::decode(&mut buf),
+                Err(FrameError::Malformed),
+                "{wire:?}"
+            );
         }
     }
 
     #[test]
     fn payload_with_truncated_field_is_malformed() {
         // A two-byte varint in a one-byte payload, followed by another frame.
-        for wire in [[3, 1, 0x40, 3, 1, 0], [7, 1, 0x40, 3, 1, 0], [13, 1, 0x40, 3, 1, 0]] {
+        for wire in [
+            [3, 1, 0x40, 3, 1, 0],
+            [7, 1, 0x40, 3, 1, 0],
+            [13, 1, 0x40, 3, 1, 0],
+        ] {
             let mut buf = Cursor::new(&wire);
-            assert_matches!(Frame::decode(&mut buf), Err(FrameError::Malformed), "{wire:?}");
+            assert_matches!(
+                Frame::decode(&mut buf),
+                Err(FrameError::Malformed),
+                "{wire:?}"
+            );
         }
     }
 

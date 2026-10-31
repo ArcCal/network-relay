@@ -19,7 +19,8 @@
 # - Support Debian 12+ and Ubuntu 24.04+ without an artificial upper version cap.
 #   Detect native amd64/arm64 and build the corresponding pinned server.
 # - Accept only the domain and hidden CF_API_TOKEN as terminal input. An inherited
-#   token can skip its prompt. Do not ask for email, username, build jobs, profile
+#   token can skip its prompt; on reruns an empty answer reuses this domain's
+#   checked root-only renewal token. Do not ask for email, username, build jobs, profile
 #   scope, password or confirmation. Keep apt/Git/helper commands noninteractive.
 # - Use Cloudflare DNS-01. It validates TXT records and requires appropriate
 #   zone-scoped token permissions, not an A/AAAA record pointing at this machine.
@@ -49,10 +50,13 @@
 #   persistent enabled state and successful HTTPS/protocol checks before success.
 #   Retain automatic restart and certificate renewal across host reboots.
 # - Build and validate the candidate while the prior service remains running.
-#   Back up dedicated files privately; stop only the old dedicated unit, verify
-#   443 is free, and install atomically. On failure restore files and the prior
-#   active/enabled state, including runtime-only enablement. Preserve ACME state
-#   and unrelated services. Backups cannot recover files deleted before the run.
+#   Back up dedicated files privately; stop the old dedicated unit and any
+#   positively identified manually started instance of this relay (exact BIN
+#   executable and `serve` with this CONFIG), verify 443 is free, and install
+#   atomically. On failure restore files and the prior active/enabled state,
+#   including runtime-only enablement. Preserve ACME state and unrelated
+#   services. Backups cannot recover files deleted before the run. Rollback
+#   restarts the old unit, not terminated manually started commands.
 #
 # Earlier failures and remedies
 # -----------------------------
@@ -128,6 +132,12 @@
 #   compiler temporary files belong inside private staging, not inherited TMPDIR.
 # - A qualified daemon account still needs a locked password and non-writable
 #   NSS home; changing that home never moves or chowns the previous directory.
+# - Takeover of a manually started relay needs positive evidence: the actual
+#   /proc exe (also when deleted) and complete argv, never a truncated comm.
+# - Recheck 443 immediately before the start as well as after the stop.
+# - Certificate preparation runs concurrently with the build. errexit does not
+#   apply inside if/|| contexts, so the job runs as a plain subshell command;
+#   cleanup waits for it because background jobs ignore SIGINT here.
 #
 # Rust-specific requirements
 # --------------------------
@@ -143,8 +153,8 @@
 # Repeatable deployment/repair sequence:
 #   1. Check the host, dedicated path ownership, account and socket ownership.
 #   2. Read only the relay domain and a hidden Cloudflare token.
-#   3. Install prerequisites noninteractively; verify and build native Rust.
-#   4. Reuse a valid domain certificate, or obtain one with DNS-01 when needed.
+#   3. Install prerequisites noninteractively; verify and build native Rust
+#   4. while concurrently reusing a valid certificate or obtaining one (DNS-01).
 #   5. Stage/validate current-script configuration, TLS copies and both exports.
 #   6. Back up old dedicated files/state, switch the unit and run real checks.
 #   7. Commit on success; otherwise restore prior files and service state.
@@ -197,6 +207,7 @@ backup_dir=
 was_active=0
 was_enabled=disabled
 tls_lock=
+certificate_job=
 
 nr_die() { printf 'Error: %s\n' "$*" >&2; exit 1; }
 nr_usage() {
@@ -205,7 +216,8 @@ Usage: sudo bash ${0##*/}
        bash ${0##*/} --plan
 
 Build this checkout for the server's native amd64/arm64 architecture. Prompt
-only for the relay domain and hidden CF_API_TOKEN. Install apt
+only for the relay domain and hidden CF_API_TOKEN (Enter on a rerun keeps the
+domain's saved renewal token; CF_API_TOKEN may be inherited). Install apt
 Certbot with its Cloudflare DNS plugin, obtain a DNS-01 certificate, configure
 renewal/reload, systemd, a website and a protected Apple device profile, then
 stage private client exports, then publish them after HTTPS and TCP/UDP checks.
@@ -250,9 +262,11 @@ nr_host() {
 }
 # Accept only a bare ASCII DNS hostname. Reject URLs, addresses, wildcards and
 # configuration/shell metacharacters before using the value in TOML or hooks.
+# The final label may be an IDNA A-label TLD (xn--...); an all-letter-only
+# rule wrongly rejected valid punycode TLDs. An all-numeric label stays invalid.
 nr_domain() {
     local value=$1
-    (( ${#value} <= 253 )) && [[ $value =~ ^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?[.])+[a-z]{2,63}$ ]]
+    (( ${#value} <= 253 )) && [[ $value =~ ^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?[.])+([a-z]{2,63}|xn--[a-z0-9]([a-z0-9-]{0,57}[a-z0-9])?)$ ]]
 }
 # This helper and the silent token read are the only terminal input points.
 # Child commands receive EOF after these prompts unless explicitly piped input.
@@ -482,17 +496,58 @@ nr_unit_identity() {
         return 1
     fi
 }
+# A manually started old relay may hold 443 with no unit MainPID. comm names
+# are truncated, so identify it by its actual executable (including an unlinked
+# old copy of BIN) and exact clap argv: `serve` plus at most one -c/--config
+# naming this deployment's file (clap's default path is that same file). Any
+# other option, --check, a relative or different config is not ownership proof.
+nr_is_relay_pid() {
+    local pid=$1 executable argument index configurations=0 selected=$CONFIG
+    local -a arguments=()
+    [[ $pid =~ ^[1-9][0-9]*$ && $pid != 1 && $pid != "$$" && $pid != "$BASHPID" ]] || return 1
+    executable=$(readlink -- "/proc/$pid/exe" 2>/dev/null) || return 1
+    executable=${executable% (deleted)}
+    [[ $executable == "$BIN" ]] || return 1
+    {
+        while IFS= read -r -d '' argument; do arguments+=("$argument"); done < "/proc/$pid/cmdline"
+    } 2>/dev/null || return 1
+    [[ ${arguments[1]:-} == serve ]] || return 1
+    for ((index=2; index<${#arguments[@]}; index++)); do
+        case ${arguments[index]} in
+            --config=*) selected=${arguments[index]#--config=} ;;
+            -c|--config)
+                index=$((index + 1))
+                (( index < ${#arguments[@]} )) || return 1
+                selected=${arguments[index]} ;;
+            -c=*) return 1 ;;
+            -c?*) selected=${arguments[index]#-c} ;;
+            *) return 1 ;;
+        esac
+        configurations=$((configurations + 1))
+    done
+    (( configurations <= 1 )) && [[ $selected == "$CONFIG" ]]
+}
+nr_standalone_pids() {
+    local directory
+    for directory in /proc/[0-9]*; do
+        if nr_is_relay_pid "${directory##*/}"; then printf '%s\n' "${directory##*/}"; fi
+    done
+}
 nr_ports() {
     nr_unit_identity || return 1
-    local occupied pid owned inode found item
+    local occupied pid pids owned= sockets inode found item
     occupied=$(nr_port_inodes) || nr_die 'Cannot inspect listening sockets; port availability is unknown.'
     [[ -n $occupied ]] || return 0
     pid=$(systemctl show "$SERVICE" --property=MainPID --value) || nr_die 'Cannot inspect dedicated service MainPID.'
-    if [[ ! $pid =~ ^[0-9]+$ || $pid == 0 ]]; then
-        nr_report_ports || true
-        nr_die 'TCP or UDP 443 belongs to another process; no other service was stopped.'
-    fi
-    owned=$(nr_pid_socket_inodes "$pid") || nr_die 'Cannot establish service socket ownership.'
+    # The canonical unit's MainPID and positively identified standalone relay
+    # instances are takeover targets; every other socket owner is a conflict.
+    pids=$(nr_standalone_pids)
+    if [[ $pid =~ ^[1-9][0-9]*$ ]]; then pids+=$'\n'$pid; fi
+    while IFS= read -r pid; do
+        [[ -n $pid ]] || continue
+        # A process may exit between the socket snapshot and this read.
+        if sockets=$(nr_pid_socket_inodes "$pid" 2>/dev/null); then owned+=$sockets$'\n'; fi
+    done <<< "$pids"
     while IFS= read -r inode; do
         [[ $inode =~ ^[0-9]+$ ]] || nr_die 'Invalid kernel socket record.'
         found=0
@@ -611,6 +666,13 @@ nr_rollback() {
 nr_cleanup() {
     local status=$?
     trap - EXIT
+    # Never delete scratch files under a running Certbot request. Without job
+    # control, Bash's background jobs ignore SIGINT, so an interrupted run waits
+    # for that bounded ACME request instead of abandoning partial ACME state.
+    if [[ -n $certificate_job ]] && kill -0 "$certificate_job" 2>/dev/null; then
+        printf 'Waiting for the running certificate request to finish...\n' >&2
+    fi
+    if [[ -n $certificate_job ]]; then wait "$certificate_job" 2>/dev/null || true; fi
     if (( transaction_started )); then
         if nr_rollback; then
             printf 'The candidate failed; dedicated files and prior active/enabled state were restored.\n' >&2
@@ -1118,6 +1180,27 @@ nr_prepare_certificate() {
     if (( previous )); then nr_atomic_install "$cert_backup/renewal.conf" "$renewal" 600; fi
     nr_die "Certbot cannot read the updated renewal metadata; inspect private backup $cert_backup."
 }
+# Background wrapper. errexit is ignored inside `if`/`||` contexts, so run the
+# subshell as a plain command after set +e, then report its status. A failure
+# is shown at once; the installer stops after the concurrent build returns.
+nr_certificate_job() {
+    local status=0
+    set +e
+    ( set -e; nr_prepare_certificate ) > "$work/certificate.log" 2>&1
+    status=$?
+    if (( status )); then
+        printf 'Certificate preparation failed; the installer stops after the running build:\n' >&2
+        cat -- "$work/certificate.log" >&2
+    fi
+    return "$status"
+}
+nr_wait_certificate() {
+    local status=0
+    wait "$certificate_job" || status=$?
+    certificate_job=
+    (( status == 0 )) || nr_die 'Certificate preparation failed; see the messages above. No deployed file was changed.'
+    cat -- "$work/certificate.log"
+}
 # Stage both certificate copies, configuration and exports before stopping the
 # old unit. The candidate is exposed read-only at a stable runtime mount so the
 # actual service UID can validate it without traversing root-only build caches.
@@ -1173,6 +1256,34 @@ nr_stop_service() {
         if systemctl is-active --quiet "$SERVICE"; then nr_die 'Cannot stop the existing relay service.'; fi
     fi
     if systemctl is-active --quiet "$SERVICE"; then nr_die 'The existing relay service did not stop.'; fi
+    nr_stop_standalone
+    nr_ports_free
+}
+# Recheck identity immediately before each signal so an exited relay's reused
+# numeric PID is not signalled. TERM first, KILL only after a bounded grace.
+nr_signal_standalone() {
+    local signal=$1 pid
+    while IFS= read -r pid; do
+        [[ -n $pid ]] || continue
+        if nr_is_relay_pid "$pid" && kill -s "$signal" -- "$pid" 2>/dev/null; then
+            printf 'Sent %s to manually started previous %s process %s.\n' "$signal" "$SERVICE" "$pid"
+        fi
+    done < <(nr_standalone_pids)
+}
+nr_stop_standalone() {
+    local attempt
+    [[ -n $(nr_standalone_pids) ]] || return 0
+    nr_signal_standalone TERM
+    for ((attempt=0; attempt<15; attempt++)); do
+        [[ -n $(nr_standalone_pids) ]] || return 0
+        (( attempt != 10 )) || nr_signal_standalone KILL
+        sleep 1
+    done
+    nr_die 'A manually started previous relay process did not exit.'
+}
+# Used after the stop and again immediately before the start: another program
+# may bind the released port while files are replaced. Report it; never stop it.
+nr_ports_free() {
     local occupied
     occupied=$(nr_port_inodes) || nr_die 'Cannot verify that 443 was released.'
     if [[ -n $occupied ]]; then
@@ -1202,7 +1313,6 @@ nr_deploy() {
     if [[ -z $(find -P "$WWW" -mindepth 1 -maxdepth 1 -print -quit) ]]; then
         printf '<!doctype html>\n<title>Welcome</title>\n<h1>Welcome</h1>\n' | nr_new_file "$WWW/index.html" 644
     fi
-    nr_prepare_certificate
     nr_prepare
     nr_ports
     {
@@ -1245,6 +1355,7 @@ nr_deploy() {
     # Replace only this unit's stale enablement entries after recording them.
     rm -f -- "/etc/systemd/system/multi-user.target.wants/$SERVICE.service" "/run/systemd/system/multi-user.target.wants/$SERVICE.service"
     systemctl enable "$SERVICE"
+    nr_ports_free
     systemctl start "$SERVICE"
     for ((attempt=0; attempt<30; attempt++)); do
         systemctl is-active --quiet "$SERVICE" || nr_die 'Candidate stopped during HTTPS readiness; restoring the previous deployment.'
@@ -1280,14 +1391,29 @@ nr_deploy() {
 nr_token_valid() {
     [[ $1 =~ ^[A-Za-z0-9_-]{35,50}$ || $1 =~ ^cf(ut|at)_[A-Za-z0-9_-]{32,256}$ ]]
 }
+# A rerun may press Enter to keep this domain's saved root-only renewal token.
+# Read it only from the checked dedicated file and by a strict line pattern,
+# never by sourcing; the value is rewritten unchanged with the same mode.
+nr_saved_token() {
+    [[ -f $CREDS && ! -L $CREDS ]] || return 1
+    nr_check_leaf "$CREDS" private
+    sed -n 's/^dns_cloudflare_api_token = \([A-Za-z0-9_-]*\)$/\1/p' "$CREDS"
+}
 nr_inputs() {
     nr_ask 'Relay domain'; domain=${REPLY,,}; domain=${domain%.}
     nr_domain "$domain" || nr_die 'Invalid DNS hostname; omit scheme, port and wildcard.'
     CREDS=$CERT_ROOT/$SERVICE-cloudflare-$domain.ini
     printf 'Use a zone-scoped token with Zone:DNS:Edit and Zone:Zone:Read.\n'
     if [[ -z $cf_token ]]; then
-        read -r -s -p 'CF_API_TOKEN (hidden): ' cf_token </dev/tty || nr_die 'Could not read token.'
+        if [[ -f $CREDS && ! -L $CREDS ]]; then
+            read -r -s -p 'CF_API_TOKEN (hidden; Enter keeps the saved renewal token): ' cf_token </dev/tty || nr_die 'Could not read token.'
+        else
+            read -r -s -p 'CF_API_TOKEN (hidden): ' cf_token </dev/tty || nr_die 'Could not read token.'
+        fi
         printf '\n'
+        if [[ -z $cf_token ]]; then
+            cf_token=$(nr_saved_token) || nr_die 'No safe saved renewal token exists for this domain; enter a Cloudflare API Token.'
+        fi
     fi
     nr_token_valid "$cf_token" || nr_die 'Expected a Cloudflare API Token.'
 }
@@ -1357,7 +1483,7 @@ nr_main() {
     if nr_certificate_valid "$CERT_ROOT/live/$domain/fullchain.pem" "$CERT_ROOT/live/$domain/privkey.pem"; then
         printf 'Certificate check: a currently valid matching certificate exists; it will be retained.\n'
     else
-        printf 'Certificate check: DNS-01 issuance is needed after the candidate build.\n'
+        printf 'Certificate check: DNS-01 issuance is needed; it runs concurrently with the build.\n'
     fi
     nr_check_leaf "$TOOLS" rootdir
     install -d -m 700 "$TOOLS"
@@ -1366,7 +1492,13 @@ nr_main() {
     trap nr_cleanup EXIT
     trap 'exit 130' INT
     trap 'exit 143' TERM
+    # DNS-01 issuance (or reuse/renewal-metadata repair) needs no compiled
+    # binary: run it while Rust builds. The shell keeps no token copy afterwards.
+    nr_certificate_job &
+    certificate_job=$!
+    unset cf_token
     nr_build "$jobs"
+    nr_wait_certificate
     nr_deploy
 }
 

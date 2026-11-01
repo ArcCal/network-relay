@@ -52,6 +52,7 @@ private final class Instance {
                 }
             case .connected: connected = true
             case .reconnecting: break
+            case .traffic, .trafficUnavailable: break
             case .exited(let code, let why): exitCode = code; error = why
             }
         }

@@ -59,6 +59,16 @@ const MAX_SOCKETS: usize = 64;
 const EPHEMERAL_FIRST: u16 = 49152;
 const EPHEMERAL_PORTS: u16 = 16384;
 
+#[cfg(any(test, feature = "test-support"))]
+#[derive(Debug, serde::Serialize)]
+pub struct TcpSnapshot {
+    pub local: Option<SocketAddr>,
+    pub peer: Option<SocketAddr>,
+    pub state: String,
+    pub received_bytes: usize,
+    pub queued_bytes: usize,
+}
+
 /// The largest UDP payload that fits in one packet of `mtu` bytes.
 pub fn max_udp_payload(mtu: usize, ipv4: bool) -> usize {
     mtu - if ipv4 { 20 } else { 40 } - 8
@@ -169,8 +179,34 @@ impl NetStack {
         why
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     pub fn socket_count(&self) -> usize {
-        self.lock().sockets.iter().count()
+        self.socket_counts().0
+    }
+
+    /// Total sockets and the subset retained after their application dropped.
+    /// Sample together so reaping cannot make resource accounting inconsistent.
+    pub fn socket_counts(&self) -> (usize, usize) {
+        let st = self.lock();
+        (st.sockets.iter().count(), st.lingering.len())
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn tcp_snapshot(&self) -> Vec<TcpSnapshot> {
+        self.lock()
+            .sockets
+            .iter()
+            .filter_map(|(_, socket)| match socket {
+                Socket::Tcp(socket) if socket.state() != tcp::State::Listen => Some(TcpSnapshot {
+                    local: socket.local_endpoint().map(Into::into),
+                    peer: socket.remote_endpoint().map(Into::into),
+                    state: socket.state().to_string(),
+                    received_bytes: socket.recv_queue(),
+                    queued_bytes: socket.send_queue(),
+                }),
+                _ => None,
+            })
+            .collect()
     }
 
     pub fn socket_limit(&self) -> usize {
@@ -499,11 +535,14 @@ impl State {
         self.lingering.retain(|&(handle, give_up)| {
             let s = sockets.get_mut::<tcp::Socket>(handle);
             match s.state() {
-                tcp::State::Closed | tcp::State::TimeWait => {
+                tcp::State::Closed => {
                     sockets.remove(handle);
                     self.waiters.remove(&handle);
                     false
                 }
+                // smoltcp owns TIME-WAIT expiry and must ACK a retransmitted
+                // peer FIN even after the application's stream was dropped.
+                tcp::State::TimeWait => true,
                 _ if now >= give_up => {
                     s.abort();
                     // Removed next time, after the reset has been sent.
@@ -925,6 +964,30 @@ mod tests {
         loss_every: Option<usize>,
         max_len: usize,
     ) -> (NetStack, NetStack, Vec<tokio::task::JoinHandle<()>>) {
+        pair_with_faults(loss_every, max_len, None)
+    }
+
+    #[derive(Default)]
+    struct FinalAckFault {
+        peer_fin: std::sync::atomic::AtomicBool,
+        acknowledgements: AtomicU64,
+        resets: AtomicU64,
+    }
+
+    fn tcp_flags(packet: &[u8]) -> Option<u8> {
+        let offset = match packet.first()? >> 4 {
+            4 if packet.get(9) == Some(&6) => usize::from(packet[0] & 15) * 4,
+            6 if packet.get(6) == Some(&6) => 40,
+            _ => return None,
+        };
+        packet.get(offset + 13).copied()
+    }
+
+    fn pair_with_faults(
+        loss_every: Option<usize>,
+        max_len: usize,
+        final_ack: Option<Arc<FinalAckFault>>,
+    ) -> (NetStack, NetStack, Vec<tokio::task::JoinHandle<()>>) {
         let a = NetStack::new(0);
         let b = NetStack::new(0);
         a.set_addresses(&[ip(A4), ip(A6)]);
@@ -937,6 +1000,7 @@ mod tests {
         let (sa, sb) = (a.clone(), b.clone());
         tasks.push(tokio::spawn(async move { sa.run(a_in, a_out).await }));
         tasks.push(tokio::spawn(async move { sb.run(b_in, b_out).await }));
+        let client_fault = final_ack.clone();
         tasks.push(tokio::spawn(async move {
             let mut n = 0;
             while let Some(p) = a_wire.recv().await {
@@ -944,11 +1008,26 @@ mod tests {
                 if loss_every.is_some_and(|k| n % k == 0) || p.len() > max_len {
                     continue;
                 }
+                if let Some(fault) = &client_fault {
+                    if fault.peer_fin.load(Ordering::SeqCst) {
+                        let flags = tcp_flags(&p).unwrap_or(0);
+                        if flags & 4 != 0 {
+                            fault.resets.fetch_add(1, Ordering::SeqCst);
+                        } else if flags & 0x11 == 0x10 && fault.acknowledgements.fetch_add(1, Ordering::SeqCst) == 0 {
+                            continue; // Lose exactly the first ACK after the peer FIN.
+                        }
+                    }
+                }
                 let _ = to_b.send(p).await;
             }
         }));
         tasks.push(tokio::spawn(async move {
             while let Some(p) = b_wire.recv().await {
+                if let Some(fault) = &final_ack {
+                    if tcp_flags(&p).is_some_and(|flags| flags & 1 != 0) {
+                        fault.peer_fin.store(true, Ordering::SeqCst);
+                    }
+                }
                 let _ = to_a.send(p).await;
             }
         }));
@@ -1014,6 +1093,92 @@ mod tests {
         let (a, b, _tasks) = pair(Some(100));
         let _echo = echo(&b, 7);
         round_trip(&a, B4, 1 << 20).await;
+        round_trip(&a, B6, 1 << 20).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn tcp_duplex_recovers_after_receive_windows_fill_and_reopen_with_loss() {
+        let (a, b, tasks) = pair(Some(100));
+        let mut listener = b.listen(7, 1).unwrap();
+        for destination in [B4, B6] {
+            for round in 0..5 {
+                tokio::time::timeout(Duration::from_secs(15), async {
+                    let (client, peer) = tokio::join!(a.connect(sa(destination, 7)), listener.accept());
+                    let mut peer = peer.unwrap();
+                    let echo = tokio::spawn(async move {
+                        let mut buf = [0; 32 << 10];
+                        loop {
+                            let n = peer.read(&mut buf).await?;
+                            if n == 0 {
+                                return peer.shutdown().await;
+                            }
+                            peer.write_all(&buf[..n]).await?;
+                        }
+                    });
+                    let (mut read, mut write) = tokio::io::split(client.unwrap());
+                    let data: Vec<_> = (0..4 << 20).map(|i| ((i * 73 + round) % 251) as u8).collect();
+                    let sent = data.clone();
+                    let writer = tokio::spawn(async move {
+                        write.write_all(&sent).await?;
+                        write.shutdown().await
+                    });
+                    // Stop consuming echoes until both directions have real
+                    // backpressure. Reopening the receive window must resume
+                    // the transfer despite packet loss and scaled windows.
+                    tokio::time::sleep(Duration::from_millis(300)).await;
+                    let mut received = Vec::new();
+                    read.read_to_end(&mut received).await.unwrap();
+                    writer.await.unwrap().unwrap();
+                    echo.await.unwrap().unwrap();
+                    assert!(received == data);
+                })
+                .await
+                .unwrap_or_else(|_| {
+                    panic!("duplex TCP stalled after reopening a receive window: {destination}, round {round}; client {:?}; peer {:?}", a.tcp_snapshot(), b.tcp_snapshot())
+                });
+            }
+        }
+        for task in tasks {
+            task.abort();
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn dropped_final_ack_is_retransmitted_after_the_application_drops_the_stream() {
+        for destination in [B4, B6] {
+            let fault = Arc::new(FinalAckFault::default());
+            let (a, b, tasks) = pair_with_faults(None, usize::MAX, Some(fault.clone()));
+            let mut listener = b.listen(7, 1).unwrap();
+            let (client, peer) = tokio::join!(a.connect(sa(destination, 7)), listener.accept());
+            let mut client = client.unwrap();
+            let mut peer = peer.unwrap();
+            client.shutdown().await.unwrap();
+            assert_eq!(peer.read(&mut [0; 1]).await.unwrap(), 0);
+            peer.shutdown().await.unwrap();
+            drop(peer);
+            assert_eq!(client.read(&mut [0; 1]).await.unwrap(), 0);
+            drop(client);
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while fault.acknowledgements.load(Ordering::SeqCst) < 2 && fault.resets.load(Ordering::SeqCst) == 0 {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("the retransmitted peer FIN received no acknowledgement");
+            assert_eq!(fault.resets.load(Ordering::SeqCst), 0, "normal close became an RST after losing the final ACK");
+            assert!(fault.acknowledgements.load(Ordering::SeqCst) >= 2);
+            assert_eq!(a.socket_counts(), (1, 1));
+            {
+                let mut st = a.lock();
+                st.lingering[0].1 = Instant::now() - Duration::from_secs(1);
+                st.reap();
+                let handle = st.lingering[0].0;
+                assert_eq!(st.sockets.get::<tcp::Socket>(handle).state(), tcp::State::TimeWait);
+            }
+            for task in tasks {
+                task.abort();
+            }
+        }
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1120,7 +1285,7 @@ mod tests {
         }
         let sockets = |s: &NetStack| s.lock().sockets.iter().count();
         // Ours close and leave; the echo side keeps its listeners and UDP socket.
-        for _ in 0..50 {
+        for _ in 0..150 {
             if sockets(&a) == 0 {
                 break;
             }

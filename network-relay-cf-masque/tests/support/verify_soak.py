@@ -91,7 +91,10 @@ def verify(log: Path, manifest_path: Path, evidence_only: bool = False) -> dict:
             require(status["available"] and status["failure"] is None, f"{transport} became unavailable")
             require(status["generation"] == peer["tunnels"] == peer["authenticated_clients"] == 1,
                     f"{transport} restarted or reenrolled its outer session")
-            require(status["sockets"] == 6 and mode["relay_tunnels"] == 6,
+            sockets, lingering = status["sockets"], status["lingering_sockets"]
+            require(0 <= lingering <= sockets <= status["socket_limit"],
+                    f"{transport} has invalid socket accounting or exceeded its limit")
+            require(sockets - lingering == 6 and mode["relay_tunnels"] == 6,
                     f"{transport} lost or added a retained business flow")
             require(not any(status[name] for name in
                             ("dropped_packets", "inbound_queue_drops", "stack_queue_drops")),

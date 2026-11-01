@@ -12,7 +12,44 @@ use std::sync::Arc;
 use support::relay::{TestEnv, TestRelay, PASSWORD, USER, WAIT};
 use support::warp_peer::WarpPeer;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use warp_masque_egress::Egress;
 use warp_masque_egress::{Transport, WarpConfig, WarpEgress};
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn ipv6_underlay_and_tunneled_dns_tcp_udp_work_in_each_explicit_transport() -> Result<()> {
+    for mode in [Transport::H2, Transport::H3] {
+        let _env = TestEnv::new("ipv6-underlay")?;
+        let mut peer = WarpPeer::start_at(mode, std::net::Ipv6Addr::LOCALHOST.into()).await?;
+        let mut settings: toml::Value = toml::from_str(&peer.settings())?;
+        settings["warp"]["dns"] = toml::Value::Array(vec!["[fd00::2]:53".into()]);
+        let config = WarpConfig::from_toml(&toml::to_string(&settings)?)?;
+        let warp = WarpEgress::connect(&config).await?;
+        let addresses = warp.resolve("fixture.test").await?;
+        ensure!(addresses.contains(&support::warp_peer::peer_addr(7).ip()), "IPv6 DNS did not answer");
+        ensure!(peer.dns_queries().iter().all(|q| q.source.is_ipv6()), "DNS used the IPv4 path");
+        for address in ["198.18.0.2:7", "[fd00::2]:7"] {
+            let address = address.parse()?;
+            let mut tcp = warp.connect_tcp(address).await?;
+            tcp.write_all(b"ipv6-underlay").await?;
+            tcp.shutdown().await?;
+            let mut echo = Vec::new();
+            tokio::time::timeout(WAIT, tcp.read_to_end(&mut echo)).await??;
+            ensure!(echo == b"ipv6-underlay", "TCP payload/half-close changed");
+            drop(tcp);
+            let udp = warp.connect_udp(address).await?;
+            udp.send(b"ipv6-underlay").await?;
+            let mut echo = [0; 64];
+            let len = tokio::time::timeout(WAIT, udp.recv(&mut echo)).await??;
+            ensure!(&echo[..len] == b"ipv6-underlay", "UDP payload changed");
+            ensure!(udp.local_addr()?.is_ipv6() == address.is_ipv6(), "inner source family changed");
+        }
+        ensure!(peer.snapshot().authenticated_clients == 1 && peer.snapshot().tunnels == 1, "outer session changed");
+        ensure!(peer.errors().is_empty(), "peer failed: {:?}", peer.errors());
+        warp.shutdown().await;
+        peer.shutdown().await;
+    }
+    Ok(())
+}
 
 struct Driver(tokio::task::JoinHandle<()>);
 impl Drop for Driver {

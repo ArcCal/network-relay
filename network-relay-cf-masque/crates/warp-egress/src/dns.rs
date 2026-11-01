@@ -14,7 +14,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::time::Instant;
 use tracing::debug;
 
-use crate::net::Net;
+use crate::netstack::{self, NetStack};
 
 const TYPE_A: u16 = 1;
 const TYPE_CNAME: u16 = 5;
@@ -76,14 +76,14 @@ impl Drop for PendingLookup<'_> {
 
 /// Resolves host names with the given servers, through `net`.
 pub struct Resolver {
-    net: Net,
+    net: NetStack,
     servers: Vec<SocketAddr>,
     cache: Mutex<HashMap<QueryKey, Cached>>,
     pending: PendingQueries,
 }
 
 impl Resolver {
-    pub fn new(net: Net, servers: Vec<SocketAddr>) -> Self {
+    pub fn new(net: NetStack, servers: Vec<SocketAddr>) -> Self {
         Self { net, servers, cache: Mutex::new(HashMap::new()), pending: Mutex::new(HashMap::new()) }
     }
 
@@ -149,11 +149,14 @@ impl Resolver {
         let (result, ttl) = match self.query(name, qtype).await {
             Answer::Found(list, ttl) if !list.is_empty() => (Ok(list), ttl),
             Answer::Found(_, ttl) | Answer::NoSuchName(ttl) => (Err(LookupError::NotFound), ttl),
-            Answer::Failed => (Err(LookupError::NoAnswer), 0),
+            // RFC 9520 section 3.2 requires at least one second of failure
+            // caching. Keep the shortest permitted delay for rapid recovery;
+            // a failed lookup must remain distinct from NXDOMAIN/NODATA.
+            Answer::Failed => (Err(LookupError::NoAnswer), 1),
         };
         self.net.check_available().map_err(|_| LookupError::Unavailable)?;
-        // TTL 0 is explicitly uncacheable. Negative lifetimes come from
-        // SOA records, never from a local fixed minimum (RFC 2308).
+        // Successful TTL 0 answers are uncacheable. NXDOMAIN/NODATA lifetimes
+        // come from SOA records (RFC 2308); failure caching is separate above.
         if ttl > 0 {
             let now = Instant::now();
             let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
@@ -191,9 +194,10 @@ impl Resolver {
     /// One query to one server. `Ok(None)` means no usable answer in time.
     async fn query_server(&self, to: SocketAddr, name: &str, qtype: u16, wait: Duration) -> io::Result<Option<Answer>> {
         let id = random_id();
-        let udp_size = self.net.max_udp_payload(to.ip())?.min(usize::from(EDNS_UDP_SIZE)) as u16;
+        self.net.local_address(to.ip())?;
+        let udp_size = netstack::max_udp_payload(self.net.mtu(), to.is_ipv4()).min(usize::from(EDNS_UDP_SIZE)) as u16;
         let query = build_query_with_udp_size(id, name, qtype, udp_size);
-        let socket = self.net.bind_udp()?;
+        let socket = self.net.bind_udp(0)?;
         socket.send_to(&query, to).await?;
         let deadline = Instant::now() + wait;
         let response = loop {
@@ -276,14 +280,10 @@ fn random_id() -> u16 {
 /// Lower case without a trailing dot, if `host` is a valid DNS name of
 /// ASCII labels (clients send internationalized names as punycode).
 pub(crate) fn normalize(host: &str) -> Option<String> {
-    let name = host.strip_suffix('.').unwrap_or(host).to_ascii_lowercase();
-    let valid = !name.is_empty()
-        && name.len() <= 253
-        && name.split('.').all(|label| {
-            (1..=63).contains(&label.len())
-                && label.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
-        });
-    valid.then_some(name)
+    let target = network_relay::policy::Target::from_template_vars(host, "53")?;
+    // IP literals are handled before DNS. An IPv6 literal cannot be encoded
+    // as a DNS query name; keep hostname rules identical to the relay's.
+    (!target.host.contains(':')).then_some(target.host)
 }
 
 /// A recursive query for `name` (already normalized) with an EDNS(0) OPT
@@ -463,6 +463,7 @@ fn dns_ttl(ttl: u32) -> u32 {
 pub(crate) fn read_name(msg: &[u8], mut pos: usize) -> Option<(String, usize)> {
     let mut name = String::new();
     let mut end = None;
+    let mut wire_len = 1; // Include the terminating root label (RFC 1035 section 2.3.4).
     for _ in 0..128 {
         let len = *msg.get(pos)?;
         match len & 0xc0 {
@@ -472,14 +473,29 @@ pub(crate) fn read_name(msg: &[u8], mut pos: usize) -> Option<(String, usize)> {
                 if !name.is_empty() {
                     name.push('.');
                 }
-                name.extend(label.iter().map(|&b| char::from(b.to_ascii_lowercase())));
-                if name.len() > 255 {
+                wire_len += 1 + label.len();
+                if wire_len > 255 {
                     return None;
+                }
+                // RFC 2181 section 11 permits binary labels. Escape octets
+                // outside our hostname alphabet so embedded dots cannot turn
+                // one wire label into several question/CNAME/owner labels.
+                for &b in label {
+                    if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_') {
+                        name.push(char::from(b.to_ascii_lowercase()));
+                    } else {
+                        use std::fmt::Write;
+                        write!(name, "\\{b:03}").expect("writing to String");
+                    }
                 }
                 pos += 1 + usize::from(len);
             }
             0xc0 => {
                 let target = usize::from(u16::from_be_bytes([len, *msg.get(pos + 1)?]) & 0x3fff);
+                // RFC 1035 section 4.1.4 points to a prior occurrence.
+                if target < 12 || target >= pos {
+                    return None;
+                }
                 end.get_or_insert(pos + 2);
                 pos = target;
             }
@@ -492,7 +508,6 @@ pub(crate) fn read_name(msg: &[u8], mut pos: usize) -> Option<(String, usize)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::netstack::NetStack;
     use bytes::Bytes;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
@@ -614,6 +629,36 @@ mod tests {
         assert!(read_name(&msg, 12).is_none());
     }
 
+    #[test]
+    fn wire_label_boundaries_cannot_impersonate_the_question_or_answer() {
+        let mut response = response_records(&[], &[], 0);
+        // One label containing a dot is distinct from the two queried labels.
+        response.splice(12..25, b"\x0bwanted.test\x00".iter().copied());
+        assert!(parse_response(&response, 9, "wanted.test", TYPE_A).is_none());
+
+        let mut forged = b"\x0bwanted.test\x00".to_vec();
+        forged.extend_from_slice(&[0, 1, 0, 1, 0, 0, 0, 60, 0, 4, 192, 0, 2, 99]);
+        let response = response_records(&[forged], &[], 0);
+        assert!(parse_response(&response, 9, "wanted.test", TYPE_A).unwrap().addrs.is_empty());
+    }
+
+    #[test]
+    fn binary_labels_are_unambiguous_and_wire_name_limits_are_enforced() {
+        let mut msg = vec![0; 12];
+        msg.extend_from_slice(b"\x04A.\\\xff\x00");
+        assert_eq!(read_name(&msg, 12).unwrap().0, r"a\046\092\255");
+        let longest = format!("{}.{}.{}.{}", "a".repeat(63), "b".repeat(63), "c".repeat(63), "d".repeat(61));
+        let mut msg = vec![0; 12];
+        msg.extend_from_slice(&wire_name(&longest));
+        assert_eq!(read_name(&msg, 12).unwrap().0, longest);
+        let mut msg = vec![0; 12];
+        msg.extend_from_slice(&wire_name(&format!("{longest}d")));
+        assert!(read_name(&msg, 12).is_none(), "256 wire octets exceed the DNS name limit");
+        let mut msg = vec![0; 12];
+        msg.extend_from_slice(b"\xc0\x0e\x01a\x00");
+        assert!(read_name(&msg, 12).is_none(), "compression must refer to a prior occurrence");
+    }
+
     fn wire_name(name: &str) -> Vec<u8> {
         let mut out = Vec::new();
         for label in name.split('.').filter(|l| !l.is_empty()) {
@@ -725,7 +770,17 @@ mod tests {
         assert_eq!(normalize("xn--fiqs8s.example").as_deref(), Some("xn--fiqs8s.example"));
         let longest = vec!["a"; 127].join(".");
         assert_eq!(normalize(&longest).map(|n| n.len()), Some(253));
-        for bad in ["", ".", "a..b", "exa mple.com", "bücher.example", &"a".repeat(64), &format!("{longest}b")] {
+        for bad in [
+            "",
+            ".",
+            "a..b",
+            "exa mple.com",
+            "-host.test",
+            "host-.test",
+            "bücher.example",
+            &"a".repeat(64),
+            &format!("{longest}b"),
+        ] {
             assert_eq!(normalize(bad), None, "{bad:?}");
         }
     }
@@ -816,7 +871,7 @@ mod tests {
             SocketAddr::new("10.0.0.2".parse().unwrap(), port),
             SocketAddr::new("fd00::2".parse().unwrap(), port),
         ];
-        (Resolver::new(Net::Stack(client), servers), count, tasks)
+        (Resolver::new(client, servers), count, tasks)
     }
 
     #[tokio::test]
@@ -872,7 +927,7 @@ mod tests {
     async fn tunnel_failure_rejects_cached_and_literal_lookups() {
         let stack = NetStack::new(0);
         stack.set_addresses(&["10.0.0.1".parse().unwrap()]);
-        let resolver = Resolver::new(Net::Stack(stack.clone()), vec!["10.0.0.2:53".parse().unwrap()]);
+        let resolver = Resolver::new(stack.clone(), vec!["10.0.0.2:53".parse().unwrap()]);
         resolver.cache.lock().unwrap().insert(
             ("cached.test".to_owned(), TYPE_A),
             (Ok(vec!["192.0.2.80".parse().unwrap()]), Instant::now() + Duration::from_secs(120)),
@@ -890,7 +945,7 @@ mod tests {
         use std::future::Future;
         let stack = NetStack::new(0);
         stack.set_addresses(&["10.0.0.1".parse().unwrap()]);
-        let resolver = Resolver::new(Net::Stack(stack.clone()), vec!["10.0.0.9:5353".parse().unwrap()]);
+        let resolver = Resolver::new(stack.clone(), vec!["10.0.0.9:5353".parse().unwrap()]);
         let mut first = Box::pin(resolver.lookup_family("pending.test", false));
         let mut second = Box::pin(resolver.lookup_family("pending.test", false));
         {
@@ -1012,7 +1067,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn partial_udp_answers_use_tcp_and_tcp_failures_are_not_negative_cached() {
+    async fn partial_udp_answers_use_tcp_and_failures_are_briefly_cached_as_failures() {
         let (mut r, count, _tasks) = setup(&["10.0.0.1"]).await;
         r.servers = vec!["10.0.0.2:53".parse().unwrap()];
         assert_eq!(r.lookup("partial.test").await.unwrap(), ["192.0.2.80".parse::<IpAddr>().unwrap()]);
@@ -1020,7 +1075,12 @@ mod tests {
             let before = count.load(Ordering::SeqCst);
             assert_eq!(r.lookup(name).await, Err(LookupError::NoAnswer));
             assert_eq!(r.lookup(name).await, Err(LookupError::NoAnswer));
-            assert_eq!(count.load(Ordering::SeqCst) - before, 4, "each lookup must retry servers, not reuse NotFound");
+            assert_eq!(count.load(Ordering::SeqCst) - before, 2, "RFC 9520 requires a brief failure cache");
+            let expires = r.cache.lock().unwrap().get(&(name.into(), TYPE_A)).unwrap().1;
+            assert!(expires <= Instant::now() + Duration::from_secs(1));
+            tokio::time::sleep_until(expires + Duration::from_millis(1)).await;
+            assert_eq!(r.lookup(name).await, Err(LookupError::NoAnswer));
+            assert_eq!(count.load(Ordering::SeqCst) - before, 4, "expired failures must be retried");
         }
     }
 }

@@ -33,8 +33,10 @@ GPL reference implementations supply behavioral evidence and are not copied.
    Nothing falls back to the host network or resolver.
 3. `crates/warp-egress` implements that interface with a pinned, mutually
    authenticated WARP tunnel, smoltcp sockets and tunnel DNS. It needs no
-   host TUN, policy routes or host DNS. It depends on network-relay only for
-   the interface.
+   host TUN, policy routes or host DNS. It reuses network-relay's interface,
+   hostname rules, QUIC integer encoding/decoding, Capsule encoding and
+   Capsule response-header validation. The parent has no
+   userspace IP stack or resolver over that stack, so those remain WARP-local.
 4. Only the physical WARP transport uses host TCP/UDP. Relayed TCP/UDP and
    DNS become IP packets inside WARP.
 5. The binary (`src/main.rs`) reads the one configuration file, connects

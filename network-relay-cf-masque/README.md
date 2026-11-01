@@ -44,8 +44,8 @@ numeric WARP endpoint. The diagnostic `check` command acts as a separate client
 connecting to an explicitly selected relay; it is never used to forward
 server traffic.
 
-`crates/warp-egress` can be used by other Rust programs; it depends on
-network-relay only for the `egress` interface it implements. The
+`crates/warp-egress` can be used by other Rust programs; it reuses
+network-relay's `egress` interface and public wire encoders. The
 [independent Cargo consumer](examples/reuse) shows how, patching h3 to
 network-relay's vendored copy as network-relay does. See the
 [crate README](crates/warp-egress/README.md).

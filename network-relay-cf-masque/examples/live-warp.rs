@@ -48,10 +48,9 @@ impl Drop for Driver {
 
 async fn get(warp: &WarpEgress, url: &str) -> Result<(hyper::Response<hyper::body::Incoming>, Driver)> {
     let uri: Uri = url.parse().context("invalid URL")?;
-    ensure!(uri.scheme_str() == Some("https"), "only HTTPS validation URLs are accepted");
-    let host = uri.host().context("URL needs a host")?;
-    ensure!(!uri.authority().unwrap().as_str().contains('@'), "URL credentials are not accepted");
-    let port = uri.port_u16().unwrap_or(443);
+    let target = origin_target(&uri)?;
+    let host = target.host.as_str();
+    let port = target.port;
     let addresses = warp.resolve(host).await.context("tunneled origin DNS")?;
     let mut stream = None;
     for address in addresses {
@@ -86,6 +85,30 @@ async fn get(warp: &WarpEgress, url: &str) -> Result<(hyper::Response<hyper::bod
         .context("origin response deadline")??;
     ensure!(response.status().is_success(), "origin returned HTTP {} (redirects are not followed)", response.status());
     Ok((response, driver))
+}
+
+fn origin_target(uri: &Uri) -> Result<network_relay::policy::Target> {
+    ensure!(uri.scheme_str() == Some("https"), "only HTTPS validation URLs are accepted");
+    let authority = uri.authority().context("URL needs a host")?;
+    ensure!(!authority.as_str().contains('@'), "URL credentials are not accepted");
+    let authority = if authority.port().is_some() { authority.as_str().to_owned() } else { format!("{authority}:443") };
+    network_relay::policy::Target::from_authority(&authority).context("invalid origin host or port")
+}
+
+#[test]
+fn validation_urls_use_the_parent_target_parser_for_each_address_family() {
+    for (url, host, port) in [
+        ("https://example.com/path", "example.com", 443),
+        ("https://192.0.2.1:8443/", "192.0.2.1", 8443),
+        ("https://[2001:db8::1]/", "2001:db8::1", 443),
+        ("https://[2001:db8::1]:8443/", "2001:db8::1", 8443),
+    ] {
+        let target = origin_target(&url.parse().unwrap()).unwrap();
+        assert_eq!((target.host.as_str(), target.port), (host, port));
+    }
+    for url in ["http://example.com/", "https://user:password@example.com/", "https://example.com:0/"] {
+        assert!(origin_target(&url.parse().unwrap()).is_err());
+    }
 }
 
 async fn trace(warp: &WarpEgress) -> Result<serde_json::Value> {

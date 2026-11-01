@@ -215,12 +215,37 @@ async fn bulk(fixture: &Fixture, inbound: &str, bytes: usize) -> Result<serde_js
                 "H3 CONNECT failed"
             );
             let (mut send, mut recv) = stream.split();
-            let sent = AtomicUsize::new(0);
-            let received = AtomicUsize::new(0);
+            let sent = Arc::new(AtomicUsize::new(0));
+            let received = Arc::new(AtomicUsize::new(0));
             let finished = AtomicBool::new(false);
             let received_eof = AtomicBool::new(false);
-            let last_sent_ms = AtomicUsize::new(0);
-            let last_received_ms = AtomicUsize::new(0);
+            let last_sent_ms = Arc::new(AtomicUsize::new(0));
+            let last_received_ms = Arc::new(AtomicUsize::new(0));
+            let mut diagnostics = tokio::task::JoinSet::new();
+            if std::env::var_os("WARP_BULK_DIAGNOSTICS").is_some() {
+                let (sent, received) = (sent.clone(), received.clone());
+                let (last_sent, last_received) = (last_sent_ms.clone(), last_received_ms.clone());
+                let warp = fixture.warp.clone();
+                let peer = fixture.peer.packet_stack();
+                let connection = client.connection().clone();
+                // A separate task observes the stall without repolling the
+                // transfer and accidentally compensating for a missing wake.
+                diagnostics.spawn(async move {
+                    while connection.close_reason().is_none() {
+                        tokio::time::sleep(Duration::from_secs(5)).await;
+                        let elapsed = started.elapsed().as_millis() as usize;
+                        let progress = last_sent.load(Ordering::Relaxed).max(last_received.load(Ordering::Relaxed));
+                        if elapsed.saturating_sub(progress) >= 5000 {
+                            save_evidence("h3-bulk-stall", serde_json::json!({"elapsed_ms": elapsed,
+                                "sent": sent.load(Ordering::Relaxed), "received": received.load(Ordering::Relaxed),
+                                "last_progress_ms": progress, "egress": warp.status(), "egress_tcp": warp.tcp_snapshot(),
+                                "peer_tcp": peer.tcp_snapshot(), "quinn": format!("{:?}", connection.stats()),
+                                "close": format!("{:?}", connection.close_reason()), "live_cloudflare": false}))?;
+                        }
+                    }
+                    Ok::<(), anyhow::Error>(())
+                });
+            }
             let writing = async {
                 let mut buf = vec![0; CHUNK];
                 for offset in (0..bytes).step_by(CHUNK) {
@@ -580,6 +605,21 @@ async fn one_hour_forced_h2_and_h3_soak_with_resource_metrics() -> Result<()> {
                     format!("soak periodic bulk cycle {cycles}, inbound {inbound}, WARP {}", transport_name(*transport))
                 })?;
             }
+        }
+        // A completed probe can race its relay task's final drop. Distinguish
+        // live flows from TCP close state retained by the packet stack.
+        for (_, fixture, _) in &fixtures {
+            tokio::time::timeout(WAIT, async {
+                loop {
+                    let status = fixture.warp.status();
+                    if status.sockets == 6 + status.lingering_sockets && fixture.relay.relay.active_tunnels() == 6 {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .context("completed probe retained a live business socket")?;
         }
         let process = process_metrics();
         let (rss, fds) = required_resource_metrics(&process)?;

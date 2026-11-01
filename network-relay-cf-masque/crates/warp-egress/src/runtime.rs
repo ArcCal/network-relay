@@ -16,7 +16,6 @@ use crate::config::WarpConfig;
 use crate::dns::Resolver;
 use crate::egress::{DatagramIo, Egress, IoFuture, TcpStream, UdpSocket};
 use crate::masque::{Sent, Tunnel};
-use crate::net::Net;
 use crate::netstack::{self, NetStack};
 
 const PACKET_QUEUE: usize = 256;
@@ -62,6 +61,7 @@ pub struct WarpStatus {
     pub ipv6: bool,
     pub tunnel_addresses: Vec<IpAddr>,
     pub sockets: usize,
+    pub lingering_sockets: usize,
     pub socket_limit: usize,
     pub tcp_buffer_bytes_per_socket: usize,
     pub workers: usize,
@@ -76,6 +76,11 @@ pub struct WarpStatus {
 }
 
 impl WarpEgress {
+    #[cfg(feature = "test-support")]
+    pub fn tcp_snapshot(&self) -> Vec<netstack::TcpSnapshot> {
+        self.0.stack.tcp_snapshot()
+    }
+
     pub async fn connect(config: &WarpConfig) -> Result<Self> {
         config.validate()?;
         let options = config.options()?;
@@ -83,7 +88,7 @@ impl WarpEgress {
         let stack = NetStack::new(0);
         stack.set_addresses(&config.addresses()?);
         fit_mtu(&stack, &tunnel)?;
-        let resolver = Resolver::new(Net::Stack(stack.clone()), config.dns_servers().to_vec());
+        let resolver = Resolver::new(stack.clone(), config.dns_servers().to_vec());
         let counters = Arc::new(Counters::default());
         let (to_stack, incoming) = mpsc::channel(PACKET_QUEUE);
         let (outgoing, from_stack) = mpsc::channel(PACKET_QUEUE);
@@ -122,6 +127,7 @@ impl WarpEgress {
         let owner = &self.0;
         let capabilities = address_capabilities(&owner.stack);
         let workers = owner.counters.workers.load(Ordering::Relaxed);
+        let (sockets, lingering_sockets) = owner.stack.socket_counts();
         WarpStatus {
             available: capabilities.available,
             transport: owner.tunnel.transport().into(),
@@ -130,7 +136,8 @@ impl WarpEgress {
             ipv4: capabilities.ipv4,
             ipv6: capabilities.ipv6,
             tunnel_addresses: capabilities.addresses,
-            sockets: owner.stack.socket_count(),
+            sockets,
+            lingering_sockets,
             socket_limit: owner.stack.socket_limit(),
             tcp_buffer_bytes_per_socket: owner.stack.tcp_buffer_bytes(),
             workers,

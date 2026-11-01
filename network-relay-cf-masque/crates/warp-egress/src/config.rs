@@ -11,7 +11,7 @@ use serde::{Deserialize, Deserializer};
 use x509_parser::prelude::FromDer;
 
 use crate::api;
-use crate::masque::{self, Auth, Options, Transport, Verify};
+use crate::masque::{self, Options, Transport};
 
 /// Settings are loaded from the `[warp]` table of the relay's one TOML
 /// configuration file, with the registration inline in `[warp.registration]`.
@@ -170,13 +170,12 @@ impl WarpConfig {
             sni: self.sni.clone(),
             uri: self.uri.clone(),
             protocol: masque::DEFAULT_PROTOCOL,
-            verify: Verify::PinnedKey(self.credentials.endpoint_spki()?),
-            auth: Auth::DeviceKey { pkcs8_der: self.credentials.private_key_der()? },
+            endpoint_spki: self.credentials.endpoint_spki()?,
+            device_pkcs8: self.credentials.private_key_der()?,
             fwmark: self.fwmark,
             keepalive: Duration::from_secs(self.keepalive_secs),
             idle_timeout: Duration::from_secs(self.idle_timeout_secs),
             transport: self.transport,
-            rfc: false,
         })
     }
 

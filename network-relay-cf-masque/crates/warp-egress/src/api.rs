@@ -71,7 +71,10 @@ impl Config {
 
     /// The server's pinned SubjectPublicKeyInfo, DER.
     pub fn endpoint_spki(&self) -> Result<Vec<u8>> {
-        pem_body(&self.endpoint_public_key).context("endpoint_public_key is not a PEM public key")
+        use rustls::pki_types::{pem::PemObject, SubjectPublicKeyInfoDer};
+        SubjectPublicKeyInfoDer::from_pem_slice(self.endpoint_public_key.as_bytes())
+            .map(|key| key.as_ref().to_vec())
+            .map_err(|_| anyhow::anyhow!("endpoint_public_key is not a PEM public key"))
     }
 
     /// Select a numeric outer address without consulting the host resolver.
@@ -137,15 +140,6 @@ fn sec1_to_pkcs8(sec1: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(body.len() + 4);
     tlv(0x30, &body, &mut out);
     out
-}
-
-fn pem_body(pem: &str) -> Result<Vec<u8>> {
-    let body: String =
-        pem.lines().map(str::trim).filter(|line| !line.is_empty() && !line.starts_with("-----")).collect();
-    if body.is_empty() {
-        bail!("no PEM body");
-    }
-    BASE64_STANDARD.decode(body).map_err(|_| anyhow::anyhow!("invalid PEM base64"))
 }
 
 fn parse_endpoint(endpoint: &str) -> Result<IpAddr> {
@@ -224,6 +218,18 @@ mod tests {
         assert_eq!(cfg.private_key_der().unwrap(), key.pkcs8_der);
         let error = Config::parse(r#"{"access_token":["do-not-log-me"]}"#).unwrap_err();
         assert!(!format!("{error:#}").contains("do-not-log-me"));
+    }
+
+    #[test]
+    fn endpoint_pin_requires_a_public_key_pem_object() {
+        for text in [
+            "AQID",
+            "-----BEGIN PRIVATE KEY-----\nAQID\n-----END PRIVATE KEY-----\n",
+            "-----BEGIN PUBLIC KEY-----\nAQID",
+        ] {
+            let cfg = Config { endpoint_public_key: text.into(), ..Config::default() };
+            assert!(cfg.endpoint_spki().is_err());
+        }
     }
 
     #[test]

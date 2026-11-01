@@ -26,7 +26,9 @@ the same code as the standard server's, with the same parameters:
 | Website/profiles | Standard cover website and Apple profile/DDM controls; private output files |
 
 Relevant IETF behavior remains governed by RFC 9110/9112/9113/9114, 8441,
-9220, 9297 and 9298 and their applicable normative references. The existing
+9220, 9297 and 9298, including the finalized RFC 9931 update, and their
+applicable normative references. TLS 1.3 is specified by RFC 9846, which
+replaces RFC 8446. The existing
 Apple profile schema is preserved, including HTTP/2-only output when
 `--no-http3` is selected. Tests are evidence for specific behaviors, not a
 certificate of compliance with every applicable document.
@@ -100,6 +102,8 @@ server sends GOAWAY, drains as on SIGTERM and exits with failure; the process
 supervisor can start a fresh session. Old sockets never attach to it. Root
 controller drop and cancellation during setup release owned tasks and
 sockets. Normal graceful shutdown differs from abort/reset.
+TCP TIME-WAIT remains owned by smoltcp after application handles are dropped;
+the adapter must not remove it early or abort it at the ordinary close deadline.
 
 The TCP façade has endpoint metadata and an independent abort control. Stale
 abort controls cannot reset a subsequently reused socket. Connected UDP
@@ -126,7 +130,9 @@ and is reflected separately from assigned addresses in diagnostics.
 
 `warp-masque-egress` implements network-relay's `egress::Egress` interface
 (resolve/TCP/connected UDP, availability and an independent terminal-failure
-future), which is the only part of network-relay it uses; it has no SOCKS,
+future), and reuses the parent's hostname rules, public QUIC integer and
+Capsule encoders, and Capsule response-header validation;
+it has no SOCKS,
 Apple UI, TUN or policy routing dependency. `WarpEgress` owns explicit
 connection, status, closed and shutdown operations. The independent
 `examples/reuse` workspace builds with one Cargo patch, pointing h3 at

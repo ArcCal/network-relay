@@ -120,6 +120,10 @@ pub struct WarpPeer {
 
 impl WarpPeer {
     pub async fn start(transport: Transport) -> Result<Self> {
+        Self::start_at(transport, IpAddr::V4(Ipv4Addr::LOCALHOST)).await
+    }
+
+    pub async fn start_at(transport: Transport, address: IpAddr) -> Result<Self> {
         let device = rcgen::KeyPair::generate_for(&rcgen::PKCS_ECDSA_P256_SHA256)?;
         let server = rcgen::KeyPair::generate_for(&rcgen::PKCS_ECDSA_P256_SHA256)?;
         let certificate = rcgen::CertificateParams::new(vec!["localhost".into()])?.self_signed(&server)?;
@@ -162,7 +166,7 @@ impl WarpPeer {
         }
         let (listener, endpoint) = match transport {
             Transport::H2 => {
-                let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+                let listener = tokio::net::TcpListener::bind(SocketAddr::new(address, 0)).await?;
                 let addr = listener.local_addr()?;
                 (Listener::H2(listener, tokio_rustls::TlsAcceptor::from(Arc::new(tls))), addr)
             }
@@ -175,7 +179,7 @@ impl WarpPeer {
                 settings.datagram_send_buffer_size(4 << 20);
                 settings.max_idle_timeout(Some(Duration::from_secs(30).try_into()?));
                 config.transport_config(Arc::new(settings));
-                let listener = quinn::Endpoint::server(config, "127.0.0.1:0".parse()?)?;
+                let listener = quinn::Endpoint::server(config, SocketAddr::new(address, 0))?;
                 let addr = listener.local_addr()?;
                 (Listener::H3(listener), addr)
             }
@@ -317,7 +321,10 @@ impl WarpPeer {
     }
 
     pub fn stack_diagnostics(&self) -> serde_json::Value {
-        serde_json::json!({"queue_drops": self.stack.queue_drops(), "sockets": self.stack.socket_count(), "socket_limit": self.stack.socket_limit(), "mtu": self.stack.mtu(), "tcp_buffer_bytes_per_socket": self.stack.tcp_buffer_bytes(), "failure": self.stack.failure_reason()})
+        serde_json::json!({"queue_drops": self.stack.queue_drops(), "sockets": self.stack.socket_count(), "socket_limit": self.stack.socket_limit(), "mtu": self.stack.mtu(), "tcp_buffer_bytes_per_socket": self.stack.tcp_buffer_bytes(), "failure": self.stack.failure_reason(), "tcp": self.stack.tcp_snapshot()})
+    }
+    pub fn packet_stack(&self) -> NetStack {
+        self.stack.clone()
     }
     pub fn errors(&self) -> Vec<String> {
         self.observations.errors.lock().unwrap().clone()

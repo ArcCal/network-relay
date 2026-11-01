@@ -1,6 +1,7 @@
 # Implementation status
 
-Updated 2026-10-31 UTC. Test results are in [VALIDATION.md](VALIDATION.md).
+Updated November 1, 2026 UTC. Test results are in [VALIDATION.md](VALIDATION.md);
+[AUDIT.md](AUDIT.md) records the current review and fixes.
 
 This project was restored after its removal and rebuilt on network-relay
 itself: the client-facing server, configuration format and helper commands
@@ -18,7 +19,7 @@ project's own.
 | IPv6 optional with a warning | `WarpConfig::warnings()`; printed and logged at start | CLI and unit tests: warning without `tunnel_ipv6`/`endpoint_v6`, server keeps running |
 | Large file integrity/half-close | Implemented | 64 MiB transfers in all six pairings |
 | NF/RS client compatibility | Their cores in this repository, used as they are | 12 ingress/egress pairs, 96 TCP/UDP checks, authentication and TLS negatives; NF uses its Linux bridge, not Network.framework |
-| Long-held TCP/UDP stability | Implemented | Synthetic 3900 s soak with six TCP and six UDP flows passed; H3 bulk diagnostic passed |
+| Long-held TCP/UDP stability | Implemented | 128 H3 bulk transfers and a fresh 3926-second soak passed: 12 held flows, one outer generation per mode, no packet queue drops; earlier restoration results are historical |
 | Actual Cloudflare exit IP, live download, live soak | Not established | Requires a host with authorized WARP connectivity |
 | Native Apple NF GUI/profile/device execution | Not executed here | Linux tests cannot substitute for it |
 
@@ -31,6 +32,8 @@ project's own.
    TCP. This is smaller than network-relay's kernel-backed capacity; set
    `relay.max_tunnels` accordingly (the example uses 48). Beyond it, new
    tunnels are refused with 502.
+   TIME-WAIT remains until smoltcp expires it; `lingering_sockets` reports
+   these retained sockets separately from live business flows.
 3. UDP payloads are bounded by the WARP MTU, 1252/1232 bytes (IPv4/IPv6) at
    MTU 1280. Larger datagrams are dropped without fragmentation; the flow
    continues. They are never sent through the VPS network instead.

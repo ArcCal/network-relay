@@ -36,7 +36,8 @@ def synthetic_rows() -> list[dict]:
                     "echo_bytes": pings * 512} for inbound in ("h1", "h2", "h3")]
             modes.append({"warp_transport": transport,
                           "egress": {"available": True, "failure": None, "generation": 1,
-                                     "sockets": 6, "dropped_packets": 0,
+                                     "sockets": 6, "lingering_sockets": 0, "socket_limit": 64,
+                                     "dropped_packets": 0,
                                      "inbound_queue_drops": 0, "stack_queue_drops": 0},
                           "peer": {"tunnels": 1, "authenticated_clients": 1},
                           "relay_tunnels": 6, "persistent_tcp": tcp, "persistent_udp": udp})
@@ -85,6 +86,14 @@ def main() -> int:
             results.append({"case": "synthetic_positive_control", "evidence_only": evidence_only,
                             "outcome": "expected_control_accepted"})
 
+        closing_rows = copy.deepcopy(rows)
+        closing_rows[0]["modes"][0]["egress"].update(sockets=8, lingering_sockets=2)
+        write_case(closing_rows, copy.deepcopy(baseline))
+        for evidence_only in (False, True):
+            verify_soak.verify(log, manifest_path, evidence_only)
+            results.append({"case": "bounded_closing_sockets", "evidence_only": evidence_only,
+                            "outcome": "expected_control_accepted"})
+
         cases = []
         for label, expected in [
             ("pending_manifest", "pending or failed"),
@@ -98,6 +107,11 @@ def main() -> int:
             ("stalled_flow", "cadence stalled"),
             ("bad_tcp_digest", "SHA-256 mismatch"),
             ("outer_restart", "restarted or reenrolled"),
+            ("missing_held_socket", "lost or added"),
+            ("unexpected_live_socket", "lost or added"),
+            ("invalid_linger", "invalid socket accounting"),
+            ("missing_linger", "lingering_sockets"),
+            ("over_socket_limit", "invalid socket accounting"),
             ("bad_production_hash", "production source changed"),
             ("changed_production_file_set", "production file set"),
         ]:
@@ -127,6 +141,16 @@ def main() -> int:
                 changed_rows[0]["modes"][0]["persistent_tcp"][0]["sha256"] = "0" * 64
             elif label == "outer_restart":
                 changed_rows[0]["modes"][0]["egress"]["generation"] = 2
+            elif label == "missing_held_socket":
+                changed_rows[0]["modes"][0]["egress"]["sockets"] = 5
+            elif label == "unexpected_live_socket":
+                changed_rows[0]["modes"][0]["egress"]["sockets"] = 7
+            elif label == "invalid_linger":
+                changed_rows[0]["modes"][0]["egress"]["lingering_sockets"] = 8
+            elif label == "missing_linger":
+                del changed_rows[0]["modes"][0]["egress"]["lingering_sockets"]
+            elif label == "over_socket_limit":
+                changed_rows[0]["modes"][0]["egress"].update(sockets=65, lingering_sockets=59)
             elif label == "bad_production_hash":
                 manifest["source_sha256"]["src/main.rs"] = "0" * 64
             elif label == "changed_production_file_set":

@@ -61,7 +61,10 @@ address; an IPv4-only registration must use IPv4 DNS servers. With no
 Queries, including TCP fallback after truncated UDP answers, use the userspace
 stack. A terminal tunnel failure immediately rejects DNS requests, including
 cached answers, literals, and shared pending queries. The transport never falls
-back to the host resolver or direct kernel sockets.
+back to the host resolver or direct kernel sockets. Wire labels preserve
+their boundaries, including binary labels. NXDOMAIN/NODATA caching uses SOA
+lifetimes; resolution failures remain failures and are cached for one second
+(RFC 9520) before retrying. Both caches share the existing 4096-entry bound.
 
 `WarpEgress` owns one fixed-transport session. Its cloneable controller and
 socket handles share terminal state; detected tunnel loss, worker failure,
@@ -84,6 +87,9 @@ are reset. DNS EDNS capacity follows the actual per-family UDP ceiling.
 The stack permits 64 total sockets, including DNS, connecting and lingering
 TCP. Each TCP socket reserves 256 KiB RX and 128 KiB TX; each UDP socket has
 bounded packet slots and byte buffers. Overload returns a resource error.
+Normal TCP close retains smoltcp's TIME-WAIT state so a lost final ACK can
+be retransmitted; these closing sockets still consume capacity. Status
+samples total sockets and `lingering_sockets` together under the stack lock.
 `status()` serializes availability, capabilities, MTU, socket/worker counts and
 packet/byte/drop counters without credential or arbitrary response-header
 values. Packet send counters indicate local transport acceptance, not remote

@@ -24,12 +24,11 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context, Result};
-use bytes::{Buf, Bytes};
+use bytes::{Buf, Bytes, BytesMut};
 use http::{Method, Request, StatusCode};
 use quinn_proto::TransportErrorCode;
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::crypto::CryptoProvider;
-use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer, ServerName, UnixTime};
 use rustls::{DigitallySignedStruct, SignatureScheme};
 use tokio::sync::{mpsc, watch};
@@ -76,42 +75,19 @@ pub enum Transport {
     H2,
 }
 
-/// How the server's certificate is checked.
-pub enum Verify {
-    /// Its public key must be the one registration gave us (the endpoint's
-    /// certificate is not for the SNI name, so this is what the official
-    /// client does too).
-    PinnedKey(Vec<u8>),
-    /// Issued by a CA in this PEM file (for tests against other servers).
-    #[allow(dead_code)] // retained RFC fixture mode; public facade requires pinning
-    Ca(Vec<u8>),
-}
-
-pub enum Auth {
-    /// A certificate for the enrolled key, made for each connection.
-    DeviceKey { pkcs8_der: Vec<u8> },
-    /// HTTP Basic (for tests against other servers).
-    #[allow(dead_code)] // retained RFC fixture mode; public facade requires device key
-    Basic { user: String, password: String },
-}
-
 pub struct Options {
     pub endpoint: SocketAddr,
     pub sni: String,
     pub uri: String,
     pub protocol: &'static str,
-    pub verify: Verify,
-    pub auth: Auth,
+    pub endpoint_spki: Vec<u8>,
+    pub device_pkcs8: Vec<u8>,
     /// SO_MARK for the socket (Linux), so policy routing keeps the tunnel's
     /// own packets out of the tunnel.
     pub fwmark: Option<u32>,
     pub keepalive: Duration,
     pub idle_timeout: Duration,
     pub transport: Transport,
-    /// The server follows RFC 9484 to the letter (a test server) rather
-    /// than Cloudflare's variations: over HTTP/2 that means extended
-    /// CONNECT with `:protocol` and a Context ID in each DATAGRAM capsule.
-    pub rfc: bool,
 }
 
 /// What became of a packet given to [`Tunnel::send_packet`].
@@ -140,9 +116,6 @@ enum Link {
         inbound: tokio::sync::Mutex<mpsc::Receiver<Bytes>>,
         /// Why the stream ended, once it has.
         ended: watch::Receiver<Option<String>>,
-        /// Whether DATAGRAM capsules carry a Context ID (RFC 9297);
-        /// Cloudflare's HTTP/2 servers carry the bare IP packet.
-        context_id: bool,
     },
 }
 
@@ -167,16 +140,6 @@ impl Drop for SetupTasks {
 /// An open tunnel. Dropping it closes the connection.
 pub struct Tunnel {
     link: Link,
-    #[allow(dead_code)] // retained safe packet-transport diagnostic metadata
-    pub status: StatusCode,
-    #[allow(dead_code)]
-    pub headers: http::HeaderMap,
-    /// Addresses the server assigned on the stream (RFC 9484 §4.7.1), if
-    /// it did; Cloudflare does not.
-    #[allow(dead_code)] // RFC address-event regressions remain with the transport
-    assigned: Arc<Mutex<Vec<IpAddr>>>,
-    #[allow(dead_code)]
-    assigned_ready: Arc<tokio::sync::Notify>,
     pub sent: AtomicU64,
     pub received: AtomicU64,
     pub dropped: Arc<AtomicU64>,
@@ -223,58 +186,6 @@ impl Tunnel {
         }
     }
 
-    /// The addresses the server assigned so far.
-    #[allow(dead_code)]
-    pub fn assigned(&self) -> Vec<IpAddr> {
-        self.assigned.lock().unwrap().clone()
-    }
-
-    /// Wait for an address event instead of racing a fixed sleep against the server.
-    #[allow(dead_code)]
-    pub async fn wait_assigned(&self) -> Result<Vec<IpAddr>> {
-        tokio::time::timeout(CONNECT_TIMEOUT, async {
-            loop {
-                let ready = self.assigned_ready.notified();
-                let assigned = self.assigned();
-                if !assigned.is_empty() {
-                    return Ok(assigned);
-                }
-                tokio::select! {
-                    _ = ready => {},
-                    why = self.closed() => bail!("waiting for tunnel addresses: {why}"),
-                }
-            }
-        })
-        .await
-        .context("timed out waiting for tunnel addresses")?
-    }
-
-    /// Warns if the server assigns addresses other than `ours`, the ones the
-    /// client uses (a standard server drops packets from addresses it did
-    /// not assign); then waits forever. Cloudflare assigns none.
-    #[allow(dead_code)]
-    pub async fn check_assigned(&self, ours: &[IpAddr]) -> String {
-        if let Ok(assigned) = self.wait_assigned().await {
-            for own in ours {
-                let theirs: Vec<String> =
-                    assigned.iter().filter(|a| a.is_ipv4() == own.is_ipv4()).map(ToString::to_string).collect();
-                if !theirs.is_empty() && !assigned.contains(own) {
-                    warn!(
-                        "the server assigned {}, but the client uses {own}: the server will likely drop its packets",
-                        theirs.join(", ")
-                    );
-                }
-            }
-        }
-        std::future::pending().await
-    }
-
-    /// The server's answer to the CONNECT request.
-    #[allow(dead_code)]
-    pub fn response(&self) -> String {
-        format!("{} {}", self.status, describe(&self.headers))
-    }
-
     /// The largest IP packet that fits one QUIC datagram right now; None
     /// over HTTP/2, where capsules have no such limit.
     pub fn max_packet(&self) -> Option<usize> {
@@ -304,8 +215,8 @@ impl Tunnel {
                     Err(e) => Err(anyhow!("sending a datagram: {e}")),
                 }
             }
-            Link::H2 { out, context_id, .. } => {
-                let capsule = datagram_capsule(pkt, *context_id);
+            Link::H2 { out, .. } => {
+                let capsule = datagram_capsule(pkt);
                 let out = out.lock().unwrap();
                 let Some(out) = out.as_ref() else {
                     bail!("the tunnel is shut down");
@@ -396,26 +307,6 @@ impl Tunnel {
             }
         }
     }
-
-    #[allow(dead_code)]
-    pub fn stats(&self) -> String {
-        let mut s = format!(
-            "{} packets sent, {} received, {} dropped (too large, or the queue was full)",
-            self.sent.load(Ordering::Relaxed),
-            self.received.load(Ordering::Relaxed),
-            self.dropped.load(Ordering::Relaxed)
-        );
-        if let Link::Quic { conn, .. } = &self.link {
-            // Packets sent beyond the datagrams counted here were dropped
-            // from quinn's send buffer; lost ones, on the way.
-            let q = conn.stats();
-            s += &format!(
-                "; QUIC: {} datagrams sent, {} of {} packets lost, RTT {:?}, path MTU {}",
-                q.frame_tx.datagram, q.path.lost_packets, q.path.sent_packets, q.path.rtt, q.path.current_mtu
-            );
-        }
-        s
-    }
 }
 
 async fn connect_h3(opts: &Options) -> Result<Tunnel> {
@@ -499,14 +390,11 @@ async fn connect_h3(opts: &Options) -> Result<Tunnel> {
     }
     // No User-Agent: usque and mihomo set an empty one, which quic-go (like
     // Go's net/http) leaves out of the request.
-    let mut req = Request::builder()
+    let req = Request::builder()
         .method(Method::CONNECT)
         .uri(&opts.uri)
         .header("capsule-protocol", "?1")
         .extension(h3::ext::Protocol::from_static(opts.protocol));
-    if let Some(auth) = basic_auth(opts) {
-        req = req.header("authorization", auth);
-    }
     let req = req.body(()).context("building the request")?;
     let mut stream = tokio::time::timeout(CONNECT_TIMEOUT, send_request.send_request(req))
         .await
@@ -534,10 +422,7 @@ async fn connect_h3(opts: &Options) -> Result<Tunnel> {
 
     // Capsules from the server, on the request stream.
     let conn2 = conn.clone();
-    let assigned = Arc::new(Mutex::new(Vec::new()));
-    let assigned2 = assigned.clone();
-    let assigned_ready = Arc::new(tokio::sync::Notify::new());
-    let ready = assigned_ready.clone();
+    let assigned = Mutex::new(Vec::new());
     let closing = Arc::new(AtomicBool::new(false));
     let closing2 = closing.clone();
     let capsules = tokio::spawn(async move {
@@ -547,12 +432,11 @@ async fn connect_h3(opts: &Options) -> Result<Tunnel> {
                 Ok(Some(mut data)) => {
                     while data.has_remaining() {
                         let chunk = data.chunk();
-                        if let Err(e) = decoder.push(chunk, &assigned2, &mut |_| {}) {
+                        if let Err(e) = decoder.push(chunk, &assigned, &mut |_| {}) {
                             warn!("invalid capsule: {e:#}");
                             conn2.close(0u32.into(), b"invalid capsule");
                             return;
                         }
-                        ready.notify_one();
                         let n = chunk.len();
                         data.advance(n);
                     }
@@ -578,10 +462,6 @@ async fn connect_h3(opts: &Options) -> Result<Tunnel> {
     tasks.0.push(capsules);
     Ok(Tunnel {
         link: Link::Quic { conn, endpoint, qsid },
-        status,
-        headers,
-        assigned,
-        assigned_ready,
         sent: AtomicU64::new(0),
         received: AtomicU64::new(0),
         dropped: Arc::new(AtomicU64::new(0)),
@@ -614,12 +494,11 @@ async fn connect_h2(opts: &Options) -> Result<Tunnel> {
         .map_err(|e| anyhow!("TLS handshake: {e}"))?;
     // Cloudflare's endpoint confirms no ALPN protocol at all, and speaks
     // HTTP/2 all the same; mihomo, too, speaks HTTP/2 whatever the server
-    // answers. A standard server (`--server`) must confirm h2, and no
-    // server may confirm another protocol.
+    // answers. A pinned WARP endpoint must not confirm another protocol.
     let alpn = tls_stream.get_ref().1.alpn_protocol().map(|p| p.to_vec());
     match alpn.as_deref() {
         Some(b"h2") => {}
-        None if !opts.rfc => debug!("the server confirmed no ALPN protocol; speaking HTTP/2"),
+        None => debug!("the server confirmed no ALPN protocol; speaking HTTP/2"),
         _ => bail!(
             "the server did not negotiate HTTP/2 (ALPN {})",
             alpn.map(|a| String::from_utf8_lossy(&a).into_owned()).unwrap_or_else(|| "none".into())
@@ -667,27 +546,15 @@ async fn connect_h2(opts: &Options) -> Result<Tunnel> {
         })
     });
     // No User-Agent, as over HTTP/3.
-    let mut req = Request::builder().method(Method::CONNECT);
-    if opts.rfc {
-        // RFC 8441 extended CONNECT, as over HTTP/3.
-        req = req
-            .uri(&opts.uri)
-            .header("capsule-protocol", "?1")
-            .extension(h2::ext::Protocol::from_static(opts.protocol));
-    } else {
-        // Cloudflare (from mihomo): a plain CONNECT to host:443 with the
-        // protocol in a header; no capsule-protocol header.
-        let uri: http::Uri = opts.uri.parse().context("the URI")?;
-        let host = uri.host().context("the URI has no host")?;
-        let authority = format!("{host}:{}", uri.port_u16().unwrap_or(443));
-        req = req
-            .uri(format!("https://{authority}/"))
-            .header("cf-connect-proto", opts.protocol)
-            .header("pq-enabled", "false");
-    }
-    if let Some(auth) = basic_auth(opts) {
-        req = req.header("authorization", auth);
-    }
+    let uri: http::Uri = opts.uri.parse().context("the URI")?;
+    let host = uri.host().context("the URI has no host")?;
+    let authority = format!("{host}:{}", uri.port_u16().unwrap_or(443));
+    // WARP uses plain CONNECT and private headers, not RFC 8441.
+    let req = Request::builder()
+        .method(Method::CONNECT)
+        .uri(format!("https://{authority}/"))
+        .header("cf-connect-proto", opts.protocol)
+        .header("pq-enabled", "false");
     let req = req.body(()).context("building the request")?;
     let mut send_request = tokio::time::timeout(CONNECT_TIMEOUT, send_request.ready())
         .await
@@ -707,13 +574,6 @@ async fn connect_h2(opts: &Options) -> Result<Tunnel> {
 
     let (out_tx, mut out_rx) = mpsc::channel::<Bytes>(H2_QUEUE);
     let (in_tx, in_rx) = mpsc::channel::<Bytes>(H2_QUEUE);
-    // Tell a standard server we take everything (RFC 9484 §4.7.3), as over
-    // HTTP/3. Cloudflare's HTTP/2 capsules are not the standard ones (no
-    // Context ID), and usque and mihomo send them nothing but DATAGRAM
-    // capsules, so neither does this client.
-    if opts.rfc {
-        let _ = out_tx.try_send(route_advertisement());
-    }
     let writer = {
         let ended_tx = ended_tx.clone();
         tokio::spawn(async move {
@@ -727,13 +587,9 @@ async fn connect_h2(opts: &Options) -> Result<Tunnel> {
             let _ = send_stream.send_data(Bytes::new(), true);
         })
     };
-    let assigned = Arc::new(Mutex::new(Vec::new()));
-    let assigned2 = assigned.clone();
-    let assigned_ready = Arc::new(tokio::sync::Notify::new());
-    let ready = assigned_ready.clone();
+    let assigned = Mutex::new(Vec::new());
     let closing = Arc::new(AtomicBool::new(false));
     let closing2 = closing.clone();
-    let context_id = opts.rfc;
     let dropped = Arc::new(AtomicU64::new(0));
     let receive_drops = dropped.clone();
     let reader = tokio::spawn(async move {
@@ -742,17 +598,7 @@ async fn connect_h2(opts: &Options) -> Result<Tunnel> {
             match chunk {
                 Ok(data) => {
                     let _ = recv_stream.flow_control().release_capacity(data.len());
-                    let parsed = decoder.push(&data, &assigned2, &mut |mut payload: &[u8]| {
-                        if context_id {
-                            match varint::decode(payload) {
-                                Some((0, n)) => payload = &payload[n..],
-                                Some((id, _)) => {
-                                    debug!("datagram with context ID {id}");
-                                    return;
-                                }
-                                None => return,
-                            }
-                        }
+                    let parsed = decoder.push(&data, &assigned, &mut |payload: &[u8]| {
                         if in_tx.try_send(Bytes::copy_from_slice(payload)).is_err() {
                             receive_drops.fetch_add(1, Ordering::Relaxed);
                             debug!("dropped a packet from the server: the queue is full");
@@ -762,7 +608,6 @@ async fn connect_h2(opts: &Options) -> Result<Tunnel> {
                         record_h2_failure(&ended_tx, format!("invalid capsule: {e:#}"));
                         return;
                     }
-                    ready.notify_one();
                 }
                 Err(e) => {
                     if !closing2.load(Ordering::Relaxed) {
@@ -781,11 +626,7 @@ async fn connect_h2(opts: &Options) -> Result<Tunnel> {
 
     tasks.0.extend([writer, reader]);
     Ok(Tunnel {
-        link: Link::H2 { out: Mutex::new(Some(out_tx)), inbound: tokio::sync::Mutex::new(in_rx), ended, context_id },
-        status,
-        headers,
-        assigned,
-        assigned_ready,
+        link: Link::H2 { out: Mutex::new(Some(out_tx)), inbound: tokio::sync::Mutex::new(in_rx), ended },
         sent: AtomicU64::new(0),
         received: AtomicU64::new(0),
         dropped,
@@ -907,19 +748,10 @@ fn explain(e: anyhow::Error) -> anyhow::Error {
     if mentions(&e, &TransportErrorCode::crypto(49).to_string()) || mentions(&e, "AccessDenied") {
         e.context(
             "the server turned the device key away (TLS access_denied): it is not enrolled, \
-             or the device was deleted; run `register` again",
+             or the device was deleted; renew enrollment and update [warp.registration]",
         )
     } else {
         e
-    }
-}
-
-fn basic_auth(opts: &Options) -> Option<String> {
-    if let Auth::Basic { user, password } = &opts.auth {
-        use base64::prelude::*;
-        Some(format!("Basic {}", BASE64_STANDARD.encode(format!("{user}:{password}"))))
-    } else {
-        None
     }
 }
 
@@ -927,10 +759,9 @@ fn basic_auth(opts: &Options) -> Option<String> {
 /// requirements, which exclude content (RFC 9297 §3.2). A website
 /// answering a CONNECT it does not understand fails both.
 fn check_response(status: StatusCode, headers: &http::HeaderMap) -> Result<()> {
-    let content = ["content-length", "content-type", "transfer-encoding"].iter().find(|h| headers.contains_key(**h));
-    if let Some(h) = content {
+    if !network_relay::proto::valid_capsule_headers(headers) {
         bail!(
-            "the server answered the CONNECT like a website ({status}, with {h}), not as a tunnel: \
+            "the server answered the CONNECT like a website ({status}, with content metadata), not as a tunnel: \
              wrong credentials, path or protocol? ({})",
             describe(headers)
         );
@@ -950,18 +781,11 @@ fn describe(h: &http::HeaderMap) -> String {
         .join(", ")
 }
 
-/// A DATAGRAM capsule (RFC 9297 §3.5) with the packet, after a Context ID
-/// of 0 when `context_id` is set.
-fn datagram_capsule(pkt: &[u8], context_id: bool) -> Bytes {
-    let len = pkt.len() + usize::from(context_id);
-    let mut d = Vec::with_capacity(1 + 8 + len);
-    varint::encode(&mut d, 0);
-    varint::encode(&mut d, len as u64);
-    if context_id {
-        d.push(0);
-    }
-    d.extend_from_slice(pkt);
-    Bytes::from(d)
+/// WARP's H2 DATAGRAM capsule carries bare IP, with no context ID.
+fn datagram_capsule(pkt: &[u8]) -> Bytes {
+    let mut wire = BytesMut::new();
+    network_relay::proto::capsule::encode(0, pkt, &mut wire);
+    wire.freeze()
 }
 
 /// A ROUTE_ADVERTISEMENT capsule (RFC 9484 §4.7.3) for all of IPv4 and
@@ -976,11 +800,9 @@ fn route_advertisement() -> Bytes {
     value.extend_from_slice(&[0; 16]);
     value.extend_from_slice(&[255; 16]);
     value.push(0);
-    let mut c = Vec::with_capacity(2 + value.len());
-    varint::encode(&mut c, 0x03);
-    varint::encode(&mut c, value.len() as u64);
-    c.extend_from_slice(&value);
-    Bytes::from(c)
+    let mut wire = BytesMut::new();
+    network_relay::proto::capsule::encode(0x03, &value, &mut wire);
+    wire.freeze()
 }
 
 /// Bound known capsule payloads to one maximum-size IP packet plus framing.
@@ -1130,25 +952,11 @@ fn tls_config(opts: &Options, alpn: &[u8]) -> Result<rustls::ClientConfig> {
     let builder = rustls::ClientConfig::builder_with_provider(provider.clone())
         .with_protocol_versions(&[&rustls::version::TLS13])
         .context("TLS versions")?;
-    let builder = match &opts.verify {
-        Verify::PinnedKey(spki) => {
-            builder.dangerous().with_custom_certificate_verifier(Arc::new(PinnedKey { spki: spki.clone(), provider }))
-        }
-        Verify::Ca(pem) => {
-            let mut roots = rustls::RootCertStore::empty();
-            for cert in CertificateDer::pem_slice_iter(pem) {
-                roots.add(cert.context("reading the CA file")?)?;
-            }
-            builder.with_root_certificates(roots)
-        }
-    };
-    let mut cfg = match &opts.auth {
-        Auth::DeviceKey { pkcs8_der } => {
-            let (cert, key) = device_certificate(pkcs8_der)?;
-            builder.with_client_auth_cert(vec![cert], key).context("client certificate")?
-        }
-        Auth::Basic { .. } => builder.with_no_client_auth(),
-    };
+    let builder = builder
+        .dangerous()
+        .with_custom_certificate_verifier(Arc::new(PinnedKey { spki: opts.endpoint_spki.clone(), provider }));
+    let (cert, key) = device_certificate(&opts.device_pkcs8)?;
+    let mut cfg = builder.with_client_auth_cert(vec![cert], key).context("client certificate")?;
     cfg.alpn_protocols = vec![alpn.to_vec()];
     Ok(cfg)
 }
@@ -1186,9 +994,9 @@ impl ServerCertVerifier for PinnedKey {
         _ocsp_response: &[u8],
         _now: UnixTime,
     ) -> Result<ServerCertVerified, rustls::Error> {
-        let (_, cert) = x509_parser::parse_x509_certificate(end_entity.as_ref())
+        let (remaining, cert) = x509_parser::parse_x509_certificate(end_entity.as_ref())
             .map_err(|e| rustls::Error::General(format!("parsing the server certificate: {e}")))?;
-        if cert.tbs_certificate.subject_pki.raw == self.spki.as_slice() {
+        if remaining.is_empty() && cert.tbs_certificate.subject_pki.raw == self.spki.as_slice() {
             Ok(ServerCertVerified::assertion())
         } else {
             Err(rustls::Error::General("the server's public key is not the endpoint key registration gave us".into()))
@@ -1233,6 +1041,23 @@ mod tests {
     use super::*;
 
     #[test]
+    fn endpoint_pin_rejects_trailing_certificate_der() {
+        use rcgen::PublicKeyData;
+        let key = rcgen::KeyPair::generate().unwrap();
+        let certificate = rcgen::CertificateParams::new(vec!["localhost".into()]).unwrap().self_signed(&key).unwrap();
+        let pin = PinnedKey {
+            spki: key.subject_public_key_info(),
+            provider: Arc::new(rustls::crypto::ring::default_provider()),
+        };
+        let name = ServerName::try_from("localhost").unwrap();
+        let now = UnixTime::since_unix_epoch(Duration::from_secs(1));
+        assert!(pin.verify_server_cert(certificate.der(), &[], &name, &[], now).is_ok());
+        let mut malformed = certificate.der().to_vec();
+        malformed.push(0);
+        assert!(pin.verify_server_cert(&CertificateDer::from(malformed), &[], &name, &[], now).is_err());
+    }
+
+    #[test]
     fn capsules_are_drained_and_partial_ones_kept() {
         let mut buf = vec![0x01, 7, 0, 4, 10, 0, 0, 2, 32]; // ADDRESS_ASSIGN 10.0.0.2/32
         buf.extend_from_slice(&[0x03, 50, 1, 2]); // a ROUTE_ADVERTISEMENT cut short
@@ -1246,8 +1071,8 @@ mod tests {
     #[test]
     fn datagram_capsules_deliver_packets() {
         let pkt = [0x45u8, 0, 0, 20];
-        let mut buf = datagram_capsule(&pkt, true).to_vec();
-        buf.extend_from_slice(&datagram_capsule(&pkt, false));
+        let mut buf = datagram_capsule(&network_relay::proto::datagram::udp_payload(&pkt)).to_vec();
+        buf.extend_from_slice(&datagram_capsule(&pkt));
         assert_eq!(buf[..3], [0x00, 5, 0]);
         let mut seen = vec![];
         let mut decoder = CapsuleDecoder::default();
@@ -1353,10 +1178,10 @@ mod decoder_tests {
     #[test]
     fn mangled_streams_never_panic() {
         let mut rng = rand::rngs::StdRng::seed_from_u64(0x5ca1ab1e);
-        let mut valid = datagram_capsule(&[0x45; 60], true).to_vec();
+        let mut valid = datagram_capsule(&network_relay::proto::datagram::udp_payload(&[0x45; 60])).to_vec();
         valid.extend_from_slice(&[0x01, 7, 0, 4, 10, 0, 0, 2, 32]);
         valid.extend_from_slice(&route_advertisement());
-        valid.extend_from_slice(&datagram_capsule(&[0x60; 80], false));
+        valid.extend_from_slice(&datagram_capsule(&[0x60; 80]));
         for _ in 0..20_000 {
             let mut bytes = valid.clone();
             for _ in 0..rng.random_range(1..6) {
@@ -1472,7 +1297,7 @@ mod decoder_tests {
         let mut bytes = vec![];
         varint::encode(&mut bytes, 99);
         bytes.extend_from_slice(&[4, 1, 2, 3, 4]);
-        bytes.extend_from_slice(&datagram_capsule(&[0x45, 1, 2, 3], true));
+        bytes.extend_from_slice(&datagram_capsule(&network_relay::proto::datagram::udp_payload(&[0x45, 1, 2, 3])));
         bytes.extend_from_slice(&[1, 7, 0, 4, 10, 0, 0, 2, 32]);
         for chunk in 1..=bytes.len() {
             let mut decoder = CapsuleDecoder::default();
@@ -1605,13 +1430,12 @@ mod cloudflare_wire_tests {
             sni: "localhost".into(),
             uri: DEFAULT_URI.into(),
             protocol,
-            verify: Verify::PinnedKey(f.server_spki.clone()),
-            auth: Auth::DeviceKey { pkcs8_der: f.device_pkcs8.clone() },
+            endpoint_spki: f.server_spki.clone(),
+            device_pkcs8: f.device_pkcs8.clone(),
             fwmark: None,
             keepalive: Duration::from_secs(15),
             idle_timeout: Duration::from_secs(30),
             transport,
-            rfc: false,
         }
     }
 
@@ -1633,25 +1457,6 @@ mod cloudflare_wire_tests {
         let mut f = fixture(b"h2");
         f.server_tls.alpn_protocols.clear();
         http2_exchange_with_cloudflare(f).await;
-    }
-
-    /// A standard server (`--server`) must still confirm h2.
-    #[tokio::test]
-    async fn http2_needs_alpn_from_a_standard_server() {
-        let mut f = fixture(b"h2");
-        f.server_tls.alpn_protocols.clear();
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(f.server_tls.clone()));
-        let server = tokio::spawn(async move {
-            let (tcp, _) = listener.accept().await.unwrap();
-            let _tls = acceptor.accept(tcp).await;
-        });
-        let mut o = options(&f, addr, Transport::H2, DEFAULT_PROTOCOL);
-        o.rfc = true;
-        let e = Tunnel::connect(&o).await.err().expect("refused");
-        assert!(format!("{e:#}").contains("did not negotiate HTTP/2 (ALPN none)"), "{e:#}");
-        server.await.unwrap();
     }
 
     async fn http2_exchange_with_cloudflare(f: Fixture) {
@@ -1679,7 +1484,7 @@ mod cloudflare_wire_tests {
             let mut send = respond.send_response(http::Response::new(()), false).unwrap();
             // Nothing but the packet, in a DATAGRAM capsule without a
             // Context ID: no ROUTE_ADVERTISEMENT before it.
-            let want = datagram_capsule(&PACKET, false);
+            let want = datagram_capsule(&PACKET);
             let mut got = Vec::new();
             while got.len() < want.len() {
                 let chunk = body.data().await.unwrap().unwrap();
@@ -1687,7 +1492,7 @@ mod cloudflare_wire_tests {
                 got.extend_from_slice(&chunk);
             }
             assert_eq!(got, want);
-            send.send_data(datagram_capsule(&REPLY, false), false).unwrap();
+            send.send_data(datagram_capsule(&REPLY), false).unwrap();
             while let Some(Ok(_)) = body.data().await {}
             driver.abort();
         });
@@ -1767,7 +1572,7 @@ mod cloudflare_wire_tests {
             let _ = acceptor.accept(tcp).await;
         });
         let mut o = options(&f, addr, Transport::H2, DEFAULT_PROTOCOL);
-        o.verify = Verify::PinnedKey(crate::api::generate_keys().unwrap().spki_der);
+        o.endpoint_spki = crate::api::generate_keys().unwrap().spki_der;
         let e = Tunnel::connect(&o).await.err().expect("refused");
         assert!(format!("{e:#}").contains("not the endpoint key"), "{e:#}");
     }
@@ -1829,7 +1634,12 @@ mod h2_flow_tests {
                 let (response, mut stream) = client.send_request(http::Request::new(()), false).unwrap();
                 response.await.unwrap();
                 let advertisement = route_advertisement();
-                let packet = datagram_capsule(&vec![0x5a; (window as usize * 128).min(65535)], true);
+                let packet = datagram_capsule(&network_relay::proto::datagram::udp_payload(&vec![
+                    0x5a;
+                    (window as usize
+                        * 128)
+                        .min(65535)
+                ]));
                 send_h2_capsule(&mut stream, advertisement.clone()).await.unwrap();
                 send_h2_capsule(&mut stream, packet.clone()).await.unwrap();
                 stream.send_data(Bytes::new(), true).unwrap();

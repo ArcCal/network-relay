@@ -21,7 +21,6 @@ mod dns;
 #[cfg(any(test, feature = "test-support"))]
 mod ip;
 mod masque;
-mod net;
 mod netstack;
 mod runtime;
 mod varint;
@@ -36,5 +35,5 @@ pub use runtime::{WarpEgress, WarpStatus};
 #[cfg(feature = "test-support")]
 pub mod test_support {
     pub use crate::ip::{checksum, decrement_hops, destination, packet_too_big, pseudo_header, IPV6_MIN_MTU};
-    pub use crate::netstack::{max_udp_payload, NetStack, TcpListener, TcpStream, UdpSocket, MTU};
+    pub use crate::netstack::{max_udp_payload, NetStack, TcpListener, TcpSnapshot, TcpStream, UdpSocket, MTU};
 }

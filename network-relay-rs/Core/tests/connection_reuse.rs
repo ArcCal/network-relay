@@ -534,3 +534,104 @@ async fn automatic_mode_does_not_replay_submitted_connect_when_response_is_slow(
     tcp_server.abort();
     let _ = tcp_server.await;
 }
+
+/// Forwards QUIC datagrams between clients and the fixture. Silencing drops
+/// every later datagram of the clients seen so far, in both directions, as a
+/// server that crashed or restarted without CONNECTION_CLOSE would; clients
+/// from new addresses are still forwarded.
+struct SilenceablePath {
+    address: SocketAddr,
+    seen: Arc<Mutex<Vec<SocketAddr>>>,
+    blocked: Arc<Mutex<Vec<SocketAddr>>>,
+    task: JoinHandle<()>,
+}
+
+impl SilenceablePath {
+    async fn start(server: SocketAddr) -> Self {
+        let front = Arc::new(tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let address = front.local_addr().unwrap();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let blocked = Arc::new(Mutex::new(Vec::<SocketAddr>::new()));
+        let (known, dropped) = (seen.clone(), blocked.clone());
+        let task = tokio::spawn(async move {
+            let mut upstreams =
+                std::collections::HashMap::<SocketAddr, Arc<tokio::net::UdpSocket>>::new();
+            let mut workers = JoinSet::new();
+            let mut buffer = vec![0; 65535];
+            while let Ok((length, client)) = front.recv_from(&mut buffer).await {
+                if dropped.lock().unwrap().contains(&client) {
+                    continue;
+                }
+                let upstream = match upstreams.entry(client) {
+                    std::collections::hash_map::Entry::Occupied(entry) => entry.get().clone(),
+                    std::collections::hash_map::Entry::Vacant(entry) => {
+                        let upstream =
+                            Arc::new(tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap());
+                        upstream.connect(server).await.unwrap();
+                        known.lock().unwrap().push(client);
+                        let (reply, front, dropped) =
+                            (upstream.clone(), front.clone(), dropped.clone());
+                        workers.spawn(async move {
+                            let mut buffer = vec![0; 65535];
+                            while let Ok(length) = reply.recv(&mut buffer).await {
+                                if !dropped.lock().unwrap().contains(&client) {
+                                    let _ = front.send_to(&buffer[..length], client).await;
+                                }
+                            }
+                        });
+                        entry.insert(upstream).clone()
+                    }
+                };
+                let _ = upstream.send(&buffer[..length]).await;
+            }
+        });
+        Self {
+            address,
+            seen,
+            blocked,
+            task,
+        }
+    }
+
+    fn silence_existing_connections(&self) {
+        let seen = self.seen.lock().unwrap().clone();
+        self.blocked.lock().unwrap().extend(seen);
+    }
+}
+
+impl Drop for SilenceablePath {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn silently_dead_connection_is_replaced_for_the_next_flow() {
+    let fixture = Fixture::start(128).await;
+    let path = SilenceablePath::start(fixture.address).await;
+    let mut backend = fixture.backend();
+    let mut config = fixture.config();
+    config.uri_template = format!(
+        "https://{}/.well-known/masque/udp/{{target_host}}/{{target_port}}/",
+        path.address
+    );
+    let client = Client::new(&config, backend.bridge.clone()).unwrap();
+    let mut first = client.open("127.0.0.1", 7, false).await.unwrap();
+    echo(&mut first.stream, b"before the server goes silent").await;
+    let started = tokio::time::Instant::now();
+    path.silence_existing_connections();
+    // One keep-alive interval passes before a PING, then the idle timeout:
+    // at most 40 seconds, as for the HTTP/2 PING keepalive. No
+    // CONNECTION_CLOSE or stateless reset arrives in the meantime.
+    tokio::time::sleep_until(started + Duration::from_secs(42)).await;
+    let mut fresh =
+        tokio::time::timeout(Duration::from_secs(15), client.open("127.0.0.1", 7, false))
+            .await
+            .expect("a new flow waited on the silent connection")
+            .unwrap();
+    echo(&mut fresh.stream, b"a new connection carries the next flow").await;
+    assert_eq!(fixture.connection_count(), 2);
+    drop((first, fresh, client));
+    backend.shutdown().await;
+    assert_eq!(backend.resource_count(), 0);
+}

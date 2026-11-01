@@ -337,12 +337,17 @@ async fn open_quic(
             .map_err(io::Error::other)?;
     let mut config = quinn::ClientConfig::new(Arc::new(crypto));
     let mut transport = quinn::TransportConfig::default();
+    // A server that crashes or restarts sends no CONNECTION_CLOSE, and its new
+    // process cannot reset the old connection, so only the idle timeout ends
+    // it; until then new flows are sent on it and fail. With a keep-alive
+    // every 10 seconds, such a connection ends within 40 seconds, as with the
+    // HTTP/2 PING keepalive, and a working one is never 30 seconds unanswered.
     transport.max_idle_timeout(Some(
-        Duration::from_secs(120)
+        Duration::from_secs(30)
             .try_into()
             .map_err(io::Error::other)?,
     ));
-    transport.keep_alive_interval(Some(Duration::from_secs(20)));
+    transport.keep_alive_interval(Some(Duration::from_secs(10)));
     // This client negotiates reliable HTTP DATAGRAM Capsules. QUIC DATAGRAM
     // transport support is intentionally disabled instead of overstated.
     transport.datagram_receive_buffer_size(None);

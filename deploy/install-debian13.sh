@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Run from the deployment bundle or source ZIP; defaults to /tmp/network-relay.
 set -Eeuo pipefail
+unset CDPATH
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 if [[ ${1:-} == --help || ${1:-} == -h ]]; then
     exec python3 "$script_dir/install.py" --help

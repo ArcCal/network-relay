@@ -227,7 +227,7 @@ class BuildOrchestrationTests(unittest.TestCase):
         self.assertEqual(self.commands("go"), [])
 
     def test_sanitizer_removes_inherited_build_overrides(self):
-        poisoned = ("CARGO_HOME", "CARGO_TARGET_DIR", "CARGO_BUILD_TARGET", "RUSTFLAGS", "CC",
+        poisoned = ("CDPATH", "CARGO_HOME", "CARGO_TARGET_DIR", "CARGO_BUILD_TARGET", "RUSTFLAGS", "CC",
                     "CXX", "AR", "CFLAGS", "CXXFLAGS", "LDFLAGS", "SDKROOT",
                     "MACOSX_DEPLOYMENT_TARGET", "GOOS", "GOARCH", "GOFLAGS",
                     "CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER", "RUSTUP_TOOLCHAIN",

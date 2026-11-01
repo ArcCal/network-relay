@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Build the independent Rust application without changing another project.
 set -euo pipefail
+unset CDPATH CARGO_BUILD_TARGET
 
 RS_SIGN=adhoc
 if [[ ${1:-} == --unsigned ]]; then

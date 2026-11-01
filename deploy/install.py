@@ -324,6 +324,7 @@ def build_binary(args):
         raise ValueError('Download and extract the complete source ZIP, or pass a built program with --binary.')
     env = os.environ.copy()
     # Keep caches out of the source ZIP and avoid modifying shell profiles.
+    env.pop('CARGO_BUILD_TARGET', None)
     env['CARGO_HOME'] = '/var/cache/network-relay/cargo'
     env['RUSTUP_HOME'] = '/opt/network-relay/rustup'
     cargo_bin = Path(env['CARGO_HOME']) / 'bin'

@@ -62,6 +62,7 @@ class TokenInputTests(unittest.TestCase):
         return subprocess.run(['bash', '-c', 'source "$1"; shift; ' + command, 'test', str(self.script),
                                str(self.certs), SAVED], input=data, capture_output=True, text=True, timeout=30)
 
+    @unittest.skipUnless(os.geteuid() == 0, 'requires a root-owned saved token')
     def test_enter_reuses_the_checked_saved_renewal_token(self):
         result = self.inputs('relay.example.com\n\n', f'dns_cloudflare_api_token = {SAVED}\n')
         self.assertEqual(result.returncode, 0, result.stderr)

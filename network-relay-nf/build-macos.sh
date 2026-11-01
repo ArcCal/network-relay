@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Independent native app. No existing project or system configuration is changed.
 set -euo pipefail
+unset CDPATH CARGO_BUILD_TARGET
 # Find tools from rustup and Homebrew even if this shell has not loaded them yet.
 for NF_PATH in /opt/homebrew/bin "${CARGO_HOME:-$HOME/.cargo}/bin"; do
     if [[ -d $NF_PATH && :$PATH: != *:"$NF_PATH":* ]]; then PATH="$NF_PATH:$PATH"; fi
@@ -35,6 +36,8 @@ fi
 export RUSTUP_TOOLCHAIN=${RUSTUP_TOOLCHAIN:-stable}
 export MACOSX_DEPLOYMENT_TARGET=27.0
 export CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-"$NF_ROOT/Core/target"}
+mkdir -p "$CARGO_TARGET_DIR"
+CARGO_TARGET_DIR=$(cd -- "$CARGO_TARGET_DIR" && pwd)
 export CARGO_PROFILE_RELEASE_STRIP=true
 NF_TARGET=aarch64-apple-darwin
 rustup target add "$NF_TARGET"

@@ -274,6 +274,12 @@ class DeploymentTests(unittest.TestCase):
         self.assertTrue(any('.network-relay-install-' in c[0] and c[1] == 'profile' for c in self.calls))
         self.assertEqual(list(deploy.BINARY.parent.glob('.network-relay-install-*')), [])
 
+    def test_source_build_ignores_inherited_cross_target(self):
+        with (mock.patch.dict(os.environ, {'CARGO_BUILD_TARGET': 'aarch64-unknown-linux-musl'}),
+              mock.patch.object(deploy, 'run') as commands):
+            deploy.build_binary(self.args(binary=None))
+        self.assertFalse('CARGO_BUILD_TARGET' in commands.call_args.kwargs['env'])
+
     @unittest.skipUnless(BINARY.exists(), 'run cargo build first or set RELAY_BINARY')
     def test_explicit_source_build_installs_build_tools(self):
         self.certificates()

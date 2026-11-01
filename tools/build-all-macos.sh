@@ -35,7 +35,7 @@ sanitize_build_env() {
     local key _value
     while IFS='=' read -r key _value; do
         case "$key" in
-            CARGO_HOME|CARGO_TARGET_DIR|CARGO_BUILD_*|CARGO_PROFILE_*|CARGO_TARGET_*|\
+            CDPATH|CARGO_HOME|CARGO_TARGET_DIR|CARGO_BUILD_*|CARGO_PROFILE_*|CARGO_TARGET_*|\
             CARGO_ENCODED_RUSTFLAGS|RUSTFLAGS|RUSTDOCFLAGS|RUSTUP_TOOLCHAIN|\
             CC|CXX|AR|LD|CFLAGS|CPPFLAGS|CXXFLAGS|LDFLAGS|\
             CC_*|CXX_*|AR_*|CFLAGS_*|CXXFLAGS_*|\

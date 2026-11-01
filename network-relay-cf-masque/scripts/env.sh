@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Source this file before building or running project tests.
+unset CDPATH
 CF_RELAY_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 export CARGO_HOME="$CF_RELAY_ROOT/.build/cargo-home"
 export CARGO_TARGET_DIR="$CF_RELAY_ROOT/target"

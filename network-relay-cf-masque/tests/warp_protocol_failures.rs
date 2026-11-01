@@ -9,11 +9,89 @@ use hyper_util::rt::TokioIo;
 use network_relay::{auth, check};
 use rcgen::PublicKeyData;
 use std::sync::Arc;
+use std::time::Duration;
 use support::relay::{TestEnv, TestRelay, PASSWORD, USER, WAIT};
 use support::warp_peer::WarpPeer;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use warp_masque_egress::Egress;
 use warp_masque_egress::{Transport, WarpConfig, WarpEgress};
+
+fn short_idle_config(peer: &WarpPeer) -> Result<WarpConfig> {
+    let mut settings: toml::Value = toml::from_str(&peer.settings())?;
+    settings["warp"]["idle_timeout_secs"] = 5.into();
+    WarpConfig::from_toml(&toml::to_string(&settings)?)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn h3_initialization_times_out_without_enough_unidirectional_credit() -> Result<()> {
+    let mut cases = tokio::task::JoinSet::new();
+    for credit in 0..3 {
+        cases.spawn(async move {
+            let mut peer = WarpPeer::start_blocked_h3(credit).await?;
+            let config = short_idle_config(&peer)?;
+            let mut connecting = tokio::task::JoinSet::new();
+            connecting.spawn(async move { WarpEgress::connect(&config).await });
+            let connection = peer.blocked_quic_connection().await?;
+            ensure!(peer.snapshot().authenticated_clients == 1, "device authentication did not complete");
+            // A live, authenticated peer must not turn stream-credit starvation
+            // into an unbounded wait, even beyond the negotiated idle timeout.
+            tokio::time::sleep(Duration::from_secs(6)).await;
+            ensure!(connection.close_reason().is_none(), "QUIC closed before the setup deadline");
+            let result = tokio::time::timeout(Duration::from_secs(14), connecting.join_next())
+                .await
+                .with_context(|| format!("HTTP/3 initialization stayed pending with {credit} uni streams"))?
+                .context("missing connect task")??;
+            let error = result.err().context("blocked HTTP/3 initialization unexpectedly succeeded")?;
+            ensure!(format!("{error:#}").contains("HTTP/3 setup timed out"), "wrong setup error: {error:#}");
+            let close = tokio::time::timeout(Duration::from_secs(2), connection.closed())
+                .await
+                .context("timed-out setup left the authenticated QUIC connection open")?;
+            ensure!(matches!(close, quinn::ConnectionError::ApplicationClosed(_)), "setup ended with {close:?}");
+            ensure!(peer.snapshot().tunnels == 0, "blocked setup opened a WARP tunnel");
+            peer.shutdown().await;
+            Ok::<_, anyhow::Error>(())
+        });
+    }
+    while let Some(result) = cases.join_next().await {
+        result??;
+    }
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn h3_settings_timeout_still_closes_the_authenticated_connection() -> Result<()> {
+    let mut peer = WarpPeer::start_blocked_h3(3).await?;
+    let config = short_idle_config(&peer)?;
+    let mut connecting = tokio::task::JoinSet::new();
+    connecting.spawn(async move { WarpEgress::connect(&config).await });
+    let connection = peer.blocked_quic_connection().await?;
+    let result = tokio::time::timeout(Duration::from_secs(8), connecting.join_next())
+        .await
+        .context("SETTINGS timeout did not return")?
+        .context("missing connect task")??;
+    let error = result.err().context("peer without SETTINGS established a tunnel")?;
+    ensure!(format!("{error:#}").contains("no SETTINGS frame"), "wrong setup error: {error:#}");
+    tokio::time::timeout(Duration::from_secs(2), connection.closed())
+        .await
+        .context("missing SETTINGS left the QUIC connection open")?;
+    peer.shutdown().await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cancelling_blocked_h3_initialization_closes_the_quic_connection() -> Result<()> {
+    let mut peer = WarpPeer::start_blocked_h3(0).await?;
+    let config = short_idle_config(&peer)?;
+    let mut connecting = tokio::task::JoinSet::new();
+    connecting.spawn(async move { WarpEgress::connect(&config).await });
+    let connection = peer.blocked_quic_connection().await?;
+    connecting.shutdown().await;
+    tokio::time::timeout(Duration::from_secs(2), connection.closed())
+        .await
+        .context("cancelled setup left the QUIC connection open")?;
+    peer.shutdown().await;
+    Ok(())
+}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn ipv6_underlay_and_tunneled_dns_tcp_udp_work_in_each_explicit_transport() -> Result<()> {

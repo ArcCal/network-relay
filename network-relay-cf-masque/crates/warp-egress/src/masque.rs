@@ -343,13 +343,24 @@ async fn connect_h3(opts: &Options) -> Result<Tunnel> {
     // SETTINGS_ENABLE_CONNECT_PROTOCOL says the sender accepts extended
     // CONNECT (RFC 9220), so only servers announce it (quic-go's client, in
     // usque and mihomo, does not); h3 sends :protocol either way.
-    let (driver, mut send_request) = h3::client::builder()
-        .enable_extended_connect(false)
-        .enable_datagram(true)
-        .enable_datagram_draft00(true)
-        .build::<_, _, Bytes>(h3_quinn::Connection::new(conn.clone()))
-        .await
-        .context("HTTP/3 setup")?;
+    // Opening control/QPACK streams can wait indefinitely for peer credit;
+    // keepalives can prevent QUIC's idle timeout throughout that wait.
+    let setup = tokio::time::timeout(
+        CONNECT_TIMEOUT,
+        h3::client::builder()
+            .enable_extended_connect(false)
+            .enable_datagram(true)
+            .enable_datagram_draft00(true)
+            .build::<_, _, Bytes>(h3_quinn::Connection::new(conn.clone())),
+    )
+    .await;
+    let (driver, mut send_request) = match setup {
+        Ok(result) => result.context("HTTP/3 setup")?,
+        Err(error) => {
+            conn.close(0u32.into(), b"HTTP/3 setup timed out");
+            return Err(error).context("HTTP/3 setup timed out");
+        }
+    };
     let mut driver = driver;
     tasks.0.push(tokio::spawn(async move {
         let _ = std::future::poll_fn(|cx| driver.poll_close(cx)).await;

@@ -116,6 +116,7 @@ pub struct WarpPeer {
     services_task: Option<JoinHandle<()>>,
     stack_task: Option<JoinHandle<()>>,
     spoof_udp: Arc<UdpSocket>,
+    blocked_quic: Arc<Mutex<Option<quinn::Connection>>>,
 }
 
 impl WarpPeer {
@@ -124,6 +125,15 @@ impl WarpPeer {
     }
 
     pub async fn start_at(transport: Transport, address: IpAddr) -> Result<Self> {
+        Self::start_with_uni_credit(transport, address, None).await
+    }
+
+    /// Authenticate QUIC, withhold HTTP/3 progress, and keep the connection alive.
+    pub async fn start_blocked_h3(uni_credit: u32) -> Result<Self> {
+        Self::start_with_uni_credit(Transport::H3, Ipv4Addr::LOCALHOST.into(), Some(uni_credit)).await
+    }
+
+    async fn start_with_uni_credit(transport: Transport, address: IpAddr, uni_credit: Option<u32>) -> Result<Self> {
         let device = rcgen::KeyPair::generate_for(&rcgen::PKCS_ECDSA_P256_SHA256)?;
         let server = rcgen::KeyPair::generate_for(&rcgen::PKCS_ECDSA_P256_SHA256)?;
         let certificate = rcgen::CertificateParams::new(vec!["localhost".into()])?.self_signed(&server)?;
@@ -178,6 +188,10 @@ impl WarpPeer {
                 settings.datagram_receive_buffer_size(Some(4 << 20));
                 settings.datagram_send_buffer_size(4 << 20);
                 settings.max_idle_timeout(Some(Duration::from_secs(30).try_into()?));
+                if let Some(credit) = uni_credit {
+                    settings.max_concurrent_uni_streams(credit.into());
+                    settings.keep_alive_interval(Some(Duration::from_secs(1)));
+                }
                 config.transport_config(Arc::new(settings));
                 let listener = quinn::Endpoint::server(config, SocketAddr::new(address, 0))?;
                 let addr = listener.local_addr()?;
@@ -220,6 +234,8 @@ impl WarpPeer {
             }
         });
         let observation = observations.clone();
+        let blocked_quic = Arc::new(Mutex::new(None));
+        let connected = blocked_quic.clone();
         let transport_task = tokio::spawn(async move {
             let mut stopped = stopped;
             let session = async {
@@ -232,6 +248,13 @@ impl WarpPeer {
                     Listener::H3(endpoint) => {
                         let incoming_conn = endpoint.accept().await.context("QUIC listener ended")?;
                         let conn = incoming_conn.await?;
+                        if uni_credit.is_some() {
+                            *connected.lock().unwrap() = Some(conn.clone());
+                            conn.closed().await;
+                            // Preserve the peer's close reason for assertions;
+                            // a local close would replace it with LocallyClosed.
+                            return Ok(());
+                        }
                         let result = serve_h3(conn.clone(), incoming, outgoing, observation.clone()).await;
                         conn.close(0u32.into(), b"fixture session ended");
                         endpoint.close(0u32.into(), b"fixture session ended");
@@ -259,7 +282,21 @@ impl WarpPeer {
             services_task: Some(services_task),
             stack_task: Some(stack_task),
             spoof_udp,
+            blocked_quic,
         })
+    }
+
+    pub async fn blocked_quic_connection(&self) -> Result<quinn::Connection> {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if let Some(connection) = self.blocked_quic.lock().unwrap().clone() {
+                    return connection;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .context("blocked peer did not finish the authenticated QUIC handshake")
     }
 
     /// The `[warp]` table for this peer, with a synthetic inline

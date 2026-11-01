@@ -102,6 +102,9 @@ server sends GOAWAY, drains as on SIGTERM and exits with failure; the process
 supervisor can start a fresh session. Old sockets never attach to it. Root
 controller drop and cancellation during setup release owned tasks and
 sockets. Normal graceful shutdown differs from abort/reset.
+HTTP/3 control/QPACK stream initialization has a 15-second deadline,
+independent of QUIC keepalives and the subsequent 5-second SETTINGS wait.
+Initialization timeout explicitly closes QUIC and cancels the pending builder.
 TCP TIME-WAIT remains owned by smoltcp after application handles are dropped;
 the adapter must not remove it early or abort it at the ordinary close deadline.
 

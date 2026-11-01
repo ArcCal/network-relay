@@ -5,7 +5,49 @@ Cloudflare account or real enrollment is used. Tests write their evidence to
 `target/evidence` (not tracked). Earlier records about the removed private
 copy of the relay are not retained: they described different code.
 
-## Current audit results (November 1, 2026 UTC)
+## HTTP/3 initialization follow-up (November 1, 2026)
+
+The missing deadline was independently reproduced through public
+`WarpEgress::connect`, using pinned server keys and enforced enrolled-client
+mTLS. A peer with zero unidirectional stream credit kept QUIC alive beyond
+the configured 5-second idle timeout; setup was still pending at the test's
+20-second guard. The guard failed before the production change.
+
+The builder now has its own 15-second deadline. Regression tests verify
+limits of 0, 1 and 2 streams and observe an application close from the peer.
+Separate controls confirm that a peer granting all 3 streams but withholding
+SETTINGS still hits the existing 5-second deadline, and that cancelling a
+pending connect closes QUIC. Both control cases passed before the fix too.
+No new cleanup abstraction or change to the parent server was required.
+
+Validation on Linux x86_64 completed with 110 finite workspace tests and
+1 library doctest passed. The affected 6-test protocol target passed again
+after test-only fixture and lint corrections. Parent validation passed 165
+unit tests and 76 integration tests, plus the same 76 integration tests with
+loopback egress. Strict all-target/all-feature Clippy, strict production
+Clippy, formatting, the locked standalone consumer and the optimized default
+build passed. All 394 tracked parent files remain unchanged against baseline
+`5b58468b3c9358ffabbb7e28bba59d856b0a2fd9`.
+
+The first full run exposed a fixture observation race: its own close replaced
+the received remote close reason with `LocallyClosed`. The raw peer now leaves
+the received reason intact, and the strict application-close assertion stays.
+A redundant Result wrapper in a test helper was also removed after Clippy.
+The affected target and all remaining validation steps were rerun afterward.
+
+Logs are under `target/evidence/h3-setup/`. `before-fix.log` records the
+original timeout regression; `cleanup-controls-before.log` records the two
+pre-existing cleanup controls. `finite-tests-and-initial-lint.log` records
+all finite test results and the initial lint failure; `validation-completion.log`
+records the final affected-target, lint, format, consumer and parent checks.
+`production-clippy.log` and `release-build.log` record the production checks.
+The initial fixture failure is retained as `full-tests-before-fixture-fix.log`.
+Failed runs are not counted as passes.
+
+The initial audit's long-run results below describe its earlier code and
+are separate historical evidence for that revision.
+
+## Initial audit results (November 1, 2026 UTC; revision 7f7bb34)
 
 Linux x86_64, Rust/Cargo 1.99.1, Go 1.26.10 and Python 3.12.14. This
 environment supports IPv6 loopback and has no configured WARP credentials
@@ -35,7 +77,7 @@ applicability and architecture decisions.
 The full Python discovery initially reported one failure because its saved-token
 test creates a file as the current user while the installer deliberately accepts
 only root-owned credential files. Root is unavailable here. The immutable test
-has no non-root guard for this case; it was explicitly excluded as unavailable
+had no non-root guard for this case; it was explicitly excluded as unavailable
 from the subsequent available-tests run. That run selected 79 tests, passed 70,
 and retained the 9 existing skips. No parent test or installer was changed.
 Root-only profile ownership adoption is likewise not established by non-root
@@ -66,8 +108,8 @@ seconds each, with at least 394 verified exchanges per flow. RSS ranged
 from 118328 to 132860 KiB, with 40-43 file descriptors. Both WARP modes
 kept one outer generation. The independent verifier recomputed every
 recorded TCP digest and checked the resource bounds and retained executable.
-All 33 frozen source/manifest/lockfile hashes match the final source, and
-all 392 parent-file hashes remain unchanged. The retained summary is
+All 33 frozen source/manifest/lockfile hashes matched that run's source, and
+all 392 parent-file hashes remained unchanged during the initial audit. The retained summary is
 `target/evidence/soak-summary-20261101T075137Z-173871.json`, with the
 corresponding `soak-manifest-20261101T075137Z-173871.json` in the same
 directory. The frozen runner's SHA-256 is

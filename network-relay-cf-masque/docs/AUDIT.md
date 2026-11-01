@@ -1,11 +1,11 @@
 # WARP adapter audit
 
-Reviewed October 31-November 1, 2026 (America/Los_Angeles). This review concerns
+Initial review October 31-November 1, 2026 (America/Los_Angeles). This review concerns
 `network-relay-cf-masque/`, with parent commit
 `136fbae9bdf07cd49219fe71af4094eba7384de8` treated as immutable. The
 parent's source, configuration, documentation, manifests, lockfiles and
-vendored implementations remain unchanged. SHA-256 snapshots cover all
-392 tracked files outside this subproject.
+vendored implementations were unchanged in that audit. Its SHA-256 snapshots
+covered all 392 tracked files outside this subproject.
 
 ## Architecture and reuse
 
@@ -94,6 +94,16 @@ Independent synthetic-peer wire encoders remain test fixtures.
    the dependency change and passed afterward. Client idle limits and the
    parent server are unchanged. Test-only snapshots and an independent observer
    retain future stall evidence without periodically repolling the transfer.
+7. **Unbounded HTTP/3 stream initialization.** A pinned, device-authenticated
+   QUIC peer withholding unidirectional stream credit while sending keepalives
+   kept public `WarpEgress::connect` pending beyond 20 seconds with a 5-second
+   idle timeout. The HTTP/3 builder now has a 15-second deadline and explicitly
+   closes QUIC on expiry. Tests cover credit limits 0/1/2, the existing SETTINGS
+   timeout and caller cancellation. The latter two cleanup paths already worked.
+   This is an availability issue requiring an authenticated outer peer; it does
+   not establish a direct attack by unauthenticated frontend clients. The
+   follow-up treats parent revision `5b58468b3c9358ffabbb7e28bba59d856b0a2fd9`
+   as immutable and changes only this subproject.
 
 ## Standards and private protocol boundary
 

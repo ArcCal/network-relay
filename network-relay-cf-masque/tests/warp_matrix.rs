@@ -30,13 +30,19 @@ struct Fixture {
 }
 impl Fixture {
     async fn start(transport: Transport) -> Result<Self> {
+        Self::start_with_sockets(transport, None).await
+    }
+    /// With `max_sockets` set, the egress's socket limit no longer depends on
+    /// the memory of the machine running the test.
+    async fn start_with_sockets(transport: Transport, max_sockets: Option<usize>) -> Result<Self> {
         let label = match transport {
             Transport::H2 => "h2",
             Transport::H3 => "h3",
         };
         let env = TestEnv::new(label)?;
         let peer = WarpPeer::start(transport).await?;
-        let config = peer.config(&env.path)?;
+        let mut config = peer.config(&env.path)?;
+        config.max_sockets = max_sockets.or(config.max_sockets);
         let warp = Arc::new(
             tokio::time::timeout(WAIT, WarpEgress::connect(&config)).await.context("WARP handshake deadline")??,
         );
@@ -338,15 +344,17 @@ async fn repeated_64mib_bulk_hash_and_half_close_across_six_pairings() -> Result
     Ok(())
 }
 
-/// The egress's socket limit follows memory instead of a fixed 64: 300 TCP
-/// connections held open at once, each echoing its own data, over both
-/// transports. A fixed limit of 64 refused the 65th.
+/// The egress carries as many connections as its socket limit allows, not a
+/// fixed 64: 300 TCP connections held open at once, each echoing its own
+/// data, over both transports. A fixed limit of 64 refused the 65th. The
+/// limit is set here; its memory-based default is tested on its own, and is
+/// smaller than 300 on a machine with less than about 450 MiB.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn hundreds_of_concurrent_tcp_connections_share_the_stack() -> Result<()> {
     const CONNECTIONS: usize = 300;
     const BYTES: usize = 16 << 10;
     for transport in [Transport::H2, Transport::H3] {
-        let fixture = Fixture::start(transport).await?;
+        let fixture = Fixture::start_with_sockets(transport, Some(1024)).await?;
         ensure!(
             fixture.warp.status().socket_limit > CONNECTIONS,
             "socket limit {} too small",

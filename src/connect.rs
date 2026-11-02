@@ -51,7 +51,7 @@ fn refusal(e: &io::Error) -> Refusal {
         io::ErrorKind::ConnectionRefused => Refusal::ConnectionRefused,
         io::ErrorKind::TimedOut => Refusal::ConnectionTimeout,
         // No socket for it, here or in an egress: a limit, not the route.
-        io::ErrorKind::OutOfMemory => Refusal::TooManyTunnels,
+        io::ErrorKind::OutOfMemory => Refusal::NoCapacity(e.to_string()),
         _ => Refusal::Unreachable(e.to_string()),
     }
 }
@@ -406,7 +406,9 @@ mod tests {
         assert_eq!(refusal(&io::ErrorKind::ConnectionRefused.into()), Refusal::ConnectionRefused);
         assert_eq!(refusal(&io::ErrorKind::TimedOut.into()), Refusal::ConnectionTimeout);
         // Out of sockets (an egress's socket limit, say): connection_limit_reached.
-        assert_eq!(refusal(&io::ErrorKind::OutOfMemory.into()), Refusal::TooManyTunnels);
+        let full = io::Error::new(io::ErrorKind::OutOfMemory, "the user-space socket limit was reached");
+        assert_eq!(refusal(&full), Refusal::NoCapacity("the user-space socket limit was reached".into()));
+        assert_eq!(refusal(&full).error_type(), Some("connection_limit_reached"));
         assert!(matches!(refusal(&io::ErrorKind::HostUnreachable.into()), Refusal::Unreachable(_)));
     }
 

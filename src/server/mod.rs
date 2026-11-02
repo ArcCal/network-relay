@@ -380,6 +380,8 @@ struct ConnInfo {
     tcp: AtomicU64,
     udp: AtomicU64,
     refused: AtomicU64,
+    /// Whether a capacity refusal on this connection has been logged.
+    limit_logged: AtomicBool,
     up: AtomicU64,
     down: AtomicU64,
     /// SHA-256 of the client certificate, if the client presented one.
@@ -428,6 +430,7 @@ impl ConnInfo {
             tcp: AtomicU64::new(0),
             udp: AtomicU64::new(0),
             refused: AtomicU64::new(0),
+            limit_logged: AtomicBool::new(false),
             up: AtomicU64::new(0),
             down: AtomicU64::new(0),
             client_cert,
@@ -789,6 +792,10 @@ impl Relay {
             let target = a.target.as_ref().map_or_else(|_| "-".to_string(), |t| t.to_string());
             if settings.log_requests {
                 info!(user = %a.user.name, kind = a.kind.as_str(), %target, status = %refusal.status(), "refused: {refusal}");
+            } else if refusal.is_limit() && !conn.limit_logged.swap(true, Ordering::Relaxed) {
+                // An operator needs to know which limit refuses, but not
+                // where to: once per connection, without the destination.
+                info!(user = %a.user.name, kind = a.kind.as_str(), status = %refusal.status(), "refused: {refusal} (further limit refusals on this connection are logged at debug level)");
             } else {
                 debug!(user = %a.user.name, kind = a.kind.as_str(), %target, status = %refusal.status(), "refused: {refusal}");
             }
@@ -820,10 +827,11 @@ impl Relay {
         } else {
             self.inner.connection_memory
         };
+        let no_memory = || Refusal::NoCapacity("the relay's memory budget is used up".into());
         if !conn.reserve(&self.inner.memory, transport_memory) {
-            return Err(Refusal::TooManyTunnels);
+            return Err(no_memory());
         }
-        let memory = self.inner.memory.try_acquire(crate::limits::MEMORY_PER_TUNNEL).ok_or(Refusal::TooManyTunnels)?;
+        let memory = self.inner.memory.try_acquire(crate::limits::MEMORY_PER_TUNNEL).ok_or_else(no_memory)?;
         let connecting = async {
             // The user's share first, so that lookups waiting for it do not
             // hold places in the total.

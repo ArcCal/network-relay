@@ -118,6 +118,9 @@ pub enum Refusal {
     TooManyTunnels,
     /// The user's share of tunnels is used up.
     TooManyUserTunnels,
+    /// Some other capacity is used up: the relay's memory budget, or the
+    /// sockets of the host or an egress. Says which.
+    NoCapacity(String),
     /// An extended CONNECT for a protocol the relay does not implement.
     UnsupportedProtocol,
     /// A UDP proxying request that breaks RFC 9298 §3.
@@ -137,9 +140,17 @@ impl Refusal {
             | Refusal::NoAddresses
             | Refusal::ConnectionRefused
             | Refusal::Unreachable(_) => StatusCode::BAD_GATEWAY,
-            Refusal::TooManyTunnels | Refusal::TooManyUserTunnels => StatusCode::SERVICE_UNAVAILABLE,
+            Refusal::TooManyTunnels | Refusal::TooManyUserTunnels | Refusal::NoCapacity(_) => {
+                StatusCode::SERVICE_UNAVAILABLE
+            }
             Refusal::UnsupportedProtocol => StatusCode::NOT_IMPLEMENTED,
         }
+    }
+
+    /// Whether a limit or some capacity, not the request or the route,
+    /// refused the request: what an operator may need to raise.
+    pub fn is_limit(&self) -> bool {
+        matches!(self, Refusal::TooManyTunnels | Refusal::TooManyUserTunnels | Refusal::NoCapacity(_))
     }
 
     /// The Proxy-Status error type (RFC 9209 §2.3), if one fits.
@@ -155,7 +166,9 @@ impl Refusal {
             Refusal::ConnectionRefused => "connection_refused",
             Refusal::ConnectionTimeout => "connection_timeout",
             Refusal::Unreachable(_) => "destination_ip_unroutable",
-            Refusal::TooManyTunnels | Refusal::TooManyUserTunnels => "connection_limit_reached",
+            Refusal::TooManyTunnels | Refusal::TooManyUserTunnels | Refusal::NoCapacity(_) => {
+                "connection_limit_reached"
+            }
             // No error type describes it; the 501 does.
             Refusal::UnsupportedProtocol => return None,
         })
@@ -192,6 +205,7 @@ impl std::fmt::Display for Refusal {
             Refusal::Unreachable(e) => write!(f, "unreachable: {e}"),
             Refusal::TooManyTunnels => f.write_str("relay.max_tunnels reached"),
             Refusal::TooManyUserTunnels => f.write_str("relay.max_tunnels_per_user reached"),
+            Refusal::NoCapacity(e) => write!(f, "out of capacity: {e}"),
             Refusal::UnsupportedProtocol => f.write_str("unsupported :protocol"),
             Refusal::MalformedRequest => f.write_str("malformed UDP proxying request"),
         }
@@ -581,6 +595,13 @@ mod tests {
         assert_eq!(Refusal::DnsTimeout.status(), StatusCode::GATEWAY_TIMEOUT);
         assert_eq!(Refusal::ConnectionRefused.status(), StatusCode::BAD_GATEWAY);
         assert_eq!(Refusal::TooManyTunnels.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let full = Refusal::NoCapacity("the user-space socket limit was reached".into());
+        assert_eq!(full.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(full.proxy_status(), "network-relay; error=connection_limit_reached");
+        assert_eq!(full.to_string(), "out of capacity: the user-space socket limit was reached");
+        assert_ne!(full.to_string(), Refusal::TooManyTunnels.to_string(), "an egress limit is not relay.max_tunnels");
+        assert!(full.is_limit() && Refusal::TooManyTunnels.is_limit() && Refusal::TooManyUserTunnels.is_limit());
+        assert!(!Refusal::ConnectionRefused.is_limit() && !Refusal::PortBlocked.is_limit());
         assert_eq!(Refusal::NoAddresses.proxy_status(), "network-relay; error=dns_error; details=\"no addresses\"");
         assert_eq!(Refusal::Unreachable("x".into()).proxy_status(), "network-relay; error=destination_ip_unroutable");
         assert_eq!(Refusal::UnsupportedProtocol.status(), StatusCode::NOT_IMPLEMENTED);

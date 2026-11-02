@@ -427,5 +427,33 @@ class ConcurrentCertificateTests(unittest.TestCase):
         self.assertNotIn('nr_prepare_certificate', deploy)
 
 
+class BuildMemoryTests(unittest.TestCase):
+    """The build was measured under memory caps; see nr_check_build_memory."""
+
+    def check(self, available, swap):
+        with tempfile.TemporaryDirectory() as directory:
+            meminfo = Path(directory) / 'meminfo'
+            meminfo.write_text(f'MemTotal: 4000000 kB\nMemAvailable: {available} kB\nSwapFree: {swap} kB\n')
+            return subprocess.run(['bash', '-c', 'source "$1"; nr_check_build_memory "$2" && echo accepted',
+                                   'test', str(SCRIPT), str(meminfo)], capture_output=True, text=True, timeout=30)
+
+    def test_too_little_memory_is_refused_with_advice(self):
+        result = self.check(1048576 - 1, 0)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('1 GiB of available memory plus free swap', result.stderr)
+
+    def test_exact_threshold_is_accepted(self):
+        self.assertIn('accepted', self.check(1048576, 0).stdout)
+
+    def test_free_swap_counts_toward_the_requirement(self):
+        self.assertIn('accepted', self.check(1048576 // 2, 1048576 // 2).stdout)
+
+    def test_check_precedes_packages_and_the_build(self):
+        text = SCRIPT.read_text()
+        body = text[text.index('nr_main() {'):]
+        positions = [body.index(marker) for marker in ('nr_check_build_memory', '"${apt[@]}" update', 'nr_certificate_job &', 'nr_build "$jobs"')]
+        self.assertEqual(positions, sorted(positions))
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -247,8 +247,10 @@ class AccountRepairTests(unittest.TestCase):
             subprocess.run(['groupdel', name], check=False, stderr=subprocess.DEVNULL)
 
     def test_account_in_use_is_repaired_and_its_home_change_deferred(self):
-        # usermod refuses a home change while a process runs as the account,
-        # as the old relay does during an upgrade; the run must not abort.
+        # A process runs as the account, as the old relay does during an
+        # upgrade. Some shadow-utils versions refuse a home change then, and
+        # the change waits until the old relay stops; others make it at once.
+        # Either way the run must not abort and the account is repaired.
         name = f'nrbusy{os.getpid() % 100000}'
         subprocess.run(['useradd', '--system', '--user-group', '--shell', '/bin/bash', '--home-dir',
                         f'/var/lib/{name}', '--groups', 'adm', name], check=True)
@@ -257,9 +259,11 @@ class AccountRepairTests(unittest.TestCase):
             result = subprocess.run(['bash', '-c', 'source "$1"; SERVICE="$2"; nr_account && '
                                      'echo "repaired pending=$account_home_pending"', 'test', str(SCRIPT), name],
                                     capture_output=True, text=True, timeout=60)
-            self.assertIn('repaired pending=1', result.stdout, result.stderr)
+            self.assertRegex(result.stdout, r'repaired pending=[01]\n', result.stderr)
+            deferred = 'repaired pending=1' in result.stdout
             entry = subprocess.run(['getent', 'passwd', name], capture_output=True, text=True).stdout.strip()
-            self.assertTrue(entry.endswith(f':/var/lib/{name}:/usr/sbin/nologin'), entry)
+            home = f'/var/lib/{name}' if deferred else '/nonexistent'
+            self.assertTrue(entry.endswith(f':{home}:/usr/sbin/nologin'), entry)
             groups = subprocess.run(['id', '-Gn', name], capture_output=True, text=True).stdout.split()
             self.assertEqual(groups, [name])
             process.kill()
@@ -269,6 +273,8 @@ class AccountRepairTests(unittest.TestCase):
                                      'echo "repaired pending=$account_home_pending"', 'test', str(SCRIPT), name],
                                     capture_output=True, text=True, timeout=60)
             self.assertIn('repaired pending=0', result.stdout, result.stderr)
+            entry = subprocess.run(['getent', 'passwd', name], capture_output=True, text=True).stdout.strip()
+            self.assertTrue(entry.endswith(':/nonexistent:/usr/sbin/nologin'), entry)
         finally:
             if process.poll() is None:
                 process.kill()

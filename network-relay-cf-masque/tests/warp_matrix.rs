@@ -338,6 +338,64 @@ async fn repeated_64mib_bulk_hash_and_half_close_across_six_pairings() -> Result
     Ok(())
 }
 
+/// The egress's socket limit follows memory instead of a fixed 64: 300 TCP
+/// connections held open at once, each echoing its own data, over both
+/// transports. A fixed limit of 64 refused the 65th.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn hundreds_of_concurrent_tcp_connections_share_the_stack() -> Result<()> {
+    const CONNECTIONS: usize = 300;
+    const BYTES: usize = 16 << 10;
+    for transport in [Transport::H2, Transport::H3] {
+        let fixture = Fixture::start(transport).await?;
+        ensure!(
+            fixture.warp.status().socket_limit > CONNECTIONS,
+            "socket limit {} too small",
+            fixture.warp.status().socket_limit
+        );
+        let started = Instant::now();
+        let mut streams = Vec::with_capacity(CONNECTIONS);
+        // One handshake at a time: the fixture's echo listener has a backlog
+        // of eight. The connections stay open until every one has echoed.
+        for n in 1..=CONNECTIONS {
+            streams.push(
+                fixture
+                    .warp
+                    .connect_tcp(peer_addr(7))
+                    .await
+                    .with_context(|| format!("connection {n} of {CONNECTIONS}"))?,
+            );
+        }
+        let held = fixture.warp.status().sockets;
+        ensure!(held >= CONNECTIONS, "only {held} sockets held for {CONNECTIONS} connections");
+        let mut echoes = tokio::task::JoinSet::new();
+        for (index, mut stream) in streams.into_iter().enumerate() {
+            echoes.spawn(async move {
+                let mut sent = vec![0; BYTES];
+                fill_pattern(&mut sent, index * BYTES);
+                stream.write_all(&sent).await?;
+                let mut received = vec![0; BYTES];
+                stream.read_exact(&mut received).await?;
+                ensure!(received == sent, "connection {index} returned other data");
+                Ok::<_, anyhow::Error>(stream)
+            });
+        }
+        let mut finished = Vec::with_capacity(CONNECTIONS);
+        while let Some(result) = tokio::time::timeout(WAIT, echoes.join_next()).await.context("echo deadline")? {
+            finished.push(result??);
+        }
+        ensure!(finished.len() == CONNECTIONS, "{} of {CONNECTIONS} connections echoed", finished.len());
+        let elapsed = started.elapsed();
+        drop(finished);
+        save_evidence(
+            &format!("concurrent-tcp-{}", transport_name(transport)),
+            serde_json::json!({"connections": CONNECTIONS, "bytes_each": BYTES, "peak_sockets": held,
+                "socket_limit": fixture.warp.status().socket_limit, "elapsed_seconds": elapsed.as_secs_f64()}),
+        )?;
+        fixture.finish().await?;
+    }
+    Ok(())
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn tunnel_dns_udp_peer_pinning_oversize_auth_and_terminal_failure() -> Result<()> {
     for transport in [Transport::H2, Transport::H3] {

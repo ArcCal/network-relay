@@ -85,7 +85,7 @@ impl WarpEgress {
         config.validate()?;
         let options = config.options()?;
         let tunnel = Arc::new(Tunnel::connect(&options).await?);
-        let stack = NetStack::new(0);
+        let stack = NetStack::with_socket_limit(0, config.socket_limit());
         stack.set_addresses(&config.addresses()?);
         fit_mtu(&stack, &tunnel)?;
         let resolver = Resolver::new(stack.clone(), config.dns_servers().to_vec());

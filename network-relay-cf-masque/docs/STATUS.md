@@ -28,10 +28,13 @@ project's own.
 1. Single selected-mode WARP generation. No in-process automatic reconnect;
    on terminal loss the server fails open tunnels, drains and exits. A
    supervisor restarts it in the same mode.
-2. The userspace stack has 64 sockets, shared by DNS and connecting/closing
-   TCP. This is smaller than network-relay's kernel-backed capacity; set
-   `relay.max_tunnels` accordingly (the example uses 48). Beyond it, new
-   tunnels are refused with 502.
+2. The userspace stack's socket limit, shared by DNS and connecting/closing
+   TCP, is sized from memory: as many sockets as fit, full (384 KiB each),
+   in a quarter of it, between 64 and 4096 (682 at 1 GiB, 341 at 512 MiB);
+   `warp.max_sockets` sets another. network-relay's own memory-based
+   `relay.max_tunnels` default is smaller, so it binds first and leaves room
+   for DNS and closing connections. Beyond the socket limit, new tunnels are
+   refused with 503 `connection_limit_reached`.
    TIME-WAIT remains until smoltcp expires it; `lingering_sockets` reports
    these retained sockets separately from live business flows.
 3. UDP payloads are bounded by the WARP MTU, 1252/1232 bytes (IPv4/IPv6) at

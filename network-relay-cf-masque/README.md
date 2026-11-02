@@ -124,6 +124,12 @@ to `1.1.1.1:53` inside WARP, keepalive to 15 seconds, idle timeout to 30 seconds
 and the H2 outer endpoint to `162.159.198.2:443`. Copy account-specific values
 from the existing enrollment rather than inventing a private key or server pin.
 
+`warp.max_sockets` optionally sets the user-space stack's socket limit (64 to
+4096). By default it is sized from memory: as many sockets as fit, full, in a
+quarter of it (682 at 1 GiB). Leave `relay.max_tunnels` and
+`relay.max_tunnels_per_user` at network-relay's defaults unless you need
+lower ones; the memory-based `relay.max_tunnels` stays below the socket limit.
+
 IPv6 is optional. If `[warp.registration]` lacks `tunnel_ipv6` or
 `endpoint_v6`, the server prints a warning naming them when it starts, logs
 it, and **keeps running** IPv4 only. Copy them from the enrollment to enable
@@ -271,8 +277,8 @@ client behavior.
 - [Licenses](NOTICE.md); the HTTP/3 patches are network-relay's
   ([`../vendor/h3/PATCH.md`](../vendor/h3/PATCH.md)).
 
-The conservative stack limit is 64 total sockets, including DNS and connecting
-or closing TCP. UDP packets larger than the current WARP MTU are dropped at
+The stack's socket limit, which includes DNS and connecting or closing TCP, is
+sized from memory (64 to 4096; `warp.max_sockets` overrides it). UDP packets larger than the current WARP MTU are dropped at
 the relay without IP fragmentation (RFC 9298 section 5). At MTU 1280,
 IPv4/IPv6 payload ceilings are 1252/1232 bytes. Normal UDP flow remains usable
 after a drop. Live account/path behavior, extended stress and native Apple

@@ -19,6 +19,13 @@ use crate::sys;
 /// Delay before trying the next address while an attempt is pending
 /// (RFC 8305 §5 recommends 250 ms).
 const ATTEMPT_DELAY: Duration = Duration::from_millis(250);
+/// After an attempt fails, the next starts this long after the previous
+/// one started at the earliest: RFC 8305 §5 forbids less than 10 ms and
+/// recommends 100 ms, to avoid congestion collapse under loss.
+const MIN_ATTEMPT_DELAY: Duration = Duration::from_millis(100);
+/// Attempts, and so sockets, one connection holds at most; a further
+/// address retires the oldest attempt.
+const MAX_ATTEMPTS: usize = 8;
 
 /// Receive buffer for relayed UDP flows, which often carry QUIC.
 const UDP_BUFFER: usize = 1 << 20;
@@ -78,35 +85,64 @@ where
     let mut pending = interleave(addrs).into_iter().peekable();
     let deadline = tokio::time::Instant::now() + timeout;
     let mut attempts = JoinSet::new();
+    // Oldest first; finished ones are skipped when retiring.
+    let mut started: std::collections::VecDeque<tokio::task::AbortHandle> = std::collections::VecDeque::new();
+    // An attempt aborted to make room: the next starts once it has ended.
+    let mut retiring = None;
+    let mut last_start = None;
+    let mut next_start = tokio::time::Instant::now();
     let mut last_error = None;
     loop {
-        if attempts.is_empty() {
-            match pending.next() {
-                Some(addr) => {
-                    attempts.spawn(attempt(addr));
-                }
-                None => return Err(last_error.map_or(Refusal::NoAddresses, |e| refusal(&e))),
-            }
-        }
-        let more = pending.peek().is_some();
-        tokio::select! {
-            joined = attempts.join_next() => match joined {
-                Some(Ok(Ok(stream))) => return Ok(stream),
-                Some(Ok(Err(e))) => {
-                    last_error = Some(e);
-                    // A failed attempt starts the next one at once (§5).
-                    if let Some(addr) = pending.next() {
-                        attempts.spawn(attempt(addr));
+        if pending.peek().is_some() && tokio::time::Instant::now() >= next_start {
+            if attempts.len() < MAX_ATTEMPTS {
+                let addr = pending.next().expect("peeked");
+                started.push_back(attempts.spawn(attempt(addr)));
+                let now = tokio::time::Instant::now();
+                last_start = Some(now);
+                next_start = now + ATTEMPT_DELAY;
+            } else if retiring.is_none() {
+                while let Some(oldest) = started.pop_front() {
+                    if !oldest.is_finished() {
+                        oldest.abort();
+                        retiring = Some(oldest.id());
+                        break;
                     }
                 }
-                Some(Err(e)) => last_error = Some(io::Error::other(e)),
-                None => {}
-            },
-            _ = tokio::time::sleep(ATTEMPT_DELAY), if more => {
-                if let Some(addr) = pending.next() {
-                    attempts.spawn(attempt(addr));
+            }
+        }
+        if attempts.is_empty() && pending.peek().is_none() {
+            return Err(last_error.map_or(Refusal::NoAddresses, |e| refusal(&e)));
+        }
+        // Wake when the next address is due: to start it, or at the limit to
+        // retire the oldest attempt, but not while one is being retired.
+        let due = pending.peek().is_some() && (attempts.len() < MAX_ATTEMPTS || retiring.is_none());
+        tokio::select! {
+            joined = attempts.join_next_with_id(), if !attempts.is_empty() => {
+                let id = match &joined {
+                    Some(Ok((id, _))) => Some(*id),
+                    Some(Err(e)) => Some(e.id()),
+                    None => None,
+                };
+                if id.is_some() && id == retiring {
+                    retiring = None;
+                }
+                match joined {
+                    Some(Ok((_, Ok(stream)))) => return Ok(stream),
+                    Some(Ok((_, Err(e)))) => {
+                        last_error = Some(e);
+                        // A failure brings the next attempt forward, but not
+                        // within MIN_ATTEMPT_DELAY of the previous start (§5).
+                        if let Some(last) = last_start {
+                            next_start = next_start.min(last + MIN_ATTEMPT_DELAY);
+                        }
+                    }
+                    // Retired to make room for a later address.
+                    Some(Err(e)) if e.is_cancelled() => {}
+                    Some(Err(e)) => last_error = Some(io::Error::other(e)),
+                    None => {}
                 }
             }
+            _ = tokio::time::sleep_until(next_start), if due => {}
             _ = tokio::time::sleep_until(deadline) => return Err(Refusal::ConnectionTimeout),
         }
     }
@@ -405,6 +441,73 @@ mod tests {
         let r = tcp(&[a("192.0.2.1:9"), a("192.0.2.2:9")], Duration::from_millis(300)).await;
         assert!(r.is_err());
         assert!(started.elapsed() < Duration::from_secs(2), "{:?}", started.elapsed());
+    }
+
+    /// Start times of attempts made by `race`, under the paused clock.
+    async fn attempt_starts(
+        addrs: usize,
+        timeout: Duration,
+        refuse: bool,
+    ) -> (Result<(), Refusal>, Vec<Duration>, usize, usize) {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Mutex;
+        struct Live(Arc<AtomicUsize>);
+        impl Drop for Live {
+            fn drop(&mut self) {
+                self.0.fetch_sub(1, Ordering::SeqCst);
+            }
+        }
+        let origin = tokio::time::Instant::now();
+        let starts = Arc::new(Mutex::new(Vec::new()));
+        let (live, most) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
+        let addresses: Vec<SocketAddr> = (0..addrs).map(|i| SocketAddr::from(([192, 0, 2, i as u8], 9))).collect();
+        let (s, l, m) = (starts.clone(), live.clone(), most.clone());
+        let result = race(&addresses, timeout, move |_| {
+            s.lock().unwrap().push(origin.elapsed());
+            let now = l.fetch_add(1, Ordering::SeqCst) + 1;
+            m.fetch_max(now, Ordering::SeqCst);
+            let live = Live(l.clone());
+            async move {
+                let _live = live;
+                if refuse {
+                    Err::<(), _>(io::Error::from(io::ErrorKind::ConnectionRefused))
+                } else {
+                    std::future::pending().await
+                }
+            }
+        })
+        .await;
+        tokio::task::yield_now().await;
+        let starts = starts.lock().unwrap().clone();
+        (result, starts, most.load(Ordering::SeqCst), live.load(Ordering::SeqCst))
+    }
+
+    /// RFC 8305 section 5: a subsequent attempt MUST NOT start within 10 ms
+    /// of the previous one, 100 ms being the recommended minimum, also
+    /// after the previous attempt failed.
+    #[tokio::test(start_paused = true)]
+    async fn attempts_after_failures_keep_the_minimum_delay() {
+        let (result, starts, _, live) = attempt_starts(64, Duration::from_secs(60), true).await;
+        assert_eq!(result.unwrap_err(), Refusal::ConnectionRefused);
+        assert_eq!(starts.len(), 64, "every address is tried");
+        for pair in starts.windows(2) {
+            assert!(pair[1] - pair[0] >= MIN_ATTEMPT_DELAY, "attempts {:?} apart", pair[1] - pair[0]);
+        }
+        assert_eq!(live, 0);
+    }
+
+    /// A name with many unanswering addresses holds at most MAX_ATTEMPTS
+    /// sockets at once; the oldest attempt is retired for the next address.
+    #[tokio::test(start_paused = true)]
+    async fn pending_attempts_are_bounded_and_later_addresses_still_tried() {
+        let (result, starts, most, live) = attempt_starts(20, Duration::from_secs(10), false).await;
+        assert_eq!(result.unwrap_err(), Refusal::ConnectionTimeout);
+        assert_eq!(starts.len(), 20, "every address is tried before the deadline");
+        assert!(most <= MAX_ATTEMPTS, "{most} attempts pending at once");
+        for pair in starts.windows(2) {
+            assert!(pair[1] - pair[0] >= ATTEMPT_DELAY, "attempts {:?} apart", pair[1] - pair[0]);
+        }
+        assert_eq!(live, 0, "every attempt is cancelled at the deadline");
     }
 
     #[tokio::test]

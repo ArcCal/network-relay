@@ -235,7 +235,8 @@ domain's saved renewal token; CF_API_TOKEN may be inherited). Install apt
 Certbot with its Cloudflare DNS plugin, obtain a DNS-01 certificate, configure
 renewal/reload, systemd, a website and a protected Apple device profile, then
 stage private client exports, then publish them after HTTPS and TCP/UDP checks.
-Debian 12+ or Ubuntu 24.04+, systemd 249+ and 5 GiB free under /opt required.
+Debian 12+ or Ubuntu 24.04+, systemd 249+, 5 GiB free under /opt and 1 GiB of
+available memory plus swap required.
 
 Defaults: user iphone, a generated 22-character mixed-case/digit/symbol password,
 one build job and the bundled selected-domain device profile.
@@ -1578,6 +1579,18 @@ nr_require_systemd() {
     [[ $version =~ ^systemd[[:space:]]([0-9]+) ]] || nr_die 'Cannot determine the systemd version.'
     (( 10#${BASH_REMATCH[1]} >= 249 )) || nr_die 'systemd 249+ is required for the service sandbox.'
 }
+# The one-job native build was measured in memory-capped cgroups without swap:
+# it was OOM-killed at 768 MiB and completed at 896 MiB. Require 1 GiB of
+# available memory plus free swap before packages, DNS-01 work (which also runs
+# during the build) or compilation, so an undersized host changes nothing and
+# is not driven into the OOM killer. MemAvailable already counts reclaimable cache.
+nr_check_build_memory() {
+    local available
+    available=$(awk '/^(MemAvailable|SwapFree):/ {n += $2} END {print n+0}' "$1") ||
+        nr_die 'Cannot read available memory.'
+    [[ $available =~ ^[0-9]+$ ]] && (( available >= 1024 * 1024 )) ||
+        nr_die 'The build needs about 1 GiB of available memory plus free swap; add swap or use a larger host.'
+}
 # Sequence preflight before input/packages, compile before service installation,
 # and keep every optional deployment choice fixed to the documented defaults.
 nr_main() {
@@ -1615,6 +1628,7 @@ nr_main() {
     for path in "${required[@]}"; do [[ -f $REPO/$path ]] || nr_die "Complete checkout required; missing $path."; done
     free_kib=$(df -Pk /opt | awk 'NR==2 {print $4}')
     [[ $free_kib =~ ^[0-9]+$ ]] && (( free_kib >= 5*1024*1024 )) || nr_die 'At least 5 GiB free under /opt is required.'
+    nr_check_build_memory /proc/meminfo
     # Bound dpkg-lock waits, retry downloads and preserve existing conffiles.
     # The installation list deliberately contains no firewall package.
     local apt=(nr_apt -o DPkg::Lock::Timeout=1800 -o Acquire::Retries=3

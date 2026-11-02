@@ -40,7 +40,15 @@ def main():
         openssl('x509','-req','-in','server.csr','-CA','ca.pem','-CAkey','ca.key','-CAcreateserial','-out','server.pem','-days','1','-extfile','server.ext')
         stop=threading.Event()
         tcp=socket.socket();tcp.bind(('127.0.0.1',0));tcp.listen();tcp.settimeout(.1)
-        udp=socket.socket(socket.AF_INET6,socket.SOCK_DGRAM);udp.setsockopt(socket.IPPROTO_IPV6,socket.IPV6_V6ONLY,0);udp.bind(('::',0));udp.settimeout(.1)
+        # Dual-stack so "localhost" works whether the server resolves it to ::1 or
+        # 127.0.0.1; fall back to IPv4 loopback on hosts without IPv6.
+        try:
+            udp=socket.socket(socket.AF_INET6,socket.SOCK_DGRAM)
+            try: udp.setsockopt(socket.IPPROTO_IPV6,socket.IPV6_V6ONLY,0);udp.bind(('::',0))
+            except OSError: udp.close();raise
+        except OSError:
+            udp=socket.socket(socket.AF_INET,socket.SOCK_DGRAM);udp.bind(('127.0.0.1',0))
+        udp.settimeout(.1)
         def echo(connection):
             with connection:
                 while True:

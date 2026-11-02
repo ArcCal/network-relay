@@ -262,7 +262,7 @@ nr_host() {
         aarch64|arm64) arch=arm64; triple=aarch64-unknown-linux-gnu ;;
         *) nr_die 'Only x86_64/amd64 and aarch64/arm64 are supported.' ;;
     esac
-    local ID= VERSION_ID= major minor
+    local ID='' VERSION_ID='' major minor
     # shellcheck source=/dev/null
     . /etc/os-release
     [[ $VERSION_ID =~ ^[0-9]+([.][0-9]+)?$ ]] || nr_die 'A released Debian/Ubuntu version is required.'
@@ -314,12 +314,12 @@ nr_check_parent_dirs() {
     done
 }
 nr_check_account() {
-    local entry name ignored uid gid gecos home shell members aliases group_entry primary users
+    local entry name uid gid home shell members aliases group_entry primary users
     entry=$(getent passwd "$SERVICE" || true)
     group_entry=$(getent group "$SERVICE" || true)
     if [[ -z $entry ]]; then
         if [[ -n $group_entry ]]; then
-            IFS=: read -r name ignored gid members <<< "$group_entry"
+            IFS=: read -r name _ gid members <<< "$group_entry"
             [[ $gid =~ ^[0-9]+$ && $gid != 0 && -z $members ]] || nr_die 'Existing dedicated group is not safe to reuse.'
             aliases=$(getent group | awk -F: -v gid="$gid" '$3 == gid {n++} END {print n+0}')
             users=$(getent passwd | awk -F: -v gid="$gid" '$4 == gid {n++} END {print n+0}')
@@ -327,12 +327,12 @@ nr_check_account() {
         fi
         return
     fi
-    IFS=: read -r name ignored uid gid gecos home shell <<< "$entry"
+    IFS=: read -r name _ uid gid _ home shell <<< "$entry"
     [[ $uid =~ ^[0-9]+$ && $gid =~ ^[0-9]+$ && $uid != 0 && $gid != 0 ]] || nr_die 'Dedicated account must not be privileged.'
     # A login shell, another home or supplementary groups on this same-named
     # account are repaired by nr_account (usermod; no home move or chown).
     [[ -n $group_entry ]] || nr_die 'Dedicated primary group is missing.'
-    IFS=: read -r name ignored primary members <<< "$group_entry"
+    IFS=: read -r name _ primary members <<< "$group_entry"
     [[ $primary == "$gid" && -z $members && $(id -gn "$SERVICE") == "$SERVICE" ]] || nr_die 'Existing service account/group is shared or mismatched.'
     aliases=$(getent passwd | awk -F: -v uid="$uid" '$3 == uid {n++} END {print n+0}')
     users=$(getent passwd | awk -F: -v gid="$gid" '$4 == gid {n++} END {print n+0}')
@@ -806,7 +806,7 @@ nr_backup() {
         canonical=$(readlink -m -- "${path%/*}")/${path##*/}
         [[ $seen != *$'\n'"$canonical"$'\n'* ]] || continue
         seen+="$canonical"$'\n'
-        type=file; [[ $path != *.service.d ]] || type=dir
+        type='file'; [[ $path != *.service.d ]] || type='dir'
         existed=0
         if [[ -e $path || -L $path ]]; then existed=1; cp -a -- "$path" "$backup_dir/files/$index"; fi
         printf '%s\t%s\t%s\t%s\n' "$index" "$existed" "$type" "$path" >> "$backup_dir/manifest"
@@ -1152,7 +1152,6 @@ nr_recover_credentials() {
     [[ $old_domain == "$domain" && $old_user == "$device_user" && ${#old_password} == 22 ]] || return 1
     [[ $old_password =~ [A-Z] && $old_password =~ [a-z] && $old_password =~ [0-9] && $old_password =~ [+/] ]] || return 1
     relay_password=$old_password
-    credentials_reused=1
 }
 # Normal Certbot live/ files are symlinks into archive/. They are read, not
 # replaced here. Validate the leaf's dates, hostname, trusted chain and key pair
@@ -1242,7 +1241,7 @@ EOF
 # successful issuance is persistent ACME state, outside the service transaction.
 nr_prepare_certificate() {
     local lineage=$CERT_ROOT/live/$domain renewal=$CERT_ROOT/renewal/$domain.conf cert_backup previous=0
-    local reused=0 parser_output
+    local parser_output
     # The token file is replaced by rename below; a bad mode or link is repaired.
     nr_check_parent_dirs "$CREDS"
     nr_check_leaf "$renewal" file
@@ -1257,7 +1256,6 @@ nr_prepare_certificate() {
     [[ -d $CERT_ROOT ]] || install -d -m 700 "$CERT_ROOT"
     nr_atomic_install "$work/credentials.ini" "$CREDS" 600
     if nr_certificate_valid "$lineage/fullchain.pem" "$lineage/privkey.pem"; then
-        reused=1
         printf 'Existing valid certificate for %s is reused; no certonly/renewal request is made.\n' "$domain"
         if (( previous )); then cp -a -- "$renewal" "$work/renewal-base.conf"; else nr_reconstruct_renewal > "$work/renewal-base.conf"; fi
     else
@@ -1320,7 +1318,6 @@ nr_prepare() {
     install -d -o root -g "$SERVICE" -m 750 "$candidate/current"
     install -o root -g "$SERVICE" -m 640 "$CERT_ROOT/live/$domain/fullchain.pem" "$candidate/current/fullchain.pem"
     install -o root -g "$SERVICE" -m 640 "$CERT_ROOT/live/$domain/privkey.pem" "$candidate/current/privkey.pem"
-    credentials_reused=0
     if nr_recover_credentials; then
         printf 'Reusing the existing private client password; configuration follows the current script.\n'
     else
@@ -1405,7 +1402,7 @@ nr_ports_free() {
 # backups. On failure after the switch, restore old files and active/enabled
 # state. A missing old binary/config from manual deletion is honestly reported.
 nr_deploy() {
-    local relay_password account key current response ready=0 attempt path index existed type
+    local relay_password account key current ready=0 attempt path index existed type
     # Clear an inherited export attribute as well as disabling bash -a above.
     export -n relay_password account
     nr_fresh

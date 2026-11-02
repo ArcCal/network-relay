@@ -1584,6 +1584,7 @@ nr_require_systemd() {
 # available memory plus free swap before packages, DNS-01 work (which also runs
 # during the build) or compilation, so an undersized host changes nothing and
 # is not driven into the OOM killer. MemAvailable already counts reclaimable cache.
+# Re-measure after toolchain/dependency changes: tests/measure-build-memory.py.
 nr_check_build_memory() {
     local available
     available=$(awk '/^(MemAvailable|SwapFree):/ {n += $2} END {print n+0}' "$1") ||

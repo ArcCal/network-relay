@@ -18,6 +18,22 @@ TOKEN = 'A' * 20 + 'b' * 10 + '0123456789'
 SAVED = 'cfut_' + 'S' * 40
 
 
+def own_service_unit():
+    """The systemd service whose cgroup this process is in, if any.
+
+    Processes a test starts inherit it. The installer never stops a relay
+    that another service unit supervises, so under a CI runner's service the
+    test's own stand-in relays would count as another unit's.
+    """
+    try:
+        lines = Path('/proc/self/cgroup').read_text().splitlines()
+    except OSError:
+        return None
+    group = next((line[3:] for line in lines if line.startswith('0::')), '')
+    units = [part for part in group.split('/') if part.endswith('.service')]
+    return units[-1][:-len('.service')] if units else None
+
+
 def run(command, data='', script=SCRIPT, env=None):
     return subprocess.run(['bash', '-c', 'source "$1"; shift; ' + command, 'test', str(script)],
                           input=data, capture_output=True, text=True, env=env, timeout=30)
@@ -300,10 +316,13 @@ class StandaloneTakeoverTests(unittest.TestCase):
         self.processes.append(process)
         return process
 
-    def shell(self, command, *args):
-        return subprocess.run(['bash', '-c', 'source "$1"; BIN="$2"; CONFIG="$3"; shift 3; ' + command, 'test',
-                               str(SCRIPT), str(self.binary), self.config, *args], capture_output=True, text=True,
-                              timeout=60)
+    def shell(self, command, *args, service=None):
+        # The stand-in relays run in this test's cgroup: make its service, if
+        # any, the deployment's own, as the installed relay's would be.
+        service = service or own_service_unit() or 'network-relay'
+        return subprocess.run(['bash', '-c', 'source "$1"; BIN="$2"; CONFIG="$3"; SERVICE="$4"; shift 4; ' + command,
+                               'test', str(SCRIPT), str(self.binary), self.config, service, *args],
+                              capture_output=True, text=True, timeout=60)
 
     def identified(self, process):
         return self.shell('nr_is_relay_pid "$1"', str(process.pid)).returncode == 0
@@ -316,8 +335,7 @@ class StandaloneTakeoverTests(unittest.TestCase):
         # deployment when CONFIG is that default.
         bare = self.start('serve')
         self.assertFalse(self.identified(bare))
-        result = subprocess.run(['bash', '-c', 'source "$1"; BIN="$2"; CONFIG=/etc/network-relay/relay.toml; '
-                                 'nr_is_relay_pid "$3"', 'test', str(SCRIPT), str(self.binary), str(bare.pid)])
+        result = self.shell('CONFIG=/etc/network-relay/relay.toml; nr_is_relay_pid "$1"', str(bare.pid))
         self.assertEqual(result.returncode, 0)
         other = self.base / 'copy' / 'network-relay'
         other.parent.mkdir()
@@ -355,6 +373,12 @@ class StandaloneTakeoverTests(unittest.TestCase):
         self.binary.unlink()
         self.assertTrue(self.identified(process), 'an upgraded-away (deleted) BIN is still this deployment')
         replacement.rename(self.binary)
+
+    @unittest.skipUnless(own_service_unit(), 'needs to run inside a systemd service cgroup, as CI runners do')
+    def test_relay_supervised_by_another_service_unit_is_never_identified(self):
+        process = self.start('serve', '--config', self.config)
+        result = self.shell('nr_is_relay_pid "$1"', str(process.pid), service='another-relay-deployment')
+        self.assertNotEqual(result.returncode, 0, 'a relay under another service unit belongs to that unit')
 
     def test_takeover_stops_identified_instances_and_spares_others(self):
         ours = self.start('serve', '--config', self.config)

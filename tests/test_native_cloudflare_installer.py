@@ -460,12 +460,29 @@ class ConcurrentCertificateTests(unittest.TestCase):
 class BuildMemoryTests(unittest.TestCase):
     """The build was measured under memory caps; see nr_check_build_memory."""
 
-    def check(self, available, swap):
+    def check(self, available, swap, cgroups='', groups=None):
+        """`groups` maps a cgroup directory, relative to a fake mount, to its
+        files; `cgroups` is /proc/self/cgroup. No cgroups by default, so the
+        machine running the tests does not matter."""
         with tempfile.TemporaryDirectory() as directory:
-            meminfo = Path(directory) / 'meminfo'
+            base = Path(directory)
+            meminfo = base / 'meminfo'
             meminfo.write_text(f'MemTotal: 4000000 kB\nMemAvailable: {available} kB\nSwapFree: {swap} kB\n')
-            return subprocess.run(['bash', '-c', 'source "$1"; nr_check_build_memory "$2" && echo accepted',
-                                   'test', str(SCRIPT), str(meminfo)], capture_output=True, text=True, timeout=30)
+            (base / 'self-cgroup').write_text(cgroups)
+            mounts = []
+            for kind, options in (('cgroup2', 'rw'), ('cgroup', 'rw,memory')):
+                mount = base / kind
+                mount.mkdir()
+                mounts.append(f'30 25 0:26 / {mount} rw,nosuid - {kind} {kind} {options}\n')
+            (base / 'mountinfo').write_text(''.join(mounts))
+            for relative, files in (groups or {}).items():
+                folder = base / relative
+                folder.mkdir(parents=True, exist_ok=True)
+                for name, value in files.items():
+                    (folder / name).write_text(f'{value}\n')
+            return subprocess.run(['bash', '-c', 'source "$1"; nr_check_build_memory "$2" "$3" "$4" && echo accepted',
+                                   'test', str(SCRIPT), str(meminfo), str(base / 'self-cgroup'), str(base / 'mountinfo')],
+                                  capture_output=True, text=True, timeout=30)
 
     def test_too_little_memory_is_refused_with_advice(self):
         result = self.check(1048576 - 1, 0)
@@ -477,6 +494,43 @@ class BuildMemoryTests(unittest.TestCase):
 
     def test_free_swap_counts_toward_the_requirement(self):
         self.assertIn('accepted', self.check(1048576 // 2, 1048576 // 2).stdout)
+
+    # A container or systemd unit with a memory limit caps the build below
+    # what the host's /proc/meminfo reports.
+    def test_a_cgroup_v2_limit_below_the_requirement_is_refused(self):
+        groups = {'cgroup2/system.slice': {'memory.max': 'max'},
+                  'cgroup2/system.slice/install.scope': {'memory.max': 512 << 20, 'memory.current': 8 << 20,
+                                                         'memory.stat': 'inactive_file 0', 'memory.swap.max': 0}}
+        result = self.check(4000000, 0, '0::/system.slice/install.scope\n', groups)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('memory limit on this container or service', result.stderr)
+
+    def test_a_limit_on_an_ancestor_cgroup_counts(self):
+        groups = {'cgroup2/lxc': {'memory.max': 768 << 20, 'memory.current': 0, 'memory.stat': 'inactive_file 0'},
+                  'cgroup2/lxc/c1': {'memory.max': 'max'}}
+        self.assertNotEqual(self.check(4000000, 0, '0::/lxc/c1\n', groups).returncode, 0)
+
+    def test_reclaimable_cache_and_allowed_swap_count_within_a_limit(self):
+        # 768 MiB limit, 400 MiB used of which 300 MiB is inactive file cache,
+        # plus 512 MiB of the cgroup's swap allowance: about 1.15 GiB.
+        group = {'memory.max': 768 << 20, 'memory.current': 400 << 20, 'memory.stat': f'inactive_file {300 << 20}',
+                 'memory.swap.max': 512 << 20, 'memory.swap.current': 0}
+        self.assertIn('accepted', self.check(4000000, 2 << 20, '0::/svc\n', {'cgroup2/svc': group}).stdout)
+        # Host swap that the cgroup may not use does not count.
+        group['memory.swap.max'] = 0
+        self.assertNotEqual(self.check(4000000, 2 << 20, '0::/svc\n', {'cgroup2/svc': group}).returncode, 0)
+
+    def test_a_cgroup_v1_limit_counts_and_unlimited_is_ignored(self):
+        limited = {'memory.limit_in_bytes': 512 << 20, 'memory.usage_in_bytes': 0, 'memory.stat': 'total_inactive_file 0'}
+        result = self.check(4000000, 0, '4:memory:/docker/c1\n', {'cgroup/docker/c1': limited})
+        self.assertNotEqual(result.returncode, 0)
+        unlimited = dict(limited, **{'memory.limit_in_bytes': 9223372036854771712})
+        self.assertIn('accepted', self.check(4000000, 0, '4:memory:/docker/c1\n', {'cgroup/docker/c1': unlimited}).stdout)
+
+    def test_a_roomy_cgroup_leaves_the_host_figure_in_charge(self):
+        group = {'memory.max': 8 << 30, 'memory.current': 0, 'memory.stat': 'inactive_file 0'}
+        self.assertIn('accepted', self.check(1048576, 0, '0::/svc\n', {'cgroup2/svc': group}).stdout)
+        self.assertNotEqual(self.check(1048576 - 1, 0, '0::/svc\n', {'cgroup2/svc': group}).returncode, 0)
 
     def test_check_precedes_packages_and_the_build(self):
         text = SCRIPT.read_text()

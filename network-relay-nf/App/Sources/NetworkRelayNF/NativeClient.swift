@@ -329,7 +329,11 @@ final class NativeClient {
         let quic = NWProtocolQUIC.Options(alpn: options.alpn)
         let trust = TrustResult()
         configureTLS(quic.securityProtocolOptions, name: options.server_name, trustResult: trust)
-        quic.idleTimeout = 60_000 // Network.framework uses milliseconds: 60 seconds.
+        // A relay that crashes or restarts sends no CONNECTION_CLOSE and its new
+        // process cannot reset this connection, so only the idle timeout ends
+        // it; until then new flows are sent on it and fail. With the 10-second
+        // keep-alive below, a dead connection ends within 40 seconds, as in RS.
+        quic.idleTimeout = 30_000 // Network.framework uses milliseconds: 30 seconds.
         quic.initialMaxData = 5 << 20
         quic.initialMaxStreamDataBidirectionalLocal = 2 << 20
         quic.initialMaxStreamDataBidirectionalRemote = 2 << 20
@@ -389,7 +393,7 @@ final class NativeClient {
             guard let metadata = connection.metadata(definition: NWProtocolQUIC.definition) as? NWProtocolQUIC.Metadata else {
                 fail(id, message: "Native QUIC stream metadata unavailable"); return
             }
-            metadata.keepAlive = .seconds(30)
+            metadata.keepAlive = .seconds(10)
             log("DEBUG", "Native QUIC stream resource=\(id) parent=\(parent) SID=\(metadata.streamIdentifier) requestedDirection=\(unidirectional ? "uni" : "bidi")")
             ready(id, readyMetadata(connection))
         }

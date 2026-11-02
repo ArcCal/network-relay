@@ -53,9 +53,26 @@ const TCP_TIMEOUT: Duration = Duration::from_secs(120);
 const LINGER: Duration = Duration::from_secs(30);
 /// Upper bound on the wait between runs of the stack's timers.
 const MAX_IDLE: Duration = Duration::from_secs(1);
-/// Includes connections still being raced or closed, plus UDP and DNS.
-/// The frontend session limit alone does not bound these socket buffers.
-const MAX_SOCKETS: usize = 64;
+/// The socket limit counts connections still being raced or closed, plus UDP
+/// and DNS; the frontend session limit alone does not bound these socket
+/// buffers. This is the least it can be.
+pub const MIN_SOCKETS: usize = 64;
+/// smoltcp finds an arriving packet's socket by scanning every socket, so
+/// the limit stays where that scan costs little next to the packet itself.
+pub const MAX_SOCKETS: usize = 4096;
+/// The most one socket's buffers can hold: a TCP socket's receive and send
+/// buffers (a UDP socket's two packet buffers are smaller). The buffers are
+/// zeroed allocations, so the system commits their memory only as data
+/// fills them; an idle connection costs little more than its bookkeeping.
+pub const SOCKET_MEMORY: usize = TCP_RX_BUFFER + TCP_TX_BUFFER;
+
+/// The socket limit for a machine with `memory` bytes: as many sockets as
+/// fit, full, in a quarter of it, as network-relay sizes its own tunnel
+/// limit. Unknown memory counts as 1 GiB.
+pub fn default_socket_limit(memory: Option<u64>) -> usize {
+    let memory = memory.unwrap_or(1 << 30);
+    usize::try_from(memory / 4 / SOCKET_MEMORY as u64).unwrap_or(usize::MAX).clamp(MIN_SOCKETS, MAX_SOCKETS)
+}
 const EPHEMERAL_FIRST: u16 = 49152;
 const EPHEMERAL_PORTS: u16 = 16384;
 
@@ -90,6 +107,8 @@ struct State {
     iface: Interface,
     device: Queues,
     sockets: SocketSet<'static>,
+    /// Sockets of any kind the stack holds at most.
+    socket_limit: usize,
     addresses: Vec<IpAddr>,
     /// Sockets of dropped streams, with the time to give up on them.
     lingering: Vec<(SocketHandle, Instant)>,
@@ -107,15 +126,24 @@ struct Waiters {
 }
 
 impl NetStack {
-    /// A stack without addresses. Each packet it sends is preceded by
-    /// `headroom` zero bytes (the client's context ID 0).
+    /// A stack without addresses and with [`MIN_SOCKETS`] sockets. Each
+    /// packet it sends is preceded by `headroom` zero bytes (the client's
+    /// context ID 0).
+    #[allow(dead_code)] // used by the tests
     pub fn new(headroom: usize) -> Self {
+        Self::with_socket_limit(headroom, MIN_SOCKETS)
+    }
+
+    /// [`NetStack::new`] with room for `socket_limit` sockets, within
+    /// [`MIN_SOCKETS`] and [`MAX_SOCKETS`].
+    pub fn with_socket_limit(headroom: usize, socket_limit: usize) -> Self {
         let mut device = Queues { headroom, ..Queues::default() };
         let iface = new_interface(&mut device);
         let state = State {
             iface,
             device,
             sockets: SocketSet::new(Vec::new()),
+            socket_limit: socket_limit.clamp(MIN_SOCKETS, MAX_SOCKETS),
             addresses: Vec::new(),
             lingering: Vec::new(),
             failure: None,
@@ -210,7 +238,7 @@ impl NetStack {
     }
 
     pub fn socket_limit(&self) -> usize {
-        MAX_SOCKETS
+        self.lock().socket_limit
     }
 
     pub fn tcp_buffer_bytes(&self) -> usize {
@@ -467,7 +495,7 @@ impl State {
         }
     }
     fn check_socket_capacity(&self, additional: usize) -> io::Result<()> {
-        if self.sockets.iter().count().saturating_add(additional) > MAX_SOCKETS {
+        if self.sockets.iter().count().saturating_add(additional) > self.socket_limit {
             return Err(io::Error::new(io::ErrorKind::OutOfMemory, "the user-space socket limit was reached"));
         }
         Ok(())
@@ -1311,7 +1339,7 @@ mod tests {
             let mut state = stack.lock();
             // Small buffers keep this resource-limit test inexpensive.
             // These stand in for sockets still connecting or closing.
-            for port in 49152..49152 + MAX_SOCKETS as u16 {
+            for port in 49152..49152 + MIN_SOCKETS as u16 {
                 let mut socket = udp::Socket::new(
                     udp::PacketBuffer::new(Vec::new(), Vec::new()),
                     udp::PacketBuffer::new(Vec::new(), Vec::new()),
@@ -1326,9 +1354,46 @@ mod tests {
         assert_eq!(error.kind(), io::ErrorKind::OutOfMemory);
         stack.lock().sockets.remove(handles.pop().unwrap());
         let replacement = stack.bind_udp(0).expect("released capacity was not reusable");
-        assert_eq!(stack.lock().sockets.iter().count(), MAX_SOCKETS);
+        assert_eq!(stack.lock().sockets.iter().count(), MIN_SOCKETS);
         drop(replacement);
-        assert_eq!(stack.lock().sockets.iter().count(), MAX_SOCKETS - 1);
+        assert_eq!(stack.lock().sockets.iter().count(), MIN_SOCKETS - 1);
+    }
+
+    #[test]
+    fn the_socket_limit_follows_memory_within_its_bounds() {
+        let mib = |n: u64| Some(n << 20);
+        assert_eq!(default_socket_limit(mib(256)), 170, "a quarter of 256 MiB at 384 KiB per full socket");
+        assert_eq!(default_socket_limit(mib(512)), 341);
+        assert_eq!(default_socket_limit(mib(1024)), 682);
+        assert_eq!(default_socket_limit(None), default_socket_limit(mib(1024)));
+        assert_eq!(default_socket_limit(mib(16)), MIN_SOCKETS, "never below the former fixed limit");
+        assert_eq!(default_socket_limit(Some(1 << 40)), MAX_SOCKETS);
+        assert_eq!(NetStack::with_socket_limit(0, 1).socket_limit(), MIN_SOCKETS);
+        assert_eq!(NetStack::with_socket_limit(0, usize::MAX).socket_limit(), MAX_SOCKETS);
+    }
+
+    #[tokio::test]
+    async fn a_larger_socket_limit_admits_that_many_connections() {
+        let limit = 300;
+        let stack = NetStack::with_socket_limit(0, limit);
+        stack.set_addresses(&[ip(A4)]);
+        let mut handles = Vec::new();
+        {
+            let mut state = stack.lock();
+            for port in 49152..49152 + (limit - 1) as u16 {
+                let mut socket = udp::Socket::new(
+                    udp::PacketBuffer::new(Vec::new(), Vec::new()),
+                    udp::PacketBuffer::new(Vec::new(), Vec::new()),
+                );
+                socket.bind(port).unwrap();
+                handles.push(state.sockets.add(socket));
+            }
+        }
+        let last = stack.bind_udp(0).expect("a socket within the limit was refused");
+        let error = stack.bind_udp(0).err().expect("the limit was not enforced");
+        assert_eq!(error.kind(), io::ErrorKind::OutOfMemory);
+        drop(last);
+        stack.bind_udp(0).expect("released capacity was not reusable");
     }
 
     #[test]

@@ -156,7 +156,8 @@ impl WarpPeer {
             Transport::H3 => b"h3".to_vec(),
         }];
 
-        let stack = NetStack::new(0);
+        // Room for every business connection a test holds at once.
+        let stack = NetStack::with_socket_limit(0, 1024);
         stack.set_addresses(&[PEER_IPV4.into(), PEER_IPV6.into()]);
         let tcp_echo = stack.listen(7, 8)?;
         let tcp_reset = stack.listen(9, 4)?;

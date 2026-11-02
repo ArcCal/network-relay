@@ -35,11 +35,102 @@ const STABLE_SESSION: Duration = Duration::from_secs(30);
 // credit of every other flow on the connection (RFC 9113 section 6.9).
 const H2_CONNECTION_WINDOW: u32 = (1 << 31) - 1;
 
-#[derive(Debug, thiserror::Error)]
-#[error(
-    "relay rejected request with HTTP {0}; check credentials, destination policy and server template"
-)]
-pub struct Rejected(pub StatusCode);
+/// A relay's refusal of a request: its status code and, when the relay sent
+/// a Proxy-Status field (RFC 9209), the reason it gave.
+#[derive(Debug)]
+pub struct Rejected(pub StatusCode, pub Option<String>);
+
+impl std::fmt::Display for Rejected {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.1 {
+            Some(reason) => write!(
+                f,
+                "relay refused the request with HTTP {}: {reason}",
+                self.0
+            ),
+            None => write!(
+                f,
+                "relay rejected request with HTTP {}; check credentials, destination policy and server template",
+                self.0
+            ),
+        }
+    }
+}
+
+impl std::error::Error for Rejected {}
+
+/// The reason in a Proxy-Status response field (RFC 9209 section 2): the
+/// `error` parameter of the last member that has one, which is the
+/// intermediary closest to this client, followed by its `details`. Only
+/// printable ASCII is kept and the result is bounded, because the text comes
+/// from the network and is shown in the interface and the log.
+fn proxy_status_reason(headers: &http::HeaderMap) -> Option<String> {
+    fn split_outside_quotes(value: &str, separator: char) -> Vec<&str> {
+        let (mut parts, mut start, mut quoted, mut escaped) = (Vec::new(), 0, false, false);
+        for (i, c) in value.char_indices() {
+            match c {
+                _ if escaped => escaped = false,
+                '\\' if quoted => escaped = true,
+                '"' => quoted = !quoted,
+                _ if c == separator && !quoted => {
+                    parts.push(&value[start..i]);
+                    start = i + 1;
+                }
+                _ => {}
+            }
+        }
+        parts.push(&value[start..]);
+        parts
+    }
+    fn unquote(value: &str) -> String {
+        let value = value.trim();
+        let Some(inner) = value.strip_prefix('"').and_then(|v| v.strip_suffix('"')) else {
+            return value.to_string();
+        };
+        let (mut out, mut escaped) = (String::new(), false);
+        for c in inner.chars() {
+            if !escaped && c == '\\' {
+                escaped = true;
+            } else {
+                out.push(c);
+                escaped = false;
+            }
+        }
+        out
+    }
+    let joined = headers
+        .get_all("proxy-status")
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .collect::<Vec<_>>()
+        .join(",");
+    let reason = split_outside_quotes(&joined, ',')
+        .into_iter()
+        .rev()
+        .find_map(|member| {
+            let (mut error, mut details) = (None, None);
+            for param in split_outside_quotes(member, ';').into_iter().skip(1) {
+                if let Some((key, value)) = param.split_once('=') {
+                    match key.trim() {
+                        "error" => error = Some(unquote(value)),
+                        "details" => details = Some(unquote(value)),
+                        _ => {}
+                    }
+                }
+            }
+            let error = error.filter(|e| !e.is_empty())?;
+            Some(match details.filter(|d| !d.is_empty()) {
+                Some(details) => format!("{error} ({details})"),
+                None => error,
+            })
+        })?;
+    let clean: String = reason
+        .chars()
+        .filter(|c| c.is_ascii_graphic() || *c == ' ')
+        .take(200)
+        .collect();
+    (!clean.is_empty()).then_some(clean)
+}
 
 pub struct Client {
     pub bridge: Arc<native::Bridge>,
@@ -679,7 +770,7 @@ fn check(
         status.is_success()
     };
     if !successful {
-        return Err(Rejected(status).into());
+        return Err(Rejected(status, proxy_status_reason(headers)).into());
     }
     if udp {
         // The connect-udp token defines capsule framing (RFC 9298 section
@@ -877,13 +968,61 @@ mod probe_tests {
     }
 
     #[test]
+    fn refusals_show_the_proxy_status_reason() {
+        let reason = |values: &[&str]| {
+            let mut headers = http::HeaderMap::new();
+            for v in values {
+                headers.append("proxy-status", http::HeaderValue::from_str(v).unwrap());
+            }
+            proxy_status_reason(&headers)
+        };
+        assert_eq!(
+            reason(&["network-relay; error=connection_limit_reached"]).as_deref(),
+            Some("connection_limit_reached")
+        );
+        assert_eq!(
+            reason(&["network-relay; error=dns_error; details=\"no addresses\""]).as_deref(),
+            Some("dns_error (no addresses)")
+        );
+        assert_eq!(
+            reason(&[
+                "origin; error=http_request_error",
+                "\"relay, one\"; error=connection_refused"
+            ])
+            .as_deref(),
+            Some("connection_refused"),
+            "the member closest to the client wins"
+        );
+        assert_eq!(reason(&["network-relay"]), None);
+        assert_eq!(reason(&[]), None);
+        assert_eq!(
+            reason(&["r; error=x; details=\"a\\\"b\t\""])
+                .as_deref()
+                .map(str::len),
+            Some(7),
+            "escapes are decoded and control characters dropped"
+        );
+        let full = Rejected(
+            StatusCode::SERVICE_UNAVAILABLE,
+            Some("connection_limit_reached".into()),
+        );
+        assert_eq!(
+            full.to_string(),
+            "relay refused the request with HTTP 503 Service Unavailable: connection_limit_reached"
+        );
+        assert!(!terminal(&full.into()));
+        let bare = Rejected(StatusCode::FORBIDDEN, None).to_string();
+        assert!(bare.contains("check credentials"), "{bare}");
+    }
+
+    #[test]
     fn temporary_relay_refusals_are_retried() {
         for code in [502, 503, 504] {
-            let refusal = Rejected(StatusCode::from_u16(code).unwrap());
+            let refusal = Rejected(StatusCode::from_u16(code).unwrap(), None);
             assert!(!terminal(&refusal.into()), "HTTP {code} is temporary");
         }
         for code in [400, 401, 403, 404, 405, 407, 500, 501] {
-            let refusal = Rejected(StatusCode::from_u16(code).unwrap());
+            let refusal = Rejected(StatusCode::from_u16(code).unwrap(), None);
             assert!(terminal(&refusal.into()), "HTTP {code} needs the user");
         }
         let tls = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "certificate");

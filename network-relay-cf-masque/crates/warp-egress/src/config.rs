@@ -10,8 +10,8 @@ use anyhow::{ensure, Context, Result};
 use serde::{Deserialize, Deserializer};
 use x509_parser::prelude::FromDer;
 
-use crate::api;
 use crate::masque::{self, Options, Transport};
+use crate::{api, netstack};
 
 /// Settings are loaded from the `[warp]` table of the relay's one TOML
 /// configuration file, with the registration inline in `[warp.registration]`.
@@ -27,6 +27,9 @@ pub struct WarpConfig {
     pub keepalive_secs: u64,
     pub idle_timeout_secs: u64,
     pub fwmark: Option<u32>,
+    /// `max_sockets`: the user-space stack's socket limit, or none for the
+    /// default derived from this machine's memory.
+    pub max_sockets: Option<usize>,
     credentials: Arc<api::Config>,
 }
 
@@ -43,6 +46,7 @@ impl fmt::Debug for WarpConfig {
             .field("keepalive_secs", &self.keepalive_secs)
             .field("idle_timeout_secs", &self.idle_timeout_secs)
             .field("fwmark", &self.fwmark)
+            .field("max_sockets", &self.max_sockets)
             .field("credentials", &"[REDACTED]")
             .finish()
     }
@@ -68,6 +72,7 @@ struct RawConfig {
     #[serde(default = "default_idle_timeout")]
     idle_timeout_secs: u64,
     fwmark: Option<u32>,
+    max_sockets: Option<usize>,
 }
 
 impl<'de> Deserialize<'de> for Transport {
@@ -110,6 +115,7 @@ impl WarpConfig {
             keepalive_secs: raw.keepalive_secs,
             idle_timeout_secs: raw.idle_timeout_secs,
             fwmark: raw.fwmark,
+            max_sockets: raw.max_sockets,
         };
         config.validate()?;
         Ok(config)
@@ -122,6 +128,12 @@ impl WarpConfig {
         ensure!(self.keepalive_secs > 0, "warp.keepalive_secs must be nonzero");
         ensure!(self.idle_timeout_secs > self.keepalive_secs, "warp.idle_timeout_secs must exceed warp.keepalive_secs");
         ensure!(self.idle_timeout_secs <= 86_400, "warp.idle_timeout_secs must be at most 86400");
+        ensure!(
+            self.max_sockets.is_none_or(|n| (netstack::MIN_SOCKETS..=netstack::MAX_SOCKETS).contains(&n)),
+            "warp.max_sockets must be between {} and {}",
+            netstack::MIN_SOCKETS,
+            netstack::MAX_SOCKETS
+        );
         ensure!(!self.dns.is_empty(), "warp.dns must contain a numeric DNS socket address");
         ensure!(
             self.dns.iter().all(|addr| addr.port() != 0 && !addr.ip().is_unspecified() && !addr.ip().is_multicast()),
@@ -181,6 +193,12 @@ impl WarpConfig {
 
     pub fn addresses(&self) -> Result<Vec<IpAddr>> {
         self.credentials.addresses()
+    }
+
+    /// The user-space stack's socket limit: `max_sockets`, or as many full
+    /// sockets as fit in a quarter of this machine's memory.
+    pub fn socket_limit(&self) -> usize {
+        self.max_sockets.unwrap_or_else(|| netstack::default_socket_limit(network_relay::limits::total_memory()))
     }
 
     pub fn dns_servers(&self) -> &[SocketAddr] {

@@ -15,7 +15,7 @@ use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, Stream, StreamExt};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::TcpStream;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use tokio_tungstenite::tungstenite::{self, client::IntoClientRequest, protocol::WebSocketConfig, Bytes, Message};
 use tokio_tungstenite::WebSocketStream;
 use tokio_util::sync::PollSender;
@@ -66,12 +66,13 @@ pub struct VlessStream {
     eof: bool,
     resetter: Arc<Resetter>,
     local: SocketAddr,
+    closing: Option<oneshot::Sender<()>>,
 }
 
 /// Messages queued for the writer task. With [`MAX_WRITE`] this bounds what
 /// one tunnel holds before the socket takes it.
 const QUEUED_MESSAGES: usize = 8;
-/// How long the writer task may take to finish the close handshake once the
+/// How long the writer task may take to drain data and close once the
 /// tunnel is gone.
 const CLOSE_WAIT: Duration = Duration::from_secs(5);
 
@@ -99,7 +100,15 @@ impl VlessStream {
         ws.send(Message::Binary(header.into())).await.map_err(ws_error)?;
         let (sink, incoming) = ws.split();
         let (outgoing, queued) = mpsc::channel(QUEUED_MESSAGES);
-        tokio::spawn(write_messages(sink, queued));
+        let (closing, closed) = oneshot::channel();
+        tokio::spawn(async move {
+            let writer = write_messages(sink, queued);
+            tokio::pin!(writer);
+            tokio::select! {
+                _ = &mut writer => {}
+                _ = closed => { let _ = tokio::time::timeout(CLOSE_WAIT, writer).await; }
+            }
+        });
         Ok(Self {
             incoming,
             outgoing: PollSender::new(outgoing),
@@ -108,6 +117,7 @@ impl VlessStream {
             eof: false,
             resetter,
             local,
+            closing: Some(closing),
         })
     }
 
@@ -151,6 +161,9 @@ impl Drop for VlessStream {
         // The socket can outlive this stream while the writer task finishes;
         // a reset is meant for the tunnel's lifetime only.
         *self.resetter.fd.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        if let Some(closing) = self.closing.take() {
+            let _ = closing.send(());
+        }
     }
 }
 
@@ -336,5 +349,38 @@ mod tests {
         let mut buf = [0u8; 16];
         let error = stream.read(&mut buf).await.unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::ConnectionReset, "{error}");
+    }
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn a_stalled_writer_releases_its_socket_after_the_stream_is_dropped() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.unwrap();
+            socket2::SockRef::from(&tcp).set_recv_buffer_size(4096).unwrap();
+            let _ws = tokio_tungstenite::accept_async(tcp).await.unwrap();
+            std::future::pending::<()>().await;
+        });
+        let mut stream =
+            VlessStream::open(&config(port), Command::Tcp, "192.0.2.7:443".parse().unwrap()).await.unwrap();
+        let fd = stream.resetter.fd.lock().unwrap().unwrap();
+        let path = format!("/proc/self/fd/{fd}");
+        let socket = std::fs::read_link(&path).unwrap();
+        let payload = [42; 16384];
+        assert!(
+            tokio::time::timeout(Duration::from_secs(2), async {
+                loop {
+                    stream.write_all(&payload).await.unwrap();
+                }
+            })
+            .await
+            .is_err(),
+            "the peer should block the writer"
+        );
+        drop(stream);
+        tokio::time::sleep(CLOSE_WAIT + Duration::from_millis(500)).await;
+        assert_ne!(std::fs::read_link(path).ok(), Some(socket), "the detached writer retained its socket");
+        server.abort();
+        let _ = server.await;
     }
 }

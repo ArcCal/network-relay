@@ -84,7 +84,9 @@ restart (the program says so when it notices one).
   ones back.
 - **Names**: looked up with DNS over TCP to `dns_servers`, each lookup over
   its own VLESS connection, A and AAAA pipelined; answers are cached for
-  their TTL (at most five minutes). Names never reach this host's resolver.
+  their TTL, including CNAMEs (at most five minutes). Unrelated answer
+  records are ignored. A usable answer is retained if the other address
+  family times out. Names never reach this host's resolver.
   The relay allows a lookup five seconds; each resolver gets 2.5.
 - **Failures**: a VLESS server that refuses the connection or is down gives
   502; a timeout 504. Every tunnel needs the VLESS server; nothing is ever
@@ -95,7 +97,8 @@ restart (the program says so when it notices one).
   what the tunnel writes (up to 8 messages of 16 KiB queued), since
   network-relay writes to a tunnel as to a kernel socket, without flushing.
   Messages from the server are limited to 256 KiB.
-- **Ending**: when a tunnel ends, its WebSocket is closed; when the device
+- **Ending**: when a tunnel ends, queued data and its WebSocket close get
+  at most five seconds before the connection is dropped; when the device
   resets it, the VLESS connection is reset (`SO_LINGER` 0) at once.
 
 ## Limitations

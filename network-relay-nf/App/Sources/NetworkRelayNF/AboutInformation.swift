@@ -10,10 +10,11 @@ struct AppInformation {
     init(info: [String: Any] = Bundle.main.infoDictionary ?? [:]) {
         let appVersion = info["CFBundleShortVersionString"] as? String ?? ""
         let clientVersion = info["NetworkRelayNFCoreVersion"] as? String ?? ""
-        version = appVersion.isEmpty ? "Unknown" : appVersion
         coreVersion = clientVersion.isEmpty ? "Unknown" : clientVersion
         let source = info["NetworkRelayNFSourceRevision"] as? String ?? ""
         sourceRevision = source.isEmpty ? "Unknown" : source
+        // Without a version, the commit identifies the build.
+        version = appVersion.isEmpty ? sourceRevision : appVersion
         // Local builds have a build timestamp, without claiming a release was published.
         guard let timestamp = info["NetworkRelayNFBuildAt"] as? String else {
             builtAt = nil
@@ -26,5 +27,14 @@ struct AppInformation {
             formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
             builtAt = formatter.date(from: timestamp)
         }
+    }
+
+    /// The build time in local time, formatted as Network Relay RS shows it.
+    var builtText: String {
+        guard let builtAt else { return "Unknown" }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss xxx"
+        return formatter.string(from: builtAt)
     }
 }

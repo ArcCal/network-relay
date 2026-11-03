@@ -229,13 +229,7 @@ struct AboutView: View {
                 Divider()
                 LabeledContent("Source revision", value: information.sourceRevision)
                 Divider()
-                LabeledContent("Built") {
-                    if let date = information.builtAt {
-                        Text(date.formatted(date: .abbreviated, time: .standard))
-                    } else {
-                        Text("Not available")
-                    }
-                }
+                LabeledContent("Built", value: information.builtText)
             }
             .font(.callout)
             .padding(20)

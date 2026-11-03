@@ -1,0 +1,42 @@
+[Unit]
+Description=Network relay for Apple devices whose tunnels go through a VLESS server
+Documentation=https://github.com/ArcCal/network-relay/tree/main/network-relay-vless
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+ExecStart=/usr/local/bin/network-relay-vless serve --config /etc/network-relay-vless/relay.toml
+# Reloads users, destination rules, timeouts, the website and the TLS
+# certificate. [vless] changes need a restart.
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=5
+User=network-relay-vless
+Group=network-relay-vless
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+SystemCallArchitectures=native
+LogsDirectory=network-relay-vless
+# Each tunnel holds a client stream and a connection to the VLESS server.
+LimitNOFILE=1048576
+
+[Install]
+WantedBy=multi-user.target

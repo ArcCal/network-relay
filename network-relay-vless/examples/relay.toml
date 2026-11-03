@@ -1,0 +1,83 @@
+# network-relay-vless configuration: one file with network-relay's
+# settings and the downstream VLESS server ([vless] at the end).
+# Install it as /etc/network-relay-vless/relay.toml, readable only by root
+# and the service (chmod 640, group network-relay-vless): it holds the
+# VLESS user ID.
+#
+# After editing: sudo systemctl reload network-relay-vless reloads users,
+# destination rules, timeouts, the website and the certificate. Changes to
+# [vless], `listen` and the [relay] limits max_tunnels, max_connections and
+# max_connections_per_ip need a restart.
+
+# UDP for HTTP/3 and TCP for HTTP/2 and HTTP/1.1, both on this port.
+listen = "[::]:443"
+# log_dir = "/var/log/network-relay-vless"
+
+[tls]
+# The certificate devices see. The connection to the VLESS server below is
+# a separate, plaintext one.
+cert = "/etc/letsencrypt/live/relay.example.com/fullchain.pem"
+key = "/etc/letsencrypt/live/relay.example.com/privkey.pem"
+
+[relay]
+udp_template = "/.well-known/masque/udp/{target_host}/{target_port}/"
+# network-relay's default destination rules. They are checked here, before
+# a tunnel reaches the VLESS server. Add the VLESS server's own public
+# addresses: through it they reach that server's own services.
+blocked_destinations = [
+    "0.0.0.0/8", "10.0.0.0/8", "100.64.0.0/10", "127.0.0.0/8", "169.254.0.0/16",
+    "172.16.0.0/12", "192.0.0.0/24", "192.0.2.0/24", "192.168.0.0/16", "198.18.0.0/15",
+    "198.51.100.0/24", "203.0.113.0/24", "192.88.99.0/24", "224.0.0.0/4", "240.0.0.0/4",
+    "::/127", "::ffff:0:0/96", "64:ff9b:1::/48", "100::/64", "100:0:0:1::/64", "2001:2::/48", "2001:10::/28",
+    "2001:20::/28", "2001:db8::/32", "3fff::/20", "5f00::/16", "fc00::/7", "fe80::/10", "ff00::/8",
+    # "198.51.100.10/32",  # the VLESS server's public address
+]
+# This host's own addresses. Tunnels leave from the VLESS server, not from
+# here, but blocking them costs nothing.
+block_own_addresses = true
+blocked_ports = [25]
+connect_timeout_secs = 10
+udp_idle_timeout_secs = 300
+max_tunnels_per_user = 512
+max_connections_per_ip = 64
+idle_timeout_secs = 300
+
+[debug]
+log_requests = false
+
+# Users: one per device. Create with `network-relay-vless passwd --name
+# iphone` and paste the lines it prints here.
+# [[user]]
+# name = "iphone"
+# password_hash = "$argon2id$..."
+
+[vless]
+# The VLESS server, as host:port. Matches an Xray-core inbound with
+#   "protocol": "vless", "settings": {"clients": [{"id": <uuid>}], "decryption": "none"},
+#   "streamSettings": {"network": "ws", "security": "none", "wsSettings": {"path": <path>}}
+# A host name is looked up with this host's resolver, each time a tunnel
+# opens; an IP address avoids that.
+server = "vless.example.net:80"
+# The client "id" of that inbound: a UUID, or a string of 1 to 30 bytes
+# that Xray-core maps to one (the same mapping is used here).
+uuid = "b4e4fad1-c320-428e-92dc-f8f6944a7dec"
+# Only "ws" and "none" are supported. Both must be written out, so that the
+# plaintext connection is a deliberate choice: anyone between this server
+# and the VLESS server can read the user ID, every destination and all
+# relayed traffic, and can change it.
+transport = "ws"
+security = "none"
+# The inbound's wsSettings.path, exactly.
+path = "/J2kV4jxviMDXceRQYVXiv6YwCc462T6P0Dayx5JYR8R"
+# The WebSocket request's Host header. Without it: the server's host (with
+# :port unless 80). Set it when the inbound has wsSettings.host, or when a
+# front (a reverse proxy or CDN) routes by Host.
+# host = "vless.example.net"
+# Resolvers for destination names, asked with DNS over TCP through the
+# VLESS server, so names never reach this host's network. Defaults:
+# dns_servers = ["1.1.1.1:53", "8.8.8.8:53"]
+# Which addresses of a name are used, in which order: ipv4_first (default),
+# ipv6_first, ipv4_only or ipv6_only. VLESS cannot tell whether the
+# destination answered, so the first address is used even if the VLESS
+# server cannot reach it; ipv4_first suits servers without IPv6.
+# ip_preference = "ipv4_first"

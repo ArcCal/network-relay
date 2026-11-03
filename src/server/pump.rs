@@ -110,7 +110,7 @@ pub(super) async fn tcp_over_stream<S: AsyncRead + AsyncWrite + Unpin>(
             why = ctx.cancelled() => Err(why.as_str().into()),
         }
     };
-    match result {
+    let success = match result {
         Ok((up, down)) => {
             debug!(user = %ctx.user.name, target = %ctx.target, up, down, "TCP tunnel closed");
             true
@@ -120,7 +120,10 @@ pub(super) async fn tcp_over_stream<S: AsyncRead + AsyncWrite + Unpin>(
             debug!(user = %ctx.user.name, target = %ctx.target, "TCP tunnel aborted: {e}");
             false
         }
-    }
+    };
+    drop(tcp); // Close the foreground socket before releasing admission.
+    drop(ctx);
+    success
 }
 
 enum H3Outcome {
@@ -380,6 +383,8 @@ pub(super) async fn udp(mut tunnel: Tunnel, sock: Udp, mut ctx: TunnelCtx) {
         tunnel.abort(why);
     }
     debug!(user = %ctx.user.name, target = %ctx.target, up, down, dropped, "UDP flow closed: {why}");
+    drop(sock);
+    drop(ctx);
 }
 
 /// Errors that concern one datagram, after which the socket still works: a

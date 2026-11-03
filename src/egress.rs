@@ -19,6 +19,10 @@ use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
 pub type IoFuture<'a, T> = Pin<Box<dyn Future<Output = io::Result<T>> + Send + 'a>>;
 
+/// Admission and memory reservations retained until background I/O has ended.
+pub type ResourceGuard = Arc<dyn Send + Sync>;
+type ResourceRetainer = Arc<dyn Fn(ResourceGuard) + Send + Sync>;
+
 /// What an egress TCP connection is underneath.
 pub trait IoStream: AsyncRead + AsyncWrite + Unpin + Send {}
 impl<T: AsyncRead + AsyncWrite + Unpin + Send> IoStream for T {}
@@ -30,6 +34,7 @@ pub struct TcpStream {
     local: SocketAddr,
     peer: SocketAddr,
     abort: Arc<dyn Fn() + Send + Sync>,
+    retain: Option<ResourceRetainer>,
 }
 
 impl std::fmt::Debug for TcpStream {
@@ -49,7 +54,20 @@ impl TcpStream {
         peer: SocketAddr,
         abort: Arc<dyn Fn() + Send + Sync>,
     ) -> Self {
-        Self { inner: Box::new(inner), local, peer, abort }
+        Self { inner: Box::new(inner), local, peer, abort, retain: None }
+    }
+
+    /// An egress with background cleanup must retain reservations until its
+    /// socket and buffers are released, including after this stream is dropped.
+    pub fn with_resource_retainer(mut self, retain: impl Fn(ResourceGuard) + Send + Sync + 'static) -> Self {
+        self.retain = Some(Arc::new(retain));
+        self
+    }
+
+    pub(crate) fn retain_resources(&self, guard: ResourceGuard) {
+        if let Some(retain) = &self.retain {
+            retain(guard);
+        }
     }
 
     pub fn peer_addr(&self) -> io::Result<SocketAddr> {
@@ -94,6 +112,10 @@ impl AsyncWrite for TcpStream {
 /// A UDP flow opened by an [`Egress`]: like a connected UDP socket, it
 /// sends to and receives from its peer only.
 pub trait DatagramIo: Send + Sync {
+    /// Retain reservations if the socket can outlive its foreground flow.
+    /// Sockets closed synchronously on drop need no additional ownership.
+    fn retain_resources(&self, _guard: ResourceGuard) {}
+
     /// Sends one datagram.
     fn send<'a>(&'a self, data: &'a [u8]) -> IoFuture<'a, usize>;
     /// Receives one whole datagram. Dropping the future loses none.

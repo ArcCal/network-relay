@@ -48,7 +48,8 @@ impl Egress for VlessEgress {
         Box::pin(async move {
             let stream = VlessStream::open(&self.config, Command::Tcp, peer).await?;
             let (local, reset) = (stream.local_addr(), stream.reset_handle());
-            Ok(TcpStream::new(stream, local, peer, reset))
+            let retain = stream.resource_retainer();
+            Ok(TcpStream::new(stream, local, peer, reset).with_resource_retainer(retain))
         })
     }
 
@@ -79,11 +80,13 @@ struct VlessUdp {
     local: SocketAddr,
     peer: SocketAddr,
     tasks: [JoinHandle<()>; 2],
+    retain: Box<dyn Fn(network_relay::egress::ResourceGuard) + Send + Sync>,
 }
 
 impl VlessUdp {
     fn start(stream: VlessStream, peer: SocketAddr) -> Self {
         let local = stream.local_addr();
+        let retain = Box::new(stream.resource_retainer());
         let (mut reader, mut writer) = tokio::io::split(stream);
         let (outgoing, mut to_send) = mpsc::channel::<Vec<u8>>(UDP_QUEUE);
         let (received, incoming) = mpsc::channel(UDP_QUEUE);
@@ -120,7 +123,7 @@ impl VlessUdp {
                 tracing::debug!("VLESS UDP flow ended: {e}");
             }
         });
-        Self { outgoing, incoming: Mutex::new(incoming), local, peer, tasks: [write, read] }
+        Self { outgoing, incoming: Mutex::new(incoming), local, peer, tasks: [write, read], retain }
     }
 }
 
@@ -133,6 +136,10 @@ impl Drop for VlessUdp {
 }
 
 impl DatagramIo for VlessUdp {
+    fn retain_resources(&self, guard: network_relay::egress::ResourceGuard) {
+        (self.retain)(guard);
+    }
+
     fn send<'a>(&'a self, data: &'a [u8]) -> IoFuture<'a, usize> {
         Box::pin(async move {
             if data.is_empty() || data.len() > MAX_UDP_PAYLOAD {

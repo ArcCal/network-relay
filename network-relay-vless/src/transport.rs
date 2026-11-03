@@ -67,6 +67,7 @@ pub struct VlessStream {
     resetter: Arc<Resetter>,
     local: SocketAddr,
     closing: Option<oneshot::Sender<()>>,
+    resources: Arc<Mutex<Option<network_relay::egress::ResourceGuard>>>,
 }
 
 /// Messages queued for the writer task. With [`MAX_WRITE`] this bounds what
@@ -101,13 +102,18 @@ impl VlessStream {
         let (sink, incoming) = ws.split();
         let (outgoing, queued) = mpsc::channel(QUEUED_MESSAGES);
         let (closing, closed) = oneshot::channel();
+        let resources = Arc::new(Mutex::new(None));
+        let held = resources.clone();
         tokio::spawn(async move {
-            let writer = write_messages(sink, queued);
-            tokio::pin!(writer);
-            tokio::select! {
-                _ = &mut writer => {}
-                _ = closed => { let _ = tokio::time::timeout(CLOSE_WAIT, writer).await; }
-            }
+            {
+                let writer = write_messages(sink, queued);
+                tokio::pin!(writer);
+                tokio::select! {
+                    _ = &mut writer => {}
+                    _ = closed => { let _ = tokio::time::timeout(CLOSE_WAIT, writer).await; }
+                }
+            } // Drop the sink before releasing its reservations.
+            drop(held);
         });
         Ok(Self {
             incoming,
@@ -118,7 +124,15 @@ impl VlessStream {
             resetter,
             local,
             closing: Some(closing),
+            resources,
         })
+    }
+
+    pub fn resource_retainer(&self) -> impl Fn(network_relay::egress::ResourceGuard) + Send + Sync + 'static {
+        let resources = self.resources.clone();
+        move |guard| {
+            *resources.lock().unwrap_or_else(|e| e.into_inner()) = Some(guard);
+        }
     }
 
     pub fn local_addr(&self) -> SocketAddr {
@@ -363,6 +377,8 @@ mod tests {
         });
         let mut stream =
             VlessStream::open(&config(port), Command::Tcp, "192.0.2.7:443".parse().unwrap()).await.unwrap();
+        let admission = Arc::new(tokio::sync::Semaphore::new(1));
+        stream.resource_retainer()(Arc::new(admission.clone().try_acquire_owned().unwrap()));
         let fd = stream.resetter.fd.lock().unwrap().unwrap();
         let path = format!("/proc/self/fd/{fd}");
         let socket = std::fs::read_link(&path).unwrap();
@@ -378,8 +394,10 @@ mod tests {
             "the peer should block the writer"
         );
         drop(stream);
+        assert_eq!(admission.available_permits(), 0, "closing sockets must remain charged");
         tokio::time::sleep(CLOSE_WAIT + Duration::from_millis(500)).await;
         assert_ne!(std::fs::read_link(path).ok(), Some(socket), "the detached writer retained its socket");
+        assert_eq!(admission.available_permits(), 1, "closed sockets must return admission");
         server.abort();
         let _ = server.await;
     }

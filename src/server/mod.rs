@@ -598,9 +598,14 @@ struct TunnelCtx {
     udp_idle_timeout: Duration,
     /// The user's traffic budget, if limits are configured.
     budget: Option<Arc<Budget>>,
+    _resources: Arc<TunnelResources>,
+}
+
+struct TunnelResources {
     _permit: OwnedSemaphorePermit,
     _user_slot: UserSlot,
     _memory: MemoryPermit,
+    _conn: Arc<ConnInfo>,
 }
 
 /// Why a tunnel was ended from outside its streams.
@@ -870,6 +875,13 @@ impl Relay {
         }
         .fetch_add(1, Ordering::Relaxed);
         debug!(user = %a.user.name, kind = a.kind.as_str(), %target, "tunnel opened");
+        let resources =
+            Arc::new(TunnelResources { _permit: permit, _user_slot: user_slot, _memory: memory, _conn: conn.clone() });
+        match &opened {
+            Opened::Tcp(connect::Tcp::Egress(tcp)) => tcp.retain_resources(resources.clone()),
+            Opened::Udp(connect::Udp::Egress(udp)) => udp.0.retain_resources(resources.clone()),
+            _ => {}
+        }
         let ctx = TunnelCtx {
             user: a.user.clone(),
             target,
@@ -882,9 +894,7 @@ impl Relay {
             peer_closed: Box::pin(std::future::pending()),
             udp_idle_timeout: settings.udp_idle_timeout,
             budget: self.budget(&a.user.name, settings.budget),
-            _permit: permit,
-            _user_slot: user_slot,
-            _memory: memory,
+            _resources: resources,
         };
         Ok((opened, ctx))
     }
@@ -1054,6 +1064,115 @@ async fn serve(config_path: PathBuf, config: Config, variant: Option<Variant>) -
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn lifecycle_config() -> Config {
+        let hash = auth::hash_password("test-password").unwrap();
+        let mut config: Config = toml::from_str("[tls]\ncert='unused.pem'\nkey='unused.key'\n[relay]\nblocked_destinations=[]\nblocked_ports=[]\nblock_own_addresses=false\nmax_tunnels=2\nmax_tunnels_per_user=2").unwrap();
+        config.users.push(crate::config::UserEntry::with_password("alice", &hash));
+        config
+    }
+
+    fn authorized(config: &Config, kind: Kind, destination: SocketAddr) -> Authorized {
+        Authorized {
+            kind,
+            user: User {
+                name: "alice".into(),
+                credential: config.users[0].password_hash.clone().unwrap(),
+                expires: None,
+            },
+            target: Ok(Target { host: destination.ip().to_string(), port: destination.port() }),
+        }
+    }
+
+    #[tokio::test]
+    async fn traffic_to_one_udp_flow_does_not_keep_another_flow_to_the_same_target_alive() {
+        let config = lifecycle_config();
+        let relay = Relay::new(&config).unwrap();
+        let echo = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let destination = echo.local_addr().unwrap();
+        let echo_task = tokio::spawn(async move {
+            let mut data = [0; 64];
+            loop {
+                let (n, peer) = echo.recv_from(&mut data).await.unwrap();
+                echo.send_to(&data[..n], peer).await.unwrap();
+            }
+        });
+        let conn = ConnInfo::new("HTTP/2", "127.0.0.1:1".parse().unwrap(), None);
+        let mut clients = Vec::new();
+        let mut tasks = Vec::new();
+        for _ in 0..2 {
+            let (opened, mut ctx) =
+                relay.open(&authorized(&config, Kind::Udp, destination), &conn, &relay.settings()).await.unwrap();
+            ctx.udp_idle_timeout = Duration::from_millis(300); // Keep the production RFC 4787 minimum unchanged.
+            let Opened::Udp(sock) = opened else { panic!("not UDP") };
+            let (client, server) = tokio::io::duplex(1024);
+            clients.push(crate::tunnel::Tunnel::stream(client));
+            tasks.push(tokio::spawn(pump::udp(crate::tunnel::Tunnel::stream(server), sock, ctx)));
+        }
+        for _ in 0..14 {
+            clients[0].send_datagram(bytes::Bytes::from_static(b"\0ping")).unwrap();
+            assert!(matches!(
+                tokio::time::timeout(Duration::from_secs(1), clients[0].next_event()).await.unwrap().unwrap(),
+                crate::tunnel::Event::Datagram(_)
+            ));
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert_eq!(relay.active_tunnels(), 1, "only the idle flow must return its reservation");
+        assert_eq!(relay.user_tunnels("alice"), 1);
+        assert!(tasks[1].is_finished());
+        assert!(!tasks[0].is_finished());
+        drop(clients);
+        for task in tasks {
+            tokio::time::timeout(Duration::from_secs(2), task).await.unwrap().unwrap();
+        }
+        assert_eq!(relay.active_tunnels(), 0);
+        echo_task.abort();
+        let _ = echo_task.await;
+    }
+
+    #[tokio::test]
+    async fn background_egress_cleanup_retains_global_user_and_memory_reservations() {
+        use crate::egress::{IoFuture, ResourceGuard};
+        struct Delayed(Arc<Mutex<Option<ResourceGuard>>>);
+        impl Egress for Delayed {
+            fn resolve<'a>(&'a self, _: &'a str) -> IoFuture<'a, Vec<std::net::IpAddr>> {
+                Box::pin(async { unreachable!() })
+            }
+            fn connect_tcp(&self, peer: SocketAddr) -> IoFuture<'_, crate::egress::TcpStream> {
+                let held = self.0.clone();
+                Box::pin(async move {
+                    let (io, _peer) = tokio::io::duplex(64);
+                    Ok(crate::egress::TcpStream::new(io, "127.0.0.1:1".parse().unwrap(), peer, Arc::new(|| {}))
+                        .with_resource_retainer(move |guard| *held.lock().unwrap() = Some(guard)))
+                })
+            }
+            fn connect_udp(&self, _: SocketAddr) -> IoFuture<'_, crate::egress::UdpSocket> {
+                Box::pin(async { unreachable!() })
+            }
+            fn available(&self) -> bool {
+                true
+            }
+            fn failed(&self) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> {
+                Box::pin(std::future::pending())
+            }
+        }
+        let config = lifecycle_config();
+        let held = Arc::new(Mutex::new(None));
+        let relay = Relay::with_egress(&config, Arc::new(Delayed(held.clone()))).unwrap();
+        let conn = ConnInfo::new("HTTP/2", "127.0.0.1:1".parse().unwrap(), None);
+        let a = authorized(&config, Kind::Tcp, "127.0.0.1:443".parse().unwrap());
+        let (socket, ctx) = relay.open(&a, &conn, &relay.settings()).await.unwrap();
+        let reservations = Arc::downgrade(&ctx._resources);
+        drop(socket);
+        drop(ctx);
+        assert_eq!(relay.active_tunnels(), 1);
+        assert_eq!(relay.user_tunnels("alice"), 1);
+        assert!(reservations.upgrade().is_some(), "memory reservations must stay alive");
+        drop(held.lock().unwrap().take());
+        assert_eq!(relay.active_tunnels(), 0);
+        assert_eq!(relay.user_tunnels("alice"), 0);
+        assert!(reservations.upgrade().is_none());
+    }
 
     #[tokio::test]
     async fn revocation_is_detected_even_when_subscription_is_late() {

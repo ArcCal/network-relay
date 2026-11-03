@@ -98,7 +98,9 @@ restart (the program says so when it notices one).
   network-relay writes to a tunnel as to a kernel socket, without flushing.
   Messages from the server are limited to 256 KiB.
 - **Ending**: when a tunnel ends, queued data and its WebSocket close get
-  at most five seconds before the connection is dropped; when the device
+  at most five seconds before the connection is dropped. Tunnel, user and
+  memory reservations stay charged until background I/O releases the socket.
+  When the device
   resets it, the VLESS connection is reset (`SO_LINGER` 0) at once.
 
 ## Limitations

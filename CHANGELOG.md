@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- network-relay-vless: keep global tunnel, per-user and memory reservations charged while background writers drain and close their sockets. Regression tests verify reservation lifetime and that traffic on one UDP flow does not extend another flow to the same destination.
+
 - network-relay-vless: bound writer draining and closing to five seconds after a tunnel ends, validate DNS answer owners and CNAME chains with their shortest TTL, and retain usable addresses when the other address family times out. Regression tests cover stalled writers, unrelated records, CNAME loops and TTLs, and partial A/AAAA replies.
 
 - **network-relay-vless**, a new server in `network-relay-vless/`: network-relay with every tunnel carried through a downstream VLESS server (VLESS over a plaintext WebSocket, as an Xray-core `ws` inbound with `security: none` serves it). It is built on network-relay's library like network-relay-cf-masque and adds only an egress: TCP and UDP tunnels go to the addresses the destination rules allowed, names are looked up with DNS over TCP through the VLESS server, and nothing is ever sent directly. One TOML file holds the relay settings and a `[vless]` table; other transports, TLS, REALITY, flows and VLESS encryption are refused. Tested on Linux against Xray-core v26.10.31 built from source, with network-relay's `check` over HTTP/3, HTTP/2 and HTTP/1.1. Its README documents the limits: the plaintext downstream, Xray-core sniffing that replaces the checked destination unless `routeOnly` is set, a 200 before the destination is known, and no half-close. network-relay itself is unchanged.

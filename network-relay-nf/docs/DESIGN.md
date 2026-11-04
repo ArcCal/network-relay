@@ -214,5 +214,9 @@ The Rust core limits foreground SOCKS sessions using the process soft file
 descriptor allowance, reserving capacity for native pending connections, the
 application and runtime I/O, with an upper bound of 256 sessions. It reads the
 allowance without changing process or system limits. Portable tests exercise the
-budget under a low Unix limit; Network.framework descriptor consumption and
-listener failure recovery still require native macOS execution.
+budget under a low Unix limit. Native EMFILE/ENFILE failures are classified as
+temporary resource exhaustion. The core preserves the cause, recreates the
+listener on its resolved address, and skips queued children that already failed.
+Cancellation and permanent bind errors remain distinct. Portable boundary tests
+exercise this recovery; Network.framework descriptor consumption and native
+listener rebinding still require macOS execution.

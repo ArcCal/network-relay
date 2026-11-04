@@ -911,3 +911,157 @@ async fn abort_resets_the_native_connection_and_wakes_pending_io() {
         "no graceful close after the abort"
     );
 }
+
+async fn ready_listener(
+    bridge: &Arc<Bridge>,
+    events: &mut mpsc::Receiver<Event>,
+) -> (TcpListener, u64) {
+    let owner = bridge.clone();
+    let opening = tokio::spawn(async move { owner.listen("127.0.0.1:0".parse().unwrap()).await });
+    let event = next_event(events).await;
+    assert_eq!(event.kind, LISTEN);
+    bridge.input(
+        READY,
+        event.id,
+        0,
+        0,
+        &serde_json::to_vec(&Ready {
+            local: "127.0.0.1:19080".into(),
+            ..Ready::default()
+        })
+        .unwrap(),
+    );
+    (opening.await.unwrap().unwrap(), event.id)
+}
+
+#[tokio::test]
+async fn listener_preserves_native_resource_exhaustion() {
+    let (bridge, mut events) = instance();
+    let (listener, id) = ready_listener(&bridge, &mut events).await;
+    assert!(bridge.input(ERROR, id, 0, 5, b"Too many open files"));
+    let error = bounded(listener.accept()).await.err().unwrap();
+    assert_eq!(error.kind(), io::ErrorKind::OutOfMemory);
+    assert!(error.to_string().contains("Too many open files"));
+}
+
+#[tokio::test]
+async fn failed_queued_child_does_not_kill_its_listener() {
+    let (bridge, mut events) = instance();
+    let (listener, parent) = ready_listener(&bridge, &mut events).await;
+    let ready = Ready {
+        local: "127.0.0.1:19080".into(),
+        peer: "127.0.0.1:50000".into(),
+        ..Ready::default()
+    };
+    let failed = bridge.accept(parent, 0, ready.clone());
+    assert!(bridge.input(ERROR, failed, 0, 4, b"connection reset before acceptance"));
+    let healthy = bridge.accept(parent, 0, ready);
+    let (accepted, _) = bounded(listener.accept()).await.unwrap();
+    assert_eq!(accepted.id(), healthy);
+    drop((accepted, listener));
+    assert!(bridge.resources.lock().unwrap().is_empty());
+}
+
+async fn next_kind(events: &mut mpsc::Receiver<Event>, kind: u32) -> Event {
+    bounded(async {
+        loop {
+            let event = events.recv().await.unwrap();
+            if event.kind == kind {
+                return event;
+            }
+        }
+    })
+    .await
+}
+
+async fn listener_recovery(mode: u8) {
+    let (bridge, mut events) = instance();
+    let (listener, id) = ready_listener(&bridge, &mut events).await;
+    let config = network_relay_nf_core::Config {
+        uri_template: "https://relay.test/.well-known/masque/udp/{target_host}/{target_port}/"
+            .into(),
+        username: "alice".into(),
+        password: "disposable-test-password".into(),
+        server_name: None,
+        transport: "http/1.1".into(),
+        probe_target: "127.0.0.1:53".parse().unwrap(),
+        mode: "socks".into(),
+        socks: network_relay_nf_core::Socks {
+            listen: vec!["127.0.0.1:0".parse().unwrap()],
+        },
+    };
+    let client =
+        Arc::new(network_relay_nf_core::client::Client::new(&config, bridge.clone()).unwrap());
+    let worker = tokio::spawn(network_relay_nf_core::socks::run(client, vec![listener]));
+    bridge.input(ERROR, id, 0, 5, b"Too many open files");
+    let retry = next_kind(&mut events, LISTEN).await;
+    assert_eq!(&retry.data[..], b"127.0.0.1:19080");
+    if mode != 0 {
+        if mode == 1 {
+            bridge.stop.cancel();
+        } else {
+            bridge.input(ERROR, retry.id, 0, 2, b"address already in use");
+        }
+        let result = bounded(worker).await.unwrap();
+        assert_eq!(result.is_ok(), mode == 1);
+        assert!(!std::iter::from_fn(|| events.try_recv().ok()).any(|event| event.kind == LISTEN));
+        bounded(async {
+            while !bridge.resources.lock().unwrap().is_empty() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await;
+        return;
+    }
+    bridge.input(ERROR, retry.id, 0, 5, b"Still out of descriptors");
+    let retry = next_kind(&mut events, LISTEN).await;
+    assert_eq!(&retry.data[..], b"127.0.0.1:19080");
+    bridge.input(
+        READY,
+        retry.id,
+        0,
+        0,
+        &serde_json::to_vec(&Ready {
+            local: "127.0.0.1:19080".into(),
+            ..Ready::default()
+        })
+        .unwrap(),
+    );
+    let accepted = bridge.accept(
+        retry.id,
+        0,
+        Ready {
+            local: "127.0.0.1:19080".into(),
+            peer: "127.0.0.1:50000".into(),
+            ..Ready::default()
+        },
+    );
+    let read = next_kind(&mut events, READ).await;
+    assert_eq!(
+        read.id, accepted,
+        "the recovered listener must accept new SOCKS clients"
+    );
+    bridge.stop.cancel();
+    bounded(worker).await.unwrap().unwrap();
+    bounded(async {
+        while !bridge.resources.lock().unwrap().is_empty() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn socks_reopens_the_same_listener_after_temporary_native_exhaustion() {
+    listener_recovery(0).await;
+}
+
+#[tokio::test]
+async fn cancelling_listener_recovery_releases_the_pending_native_open() {
+    listener_recovery(1).await;
+}
+
+#[tokio::test]
+async fn listener_recovery_does_not_hide_a_permanent_bind_error() {
+    listener_recovery(2).await;
+}

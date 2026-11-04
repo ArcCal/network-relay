@@ -195,6 +195,7 @@ final class NativeClient {
         case .tls: return 1
         case .posix(.EADDRINUSE): return 2
         case .posix(.ETIMEDOUT): return 3
+        case .posix(.EMFILE), .posix(.ENFILE): return 5
         default: return 4
         }
     }

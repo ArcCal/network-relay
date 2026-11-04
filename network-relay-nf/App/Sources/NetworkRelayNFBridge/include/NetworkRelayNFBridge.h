@@ -13,6 +13,8 @@ typedef struct NfEvent {
 NfHandle *nf_start(const char *configuration, uint32_t level);
 NfEvent *nf_next_event(NfHandle *handle);
 void nf_free_event(NfEvent *event);
+// ERROR flags: 1 trust, 2 address in use, 3 timeout, 4 connection failure,
+// 5 temporary native resource exhaustion (EMFILE/ENFILE).
 bool nf_input(NfHandle *handle, uint32_t kind, uint64_t id, uint64_t token, uint64_t flags, const uint8_t *data, size_t len);
 typedef enum NfDataInputResult {
     NF_DATA_ACCEPTED = 0,

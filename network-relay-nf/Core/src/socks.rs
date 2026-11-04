@@ -62,14 +62,14 @@ pub async fn run(client: Arc<Client>, listeners: Vec<native::TcpListener>) -> Re
     let mut workers = JoinSet::new();
     let monitor = client.clone();
     workers.spawn(async move { monitor.monitor().await });
-    for listener in listeners {
+    for mut listener in listeners {
         let client = client.clone();
         let limit = limit.clone();
         workers.spawn(async move {
             let mut sessions = JoinSet::new();
             loop {
                 tokio::select! {
-                    accepted = listener.accept() => {
+                    accepted = accept_recovering(&mut listener, &client.bridge) => {
                         let (io, peer) = accepted?;
                         let Ok(permit) = limit.clone().try_acquire_owned() else { drop(io); continue; };
                         let client = client.clone();
@@ -87,8 +87,38 @@ pub async fn run(client: Arc<Client>, listeners: Vec<native::TcpListener>) -> Re
         });
     }
     tokio::select! {
+        biased;
         _ = client.bridge.stop.cancelled() => Ok(()),
         result = workers.join_next() => result.context("relay worker disappeared")??,
+    }
+}
+
+/// Recreate only a resource-exhausted native listener, using its resolved
+/// address so an ephemeral bind does not silently move the SOCKS endpoint.
+async fn accept_recovering(
+    listener: &mut native::TcpListener,
+    bridge: &Arc<native::Bridge>,
+) -> std::io::Result<(native::Io, SocketAddr)> {
+    loop {
+        match listener.accept().await {
+            Ok(accepted) => return Ok(accepted),
+            Err(error) if error.kind() == std::io::ErrorKind::OutOfMemory => {
+                let address = listener.local_addr()?;
+                tracing::warn!(%error, %address, "SOCKS listener exhausted native resources; retrying");
+                loop {
+                    tokio::time::sleep(Duration::from_millis(250)).await;
+                    match bridge.listen(address).await {
+                        Ok(replacement) => {
+                            *listener = replacement;
+                            break;
+                        }
+                        Err(error) if error.kind() == std::io::ErrorKind::OutOfMemory => {}
+                        Err(error) => return Err(error),
+                    }
+                }
+            }
+            Err(error) => return Err(error),
+        }
     }
 }
 

@@ -386,6 +386,7 @@ fn native_error(flags: u64, data: &[u8]) -> io::Error {
         1 => io::ErrorKind::PermissionDenied,
         2 => io::ErrorKind::AddrInUse,
         3 => io::ErrorKind::TimedOut,
+        5 => io::ErrorKind::OutOfMemory,
         _ => io::ErrorKind::ConnectionAborted,
     };
     io::Error::new(kind, String::from_utf8_lossy(data).into_owned())
@@ -624,18 +625,25 @@ impl TcpListener {
         self._io.local_addr()
     }
     pub async fn accept(&self) -> io::Result<(Io, SocketAddr)> {
-        let (id, _, ready) = self
-            .accepted
-            .lock()
-            .await
-            .recv()
-            .await
-            .ok_or(io::ErrorKind::BrokenPipe)?;
-        let peer = ready
-            .peer
-            .parse()
-            .map_err(|_| io::ErrorKind::AddrNotAvailable)?;
-        Ok((self.bridge.accepted_io(id, ready)?, peer))
+        loop {
+            let accepted = self.accepted.lock().await.recv().await;
+            // Preserve the listener's native failure instead of reducing every
+            // failure to a closed accept queue. A queued child may already
+            // have failed independently while its parent remains healthy.
+            if let Some((flags, data)) = &*self._io.failure.lock().unwrap() {
+                return Err(native_error(*flags, data));
+            }
+            let (id, _, ready) = accepted.ok_or(io::ErrorKind::BrokenPipe)?;
+            let peer = ready
+                .peer
+                .parse()
+                .map_err(|_| io::ErrorKind::AddrNotAvailable)?;
+            match self.bridge.accepted_io(id, ready) {
+                Ok(io) => return Ok((io, peer)),
+                Err(error) if error.kind() == io::ErrorKind::NotConnected => continue,
+                Err(error) => return Err(error),
+            }
+        }
     }
 }
 pub struct UdpSocket {

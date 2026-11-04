@@ -885,7 +885,6 @@ async fn open_resource(
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn repeated_local_connection_cancellation_releases_blocked_reads_and_sockets() {
         let mut backend = Backend::start(BackendOptions::default()).unwrap();
@@ -930,26 +929,67 @@ mod tests {
         backend.shutdown().await;
         assert_eq!(backend.resource_count(), 0);
     }
-    #[tokio::test]
-    async fn a_local_stream_uses_one_file_descriptor() {
-        use std::os::fd::AsRawFd;
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let _peer = TcpStream::connect(listener.local_addr().unwrap())
-            .await
-            .unwrap();
-        let (tcp, _) = listener.accept().await.unwrap();
-        let socket = std::fs::read_link(format!("/proc/self/fd/{}", tcp.as_raw_fd())).unwrap();
-        let stream = Stream::tcp(tcp, CancellationToken::new()).unwrap();
-        let count = std::fs::read_dir("/proc/self/fd")
+    #[cfg(unix)]
+    #[test]
+    fn a_local_stream_uses_one_file_descriptor() {
+        const CHILD: &str = "RELAY_RS_SINGLE_DESCRIPTOR_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let output = std::process::Command::new("/bin/sh")
+                .args([
+                    "-c",
+                    "ulimit -n 64 && exec \"$@\"",
+                    "single-descriptor-test",
+                ])
+                .arg(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "backend::tests::a_local_stream_uses_one_file_descriptor",
+                    "--nocapture",
+                ])
+                .env(CHILD, "1")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "child failed:\n{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
             .unwrap()
-            .filter_map(Result::ok)
-            .filter(|entry| std::fs::read_link(entry.path()).ok().as_ref() == Some(&socket))
-            .count();
-        assert_eq!(
-            count, 1,
-            "an accepted socket must not be duplicated just for reset support"
-        );
-        drop(stream);
+            .block_on(async {
+                let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+                let mut peer = TcpStream::connect(listener.local_addr().unwrap())
+                    .await
+                    .unwrap();
+                let (tcp, _) = listener.accept().await.unwrap();
+                let mut files = Vec::new();
+                loop {
+                    match std::fs::File::open("/dev/null") {
+                        Ok(file) => files.push(file),
+                        Err(error) => {
+                            assert_eq!(error.raw_os_error(), Some(libc::EMFILE));
+                            break;
+                        }
+                    }
+                }
+                // There is no spare descriptor: wrapping the existing socket must
+                // still work. This detects duplication without Linux-only /proc.
+                let stream = Stream::tcp(tcp, CancellationToken::new())
+                    .expect("wrapping TCP allocated another descriptor");
+                drop(files);
+                stream.write.lock().await.write_all(b"ok").await.unwrap();
+                let mut bytes = [0; 2];
+                tokio::time::timeout(Duration::from_secs(2), peer.read_exact(&mut bytes))
+                    .await
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(&bytes, b"ok");
+            });
     }
 
     #[cfg(unix)]
@@ -990,23 +1030,43 @@ mod tests {
                     .await
                     .unwrap();
                 // Synchronous calls keep the backend from accepting before pressure is in place.
-                let _peer = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+                let queued_peer =
+                    std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
                 let mut files = Vec::new();
                 loop {
                     match std::fs::File::open("/dev/null") {
                         Ok(file) => files.push(file),
                         Err(error) => {
-                            assert_eq!(error.raw_os_error(), Some(24));
+                            assert_eq!(error.raw_os_error(), Some(libc::EMFILE));
                             break;
                         }
                     }
                 }
                 tokio::time::sleep(Duration::from_millis(200)).await;
                 drop(files);
-                let (accepted, _) = tokio::time::timeout(Duration::from_secs(3), listener.accept())
+                drop(queued_peer);
+                // Kernels may discard the connection queued during EMFILE.
+                // Recovery means newly arriving clients can be accepted.
+                let fresh_peer = TcpStream::connect(listener.local_addr().unwrap())
                     .await
-                    .unwrap()
-                    .expect("a temporary descriptor shortage must not terminate the listener");
+                    .unwrap();
+                let fresh_address = fresh_peer.local_addr().unwrap();
+                let accepted = tokio::time::timeout(Duration::from_secs(5), async {
+                    loop {
+                        let (accepted, peer) = listener
+                            .accept()
+                            .await
+                            .expect("a temporary descriptor shortage terminated the listener");
+                        if peer == fresh_address {
+                            break accepted;
+                        }
+                        drop(accepted);
+                    }
+                })
+                .await
+                .expect(
+                    "listener did not accept a fresh connection after descriptors were released",
+                );
                 drop(accepted);
                 assert!(!backend.bridge.stop.is_cancelled());
                 backend.shutdown().await;

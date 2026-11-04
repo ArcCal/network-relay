@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Network Relay RS tests no longer require Linux `/proc` on macOS: descriptor duplication is checked under an exhausted descriptor allowance, and listener recovery is checked with a fresh client after the allowance is restored. The portable cancellation test also runs on macOS.
+
 - Network Relay NF preserves native listener failure reasons, skips queued connections that failed before acceptance, and recreates a resource-exhausted SOCKS listener on the same resolved address. Recovery retries resource shortages, remains cancellable, and still reports permanent bind errors.
 
 - Network Relay RS: accepted TCP sockets no longer duplicate their descriptor for reset support, and the SOCKS listener retries temporary descriptor shortages instead of stopping the client. NF and RS bound foreground SOCKS concurrency by the process descriptor allowance while reserving capacity for pending I/O and the application. Process and system limits are unchanged.

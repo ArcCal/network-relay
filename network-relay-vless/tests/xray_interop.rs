@@ -97,7 +97,7 @@ impl Xray {
     "streamSettings": {{ "network": "ws", "security": "none", "wsSettings": {{ "path": "{WS_PATH}" }} }},
     "sniffing": {{ "enabled": true, "destOverride": ["http", "quic", "tls"], "routeOnly": {route_only} }}
   }}],
-  "dns": {{ "hosts": {{ "fixture.test": "127.0.0.2" }} }},
+  "dns": {{ "hosts": {{ "fixture.test": "127.0.0.2", "localhost": "127.0.0.1" }} }},
   "outbounds": [{{ "protocol": "freedom",
     "settings": {{ "domainStrategy": "UseIP", "finalRules": [{{ "action": "allow", "ip": ["127.0.0.0/8"] }}] }} }}]
 }}"#,

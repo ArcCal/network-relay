@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- network-relay-vless: retain usable DNS addresses when the other family returns an error, subtract reply-waiting time from cache TTLs, and require a matching successful DNS response for the startup probe. The Xray fixture pins localhost to its IPv4 listener so interoperability tests do not depend on host IPv6 preference.
+
 - network-relay-vless: keep global tunnel, per-user and memory reservations charged while background writers drain and close their sockets. Regression tests verify reservation lifetime and that traffic on one UDP flow does not extend another flow to the same destination.
 
 - network-relay-vless: bound writer draining and closing to five seconds after a tunnel ends, validate DNS answer owners and CNAME chains with their shortest TTL, and retain usable addresses when the other address family times out. Regression tests cover stalled writers, unrelated records, CNAME loops and TTLs, and partial A/AAAA replies.

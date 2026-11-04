@@ -86,7 +86,8 @@ restart (the program says so when it notices one).
   its own VLESS connection, A and AAAA pipelined; answers are cached for
   their TTL, including CNAMEs (at most five minutes). Unrelated answer
   records are ignored. A usable answer is retained if the other address
-  family times out. Names never reach this host's resolver.
+  family fails or times out; waiting does not renew the answer's TTL. Names
+  never reach this host's resolver.
   The relay allows a lookup five seconds; each resolver gets 2.5.
 - **Failures**: a VLESS server that refuses the connection or is down gives
   502; a timeout 504. Every tunnel needs the VLESS server; nothing is ever

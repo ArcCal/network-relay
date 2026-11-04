@@ -91,7 +91,16 @@ impl Resolver {
                 let mut answer = vec![0; stream.read_u16().await? as usize];
                 stream.read_exact(&mut answer).await?;
                 match Message::from_vec(&answer) {
-                    Ok(answer) if answer.id() == id => Ok(()),
+                    Ok(answer)
+                        if answer.id() == id
+                            && answer.message_type() == MessageType::Response
+                            && answer.op_code() == OpCode::Query
+                            && answer.queries() == message.queries()
+                            && answer.response_code() == ResponseCode::NoError
+                            && !answer.truncated() =>
+                    {
+                        Ok(())
+                    }
                     _ => Err(io::Error::new(io::ErrorKind::InvalidData, "malformed DNS answer")),
                 }
             };
@@ -161,7 +170,8 @@ impl Resolver {
         .map_err(timeout_error)?
         .map_err(retry)?;
         let mut addrs = Vec::new();
-        let mut ttl = MAX_TTL;
+        let mut expires = Instant::now() + MAX_TTL;
+        let mut failure = None;
         let mut nxdomain = false;
         while !queries.is_empty() {
             let read = async {
@@ -195,21 +205,29 @@ impl Resolver {
                 ResponseCode::NoError => {}
                 ResponseCode::NXDomain => nxdomain = true,
                 code => {
-                    return Err(retry(io::Error::other(format!("the resolver answered {code}"))));
+                    failure = Some(io::Error::other(format!("the resolver answered {code}")));
+                    continue;
                 }
             }
             let (found, answer_ttl) = addresses(&answer, name, qtype).map_err(retry)?;
+            if !found.is_empty() {
+                expires = expires.min(Instant::now() + answer_ttl);
+            }
             for found in found {
                 if !addrs.contains(&found) {
                     addrs.push(found);
                 }
             }
-            ttl = ttl.min(answer_ttl);
         }
         if nxdomain && addrs.is_empty() {
             return Err(Failure::Final(io::Error::new(io::ErrorKind::NotFound, "no such name")));
         }
-        Ok((addrs, ttl))
+        if addrs.is_empty() {
+            if let Some(error) = failure {
+                return Err(retry(error));
+            }
+        }
+        Ok((addrs, expires.saturating_duration_since(Instant::now())))
     }
 }
 
@@ -296,8 +314,8 @@ mod tests {
         assert!(ttl.is_zero());
     }
 
-    // A real WS/VLESS peer returns only one of the pipelined DNS answers.
-    async fn partial_answer(qtype: RecordType) {
+    // Exercise real framing and reply ordering through an independent WS peer.
+    async fn partial_answer(qtype: RecordType, failure_first: Option<bool>, ttl: u32) {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
         let server = tokio::spawn(async move {
@@ -327,11 +345,27 @@ mod tests {
                 RecordType::A => RData::A(rdata::A("198.51.100.77".parse().unwrap())),
                 _ => RData::AAAA(rdata::AAAA("2001:db8::7".parse().unwrap())),
             };
-            answer.add_answer(Record::from_rdata(query.queries()[0].name().clone(), 10, data));
-            let bytes = answer.to_vec().unwrap();
+            if ttl != 0 {
+                answer.add_answer(Record::from_rdata(query.queries()[0].name().clone(), ttl, data));
+            }
+            let other = queries.iter().find(|q| q.queries()[0].query_type() != qtype).unwrap();
+            let mut failure = Message::new();
+            failure
+                .set_id(other.id())
+                .set_message_type(MessageType::Response)
+                .set_response_code(ResponseCode::ServFail);
+            failure.add_query(other.queries()[0].clone());
+            let answers = match failure_first {
+                Some(true) => vec![failure, answer],
+                Some(false) => vec![answer, failure],
+                None => vec![answer],
+            };
             let mut frame = vec![0, 0]; // VLESS response header.
-            frame.extend_from_slice(&(bytes.len() as u16).to_be_bytes());
-            frame.extend_from_slice(&bytes);
+            for answer in answers {
+                let bytes = answer.to_vec().unwrap();
+                frame.extend_from_slice(&(bytes.len() as u16).to_be_bytes());
+                frame.extend_from_slice(&bytes);
+            }
             ws.send(WsMessage::Binary(frame.into())).await.unwrap();
             tokio::time::sleep(Duration::from_secs(10)).await;
         });
@@ -345,22 +379,108 @@ mod tests {
             ip_preference: IpPreference::Ipv4First,
         };
         let resolver = Resolver::new(Arc::new(config));
-        let found =
-            tokio::time::timeout(Duration::from_secs(4), resolver.lookup("victim.test")).await.unwrap().unwrap();
+        let result = tokio::time::timeout(Duration::from_secs(4), resolver.lookup("victim.test")).await.unwrap();
+        if ttl == 0 {
+            assert!(result.is_err(), "failed families must not become an empty success");
+            server.abort();
+            let _ = server.await;
+            return;
+        }
+        let found = result.unwrap();
         let expected: IpAddr = if qtype == RecordType::A { "198.51.100.77" } else { "2001:db8::7" }.parse().unwrap();
         assert_eq!(found, vec![expected]);
-        assert_eq!(resolver.lookup("victim.test").await.unwrap(), found); // Cached without another connection.
+        if ttl == 1 {
+            assert!(
+                resolver.cache.lock().unwrap().get("victim.test").is_none_or(|(_, expires)| *expires <= Instant::now()),
+                "waiting for AAAA must not extend an expired A record's TTL"
+            );
+        } else {
+            assert_eq!(resolver.lookup("victim.test").await.unwrap(), found); // Cached without another connection.
+        }
         server.abort();
         let _ = server.await;
     }
 
     #[tokio::test]
     async fn ipv4_survives_an_unanswered_aaaa_query() {
-        partial_answer(RecordType::A).await;
+        partial_answer(RecordType::A, None, 10).await;
     }
 
     #[tokio::test]
     async fn ipv6_survives_an_unanswered_a_query() {
-        partial_answer(RecordType::AAAA).await;
+        partial_answer(RecordType::AAAA, None, 10).await;
+    }
+    #[tokio::test]
+    async fn successful_family_survives_servfail_in_either_reply_order() {
+        for qtype in [RecordType::A, RecordType::AAAA] {
+            for first in [true, false] {
+                partial_answer(qtype, Some(first), 10).await;
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn waiting_for_the_other_family_does_not_extend_dns_ttl() {
+        partial_answer(RecordType::A, None, 1).await;
+    }
+    #[tokio::test]
+    async fn startup_probe_requires_a_matching_successful_dns_response() {
+        let mut outcomes = Vec::new();
+        for mode in 0..4 {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let server = tokio::spawn(async move {
+                let (tcp, _) = listener.accept().await.unwrap();
+                let mut ws = tokio_tungstenite::accept_async(tcp).await.unwrap();
+                let _header = ws.next().await.unwrap().unwrap();
+                let mut wire = Vec::new();
+                let mut answer = loop {
+                    if let WsMessage::Binary(data) = ws.next().await.unwrap().unwrap() {
+                        wire.extend_from_slice(&data);
+                    }
+                    if wire.len() >= 2 {
+                        let n = u16::from_be_bytes([wire[0], wire[1]]) as usize;
+                        if wire.len() >= n + 2 {
+                            break Message::from_vec(&wire[2..n + 2]).unwrap();
+                        }
+                    }
+                };
+                if mode != 0 {
+                    answer.set_message_type(MessageType::Response);
+                }
+                if mode == 1 {
+                    answer.set_response_code(ResponseCode::ServFail);
+                }
+                if mode == 2 {
+                    answer.queries_mut()[0].set_name(Name::from_ascii("unrelated.test.").unwrap());
+                }
+                let bytes = answer.to_vec().unwrap();
+                let mut frame = vec![0, 0];
+                frame.extend_from_slice(&(bytes.len() as u16).to_be_bytes());
+                frame.extend_from_slice(&bytes);
+                ws.send(WsMessage::Binary(frame.into())).await.unwrap();
+                tokio::time::sleep(Duration::from_secs(2)).await;
+            });
+            let config = VlessConfig {
+                server_host: "127.0.0.1".into(),
+                server_port: port,
+                user_id: UserId::parse("b4e4fad1-c320-428e-92dc-f8f6944a7dec").unwrap(),
+                path: "/ws".into(),
+                host_header: "vless.test".into(),
+                dns_servers: vec!["127.0.0.1:53".parse().unwrap()],
+                ip_preference: IpPreference::Ipv4Only,
+            };
+            let result = Resolver::new(Arc::new(config)).probe().await;
+            server.abort();
+            let _ = server.await;
+            outcomes.push(result.is_ok());
+        }
+        assert_eq!(outcomes, vec![false, false, false, true]);
+    }
+
+    #[tokio::test]
+    async fn a_family_error_without_usable_addresses_remains_an_error() {
+        partial_answer(RecordType::A, Some(true), 0).await;
+        partial_answer(RecordType::AAAA, Some(false), 0).await;
     }
 }

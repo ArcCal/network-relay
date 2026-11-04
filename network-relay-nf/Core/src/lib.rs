@@ -1,5 +1,6 @@
 //! No host network sockets: all I/O is requested through the native bridge.
 pub mod client;
+mod limits;
 pub mod native;
 pub mod proto;
 pub mod quic;

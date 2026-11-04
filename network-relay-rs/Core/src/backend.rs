@@ -42,11 +42,13 @@ type Reader = Box<dyn AsyncRead + Send + Unpin>;
 type Writer = Box<dyn AsyncWrite + Send + Unpin>;
 enum ReadHalf {
     Socket(Reader),
+    Tcp(tokio::net::tcp::OwnedReadHalf),
     Quic(quinn::RecvStream),
     Empty,
 }
 enum WriteHalf {
     Socket(Writer),
+    Tcp(tokio::net::tcp::OwnedWriteHalf),
     Quic(quinn::SendStream),
     Empty,
 }
@@ -54,6 +56,7 @@ impl ReadHalf {
     async fn read(&mut self, data: &mut [u8]) -> io::Result<usize> {
         match self {
             Self::Socket(read) => read.read(data).await,
+            Self::Tcp(read) => read.read(data).await,
             Self::Quic(read) => AsyncReadExt::read(read, data).await,
             Self::Empty => Ok(0),
         }
@@ -63,6 +66,7 @@ impl WriteHalf {
     async fn write_all(&mut self, data: &[u8]) -> io::Result<()> {
         match self {
             Self::Socket(write) => write.write_all(data).await,
+            Self::Tcp(write) => write.write_all(data).await,
             Self::Quic(write) => AsyncWriteExt::write_all(write, data).await,
             Self::Empty if data.is_empty() => Ok(()),
             Self::Empty => Err(io::ErrorKind::BrokenPipe.into()),
@@ -71,6 +75,7 @@ impl WriteHalf {
     async fn shutdown(&mut self) -> io::Result<()> {
         match self {
             Self::Socket(write) => write.shutdown().await,
+            Self::Tcp(write) => write.shutdown().await,
             Self::Quic(write) => AsyncWriteExt::shutdown(write).await,
             Self::Empty => Ok(()),
         }
@@ -80,9 +85,6 @@ struct Stream {
     read: tokio::sync::Mutex<ReadHalf>,
     write: tokio::sync::Mutex<WriteHalf>,
     stop: CancellationToken,
-    /// A second handle on an accepted local TCP socket, to reset it when
-    /// the core aborts the connection (CLOSE with `ABORT`).
-    tcp: Mutex<Option<std::net::TcpStream>>,
 }
 impl Stream {
     fn new(read: ReadHalf, write: WriteHalf, stop: CancellationToken) -> Arc<Self> {
@@ -90,15 +92,11 @@ impl Stream {
             read: tokio::sync::Mutex::new(read),
             write: tokio::sync::Mutex::new(write),
             stop,
-            tcp: Mutex::new(None),
         })
     }
     fn tcp(tcp: TcpStream, stop: CancellationToken) -> io::Result<Arc<Self>> {
-        let socket = tcp.into_std()?;
-        let handle = socket.try_clone()?;
-        let stream = Self::socket(TcpStream::from_std(socket)?, stop);
-        *locked(&stream.tcp) = Some(handle);
-        Ok(stream)
+        let (read, write) = tcp.into_split();
+        Ok(Self::new(ReadHalf::Tcp(read), WriteHalf::Tcp(write), stop))
     }
     fn socket<T: AsyncRead + AsyncWrite + Send + Unpin + 'static>(
         io: T,
@@ -111,15 +109,27 @@ impl Stream {
             stop,
         )
     }
-    async fn reset(&self, code: u64) {
+    async fn reset(&self, code: u64, aborted: bool) {
         // Cancel blocked reads/writes first so their guards are released.
         self.stop.cancel();
         let code = quinn::VarInt::from_u64(code).unwrap_or(quinn::VarInt::from_u32(0x102));
-        if let ReadHalf::Quic(read) = &mut *self.read.lock().await {
-            let _ = read.stop(code);
+        match &mut *self.read.lock().await {
+            ReadHalf::Quic(read) => {
+                let _ = read.stop(code);
+            }
+            ReadHalf::Tcp(read) if aborted => {
+                let _ = read.as_ref().set_zero_linger();
+            }
+            _ => {}
         }
-        if let WriteHalf::Quic(write) = &mut *self.write.lock().await {
+        let mut write = self.write.lock().await;
+        if let WriteHalf::Quic(write) = &mut *write {
             let _ = write.reset(code);
+        } else if aborted && matches!(*write, WriteHalf::Tcp(_)) {
+            // Do not let OwnedWriteHalf send FIN before the zero-linger reset.
+            if let WriteHalf::Tcp(write) = std::mem::replace(&mut *write, WriteHalf::Empty) {
+                write.forget();
+            }
         }
     }
 }
@@ -685,17 +695,9 @@ async fn run(
                             b"",
                         ),
                         Kind::Stream(stream) => {
-                            // An aborted TCP connection ends with a reset,
-                            // not a FIN, once its last handle is dropped.
-                            if event.flags == ABORT
-                                && let Some(socket) = locked(&stream.tcp).take()
-                                && let Ok(socket) = TcpStream::from_std(socket)
-                            {
-                                let _ = socket.set_zero_linger();
-                            }
                             let code = if event.flags == 0 { 0x10c } else { event.flags };
                             workers.spawn(async move {
-                                stream.reset(code).await;
+                                stream.reset(code, event.flags == ABORT).await;
                             });
                         }
                         _ => {}
@@ -801,8 +803,29 @@ async fn open_resource(
                 },
             );
             tracing::info!(%local,"SOCKS TCP listener ready");
+            let mut descriptor_pressure = false;
             loop {
-                let (tcp, peer) = tokio::select! {_=stop.cancelled()=>return Ok(()),accepted=listener.accept()=>accepted?};
+                let accepted = tokio::select! {_=stop.cancelled()=>return Ok(()),accepted=listener.accept()=>accepted};
+                let (tcp, peer) = match accepted {
+                    Ok(accepted) => {
+                        if descriptor_pressure {
+                            tracing::info!("SOCKS listener resumed accepting connections");
+                            descriptor_pressure = false;
+                        }
+                        accepted
+                    }
+                    Err(error)
+                        if matches!(error.raw_os_error(), Some(libc::EMFILE | libc::ENFILE)) =>
+                    {
+                        if !descriptor_pressure {
+                            tracing::warn!(%error, "SOCKS listener is waiting for file descriptors");
+                            descriptor_pressure = true;
+                        }
+                        tokio::time::sleep(Duration::from_millis(250)).await;
+                        continue;
+                    }
+                    Err(error) => return Err(error),
+                };
                 tcp.set_nodelay(true)?;
                 let mut state = locked(state);
                 if stop.is_cancelled() {
@@ -862,6 +885,134 @@ async fn open_resource(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn repeated_local_connection_cancellation_releases_blocked_reads_and_sockets() {
+        let mut backend = Backend::start(BackendOptions::default()).unwrap();
+        let listener = backend
+            .bridge
+            .listen("127.0.0.1:0".parse().unwrap())
+            .await
+            .unwrap();
+        for _ in 0..100 {
+            let mut peer = TcpStream::connect(listener.local_addr().unwrap())
+                .await
+                .unwrap();
+            let (mut accepted, _) = listener.accept().await.unwrap();
+            let mut byte = [0];
+            tokio::select! {
+                biased;
+                _ = accepted.read(&mut byte) => panic!("the silent peer must leave a read pending"),
+                _ = tokio::task::yield_now() => {}
+            }
+            drop(accepted);
+            assert_eq!(
+                tokio::time::timeout(Duration::from_secs(2), peer.read(&mut byte))
+                    .await
+                    .unwrap()
+                    .unwrap(),
+                0
+            );
+        }
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while backend.resource_count() != 1 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            locked(&backend.bridge.resources).len(),
+            1,
+            "only the listener remains"
+        );
+        drop(listener);
+        backend.shutdown().await;
+        assert_eq!(backend.resource_count(), 0);
+    }
+    #[tokio::test]
+    async fn a_local_stream_uses_one_file_descriptor() {
+        use std::os::fd::AsRawFd;
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let _peer = TcpStream::connect(listener.local_addr().unwrap())
+            .await
+            .unwrap();
+        let (tcp, _) = listener.accept().await.unwrap();
+        let socket = std::fs::read_link(format!("/proc/self/fd/{}", tcp.as_raw_fd())).unwrap();
+        let stream = Stream::tcp(tcp, CancellationToken::new()).unwrap();
+        let count = std::fs::read_dir("/proc/self/fd")
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| std::fs::read_link(entry.path()).ok().as_ref() == Some(&socket))
+            .count();
+        assert_eq!(
+            count, 1,
+            "an accepted socket must not be duplicated just for reset support"
+        );
+        drop(stream);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn file_descriptor_exhaustion_does_not_destroy_the_listener() {
+        const CHILD: &str = "RELAY_RS_FD_PRESSURE_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let output = std::process::Command::new("/bin/sh")
+                .arg("-c")
+                .arg("ulimit -n 64 && exec \"$@\"")
+                .arg("fd-pressure-test")
+                .arg(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "backend::tests::file_descriptor_exhaustion_does_not_destroy_the_listener",
+                    "--nocapture",
+                ])
+                .env(CHILD, "1")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "child failed:\n{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(async {
+                let mut backend = Backend::start(BackendOptions::default()).unwrap();
+                let listener = backend
+                    .bridge
+                    .listen("127.0.0.1:0".parse().unwrap())
+                    .await
+                    .unwrap();
+                // Synchronous calls keep the backend from accepting before pressure is in place.
+                let _peer = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+                let mut files = Vec::new();
+                loop {
+                    match std::fs::File::open("/dev/null") {
+                        Ok(file) => files.push(file),
+                        Err(error) => {
+                            assert_eq!(error.raw_os_error(), Some(24));
+                            break;
+                        }
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(200)).await;
+                drop(files);
+                let (accepted, _) = tokio::time::timeout(Duration::from_secs(3), listener.accept())
+                    .await
+                    .unwrap()
+                    .expect("a temporary descriptor shortage must not terminate the listener");
+                drop(accepted);
+                assert!(!backend.bridge.stop.is_cancelled());
+                backend.shutdown().await;
+                assert_eq!(backend.resource_count(), 0);
+            });
+    }
     #[tokio::test]
     async fn occupied_listener_returns_an_error_and_cleans_up() {
         let occupied = TcpListener::bind("127.0.0.1:0").await.unwrap();

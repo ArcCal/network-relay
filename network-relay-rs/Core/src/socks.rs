@@ -53,7 +53,7 @@ impl Target {
 }
 
 pub async fn run(client: Arc<Client>, listeners: Vec<native::TcpListener>) -> Result<()> {
-    let limit = Arc::new(Semaphore::new(256));
+    let limit = Arc::new(Semaphore::new(crate::limits::socks_sessions()));
     let mut workers = JoinSet::new();
     let monitor = client.clone();
     workers.spawn(async move { monitor.monitor().await });

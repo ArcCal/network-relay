@@ -58,7 +58,7 @@ impl Target {
 
 /// Runs the no-authentication SOCKS proxy on `listeners`.
 pub async fn run(client: Arc<Client>, listeners: Vec<native::TcpListener>) -> Result<()> {
-    let limit = Arc::new(Semaphore::new(256));
+    let limit = Arc::new(Semaphore::new(crate::limits::socks_sessions()));
     let mut workers = JoinSet::new();
     let monitor = client.clone();
     workers.spawn(async move { monitor.monitor().await });

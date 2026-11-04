@@ -91,7 +91,10 @@ match the control peer. An advertised sender port is enforced; otherwise the
 first valid sender port is pinned. Each association has at most 32 destination
 flows, a 16-packet outgoing queue per flow, a 32-packet reply queue and a
 120-second inactive-flow timeout. Queue overflow is dropped. Concurrent SOCKS
-TCP sessions are capped at 256. Per-drop UI counters are not implemented.
+TCP sessions are capped at 256 and further bounded by the process file descriptor
+allowance, with capacity reserved for pending I/O and the application. Temporary
+accept-time descriptor exhaustion is retried without terminating the listener.
+Per-drop UI counters are not implemented.
 
 ## Readiness, transport and retries
 

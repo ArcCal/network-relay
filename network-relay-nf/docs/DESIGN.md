@@ -207,3 +207,12 @@ The active-server restart and blank-new-server selection fixes are retained.
 The user has reported a Mac build/launch and SOCKS TCP/UDP forwarding success.
 The individual UI behaviors and complete native acceptance matrix still need
 verification; [the evidence](evidence/native-mac-20261011.md) records the limits.
+
+### SOCKS descriptor capacity
+
+The Rust core limits foreground SOCKS sessions using the process soft file
+descriptor allowance, reserving capacity for native pending connections, the
+application and runtime I/O, with an upper bound of 256 sessions. It reads the
+allowance without changing process or system limits. Portable tests exercise the
+budget under a low Unix limit; Network.framework descriptor consumption and
+listener failure recovery still require native macOS execution.

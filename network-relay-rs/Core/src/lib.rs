@@ -5,6 +5,7 @@
 //! it has no platform networking dependency.
 pub mod backend;
 pub mod client;
+mod limits;
 pub mod native;
 pub mod proto;
 pub mod quic;

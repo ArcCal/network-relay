@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Update the entry script before building Linux servers and macOS GUI clients.
+# Download the latest source before building Linux servers and macOS GUI clients.
 set -euo pipefail
 unset CDPATH
 # Find tools from rustup and Homebrew even if this shell has not loaded them yet.
@@ -19,18 +19,19 @@ macOS arm64.
 The Caddy executable includes the Cloudflare DNS plugin.
 Requires an Apple silicon Mac, macOS 27+ and an Xcode macOS 27+ SDK.
 
-  --repo DIR    persistent checkout (default: NETWORK_RELAY_SRC or
-                ~/network-relay)
-  --output DIR  new or empty artifact directory (default: a unique directory
-                under ~/Desktop/Network-Relay-Builds)
+  --repo DIR    reuse a checkout instead of downloading a fresh one to
+                /tmp/network-relay.* (also set by NETWORK_RELAY_SRC)
+  --output DIR  new or empty artifact directory (default:
+                ~/Desktop/YYYYMMDD-HHMMSS, using local time)
   --jobs N      Rust compilation jobs (default: 2)
   --help        show this help
 
-First run clones ArcCal/network-relay. Each later run updates main with
-pull --ff-only origin main and executes the latest committed scripts.
+By default, every run downloads a complete main checkout from GitHub to /tmp
+and keeps it there. With --repo, update that checkout with pull --ff-only.
+Always execute the latest committed scripts.
 Local commits are refused. Uncommitted files are preserved and are never
 used as build inputs. Git credentials must allow reading both repositories.
-Compilation and signing use a private /private/tmp workspace.
+Compilation and signing use a separate private /tmp workspace.
 Afterwards every folder in the checkout and the artifacts is mode 777.
 HELP
 }
@@ -250,8 +251,8 @@ main() {
         build_updated "$2" "$3" "$4" "$5" "$6"
         return
     fi
-    local repo=${NETWORK_RELAY_SRC:-"$HOME/network-relay"} output='' jobs=2
-    local commit
+    local repo=${NETWORK_RELAY_SRC:-} output='' jobs=2
+    local commit parent
     while (( $# )); do
         case $1 in
             -h|--help) usage; return ;;
@@ -268,11 +269,18 @@ main() {
     done
     [[ $jobs =~ ^[1-9][0-9]*$ ]] || die '--jobs must be a positive integer.'
     check_host
+    if [[ -z $repo ]]; then repo=$(mktemp -d /tmp/network-relay.XXXXXX); fi
     relay_checkout=$repo
     trap open_dirs EXIT
     update_checkout
     relay_checkout=$repo
-    build_work=$(mktemp -d /private/tmp/relay-mac.XXXXXX)
+    if [[ -z $output ]]; then
+        parent=${NETWORK_RELAY_BUILD_ROOT:-"$HOME/Desktop"}
+        mkdir -p -- "$parent"
+        output="$parent/$(date +%Y%m%d-%H%M%S)"
+        mkdir -- "$output" || die 'Timestamped output directory already exists or cannot be created; use --output DIR.'
+    fi
+    build_work=$(mktemp -d /tmp/relay-mac.XXXXXX)
     trap report_failure EXIT
     printf '%s\n' "$commit" > "$build_work/.owner"
     git -C "$repo" show "$commit:build-all-targets-on-macos.sh" > "$build_work/driver.sh"

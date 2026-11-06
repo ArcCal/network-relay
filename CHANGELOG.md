@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- The all-target macOS builder defaults to a fresh complete checkout in `/tmp` on every run and a Desktop artifact folder named `YYYYMMDD-HHMMSS` in local time. Explicit source and output overrides remain available; existing output folders are preserved.
+
 - Network Relay RS tests no longer require Linux `/proc` on macOS: descriptor duplication is checked under an exhausted descriptor allowance, and listener recovery is checked with a fresh client after the allowance is restored. The portable cancellation test also runs on macOS.
 
 - Network Relay NF preserves native listener failure reasons, skips queued connections that failed before acceptance, and recreates a resource-exhausted SOCKS listener on the same resolved address. Recovery retries resource shortages, remains cancellable, and still reports permanent bind errors.

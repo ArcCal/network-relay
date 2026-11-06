@@ -947,12 +947,19 @@ its results.
 | `build-linux-servers-on-linux.sh` | Debian 13 or Ubuntu 26.04, x64 or arm64 | `network-relay`, `network-relay-cf-masque` and `caddy-network-relay` (with Cloudflare DNS) for Linux x64 and arm64 | `./relay-servers-*` |
 | `build-linux-clients-on-linux.sh` | Debian 13 or Ubuntu 26.04, x64 or arm64 | the headless Network Relay RS client for Linux x64 and arm64 | `./network-relay-linux-clients-*` |
 | `build-macos-gui-clients-on-macos.sh` | Apple silicon Mac, macOS 27+ and Xcode 27+ | the Network Relay NF and RS apps | `~/Desktop/Network-Relay-Builds/network-relay-macos-gui-*` |
-| `build-all-targets-on-macos.sh` | Apple silicon Mac, macOS 27+ and Xcode 27+ | everything above, plus the RS client for macOS arm64 | `~/Desktop/Network-Relay-Builds/network-relay-all-*` |
+| `build-all-targets-on-macos.sh` | Apple silicon Mac, macOS 27+ and Xcode 27+ | everything above, plus the RS client for macOS arm64 | `~/Desktop/YYYYMMDD-HHMMSS` (local time) |
 | [`tools/build-all-macos.sh`](docs/build-all-macos.md) | Apple silicon Mac | every ArcCal VPN application from five repositories | `~/Projects/vpn-build-*` |
 | `network-relay-nf/build-macos.sh`, `network-relay-rs/build-macos.sh` | Apple silicon Mac | one app from the current folder | `dist/` in that app's folder |
 | `deploy/package-installer.py` | any system with Python 3 | the standalone installers (no compiling) | `dist/` |
 
-The repository-root scripts keep their source checkout in `~/network-relay`
+By default, `build-all-targets-on-macos.sh` downloads a fresh, complete main
+checkout to `/tmp/network-relay.*` on every run and keeps it there. Its build
+artifacts go into a Desktop folder named with the local date and time to the
+second. Existing output folders are never overwritten; use `--output DIR`
+to choose another location. `--repo DIR` or `NETWORK_RELAY_SRC` explicitly
+selects a checkout to reuse instead of downloading a new one.
+
+The other repository-root scripts keep their source checkout in `~/network-relay`
 (change it with `--repo`), update it with `git pull --ff-only` and build a
 private snapshot of the fetched commit. Run any of them with `--help` for all
 options. Artifacts include logs, `MANIFEST.txt` or source revisions, and

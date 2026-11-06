@@ -22,6 +22,9 @@ use tokio::{
 const WAIT: Duration = Duration::from_secs(10);
 const TARGET_PORT: u16 = 53;
 const REJECTED_PORT: u16 = 54;
+const DNS_QUERY: &[u8] =
+    b"\x12\x34\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00\x07example\x03com\x00\x00\x01\x00\x01";
+const DNS_ANSWER: &[u8] = b"\x12\x34\x81\x80\x00\x01\x00\x01\x00\x00\x00\x00\x07example\x03com\x00\x00\x01\x00\x01\xc0\x0c\x00\x01\x00\x01\x00\x00\x00\x3c\x00\x04\xcb\x00\x71\x07";
 static NEXT_FIXTURE: AtomicUsize = AtomicUsize::new(0);
 
 struct Fixture {
@@ -151,6 +154,9 @@ impl Fixture {
                                 anyhow::ensure!(headers.len() < 8192, "fixture headers too large");
                             }
                             let headers = String::from_utf8(headers)?;
+                            anyhow::ensure!(headers.lines().any(|line| line.eq_ignore_ascii_case(
+                                &format!("Host: relay.test:{}", address.port())
+                            )), "the pinned IP replaced the HTTP relay host");
                             let request = headers.lines().next().unwrap();
                             anyhow::ensure!(request.starts_with("GET "), "expected CONNECT-UDP Upgrade");
                             if request.contains(&format!("/{REJECTED_PORT}/ ")) {
@@ -205,6 +211,9 @@ impl Drop for Fixture {
 }
 
 fn response(payload: &[u8]) -> Vec<u8> {
+    if payload == DNS_QUERY {
+        return DNS_ANSWER.to_vec();
+    }
     if payload.is_empty() {
         vec![]
     } else {
@@ -327,8 +336,15 @@ async fn exercise() {
     );
 
     let mut expected = (0, 0);
-    for size in [0, 1, 63, 1025] {
-        let payload: Vec<u8> = (0..size).map(|index| (index % 251) as u8).collect();
+    for payload in [0, 1, 63, 1025]
+        .into_iter()
+        .map(|size| {
+            (0..size)
+                .map(|index| (index % 251) as u8)
+                .collect::<Vec<_>>()
+        })
+        .chain(std::iter::once(DNS_QUERY.to_vec()))
+    {
         local
             .send_to(&packet(TARGET_PORT, &payload), association)
             .await

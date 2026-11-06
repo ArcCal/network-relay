@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- NF and RS keep new servers in one unsaved form until Save succeeds, with only saved profiles in server menus. An explicit relay IP stays separate from SNI, certificate identity and HTTP host information; the relay domain needs no DNS records. Timeout retries and tunneled website/DNS traffic remain supported, with regression coverage.
+
 - The all-target macOS builder also builds `network-relay-vless` for Linux x64 and arm64, verifies their static executable architectures, and includes both files in the artifact manifest and SHA-256 checksums.
 
 - The all-target macOS builder defaults to a fresh complete checkout in `/tmp` on every run and a Desktop artifact folder named `YYYYMMDD-HHMMSS` in local time. Explicit source and output overrides remain available; existing output folders are preserved.

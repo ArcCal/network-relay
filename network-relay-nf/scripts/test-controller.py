@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Run the actual Swift controller with controlled platform, storage and client APIs.
 
-The model is compiled unchanged. The controller only loses its AppKit import.
+The model and draft are compiled unchanged. The controller only loses its AppKit import.
 This checks lifecycle decisions without claiming native macOS UI or networking.
 """
 import argparse
@@ -109,6 +109,42 @@ struct Harness {
             return old
         }
         func pass(_ message: String) { passed += 1; print("PASS \(message)") }
+
+        var draft = Draft(baseline)
+        draft.addServer()
+        let pendingID = draft.editing
+        draft.servers[draft.servers.count - 1].name = "Unfinished"
+        for _ in 0..<10 { draft.addServer() }
+        check(draft.servers.count == baseline.servers.count + 1 && draft.editing == pendingID,
+              "repeated Add must reuse one unsaved form")
+        draft.editing = first.id
+        draft.addServer()
+        check(draft.editing == pendingID && draft.servers.last!.name == "Unfinished",
+              "returning to Add must restore the draft without losing its fields")
+        check(controller.configuration == baseline && Store.configuration == baseline,
+              "Add must not save a server")
+        var unsaved = baseline
+        unsaved.servers = draft.servers
+        do { try controller.save(unsaved); preconditionFailure("expected incomplete server rejection") }
+        catch is ServerError {}
+        check(controller.configuration == baseline && Store.configuration == baseline,
+              "invalid Save must keep unfinished servers out of saved settings")
+        draft.servers[draft.servers.count - 1] = Server(id: pendingID!, domain: "new.test", username: "user", password: "password")
+        unsaved.servers = draft.servers
+        Store.failNextSave = true
+        do { try controller.save(unsaved); preconditionFailure("expected failed persistence") }
+        catch HarnessError.saveFailed {}
+        check(controller.configuration == baseline && Store.configuration == baseline,
+              "failed Save must not publish a draft server")
+        try controller.save(unsaved)
+        check(controller.configuration.servers.count == baseline.servers.count + 1,
+              "successful Save must publish the new server")
+        var emptyDraft = Draft(Configuration())
+        let initialID = emptyDraft.editing
+        for _ in 0..<10 { emptyDraft.addServer() }
+        check(emptyDraft.servers.count == 1 && emptyDraft.editing == initialID,
+              "the initial empty form must also be reused")
+        pass("new servers remain a single editable draft until a successful Save")
 
         try reset()
         let initially = NativeClient.attempts
@@ -343,6 +379,9 @@ def main():
     native = (sources / "NetworkRelayNF" / "NativeClient.swift").read_text()
     start = native.index("enum NativeUpdate {")
     native_update = native[start:native.index("\n}\n", start) + 3]
+    app = (sources / "NetworkRelayNF" / "App.swift").read_text()
+    start = app.index("struct Draft: Equatable {")
+    draft = app[start:app.index("\nstruct SettingsForm:", start)]
     with tempfile.TemporaryDirectory(prefix="network-relay-nf-controller-") as folder:
         build = Path(folder)
         environment = os.environ.copy()
@@ -357,12 +396,13 @@ def main():
         ], env=environment, check=True)
         (build / "Stubs.swift").write_text(STUBS + "\n" + native_update)
         (build / "TunnelController.swift").write_text(controller)
+        (build / "Draft.swift").write_text("import Foundation\nimport NetworkRelayNFModel\n" + draft)
         (build / "Harness.swift").write_text(HARNESS)
         executable = build / "controller-check"
         subprocess.run([
             compiler, "-I", str(build), "-L", str(build), "-lNetworkRelayNFModel",
             "-Xlinker", "-rpath", "-Xlinker", str(build),
-            str(build / "Stubs.swift"), str(build / "TunnelController.swift"), str(build / "Harness.swift"),
+            str(build / "Stubs.swift"), str(build / "TunnelController.swift"), str(build / "Draft.swift"), str(build / "Harness.swift"),
             "-o", str(executable),
         ], env=environment, check=True)
         subprocess.run([str(executable)], env=environment, check=True)

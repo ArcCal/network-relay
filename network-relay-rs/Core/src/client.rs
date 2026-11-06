@@ -138,6 +138,7 @@ pub struct Client {
     pub bridge: Arc<native::Bridge>,
     template: proto::UriTemplate,
     authority: http::uri::Authority,
+    endpoint: http::uri::Authority,
     certificate_name: String,
     authorization: http::HeaderValue,
     transport: String,
@@ -214,11 +215,34 @@ impl Client {
             .server_name
             .clone()
             .unwrap_or_else(|| authority.host().trim_matches(['[', ']']).into());
+        let endpoint = authority.clone();
+        // The numeric socket endpoint must not replace the relay's HTTP host.
+        let authority = if config.server_name.is_some()
+            && endpoint
+                .host()
+                .trim_matches(['[', ']'])
+                .parse::<std::net::IpAddr>()
+                .is_ok()
+        {
+            let host = if certificate_name.contains(':') {
+                format!("[{}]", certificate_name.trim_matches(['[', ']']))
+            } else {
+                certificate_name.clone()
+            };
+            match endpoint.port_u16() {
+                Some(port) => format!("{host}:{port}"),
+                None => host,
+            }
+            .parse()?
+        } else {
+            authority
+        };
         let (selected, _) = watch::channel(None);
         Ok(Self {
             bridge,
             template,
             authority,
+            endpoint,
             certificate_name,
             authorization,
             transport: config.transport.clone(),
@@ -230,7 +254,7 @@ impl Client {
         })
     }
     fn options(&self, alpn: &[&str]) -> Vec<u8> {
-        serde_json::to_vec(&serde_json::json!({"host":self.authority.host().trim_matches(['[', ']']),"port":self.authority.port_u16().unwrap_or(443),"server_name":self.certificate_name,"alpn":alpn})).unwrap()
+        serde_json::to_vec(&serde_json::json!({"host":self.endpoint.host().trim_matches(['[', ']']),"port":self.endpoint.port_u16().unwrap_or(443),"server_name":self.certificate_name,"alpn":alpn})).unwrap()
     }
     fn request(&self, host: &str, port: u16, udp: bool) -> Result<Request<()>> {
         let uri = if udp {
@@ -881,6 +905,96 @@ impl UdpFlow {
 #[cfg(test)]
 mod probe_tests {
     use super::*;
+
+    #[test]
+    fn explicit_ip_keeps_socket_certificate_and_http_hosts_separate() {
+        for transport in ["auto", "h3", "h2", "http/1.1"] {
+            for (endpoint, ip, port, authority) in [
+                (
+                    "192.0.2.1:8443",
+                    "192.0.2.1",
+                    8443,
+                    "relay.test.invalid:8443",
+                ),
+                (
+                    "[2001:db8::1]:443",
+                    "2001:db8::1",
+                    443,
+                    "relay.test.invalid:443",
+                ),
+                ("192.0.2.1", "192.0.2.1", 443, "relay.test.invalid"),
+            ] {
+                let config = test_config(endpoint, transport);
+                let (events, _) = tokio::sync::mpsc::channel(16);
+                let client = Client::new(&config, native::Bridge::new(events)).unwrap();
+                let options: serde_json::Value =
+                    serde_json::from_slice(&client.options(&["h3"])).unwrap();
+                assert_eq!(options["host"], ip);
+                assert_eq!(options["port"], port);
+                assert_eq!(options["server_name"], "relay.test.invalid");
+                let udp = client.request("website.test.invalid", 53, true).unwrap();
+                assert_eq!(udp.uri().authority().unwrap().as_str(), authority);
+                assert!(udp.uri().path().contains("/website.test.invalid/53/"));
+                let tcp = client.request("website.test.invalid", 443, false).unwrap();
+                assert_eq!(
+                    tcp.uri().authority().unwrap().as_str(),
+                    "website.test.invalid:443"
+                );
+            }
+        }
+    }
+
+    fn test_config(endpoint: &str, transport: &str) -> crate::Config {
+        toml::from_str(&format!(
+            r#"
+uri_template = "https://{endpoint}/.well-known/masque/udp/{{target_host}}/{{target_port}}/"
+server_name = "relay.test.invalid"
+username = "test"
+password = "test-password"
+mode = "socks"
+transport = "{transport}"
+[socks]
+listen = ["127.0.0.1:1080"]
+"#
+        ))
+        .unwrap()
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn repeated_connection_timeouts_keep_monitoring_until_cancelled() {
+        for (transport, kind) in [("h2", native::OPEN_TCP), ("h3", native::OPEN_QUIC)] {
+            let (events, mut requests) = tokio::sync::mpsc::channel(32);
+            let bridge = native::Bridge::new(events);
+            let client =
+                Client::new(&test_config("192.0.2.1:443", transport), bridge.clone()).unwrap();
+            let monitor = tokio::spawn(async move { client.monitor().await });
+            for _ in 0..4 {
+                let opening = loop {
+                    let event = tokio::time::timeout(Duration::from_secs(45), requests.recv())
+                        .await
+                        .unwrap()
+                        .unwrap();
+                    if event.kind == kind {
+                        break event;
+                    }
+                };
+                assert!(bridge.input(native::ERROR, opening.id, 0, 3, b"connection timed out"));
+                loop {
+                    let event = tokio::time::timeout(Duration::from_secs(45), requests.recv())
+                        .await
+                        .unwrap()
+                        .unwrap();
+                    if event.kind == native::STATUS {
+                        assert_eq!(event.flags, 2, "a timeout must report a retry");
+                        break;
+                    }
+                }
+                assert!(!monitor.is_finished(), "a timeout must not end the client");
+            }
+            monitor.abort();
+            assert!(monitor.await.unwrap_err().is_cancelled());
+        }
+    }
 
     #[tokio::test(start_paused = true)]
     async fn idle_probe_renews_without_sending_application_datagrams() {

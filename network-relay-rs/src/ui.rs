@@ -88,6 +88,7 @@ struct App {
     controller: Controller,
     draft: Configuration,
     editing: Option<Uuid>,
+    adding: Option<Uuid>,
     select_after_save: Option<Uuid>,
     imported_log_level: bool,
     imported_servers: bool,
@@ -266,10 +267,12 @@ impl App {
             draft.servers.push(Server::default());
         }
         let editing = draft.selected_server().map(|server| server.id);
+        let adding = controller.config.servers.is_empty().then_some(editing).flatten();
         let mut result = Self {
             controller,
             draft,
             editing,
+            adding,
             select_after_save: None,
             imported_log_level: false,
             imported_servers: false,
@@ -339,11 +342,15 @@ impl App {
         send1::<_, ()>(self.editor.launch, "setState:", self.draft.connect_on_launch as isize);
     }
     unsafe fn show_server_editor(&mut self) {
+        let servers = saved_server_drafts(&self.draft, &self.controller.config);
         let editing =
-            self.editing.and_then(|id| self.draft.servers.iter().position(|server| server.id == id)).unwrap_or(0);
-        popup_items(self.editor.names, &self.draft.servers.iter().map(server_title).collect::<Vec<_>>(), editing);
+            self.editing.and_then(|id| servers.iter().position(|server| server.id == id)).map_or(0, |index| index + 1);
+        let names = std::iter::once("Select a saved server".into())
+            .chain(servers.into_iter().map(server_title))
+            .collect::<Vec<_>>();
+        popup_items(self.editor.names, &names, editing);
         let blank = Server::default();
-        let server = self.draft.servers.get(editing).unwrap_or(&blank);
+        let server = self.draft.servers.iter().find(|server| Some(server.id) == self.editing).unwrap_or(&blank);
         set_text(self.editor.name, &server.name);
         set_text(self.editor.domain, &server.domain);
         set_text(self.editor.ip, &server.server_ip);
@@ -381,6 +388,7 @@ impl App {
                     saved.preparing_connection_save(&self.controller.config, self.imported_servers);
                 self.controller.apply_saved(saved, allow_reconnect)?;
                 self.draft = self.controller.config.clone();
+                self.adding = None;
                 if !self.draft.servers.iter().any(|server| Some(server.id) == self.editing) {
                     self.editing = self.draft.selected_server_id;
                 }
@@ -392,19 +400,15 @@ impl App {
             }
             SERVER => {
                 self.read_server_fields();
-                let id = self.draft.servers.get(index(sender)).map(|server| server.id);
-                self.editing = id;
-                if let Some(id) = id {
-                    if self.controller.config.servers.iter().any(|server| server.id == id) {
-                        let mut config = self.controller.config.clone();
-                        config.selected_server_id = Some(id);
-                        self.controller.apply_choice(config)?;
-                        self.select_after_save = None;
-                        self.message("Server applied. Other changes still need Save.");
-                    } else {
-                        self.select_after_save = Some(id);
-                        self.message("Server selected; save this new server before connecting.");
-                    }
+                if let Some(id) = index(sender).checked_sub(1).and_then(|index| {
+                    saved_server_drafts(&self.draft, &self.controller.config).get(index).map(|server| server.id)
+                }) {
+                    let mut config = self.controller.config.clone();
+                    config.selected_server_id = Some(id);
+                    self.controller.apply_choice(config)?;
+                    self.editing = Some(id);
+                    self.select_after_save = None;
+                    self.message("Server applied. Other changes still need Save.");
                 }
                 self.show_server_editor();
             }
@@ -438,9 +442,7 @@ impl App {
             }
             ADD => {
                 self.read_server_fields();
-                let server = Server::default();
-                self.editing = Some(server.id);
-                self.draft.servers.push(server);
+                self.editing = Some(add_server_draft(&mut self.draft, &mut self.adding));
                 self.show_server_editor();
             }
             REMOVE => {
@@ -462,6 +464,9 @@ impl App {
                     self.controller.apply(without_server(&self.controller.config, id))?;
                 }
                 self.draft.servers.retain(|server| server.id != id);
+                if self.adding == Some(id) {
+                    self.adding = None;
+                }
                 if self.select_after_save == Some(id) {
                     self.select_after_save = None;
                 }
@@ -1251,6 +1256,21 @@ fn server_title(server: &Server) -> String {
         "New Server".into()
     }
 }
+fn saved_server_drafts<'a>(draft: &'a Configuration, current: &Configuration) -> Vec<&'a Server> {
+    draft.servers.iter().filter(|server| current.servers.iter().any(|saved| saved.id == server.id)).collect()
+}
+fn add_server_draft(draft: &mut Configuration, adding: &mut Option<Uuid>) -> Uuid {
+    if let Some(id) = *adding
+        && draft.servers.iter().any(|server| server.id == id)
+    {
+        return id;
+    }
+    let server = Server::default();
+    let id = server.id;
+    draft.servers.push(server);
+    *adding = Some(id);
+    id
+}
 fn blank_server(server: &Server) -> bool {
     server.name.is_empty()
         && server.domain.is_empty()
@@ -1296,6 +1316,33 @@ fn private_write(path: &Path, contents: &[u8]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn new_server_stays_in_one_form_until_saved() {
+        let current = Configuration { servers: vec![configured("saved")], ..Configuration::default() };
+        let mut draft = current.clone();
+        let mut adding = None;
+        let id = add_server_draft(&mut draft, &mut adding);
+        draft.servers[1].name = "Unfinished".into();
+        for _ in 0..10 {
+            assert_eq!(add_server_draft(&mut draft, &mut adding), id);
+        }
+        assert_eq!(draft.servers.len(), 2);
+        assert_eq!(draft.servers[1].name, "Unfinished");
+        assert_eq!(saved_server_drafts(&draft, &current).len(), 1);
+        draft.servers[1] = Server { id, ..configured("new") };
+        let saved = prepare_save(&draft, &current, None);
+        saved.check().unwrap();
+        assert_eq!(saved_server_drafts(&draft, &current).len(), 1);
+        assert_eq!(saved_server_drafts(&draft, &saved).len(), 2);
+        adding = None;
+        assert_ne!(add_server_draft(&mut draft, &mut adding), id);
+        assert_eq!(saved_server_drafts(&draft, &saved).len(), 2);
+        let mut empty = Configuration { servers: vec![Server::default()], ..Configuration::default() };
+        let initial_id = empty.servers[0].id;
+        let mut adding = Some(initial_id);
+        assert_eq!(add_server_draft(&mut empty, &mut adding), initial_id);
+        assert_eq!(empty.servers.len(), 1);
+    }
     fn configured(name: &str) -> Server {
         Server {
             name: name.into(),

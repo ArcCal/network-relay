@@ -66,6 +66,15 @@ is `127.0.0.1:1080`; it may conflict with a running Masque NF instance. The loca
 proxy uses the no-authentication method. Username and password authenticate the
 remote relay connection, not programs connecting to the local proxy.
 
+With an explicit IP, the relay domain is not resolved: it may have no A/AAAA
+records or point elsewhere. The domain is retained for SNI, certificate checks
+and the relay's HTTP host information. Website names and DNS payloads still
+travel through the tunnel. Connection timeouts keep retrying with a connecting
+indicator and no modal timeout alert; Disconnect stops the retry.
+
+Add opens one unsaved server form. Repeated Add reuses it, and server menus show
+only saved profiles. A new profile joins those menus only after Save succeeds.
+
 ```bash
 curl -I --noproxy '' --proxy socks5h://127.0.0.1:1080 \
   --connect-timeout 10 --max-time 30 https://example.com/

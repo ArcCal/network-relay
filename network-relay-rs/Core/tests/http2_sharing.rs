@@ -265,6 +265,13 @@ async fn tunnel(
     mut respond: h2::server::SendResponse<Bytes>,
 ) {
     let udp = request.extensions().get::<h2::ext::Protocol>().is_some();
+    if udp {
+        assert_eq!(
+            request.uri().host(),
+            Some("relay.test"),
+            "pinned IP replaced relay :authority"
+        );
+    }
     let flood = request.uri().port_u16() == Some(FLOOD_PORT);
     let mut response = http::Response::builder().status(200);
     if udp {

@@ -68,6 +68,11 @@ final class NativeClient {
         let port: UInt16
         let server_name: String
         let alpn: [String]
+        var endpointHost: NWEndpoint.Host {
+            if let address = IPv4Address(host) { return .ipv4(address) }
+            if let address = IPv6Address(host) { return .ipv6(address) }
+            return .name(host, nil)
+        }
     }
     private struct Ready: Encodable {
         var alpn = ""
@@ -289,7 +294,7 @@ final class NativeClient {
         tcp.enableKeepalive = true; tcp.keepaliveIdle = 60; tcp.keepaliveInterval = 10; tcp.keepaliveCount = 3
         let parameters = NWParameters(tls: tls, tcp: tcp)
         parameters.preferNoProxies = true
-        let connection = NWConnection(host: .init(options.host), port: .init(rawValue: options.port)!, using: parameters)
+        let connection = NWConnection(host: options.endpointHost, port: .init(rawValue: options.port)!, using: parameters)
         connections[id] = Connection(connection, trust: trust)
         start(connection, id: id) { [weak self] in
             guard let self else { return }
@@ -345,7 +350,7 @@ final class NativeClient {
         quic.maxUDPPayloadSize = 1472
         let parameters = NWParameters(quic: quic)
         parameters.preferNoProxies = true
-        let endpoint = NWEndpoint.hostPort(host: .init(options.host), port: .init(rawValue: options.port)!)
+        let endpoint = NWEndpoint.hostPort(host: options.endpointHost, port: .init(rawValue: options.port)!)
         let native = NWConnectionGroup(with: NWMultiplexGroup(to: endpoint), using: parameters)
         let group = Group(native, trust: trust); groups[id] = group
         native.newConnectionHandler = { [weak self, weak group] connection in

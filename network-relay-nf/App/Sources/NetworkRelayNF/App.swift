@@ -319,6 +319,8 @@ struct Draft: Equatable {
     var servers: [Server] = []
     /// The server whose fields the form shows.
     var editing: UUID?
+    /// One editable addition, kept out of the saved-server menus until Save.
+    var adding: UUID?
     var listenAddress = "127.0.0.1"
     var port = ""
     var connectOnLaunch = false
@@ -335,10 +337,22 @@ struct Draft: Equatable {
         // At the first start, a server to fill in.
         servers = configuration.servers.isEmpty ? [Server()] : configuration.servers
         editing = configuration.selectedServer?.id ?? servers.first?.id
+        adding = configuration.servers.isEmpty ? editing : nil
         listenAddress = configuration.listenAddress
         port = String(configuration.port)
         connectOnLaunch = configuration.connectOnLaunch
         loaded = true
+    }
+
+    mutating func addServer() {
+        if let adding, servers.contains(where: { $0.id == adding }) {
+            editing = adding
+            return
+        }
+        let server = Server()
+        servers.append(server)
+        editing = server.id
+        adding = server.id
     }
 
     /// Whether these are the saved settings.
@@ -377,9 +391,12 @@ struct SettingsForm: View {
                 Section {
                     if editedIndex != nil {
                         Picker("Server", selection: Binding(
-                            get: { draft.editing },
+                            get: { tunnel.configuration.servers.contains(where: { $0.id == draft.editing }) ? draft.editing : nil },
                             set: { changeServer($0) })) {
-                            ForEach(draft.servers) { server in
+                            Text("Select a saved server").tag(Optional<UUID>.none)
+                            ForEach(draft.servers.filter { server in
+                                tunnel.configuration.servers.contains(where: { $0.id == server.id })
+                            }) { server in
                                 Text(server.title).tag(Optional(server.id))
                             }
                         }
@@ -594,9 +611,7 @@ struct SettingsForm: View {
     }
 
     private func addServer() {
-        let server = Server()
-        draft.servers.append(server)
-        draft.editing = server.id
+        draft.addServer()
     }
 
     /// A saved server is deleted from the saved settings at once; an unsaved
@@ -619,6 +634,7 @@ struct SettingsForm: View {
             }
         }
         draft.servers.removeAll { $0.id == id }
+        if draft.adding == id { draft.adding = nil }
         if draft.selectAfterSave == id {
             draft.selectAfterSave = nil
         }
@@ -663,6 +679,7 @@ struct SettingsForm: View {
             new = prepared.configuration
             let reconnecting = try tunnel.save(new, allowReconnect: prepared.allowReconnect)
             draft.servers = new.servers
+            draft.adding = nil
             if !draft.servers.contains(where: { $0.id == draft.editing }) {
                 draft.editing = new.selectedServer?.id
             }

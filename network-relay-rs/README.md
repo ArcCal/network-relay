@@ -48,6 +48,11 @@ clone procedure and independent TCP/UDP checks are in
 
 Enter the relay domain, optional IP, username and password. An IP override
 changes only the socket endpoint; the domain remains the TLS certificate name.
+The relay domain is not resolved when an IP is supplied, even if its A/AAAA
+records are missing or point elsewhere. It remains the SNI, certificate and
+relay HTTP host name. Website names and DNS payloads still travel through the
+tunnel. Timeouts retry with a connecting indicator and no modal timeout alert;
+Disconnect stops the retry.
 The default local SOCKS5 address is `127.0.0.1:1080`. Quit an application already
 using that port, or select a different port. Switching the selected server or
 transport while connected automatically restarts this app's client.
@@ -63,6 +68,8 @@ A saved server chosen in either server menu, or a new transport, applies
 immediately; a newly added or imported server must be saved first. The minus
 (-) button deletes the selected server after a confirmation; deleting the
 connected server moves the connection to the next server in the list.
+Add opens one unsaved form, reused by repeated Add. New profiles appear in
+server menus only after Save succeeds.
 
 ## Command-line operation
 

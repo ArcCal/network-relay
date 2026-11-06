@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- The all-target macOS builder also builds `network-relay-vless` for Linux x64 and arm64, verifies their static executable architectures, and includes both files in the artifact manifest and SHA-256 checksums.
+
 - The all-target macOS builder defaults to a fresh complete checkout in `/tmp` on every run and a Desktop artifact folder named `YYYYMMDD-HHMMSS` in local time. Explicit source and output overrides remain available; existing output folders are preserved.
 
 - Network Relay RS tests no longer require Linux `/proc` on macOS: descriptor duplication is checked under an exhausted descriptor allowance, and listener recovery is checked with a fresh client after the allowance is restored. The portable cancellation test also runs on macOS.

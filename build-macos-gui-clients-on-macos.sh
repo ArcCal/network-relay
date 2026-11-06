@@ -429,10 +429,12 @@ rg_servers() {
         case $arch in amd64) triple=x86_64-unknown-linux-musl ;; arm64) triple=aarch64-unknown-linux-musl ;; esac
         lr_build_rust "$repo/Cargo.toml" "$work/rust-main" "$triple" --bin network-relay
         lr_build_rust "$repo/network-relay-cf-masque/Cargo.toml" "$work/rust-cf" "$triple" --bin network-relay-cf-masque
+        lr_build_rust "$repo/network-relay-vless/Cargo.toml" "$work/rust-vless" "$triple" --bin network-relay-vless
         lr_build_rust "$repo/network-relay-rs/Cargo.toml" "$work/rust-rs" "$triple" --bin network-relay-rs
         lr_build_caddy "$arch"
         rg_binary "$work/rust-main/$triple/release/network-relay" network-relay "$arch"
         rg_binary "$work/rust-cf/$triple/release/network-relay-cf-masque" network-relay-cf-masque "$arch"
+        rg_binary "$work/rust-vless/$triple/release/network-relay-vless" network-relay-vless "$arch"
         rg_binary "$work/rust-rs/$triple/release/network-relay-rs" network-relay-rs "$arch"
         rg_binary "$work/caddy-network-relay-$arch" caddy-network-relay "$arch"
     done
@@ -498,6 +500,7 @@ rg_manifest() {
             rg_source_record "$caddy_src" ArcCal/caddy-network-relay "$caddy_commit"
             rg_source_record "$cloudflare_src" caddy-dns/cloudflare "$cloudflare_commit"
             printf 'Linux: static amd64/arm64; architecture and Go build information inspected, not executed on this Mac.\n'
+            printf 'VLESS: network-relay-vless-linux-amd64 and network-relay-vless-linux-arm64.\n'
             printf 'Rust CLI: Linux amd64/arm64 and macOS arm64; native Mac --help/--version checked.\n'
         fi
         printf 'Mac: original client tests, bundle architecture and strict signatures checked.\n'
@@ -507,7 +510,7 @@ rg_checksums() (
     cd -- "$output" || exit
     local expected=(network-relay-nf-macos-arm64.app network-relay-rs-macos-arm64.app NetworkRelayNF-*-macos-arm64.zip NetworkRelayRS-*-macos-arm64.zip MANIFEST.txt)
     if [[ $mode == all ]]; then
-        expected+=(network-relay-linux-amd64 network-relay-linux-arm64 network-relay-cf-masque-linux-amd64 network-relay-cf-masque-linux-arm64 caddy-network-relay-linux-amd64 caddy-network-relay-linux-arm64 network-relay-rs-linux-amd64 network-relay-rs-linux-arm64 network-relay-rs-macos-arm64)
+        expected+=(network-relay-linux-amd64 network-relay-linux-arm64 network-relay-cf-masque-linux-amd64 network-relay-cf-masque-linux-arm64 network-relay-vless-linux-amd64 network-relay-vless-linux-arm64 caddy-network-relay-linux-amd64 caddy-network-relay-linux-arm64 network-relay-rs-linux-amd64 network-relay-rs-linux-arm64 network-relay-rs-macos-arm64)
     fi
     find -P "${expected[@]}" -type f -print0 | xargs -0 shasum -a 256 > "$logs/checksums.part" || exit
     [[ -s $logs/checksums.part ]] || rg_die 'Checksum manifest is empty.'

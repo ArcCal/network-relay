@@ -947,7 +947,7 @@ its results.
 | `build-linux-servers-on-linux.sh` | Debian 13 or Ubuntu 26.04, x64 or arm64 | `network-relay`, `network-relay-cf-masque` and `caddy-network-relay` (with Cloudflare DNS) for Linux x64 and arm64 | `./relay-servers-*` |
 | `build-linux-clients-on-linux.sh` | Debian 13 or Ubuntu 26.04, x64 or arm64 | the headless Network Relay RS client for Linux x64 and arm64 | `./network-relay-linux-clients-*` |
 | `build-macos-gui-clients-on-macos.sh` | Apple silicon Mac, macOS 27+ and Xcode 27+ | the Network Relay NF and RS apps | `~/Desktop/Network-Relay-Builds/network-relay-macos-gui-*` |
-| `build-all-targets-on-macos.sh` | Apple silicon Mac, macOS 27+ and Xcode 27+ | everything above, plus the RS client for macOS arm64 | `~/Desktop/YYYYMMDD-HHMMSS` (local time) |
+| `build-all-targets-on-macos.sh` | Apple silicon Mac, macOS 27+ and Xcode 27+ | everything above, plus `network-relay-vless` for Linux x64/arm64 and the RS client for macOS arm64 | `~/Desktop/YYYYMMDD-HHMMSS` (local time) |
 | [`tools/build-all-macos.sh`](docs/build-all-macos.md) | Apple silicon Mac | every ArcCal VPN application from five repositories | `~/Projects/vpn-build-*` |
 | `network-relay-nf/build-macos.sh`, `network-relay-rs/build-macos.sh` | Apple silicon Mac | one app from the current folder | `dist/` in that app's folder |
 | `deploy/package-installer.py` | any system with Python 3 | the standalone installers (no compiling) | `dist/` |

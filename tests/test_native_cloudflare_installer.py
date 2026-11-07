@@ -546,12 +546,12 @@ class WebsiteAndServicePreflightTests(unittest.TestCase):
     def test_website_access_is_checked_before_packages_and_build(self):
         script = SCRIPT.read_text()
         main = script[script.index('nr_main() {'):]
-        self.assertLess(main.index('nr_preflight_web_access'), main.index('"\u0024{apt[@]}" update'))
-        self.assertLess(main.index('nr_preflight_web_access'), main.index('nr_build "\u0024jobs"'))
+        self.assertLess(main.index('nr_preflight_web_access'), main.index('"${apt[@]}" update'))
+        self.assertLess(main.index('nr_preflight_web_access'), main.index('nr_build "$jobs"'))
         deploy = script[script.index('nr_deploy() {'):script.index('\n}\n', script.index('nr_deploy() {'))]
         self.assertLess(deploy.index('nr_check_web_access'), deploy.index('nr_prepare\n'))
         self.assertIn('nr_prepare_log', deploy)
-        self.assertIn('runuser -u "\u0024SERVICE" -- "\u0024BIN" --version', deploy)
+        self.assertIn('runuser -u "$SERVICE" -- "$BIN" --version', deploy)
 
     def test_unreadable_site_index_fails_without_chmodding_shared_parents(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -559,12 +559,12 @@ class WebsiteAndServicePreflightTests(unittest.TestCase):
             website.mkdir()
             (website / 'index.html').write_text('hello')
             command = (
-                'SERVICE=nobody; WWW="\u00241"; '
-                'runuser() { [[ "\u0024*" != *index.html* ]]; }; '
+                'SERVICE=nobody; WWW="$1"; '
+                'runuser() { [[ "$*" != *index.html* ]]; }; '
                 'nr_check_web_access'
             )
             result = subprocess.run(
-                ['bash', '-c', 'source "\u00241"; shift; ' + command, 'test', str(SCRIPT), str(website)],
+                ['bash', '-c', 'source "$1"; shift; ' + command, 'test', str(SCRIPT), str(website)],
                 capture_output=True, text=True, timeout=30)
             self.assertNotEqual(result.returncode, 0)
             self.assertIn('cannot read', result.stderr.lower())
@@ -574,13 +574,13 @@ class WebsiteAndServicePreflightTests(unittest.TestCase):
             logs = Path(folder)
             (logs / 'network-relay.log').symlink_to(logs / 'secret')
             command = (
-                'SERVICE=network-relay; LOGS="\u00241"; '
+                'SERVICE=network-relay; LOGS="$1"; '
                 'nr_check_leaf() { :; }; '
                 'install() { :; }; '
                 'nr_prepare_log'
             )
             result = subprocess.run(
-                ['bash', '-c', 'source "\u00241"; shift; ' + command, 'test', str(SCRIPT), str(logs)],
+                ['bash', '-c', 'source "$1"; shift; ' + command, 'test', str(SCRIPT), str(logs)],
                 capture_output=True, text=True, timeout=30)
             self.assertNotEqual(result.returncode, 0)
             self.assertIn('Unsafe managed log entry', result.stderr)
@@ -588,7 +588,7 @@ class WebsiteAndServicePreflightTests(unittest.TestCase):
     def test_service_start_failure_collects_diagnostics_before_rollback(self):
         script = SCRIPT.read_text()
         deploy = script[script.index('nr_deploy() {'):script.index('\n}\n', script.index('nr_deploy() {'))]
-        self.assertIn('if ! systemctl start "\u0024SERVICE"; then\n        nr_service_diagnostics', deploy)
+        self.assertIn('if ! systemctl start "$SERVICE"; then\n        nr_service_diagnostics', deploy)
         self.assertIn('nr_die \'Candidate could not start; restoring the previous deployment.\'', deploy)
 
 if __name__ == '__main__':

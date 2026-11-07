@@ -690,8 +690,28 @@ nr_new_file() {
     chmod "$mode" "$path"
     chown root:"$group" "$path"
 }
+# Where a service account already exists, catch shared-parent and existing
+# index permissions before downloading packages or compiling. A restricted
+# dedicated web root is repaired later; shared parents are never modified.
+nr_preflight_web_access() {
+    id -u "$SERVICE" >/dev/null 2>&1 || return 0
+    local path
+    for path in / /var /var/www; do
+        if [[ -d $path ]] && ! runuser -u "$SERVICE" -- test -x "$path"; then
+            nr_die "The $SERVICE account cannot traverse shared website parent $path; correct it before installing."
+        fi
+    done
+    # A directory mode is repairable, but an unreadable existing index may
+    # contain site content we must not silently expose with chmod.
+    if [[ -f $WWW/index.html ]] && ! runuser -u "$SERVICE" -- test -r "$WWW/index.html"; then
+        # Defer this case when only the managed web root blocks traversal.
+        if runuser -u "$SERVICE" -- test -x "$WWW"; then
+            nr_die "The $SERVICE account cannot read existing $WWW/index.html; repair its access before installing."
+        fi
+    fi
+}
 # The website is public, but no shared parent is ours to chmod. Validate
-# traversal by the service UID before compiling or stopping an old deployment.
+# traversal by the service UID before stopping an old deployment.
 # Only the already-checked dedicated web root may be made world-traversable.
 nr_check_web_access() {
     local path
@@ -1751,6 +1771,7 @@ nr_main() {
     # A persistent root-owned lock directory serializes competing installers.
     nr_acquire_lock
     nr_fresh
+    nr_preflight_web_access
     nr_inputs
     nr_noninteractive
     device_user=iphone

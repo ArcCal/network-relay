@@ -1571,7 +1571,7 @@ nr_apt() {
 # rely on a sandbox directive that an older manager would ignore as unknown.
 nr_require_systemd() {
     local version
-    version=$(systemd --version) || nr_die 'Cannot determine the systemd version.'
+    version=$(systemctl --version) || nr_die 'Cannot determine the systemd version.'
     version=${version%%$'\n'*}
     [[ $version =~ ^systemd[[:space:]]([0-9]+) ]] || nr_die 'Cannot determine the systemd version.'
     (( 10#${BASH_REMATCH[1]} >= 249 )) || nr_die 'systemd 249+ is required for the service sandbox.'

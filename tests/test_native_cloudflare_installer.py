@@ -539,5 +539,57 @@ class BuildMemoryTests(unittest.TestCase):
         self.assertEqual(positions, sorted(positions))
 
 
+
+class WebsiteAndServicePreflightTests(unittest.TestCase):
+    """Isolated source-level regression checks; never mutate host services."""
+
+    def test_website_access_is_checked_before_packages_and_build(self):
+        script = SCRIPT.read_text()
+        main = script[script.index('nr_main() {'):]
+        self.assertLess(main.index('nr_preflight_web_access'), main.index('"${apt[@]}" update'))
+        self.assertLess(main.index('nr_preflight_web_access'), main.index('nr_build "$jobs"'))
+        deploy = script[script.index('nr_deploy() {'):script.index('\n}\n', script.index('nr_deploy() {'))]
+        self.assertLess(deploy.index('nr_check_web_access'), deploy.index('nr_prepare\n'))
+        self.assertIn('nr_prepare_log', deploy)
+        self.assertIn('runuser -u "$SERVICE" -- "$BIN" --version', deploy)
+
+    def test_unreadable_site_index_fails_without_chmodding_shared_parents(self):
+        with tempfile.TemporaryDirectory() as folder:
+            website = Path(folder) / 'site'
+            website.mkdir()
+            (website / 'index.html').write_text('hello')
+            command = (
+                'SERVICE=nobody; WWW="$1"; '
+                'runuser() { [[ "$*" != *index.html* ]]; }; '
+                'nr_check_web_access'
+            )
+            result = subprocess.run(
+                ['bash', '-c', 'source "$1"; shift; ' + command, 'test', str(SCRIPT), str(website)],
+                capture_output=True, text=True, timeout=30)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('cannot read', result.stderr.lower())
+
+    def test_untrusted_log_symlink_is_rejected_before_ownership_changes(self):
+        with tempfile.TemporaryDirectory() as folder:
+            logs = Path(folder)
+            (logs / 'network-relay.log').symlink_to(logs / 'secret')
+            command = (
+                'SERVICE=network-relay; LOGS="$1"; '
+                'nr_check_leaf() { :; }; '
+                'install() { :; }; '
+                'nr_prepare_log'
+            )
+            result = subprocess.run(
+                ['bash', '-c', 'source "$1"; shift; ' + command, 'test', str(SCRIPT), str(logs)],
+                capture_output=True, text=True, timeout=30)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('Unsafe managed log entry', result.stderr)
+
+    def test_service_start_failure_collects_diagnostics_before_rollback(self):
+        script = SCRIPT.read_text()
+        deploy = script[script.index('nr_deploy() {'):script.index('\n}\n', script.index('nr_deploy() {'))]
+        self.assertIn('if ! systemctl start "$SERVICE"; then\n        nr_service_diagnostics', deploy)
+        self.assertIn('nr_die \'Candidate could not start; restoring the previous deployment.\'', deploy)
+
 if __name__ == '__main__':
     unittest.main()

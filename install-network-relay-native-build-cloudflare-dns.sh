@@ -690,6 +690,58 @@ nr_new_file() {
     chmod "$mode" "$path"
     chown root:"$group" "$path"
 }
+# Where a service account already exists, catch shared-parent and existing
+# index permissions before downloading packages or compiling. A restricted
+# dedicated web root is repaired later; shared parents are never modified.
+nr_preflight_web_access() {
+    id -u "$SERVICE" >/dev/null 2>&1 || return 0
+    local path
+    for path in / /var /var/www; do
+        if [[ -d $path ]] && ! runuser -u "$SERVICE" -- test -x "$path"; then
+            nr_die "The $SERVICE account cannot traverse shared website parent $path; correct it before installing."
+        fi
+    done
+    # A directory mode is repairable, but an unreadable existing index may
+    # contain site content we must not silently expose with chmod.
+    if [[ -f $WWW/index.html ]] && ! runuser -u "$SERVICE" -- test -r "$WWW/index.html"; then
+        # Defer this case when only the managed web root blocks traversal.
+        if runuser -u "$SERVICE" -- test -x "$WWW"; then
+            nr_die "The $SERVICE account cannot read existing $WWW/index.html; repair its access before installing."
+        fi
+    fi
+}
+# The website is public, but no shared parent is ours to chmod. Validate
+# traversal by the service UID before stopping an old deployment.
+# Only the already-checked dedicated web root may be made world-traversable.
+nr_check_web_access() {
+    local path
+    for path in / /var /var/www; do
+        if ! runuser -u "$SERVICE" -- test -x "$path"; then
+            nr_die "The $SERVICE account cannot traverse shared website parent $path; fix that parent's access policy separately."
+        fi
+    done
+    if [[ -d $WWW ]] && ! runuser -u "$SERVICE" -- test -x "$WWW"; then
+        nr_die "The $SERVICE account cannot traverse managed website directory $WWW."
+    fi
+    if [[ -e $WWW/index.html ]] && ! runuser -u "$SERVICE" -- test -r "$WWW/index.html"; then
+        nr_die "The $SERVICE account cannot read $WWW/index.html; inspect its owner and permissions."
+    fi
+}
+# Repair only the original server's dedicated active logfile. Never follow
+# links, adopt a foreign-owned file, touch hardlinks or recursively chown logs.
+nr_prepare_log() {
+    local file=$LOGS/$SERVICE.log metadata owner links
+    nr_check_leaf "$LOGS" statedir
+    install -d -o "$SERVICE" -g "$SERVICE" -m 700 "$LOGS"
+    [[ -e $file || -L $file ]] || return 0
+    [[ ! -L $file && -f $file ]] || nr_die "Unsafe managed log entry: $file."
+    metadata=$(stat -c '%u %h' -- "$file") || nr_die "Cannot inspect managed logfile."
+    read -r owner links <<< "$metadata"
+    [[ $links == 1 && ( $owner == 0 || $owner == "$(id -u "$SERVICE")" ) ]] ||
+        nr_die "Refusing foreign-owned or hard-linked managed logfile: $file."
+    chown "$SERVICE:$SERVICE" -- "$file"
+    chmod 600 -- "$file"
+}
 # Dedicated files participate in a rollback transaction. Certificates, ACME
 # accounts, websites and logs remain in place: remote issuance cannot be undone
 # by restoring a configuration file. Backups are root-only and retained.
@@ -1397,6 +1449,10 @@ nr_ports_free() {
         nr_die 'TCP/UDP 443 is still occupied; no unrelated process was stopped.'
     fi
 }
+nr_service_diagnostics() {
+    printf 'Recent %s service diagnostics (secrets may exist in custom logs; review before sharing):\n' "$SERVICE" >&2
+    journalctl -u "$SERVICE" -n 12 --no-pager -o cat >&2 || true
+}
 # The current script replaces dedicated files after a validated build/stage.
 # Retain old websites/logs/ACME state; preserve complete file and unit-state
 # backups. On failure after the switch, restore old files and active/enabled
@@ -1407,6 +1463,13 @@ nr_deploy() {
     export -n relay_password account
     nr_fresh
     nr_account
+    # Prevent a long build from hiding existing website-parent access failures;
+    # recheck here after account creation, before changing deployed files.
+    for path in / /var /var/www; do
+        if [[ -d $path ]] && ! runuser -u "$SERVICE" -- test -x "$path"; then
+            nr_die "The $SERVICE account cannot traverse shared website parent $path."
+        fi
+    done
     # Shared parents are never chmodded. Only create absent standard directories
     # after their existing ancestors have passed the root-ownership checks.
     for path in "$BIN" "$UNIT" "$SYSCTL" "$HOOK"; do
@@ -1415,10 +1478,15 @@ nr_deploy() {
     install -d -o root -g "$SERVICE" -m 750 "$ETC" "$TLS"
     install -d -o root -g root -m 700 "$EXPORTS"
     [[ -d ${WWW%/*} ]] || install -d -m 755 "${WWW%/*}"
-    if [[ ! -e $WWW ]]; then install -d -m 755 "$WWW"; fi
+    if [[ ! -e $WWW ]]; then install -d -o root -g root -m 755 "$WWW"; fi
+    # nr_fresh already ruled out untrusted/symlinked dedicated directories.
+    # This path is intentionally a public website; never change /var/www itself.
+    chmod 755 "$WWW"
     if [[ -z $(find -P "$WWW" -mindepth 1 -maxdepth 1 -print -quit) ]]; then
         printf '<!doctype html>\n<title>Welcome</title>\n<h1>Welcome</h1>\n' | nr_new_file "$WWW/index.html" 644
     fi
+    nr_check_web_access
+    nr_prepare_log
     nr_prepare
     nr_ports
     {
@@ -1456,6 +1524,9 @@ nr_deploy() {
         if [[ $type == dir && -d $path ]]; then rm -rf -- "$path"; fi
     done < "$backup_dir/manifest"
     nr_atomic_install "$work/$SERVICE" "$BIN" 755
+    # Prove that the final executable can run under the real daemon identity.
+    runuser -u "$SERVICE" -- "$BIN" --version >/dev/null ||
+        nr_die 'The installed binary is not executable by the service account.'
     nr_atomic_install "$work/config" "$CONFIG" 640 "$SERVICE"
     nr_atomic_install "$work/unit" "$UNIT" 644
     nr_atomic_install "$work/hook" "$HOOK" 700
@@ -1467,15 +1538,25 @@ nr_deploy() {
     rm -f -- "/etc/systemd/system/multi-user.target.wants/$SERVICE.service" "/run/systemd/system/multi-user.target.wants/$SERVICE.service"
     systemctl enable "$SERVICE"
     nr_ports_free
-    systemctl start "$SERVICE"
+    if ! systemctl start "$SERVICE"; then
+        nr_service_diagnostics
+        nr_die 'Candidate could not start; restoring the previous deployment.'
+    fi
     for ((attempt=0; attempt<30; attempt++)); do
-        systemctl is-active --quiet "$SERVICE" || nr_die 'Candidate stopped during HTTPS readiness; restoring the previous deployment.'
+        if ! systemctl is-active --quiet "$SERVICE"; then
+            nr_service_diagnostics
+            nr_die 'Candidate stopped during HTTPS readiness; restoring the previous deployment.'
+        fi
         if curl --disable --noproxy '*' --silent --show-error --output /dev/null --max-time 3 \
             --resolve "$domain:443:127.0.0.1" "https://$domain/" 2>/dev/null; then ready=1; break; fi
         sleep 1
     done
-    (( ready )) || nr_die 'Trusted HTTPS readiness failed; restoring the previous deployment.'
+    if (( !ready )); then
+        nr_service_diagnostics
+        nr_die 'Trusted HTTPS readiness failed; restoring the previous deployment.'
+    fi
     if ! printf '%s\n' "$relay_password" | "$BIN" check --server "$domain" --address 127.0.0.1 --user "$device_user"; then
+        nr_service_diagnostics
         nr_die 'Protocol checks failed; restoring the previous deployment.'
     fi
     nr_atomic_install "$work/exports/device.mobileconfig" "$PROFILE" 600
@@ -1484,7 +1565,10 @@ nr_deploy() {
     [[ $(systemctl is-enabled certbot.timer) == enabled ]] || nr_die 'Certbot renewal timer is not enabled at boot.'
     systemctl is-active --quiet certbot.timer || nr_die 'Certbot renewal timer is not active.'
     [[ $(systemctl is-enabled "$SERVICE") == enabled ]] || nr_die 'Relay is not enabled at boot.'
-    systemctl is-active --quiet "$SERVICE" || nr_die 'Relay is not active after protocol checks.'
+    if ! systemctl is-active --quiet "$SERVICE"; then
+        nr_service_diagnostics
+        nr_die 'Relay is not active after protocol checks.'
+    fi
     unset relay_password
     transaction_started=0
     sysctl -p "$SYSCTL" || printf 'Warning: socket-buffer tuning was denied; existing runtime settings remain.\n'
@@ -1687,6 +1771,7 @@ nr_main() {
     # A persistent root-owned lock directory serializes competing installers.
     nr_acquire_lock
     nr_fresh
+    nr_preflight_web_access
     nr_inputs
     nr_noninteractive
     device_user=iphone

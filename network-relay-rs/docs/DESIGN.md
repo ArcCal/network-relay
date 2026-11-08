@@ -62,6 +62,15 @@ transport restarts an active instance automatically. Late status messages from
 an earlier generation cannot overwrite the new instance. Changes to only log
 level, profile display name or inactive profiles do not reconnect.
 
+GUI-only recovery observes SystemConfiguration route/address/link changes and
+transport retry status. It stops the old controller worker before starting a
+fresh one, with a one-to-30-second backoff reset after 30 seconds connected.
+Disconnect and Quit cancel pending recovery; right-hand saved server and
+transport choices supersede it immediately. Gateway/quota responses retain the
+core's in-place retry and admitted flows. The sidebar and menu-bar server names
+are read-only. This adapter does not change the shared controller, protocol core
+or headless entry point.
+
 Each client caches one HTTP/3 session for new CONNECT requests and the readiness
 probe. Independent request streams share that session; cancelling a flow or
 renewing the probe releases only its stream. Active flows retain their session

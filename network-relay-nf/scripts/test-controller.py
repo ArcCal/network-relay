@@ -23,6 +23,9 @@ struct Published<Value> {
 }
 
 enum HarnessError: Error { case startFailed, saveFailed }
+final class NetworkChanges {
+    init(_ changed: @escaping @MainActor () -> Void) {}
+}
 @MainActor
 final class NativeClient {
     static var instances: [NativeClient] = []
@@ -81,7 +84,7 @@ import NetworkRelayNFModel
 @main
 struct Harness {
     @MainActor
-    static func main() throws {
+    static func main() async throws {
         let first = Server(name: "First", domain: "first.test", username: "user", password: "password", transport: .h2)
         let second = Server(name: "Second", domain: "second.test", username: "user", password: "password", transport: .h2)
         let baseline = Configuration(servers: [first, second], selectedServerID: first.id)
@@ -358,6 +361,102 @@ struct Harness {
         pass("telemetry failure is isolated and terminal client failure clears traffic")
 
         try reset()
+        let handedOff = start()
+        handedOff.emit(.connected)
+        let beforeHandoff = NativeClient.attempts
+        controller.networkChanged()
+        check(handedOff.stops == 1 && controller.status.isActive,
+              "network change must tear down the old core and show recovery")
+        controller.retryIfDue(now: ProcessInfo.processInfo.systemUptime + 100)
+        check(NativeClient.attempts == beforeHandoff, "must not overlap old and new listeners")
+        handedOff.emit(.exited(0, nil))
+        handedOff.emit(.connected)
+        if case .reconnecting = controller.status {} else { preconditionFailure("stale ready callback revived old run") }
+        controller.retryIfDue(now: ProcessInfo.processInfo.systemUptime + 100)
+        check(NativeClient.attempts == beforeHandoff + 1 && NativeClient.instances.last!.id != handedOff.id,
+              "network change must start a genuinely new core generation")
+        pass("network handoff waits for teardown, ignores stale callbacks and starts a fresh generation")
+
+        try reset()
+        let timedOut = start()
+        let beforeTimeout = NativeClient.attempts
+        timedOut.emit(.reconnecting("transport timeout"))
+        check(timedOut.stops == 1, "retry status must discard old native resources")
+        timedOut.emit(.exited(0, nil))
+        controller.retryIfDue(now: ProcessInfo.processInfo.systemUptime + 100)
+        check(NativeClient.attempts == beforeTimeout + 1, "retry must allocate a fresh core")
+        let again = NativeClient.instances.last!
+        again.emit(.reconnecting("transport timeout"))
+        again.emit(.exited(0, nil))
+        controller.retryIfDue(now: ProcessInfo.processInfo.systemUptime + 1)
+        check(NativeClient.attempts == beforeTimeout + 1, "repeated failures need bounded backoff")
+        controller.retryIfDue(now: ProcessInfo.processInfo.systemUptime + 100)
+        check(NativeClient.attempts == beforeTimeout + 2, "backoff must still make another attempt")
+        pass("retry indications rebuild native resources with backoff and real attempts")
+
+        try reset()
+        let cancelled = start()
+        controller.networkChanged()
+        controller.disconnect()
+        controller.networkChanged()
+        cancelled.emit(.exited(0, nil))
+        let beforeCancelledRetry = NativeClient.attempts
+        controller.retryIfDue(now: ProcessInfo.processInfo.systemUptime + 100)
+        controller.networkChanged()
+        check(NativeClient.attempts == beforeCancelledRetry && controller.status == .stopped,
+              "manual Disconnect must cancel retries and ignore later path notifications")
+        pass("manual Disconnect suppresses both pending retries and network callbacks")
+
+        try reset()
+        let choosing = start()
+        controller.networkChanged()
+        choosing.emit(.exited(0, nil))
+        let beforeChoice = NativeClient.attempts
+        var rightChoice = controller.configuration
+        rightChoice.selectedServerID = second.id
+        rightChoice.servers[1].transport = .http1
+        try controller.save(rightChoice, retryFailed: true)
+        check(NativeClient.attempts == beforeChoice + 1 && controller.configuration.selectedServer?.id == second.id,
+              "right-side choices must supersede pending recovery immediately")
+        check(NativeClient.instances.last!.configuration.contains("http/1.1"), "chosen transport must apply")
+        pass("saved server and transport changes supersede pending recovery without waiting for Save")
+
+        try reset()
+        let busyGateway = start()
+        let beforeGateway = NativeClient.attempts
+        busyGateway.emit(.reconnecting("relay refused the request with HTTP 503 Service Unavailable"))
+        controller.retryIfDue(now: ProcessInfo.processInfo.systemUptime + 100)
+        check(busyGateway.stops == 0 && NativeClient.attempts == beforeGateway,
+              "a responding gateway must keep existing flows while the core retries")
+        controller.networkChanged()
+        check(busyGateway.stops == 1, "a real path change must still replace that connection")
+        pass("gateway/quota replies preserve active flows until an actual path change")
+
+        try reset()
+        let scheduled = start()
+        let beforeScheduled = NativeClient.attempts
+        scheduled.emit(.reconnecting("transport timeout"))
+        try await Task.sleep(nanoseconds: 1_100_000_000)
+        check(NativeClient.attempts == beforeScheduled, "timer must wait for old listener teardown")
+        scheduled.emit(.exited(0, nil))
+        for _ in 0..<100 {
+            if NativeClient.attempts > beforeScheduled { break }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        check(NativeClient.attempts == beforeScheduled + 1, "the real retry task must start a fresh core")
+        pass("real retry timer starts a fresh instance after teardown without a manual retry call")
+
+        try reset()
+        let quittingClient = start()
+        controller.networkChanged()
+        quittingClient.emit(.exited(0, nil))
+        let beforeQuit = NativeClient.attempts
+        if case .terminateNow = controller.requestQuit() {} else { preconditionFailure("pending retry has no live core") }
+        controller.retryIfDue(now: ProcessInfo.processInfo.systemUptime + 100)
+        controller.networkChanged()
+        try await Task.sleep(nanoseconds: 1_100_000_000)
+        check(NativeClient.attempts == beforeQuit, "Quit must never revive a pending retry")
+        pass("Quit cancels pending recovery")
         print("RESULT \(passed) controller scenarios passed; platform UI and network transport are stubbed")
     }
 }

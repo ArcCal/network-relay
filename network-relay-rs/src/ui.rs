@@ -4,6 +4,8 @@
 #![allow(unsafe_op_in_unsafe_fn)]
 
 mod appkit;
+mod network_changes;
+mod recovery;
 use crate::controller::{Controller, Status};
 use crate::model::{Configuration, LogLevel, Server, TransferScope, Transport};
 use crate::traffic::{LiveTraffic, TrafficState};
@@ -14,6 +16,7 @@ use std::ffi::c_void;
 use std::fs;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Instant;
 use uuid::Uuid;
 
 const APP_NAME: &str = "Network Relay RS";
@@ -33,7 +36,6 @@ const LATEST: isize = 13;
 const OPEN_MAIN: isize = 14;
 const QUIT: isize = 15;
 const ERASE: isize = 16;
-const STATUS_SERVER: isize = 17;
 const SHOW_POPOVER: isize = 18;
 const IMPORT: isize = 19;
 const EXPORT: isize = 20;
@@ -86,6 +88,8 @@ struct LogViews {
 }
 struct App {
     controller: Controller,
+    recovery: recovery::Recovery,
+    _network_monitor: Option<network_changes::Monitor>,
     draft: Configuration,
     editing: Option<Uuid>,
     adding: Option<Uuid>,
@@ -132,6 +136,7 @@ pub fn run(controller: Controller) -> Result<()> {
         send0::<()>(nsapp, "run");
         APPLICATION.with(|slot| {
             if let Some(mut app) = slot.borrow_mut().take() {
+                app.recovery.cancel();
                 app.controller.stop();
             }
         });
@@ -166,11 +171,12 @@ unsafe extern "C" fn tick(_: Id, _: Id, _: Id) {
     let pool = new("NSAutoreleasePool");
     with_app(|app| {
         if TERMINATION_REQUESTED.swap(false, Ordering::Relaxed) {
+            app.recovery.cancel();
             app.controller.stop();
             send1::<_, ()>(app.application, "terminate:", NIL);
             return;
         }
-        app.controller.poll();
+        app.recovery.poll(&mut app.controller, Instant::now(), network_changes::take_change());
         app.refresh();
     });
     send0::<()>(pool, "drain");
@@ -270,6 +276,8 @@ impl App {
         let adding = controller.config.servers.is_empty().then_some(editing).flatten();
         let mut result = Self {
             controller,
+            recovery: recovery::Recovery::default(),
+            _network_monitor: network_changes::Monitor::new(),
             draft,
             editing,
             adding,
@@ -375,10 +383,10 @@ impl App {
     unsafe fn action(&mut self, tag: isize, sender: Id) -> Result<()> {
         match tag {
             POWER => {
-                if active(&self.controller.status) {
-                    self.controller.disconnect();
+                if active(&self.recovery.status(&self.controller)) {
+                    self.recovery.disconnect(&mut self.controller);
                 } else {
-                    self.controller.connect();
+                    self.recovery.connect(&mut self.controller);
                 }
             }
             SAVE => {
@@ -387,6 +395,7 @@ impl App {
                 let (saved, allow_reconnect) =
                     saved.preparing_connection_save(&self.controller.config, self.imported_servers);
                 self.controller.apply_saved(saved, allow_reconnect)?;
+                self.recovery.settings_applied(&self.controller, allow_reconnect);
                 self.draft = self.controller.config.clone();
                 self.adding = None;
                 if !self.draft.servers.iter().any(|server| Some(server.id) == self.editing) {
@@ -406,23 +415,12 @@ impl App {
                     let mut config = self.controller.config.clone();
                     config.selected_server_id = Some(id);
                     self.controller.apply_choice(config)?;
+                    self.recovery.settings_applied(&self.controller, true);
                     self.editing = Some(id);
                     self.select_after_save = None;
                     self.message("Server applied. Other changes still need Save.");
                 }
                 self.show_server_editor();
-            }
-            STATUS_SERVER => {
-                let id = self.controller.config.servers.get(index(sender)).map(|server| server.id);
-                if let Some(id) = id {
-                    self.read_server_fields();
-                    let mut config = self.controller.config.clone();
-                    config.selected_server_id = Some(id);
-                    self.controller.apply_choice(config)?;
-                    self.editing = Some(id);
-                    self.select_after_save = None;
-                    self.show_server_editor();
-                }
             }
             TRANSPORT => {
                 let mode = transport_at(index(sender));
@@ -434,6 +432,7 @@ impl App {
                     if let Some(server) = config.servers.iter_mut().find(|server| server.id == id) {
                         server.transport = mode;
                         self.controller.apply_choice(config)?;
+                        self.recovery.settings_applied(&self.controller, true);
                         self.message("Transport applied. Other changes still need Save.");
                     } else {
                         self.message("Transport selected; save this new server before connecting.");
@@ -462,6 +461,7 @@ impl App {
                         return Ok(());
                     }
                     self.controller.apply(without_server(&self.controller.config, id))?;
+                    self.recovery.settings_applied(&self.controller, true);
                 }
                 self.draft.servers.retain(|server| server.id != id);
                 if self.adding == Some(id) {
@@ -521,6 +521,7 @@ impl App {
             }
             OPEN_MAIN => self.show_main(),
             QUIT => {
+                self.recovery.cancel();
                 self.controller.stop();
                 send1::<_, ()>(self.application, "terminate:", NIL);
             }
@@ -531,6 +532,7 @@ impl App {
                     &["Erase and Quit", "Cancel"],
                 ) == 0
                 {
+                    self.recovery.cancel();
                     self.controller.stop();
                     self.controller.erase()?;
                     send1::<_, ()>(self.application, "terminate:", NIL);
@@ -677,7 +679,8 @@ impl App {
             self.editor.lan_warning,
             if local { "" } else { "Any device on the same network can use this proxy." },
         );
-        let (title, detail, symbol, color) = match &self.controller.status {
+        let display_status = self.recovery.status(&self.controller);
+        let (title, detail, symbol, color) = match &display_status {
             Status::Stopped => ("Not Connected", "", "shield.slash", "secondaryLabelColor"),
             Status::Connecting => ("Connecting…", "", "shield.lefthalf.filled", "systemBlueColor"),
             Status::Connected => ("Connected", "", "checkmark.shield.fill", "systemGreenColor"),
@@ -693,7 +696,7 @@ impl App {
         let reduced = send0::<bool>(workspace, "accessibilityDisplayShouldReduceMotion");
         let status_key = format!("{title}\n{detail}\n{:?}\n{reduced}", self.controller.config.selected_server_id);
         if status_key != self.last_status {
-            let busy = matches!(self.controller.status, Status::Connecting | Status::Reconnecting);
+            let busy = matches!(display_status, Status::Connecting | Status::Reconnecting);
             for status in [&self.main_status, &self.menu_status] {
                 set_text(status.title, title);
                 set_text(status.detail, detail);
@@ -711,7 +714,7 @@ impl App {
                 send1::<_, ()>(
                     status.power,
                     "setToolTip:",
-                    string(if active(&self.controller.status) { "Disconnect" } else { "Connect" }),
+                    string(if active(&display_status) { "Disconnect" } else { "Connect" }),
                 );
             }
             let image: Id = send2(
@@ -724,24 +727,10 @@ impl App {
             send1::<_, ()>(button, "setImage:", image);
             self.last_status = status_key;
         }
-        let titles = self.controller.config.servers.iter().map(server_title).collect::<Vec<_>>();
-        let empty_titles = vec!["No saved server".into()];
-        let selected = self
-            .controller
-            .config
-            .servers
-            .iter()
-            .position(|server| Some(server.id) == self.controller.config.selected_server_id)
-            .unwrap_or(0);
+        let node =
+            self.controller.config.selected_server().map(server_title).unwrap_or_else(|| "No saved server".into());
         for status in [&self.main_status, &self.menu_status] {
-            let selected_title: Id = send0(status.server, "titleOfSelectedItem");
-            let desired = titles.get(selected).cloned().unwrap_or_else(|| "No saved server".into());
-            if send0::<isize>(status.server, "numberOfItems") as usize != titles.len().max(1)
-                || ns_text(selected_title) != desired
-            {
-                popup_items(status.server, if titles.is_empty() { &empty_titles } else { &titles }, selected);
-            }
-            enabled(status.server, !titles.is_empty());
+            set_text(status.server, &node);
             set_text(status.address, &self.controller.config.proxy_address());
         }
         if self
@@ -996,7 +985,8 @@ unsafe fn status_views(parent: Id, delegate: Id, menu: bool) -> StatusViews {
             autoresize(element, 40);
         }
     }
-    let server = popup(parent, rect(20., if menu { 94. } else { 114. }, inner, 28.), delegate, STATUS_SERVER);
+    let server = label(parent, "No saved server", rect(20., if menu { 94. } else { 114. }, inner, 28.), 13., false);
+    send1::<_, ()>(server, "setAlignment:", 1_isize);
     let traffic = (!menu).then(|| traffic_views(parent, rect(20., 114., inner, 82.)));
     let proxy = card(parent, rect(20., if menu { 46. } else { 40. }, inner, 62.));
     label(proxy, "SOCKS5 proxy", rect(12., 36., 205., 18.), 11., false);

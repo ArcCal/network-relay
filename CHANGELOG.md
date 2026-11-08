@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- NF and RS GUI clients rebuild their connection after network path changes or transport retry failures, waiting for the old listener to stop and backing off repeated failures. Manual Disconnect and Quit cancel recovery; gateway/quota replies preserve active flows. The sidebar and menu-bar node names are read-only; saved node and transport choices remain immediate in right-hand settings. Headless clients and servers are unchanged.
+
 - NF and RS keep new servers in one unsaved form until Save succeeds, with only saved profiles in server menus. An explicit relay IP stays separate from SNI, certificate identity and HTTP host information; the relay domain needs no DNS records. Timeout retries and tunneled website/DNS traffic remain supported, with regression coverage.
 
 - The all-target macOS builder also builds `network-relay-vless` for Linux x64 and arm64, verifies their static executable architectures, and includes both files in the artifact manifest and SHA-256 checksums.

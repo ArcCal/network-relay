@@ -19,11 +19,20 @@ final class TunnelController: ObservableObject {
     private var restartAfterExit = false
     private var quitting = false
     private var eraseOnQuit = false
+    private var networkChanges: NetworkChanges?
+    private var retryTask: Task<Void, Never>?
+    private var retryAt: TimeInterval?
+    private var retryReason: String?
+    private var retryDelay: TimeInterval = 1
+    private var connectedSince: TimeInterval?
 
     private init() { configuration = Store.load() }
     var settings: Settings { configuration.settings }
     var isConfigured: Bool { (try? clientConfiguration(settings, password: configuration.password)) != nil }
     func launched() {
+        if networkChanges == nil {
+            networkChanges = NetworkChanges { [weak self] in self?.networkChanged() }
+        }
         let information = AppInformation()
         let built = information.builtAt.map { ISO8601DateFormatter().string(from: $0) } ?? "Unknown"
         appendLog(["\(timestamp()) INFO app: Network Relay NF launched; Network.framework transport; app \(information.version); core \(information.coreVersion); built \(built); source \(information.sourceRevision)"])
@@ -73,11 +82,19 @@ final class TunnelController: ObservableObject {
         if levelChanged { client?.setLogLevel(new.logLevel) }
         guard !quitting else { return false }
         if !allowReconnect {
+            cancelRetry()
             restartAfterExit = false
             stopClient()
             return false
         }
         if client == nil {
+            if restartAfterExit {
+                if change == .disconnect { disconnect(); return false }
+                if change == .reconnect || selectedChanged {
+                    cancelRetry(); restartAfterExit = false; connect()
+                    return true
+                }
+            }
             if retryFailed, case .failed = status, change != .disconnect, change == .reconnect || selectedChanged {
                 connect()
                 return true
@@ -90,18 +107,23 @@ final class TunnelController: ObservableObject {
         switch change {
         case .none: return false
         case .reconnect:
+            cancelRetry()
             restartAfterExit = true
             stopClient()
             return true
         case .disconnect:
+            cancelRetry()
             restartAfterExit = false
             stopClient()
             return false
         }
     }
-    func toggle() { if client != nil { disconnect() } else { connect() } }
-    func connect() {
+    func toggle() { if client != nil || restartAfterExit { disconnect() } else { connect() } }
+    func connect(resetRetry: Bool = true) {
         guard client == nil, !quitting else { return }
+        cancelRetry(); restartAfterExit = false
+        if resetRetry { retryDelay = 1 }
+        connectedSince = nil
         clearTraffic()
         do {
             let input = try clientConfiguration(settings, password: configuration.password)
@@ -122,6 +144,7 @@ final class TunnelController: ObservableObject {
         }
     }
     func disconnect() {
+        cancelRetry()
         appendLog(["\(timestamp()) INFO app: Disconnect requested"])
         // An explicit Disconnect always cancels an earlier Save-triggered restart.
         restartAfterExit = false
@@ -135,6 +158,7 @@ final class TunnelController: ObservableObject {
     }
     /// AppKit waits asynchronously for this instance to release its sockets.
     func requestQuit() -> NSApplication.TerminateReply {
+        cancelRetry()
         clearTraffic()
         appendLog(["\(timestamp()) INFO app: Quit requested"])
         restartAfterExit = false; quitting = true
@@ -145,14 +169,21 @@ final class TunnelController: ObservableObject {
         stopClient()
         return .terminateLater
     }
-    func stopForQuit() { clearTraffic(); restartAfterExit = false; quitting = true; client?.stop() }
+    func stopForQuit() { cancelRetry(); clearTraffic(); restartAfterExit = false; quitting = true; client?.stop() }
     func eraseEverythingAndQuit() { eraseOnQuit = true; NSApp.terminate(nil) }
 
     private func received(_ update: NativeUpdate) {
         switch update {
         case .log(let lines): appendLog(lines)
-        case .connected: if !stopping { status = .connected }
-        case .reconnecting(let why): if !stopping { status = .reconnecting(why) }
+        case .connected:
+            if !stopping { connectedSince = ProcessInfo.processInfo.systemUptime; status = .connected }
+        case .reconnecting(let why):
+            if !stopping {
+                // A gateway/quota response proves the peer still answered.
+                // Preserve admitted flows while the core retries that request.
+                if why.contains("relay refused the request with HTTP ") { status = .reconnecting(why) }
+                else { reconnect(why) }
+            }
         case .traffic(let sample):
             if !stopping, !quitting, trafficNodeName != nil { traffic.sample(sample) }
         case .trafficUnavailable:
@@ -160,6 +191,7 @@ final class TunnelController: ObservableObject {
         case .exited(let code, let error):
             clearTraffic()
             client = nil
+            generation = UUID()
             if stopping || code == 0 {
                 status = .stopped
                 appendLog(["\(timestamp()) INFO app: Disconnected"])
@@ -173,9 +205,54 @@ final class TunnelController: ObservableObject {
                 if eraseOnQuit { Store.eraseEverything() }
                 NSApp.reply(toApplicationShouldTerminate: true)
             } else if restartAfterExit {
-                restartAfterExit = false; connect()
+                if retryAt != nil {
+                    status = .reconnecting(retryReason ?? "Opening a fresh relay connection")
+                    scheduleRetry()
+                } else {
+                    restartAfterExit = false; connect()
+                }
             }
         }
+    }
+    func networkChanged() {
+        guard !quitting, status.isActive, !stopping || restartAfterExit else { return }
+        retryDelay = 1
+        reconnect("Network changed; opening a fresh relay connection", networkChange: true)
+    }
+    private func reconnect(_ reason: String, networkChange: Bool = false) {
+        let now = ProcessInfo.processInfo.systemUptime
+        if let since = connectedSince, now - since >= 30 { retryDelay = 1 }
+        connectedSince = nil
+        let delay = networkChange ? 1 : retryDelay
+        if !networkChange { retryDelay = min(retryDelay * 2, 30) }
+        let previousRetry = retryAt
+        cancelRetry()
+        retryReason = reason
+        let deadline = now + delay
+        retryAt = networkChange ? min(previousRetry ?? deadline, deadline) : deadline
+        restartAfterExit = true
+        if client != nil, !stopping { stopClient() }
+        status = .reconnecting(reason)
+        appendLog(["\(timestamp()) INFO app: Fresh relay connection in \(Int(delay))s; \(reason)"])
+        if client == nil { scheduleRetry() }
+    }
+    private func cancelRetry() {
+        retryTask?.cancel(); retryTask = nil
+        retryAt = nil; retryReason = nil
+    }
+    private func scheduleRetry() {
+        guard let retryAt else { return }
+        let delay = max(0, retryAt - ProcessInfo.processInfo.systemUptime)
+        retryTask = Task { [weak self] in
+            do { try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000)) }
+            catch { return }
+            self?.retryIfDue()
+        }
+    }
+    func retryIfDue(now: TimeInterval = ProcessInfo.processInfo.systemUptime) {
+        guard !quitting, restartAfterExit, client == nil, let retryAt, now >= retryAt else { return }
+        cancelRetry(); restartAfterExit = false
+        connect(resetRetry: false)
     }
     private func clearTraffic() {
         traffic.reset()

@@ -64,12 +64,19 @@ rewrite NF's private settings automatically. Password-free exports leave an
 existing matching server password intact. RS keeps and uses NF's per-server
 admission probe target but has no field to edit it.
 
-A saved server chosen in either server menu, or a new transport, applies
+A saved server chosen in the right-hand settings form, or a new transport, applies
 immediately; a newly added or imported server must be saved first. The minus
 (-) button deletes the selected server after a confirmation; deleting the
 connected server moves the connection to the next server in the list.
 Add opens one unsaved form, reused by repeated Add. New profiles appear in
 server menus only after Save succeeds.
+
+The sidebar and menu-bar panel show the selected server without a switcher.
+In GUI mode, route/address/link changes and transport retry failures stop the
+old client before opening a fresh connection, with a 1-30 second retry backoff.
+Explicit Disconnect cancels pending retries. Gateway/quota replies retain the
+existing connections while the protocol core retries. This GUI recovery does
+not change command-line operation.
 
 ## Command-line operation
 

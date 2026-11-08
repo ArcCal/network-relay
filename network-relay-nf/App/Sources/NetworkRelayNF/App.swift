@@ -199,8 +199,7 @@ struct MainWindow: View {
         .onAppear { showInDock(true) }
         .onDisappear { showInDock(false) }
         .onChange(of: tunnel.configuration.selectedServer?.id) { _, id in
-            // A choice in the sidebar or menu bar also changes the profile
-            // whose Transport the form edits. Keep its unsaved fields intact.
+            // Align the editor with saved choices, keeping other draft fields.
             guard let id, draft.servers.contains(where: { $0.id == id }) else { return }
             draft.editing = id
             draft.selectAfterSave = nil
@@ -277,7 +276,7 @@ struct StatusColumn: View {
             }
             .animation(reduceMotion ? nil : .easeInOut(duration: 0.25), value: tunnel.status)
             Spacer()
-            ServerPicker()
+            ServerLabel()
             if let node = tunnel.trafficNodeName {
                 LiveTrafficCard(node: node, traffic: tunnel.traffic)
             }
@@ -967,7 +966,7 @@ struct MenuPanel: View {
             }
             .frame(maxWidth: .infinity)
             .animation(.easeInOut(duration: 0.25), value: tunnel.status)
-            ServerPicker()
+            ServerLabel()
             ProxyRow(settings: tunnel.settings)
             HStack(spacing: 4) {
                 Button {
@@ -1016,25 +1015,12 @@ struct MenuPanel: View {
 
 // MARK: - Parts
 
-/// The server to connect to. Choosing another while connected reconnects
-/// through it, for instance when the one in use is down.
-struct ServerPicker: View {
+/// Read-only identity; all server choices live in the settings form.
+struct ServerLabel: View {
     @EnvironmentObject private var tunnel: TunnelController
 
     var body: some View {
-        let servers = tunnel.configuration.servers
-        if servers.count > 1 {
-            Picker(selection: Binding(get: { tunnel.configuration.selectedServer?.id }, set: { if let id = $0 { tunnel.use(id) } })) {
-                ForEach(servers) { server in
-                    Text(server.title).tag(Optional(server.id))
-                }
-            } label: {
-                Label("Server", systemImage: "server.rack")
-            }
-            .pickerStyle(.menu)
-            .help((tunnel.configuration.selectedServer.map { "\($0.title)\n" } ?? "")
-                + (tunnel.status.isActive ? "Choosing another server reconnects through it" : "The server to connect to"))
-        } else if let server = servers.first {
+        if let server = tunnel.configuration.selectedServer {
             Label(server.title, systemImage: "server.rack")
                 .font(.callout)
                 .foregroundStyle(.secondary)

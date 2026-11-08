@@ -74,6 +74,15 @@ failure/retry. Renewal retains the selected transport and existing independent
 SOCKS flows. It sends no application heartbeat. TCP-only policies that deny this probe
 are not supported by the current readiness design.
 
+The GUI observes Network.framework path updates, ignoring the initial snapshot.
+A later update or a transport retry error stops the current NativeClient and
+waits for its exit before creating a fresh instance. Retries back off from one
+to 30 seconds, reset after 30 seconds connected, and are cancelled by Disconnect
+or Quit. Gateway/quota responses keep the core's in-place retry so existing
+admitted flows survive. Saved server and transport choices in right-hand
+settings supersede pending recovery immediately; left-side and menu-bar server
+names are read-only. The protocol core and headless client are unchanged.
+
 Automatic mode tries HTTP/3 for five seconds, then native TCP with ALPN `h2`,
 `http/1.1`. Authentication/security rejection is terminal rather than a reason
 to downgrade; 502, 503 and 504 refusals are temporary and are retried. Forced modes do not silently change transport. The monitor's

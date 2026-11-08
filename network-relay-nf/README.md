@@ -75,6 +75,13 @@ indicator and no modal timeout alert; Disconnect stops the retry.
 Add opens one unsaved server form. Repeated Add reuses it, and server menus show
 only saved profiles. A new profile joins those menus only after Save succeeds.
 
+The sidebar and menu-bar panel show the selected server without a switcher.
+Choose saved servers and transports in the right-hand settings form; these
+choices apply immediately without Save. Network path changes and transport
+retry failures stop the old client before opening a fresh connection, with a
+1-30 second retry backoff. Explicit Disconnect cancels pending retries.
+Gateway/quota replies retain existing connections while the protocol core retries.
+
 ```bash
 curl -I --noproxy '' --proxy socks5h://127.0.0.1:1080 \
   --connect-timeout 10 --max-time 30 https://example.com/

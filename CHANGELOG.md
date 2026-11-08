@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- NF and RS GUI network observers ignore unchanged path notifications instead of restarting healthy proxy sessions. NF compares native path snapshots; RS compares primary-interface routing, address and link state while ignoring unrelated metadata. Real path changes still rebuild the connection, and manual Disconnect remains final.
+
 - NF and RS GUI clients rebuild their connection after network path changes or persistent transport retry failures, waiting for the old listener to stop and backing off repeated failures. A two-second probe recovery window preserves healthy flows after an isolated stream reset. Manual Disconnect and Quit cancel recovery; gateway/quota replies preserve active flows. The sidebar and menu-bar node names are read-only; saved node and transport choices remain immediate in right-hand settings. Headless clients and servers are unchanged.
 
 - NF and RS keep new servers in one unsaved form until Save succeeds, with only saved profiles in server menus. An explicit relay IP stays separate from SNI, certificate identity and HTTP host information; the relay domain needs no DNS records. Timeout retries and tunneled website/DNS traffic remain supported, with regression coverage.

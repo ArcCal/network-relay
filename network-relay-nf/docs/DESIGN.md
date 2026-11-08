@@ -74,8 +74,9 @@ failure/retry. Renewal retains the selected transport and existing independent
 SOCKS flows. It sends no application heartbeat. TCP-only policies that deny this probe
 are not supported by the current readiness design.
 
-The GUI observes Network.framework path updates, ignoring the initial snapshot.
-A later update or a transport retry error stops the current NativeClient and
+The GUI observes Network.framework path updates, ignoring the initial snapshot
+and later snapshots that compare equal using Network.framework's path equality.
+A changed path or a transport retry error stops the current NativeClient and
 waits for its exit before creating a fresh instance. Retries back off from one
 to 30 seconds, reset after 30 seconds connected, and are cancelled by Disconnect
 or Quit. Gateway/quota responses keep the core's in-place retry so existing

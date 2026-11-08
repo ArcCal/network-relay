@@ -19,7 +19,7 @@ fn affects_active_path(key: &str, primary: &[String]) -> bool {
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 mod platform {
     use super::*;
-    use std::ffi::{CStr, c_char, c_void};
+    use std::ffi::{CStr, CString, c_char, c_void};
     use std::ptr;
     type Ref = *const c_void;
     #[cfg_attr(target_os = "macos", link(name = "CoreFoundation", kind = "framework"))]
@@ -31,6 +31,11 @@ mod platform {
         fn CFArrayGetCount(array: Ref) -> isize;
         fn CFArrayGetValueAtIndex(array: Ref, index: isize) -> Ref;
         fn CFDictionaryGetValue(dictionary: Ref, key: Ref) -> Ref;
+        fn CFDictionaryGetTypeID() -> usize;
+        fn CFStringGetTypeID() -> usize;
+        fn CFGetTypeID(value: Ref) -> usize;
+        fn CFEqual(left: Ref, right: Ref) -> u8;
+        fn CFRetain(value: Ref) -> Ref;
         fn CFStringGetCString(string: Ref, buffer: *mut c_char, capacity: isize, encoding: u32) -> u8;
         fn CFRelease(value: Ref);
         fn CFRunLoopGetMain() -> Ref;
@@ -53,54 +58,131 @@ mod platform {
     unsafe fn string(value: Ref) -> Option<String> {
         let mut bytes = [0; 1024];
         if value.is_null()
+            || unsafe { CFGetTypeID(value) != CFStringGetTypeID() }
             || unsafe { CFStringGetCString(value, bytes.as_mut_ptr(), bytes.len() as isize, 0x08000100) } == 0
         {
             return None;
         }
         unsafe { CStr::from_ptr(bytes.as_ptr()) }.to_str().ok().map(str::to_owned)
     }
-    unsafe fn primary_interface(store: Ref, key: &CStr) -> Option<String> {
-        unsafe {
-            let key = CFStringCreateWithCString(ptr::null(), key.as_ptr(), 0x08000100);
-            if key.is_null() {
-                return None;
+    struct Value(Ref);
+    impl Drop for Value {
+        fn drop(&mut self) {
+            if !self.0.is_null() {
+                unsafe { CFRelease(self.0) }
             }
-            let dictionary = SCDynamicStoreCopyValue(store, key);
-            CFRelease(key);
-            if dictionary.is_null() {
-                return None;
-            }
-            let field = CFStringCreateWithCString(ptr::null(), c"PrimaryInterface".as_ptr(), 0x08000100);
-            let result = if field.is_null() { None } else { string(CFDictionaryGetValue(dictionary, field)) };
-            if !field.is_null() {
-                CFRelease(field);
-            }
-            CFRelease(dictionary);
-            result
         }
     }
-    unsafe extern "C" fn changed(store: Ref, keys: Ref, _: *mut c_void) {
-        // Ignore link/address churn on interfaces that carry no default path.
-        // Global changes still detect a switch of the primary interface itself.
-        unsafe {
-            let primary = [
-                primary_interface(store, c"State:/Network/Global/IPv4"),
-                primary_interface(store, c"State:/Network/Global/IPv6"),
-            ]
-            .into_iter()
-            .flatten()
-            .collect::<Vec<_>>();
-            for index in 0..CFArrayGetCount(keys) {
-                if string(CFArrayGetValueAtIndex(keys, index)).is_some_and(|key| affects_active_path(&key, &primary)) {
-                    CHANGED.store(true, Ordering::Relaxed);
-                    break;
+    impl PartialEq for Value {
+        fn eq(&self, other: &Self) -> bool {
+            self.0 == other.0 || (!self.0.is_null() && !other.0.is_null() && unsafe { CFEqual(self.0, other.0) != 0 })
+        }
+    }
+    impl Value {
+        unsafe fn key(text: &CStr) -> Option<Self> {
+            let value = unsafe { CFStringCreateWithCString(ptr::null(), text.as_ptr(), 0x08000100) };
+            (!value.is_null()).then_some(Self(value))
+        }
+        unsafe fn dictionary(store: Ref, key: &CStr) -> Option<Self> {
+            let key = unsafe { Self::key(key) }?;
+            Some(Self(unsafe { SCDynamicStoreCopyValue(store, key.0) }))
+        }
+        unsafe fn field(&self, key: &CStr) -> Option<Ref> {
+            if self.0.is_null() || unsafe { CFGetTypeID(self.0) != CFDictionaryGetTypeID() } {
+                return Some(ptr::null());
+            }
+            let key = unsafe { Self::key(key) }?;
+            Some(unsafe { CFDictionaryGetValue(self.0, key.0) })
+        }
+    }
+    #[derive(Default, PartialEq)]
+    struct Snapshot {
+        primary: Vec<String>,
+        values: Vec<Value>,
+    }
+    impl Snapshot {
+        unsafe fn append(&mut self, dictionary: &Value, fields: &[&CStr]) -> Option<()> {
+            for field in fields {
+                let value = unsafe { dictionary.field(field) }?;
+                self.values.push(Value(if value.is_null() { value } else { unsafe { CFRetain(value) } }));
+            }
+            Some(())
+        }
+        unsafe fn capture(store: Ref) -> Option<Self> {
+            let mut snapshot = Self::default();
+            for key in [c"State:/Network/Global/IPv4", c"State:/Network/Global/IPv6"] {
+                let dictionary = unsafe { Value::dictionary(store, key) }?;
+                if let Some(name) = unsafe { string(dictionary.field(c"PrimaryInterface")?) } {
+                    snapshot.primary.push(name);
+                }
+                unsafe { snapshot.append(&dictionary, &[c"PrimaryInterface", c"PrimaryService", c"Router"]) }?;
+            }
+            snapshot.primary.sort_unstable();
+            snapshot.primary.dedup();
+            for interface in snapshot.primary.clone() {
+                for (entity, fields) in [
+                    (
+                        "IPv4",
+                        &[
+                            c"Addresses",
+                            c"SubnetMasks",
+                            c"DestAddresses",
+                            c"Router",
+                            c"AdditionalRoutes",
+                            c"ExcludedRoutes",
+                            c"IncludedRoutes",
+                        ][..],
+                    ),
+                    (
+                        "IPv6",
+                        &[
+                            c"Addresses",
+                            c"PrefixLength",
+                            c"DestAddresses",
+                            c"Flags",
+                            c"Router",
+                            c"AdditionalRoutes",
+                            c"ExcludedRoutes",
+                            c"IncludedRoutes",
+                        ][..],
+                    ),
+                    ("Link", &[c"Active"][..]),
+                ] {
+                    let key = CString::new(format!("State:/Network/Interface/{interface}/{entity}")).ok()?;
+                    let dictionary = unsafe { Value::dictionary(store, &key) }?;
+                    unsafe { snapshot.append(&dictionary, fields) }?;
                 }
             }
+            Some(snapshot)
+        }
+    }
+    #[repr(C)]
+    struct StoreContext {
+        version: isize,
+        info: *mut c_void,
+        retain: Option<unsafe extern "C" fn(Ref) -> Ref>,
+        release: Option<unsafe extern "C" fn(Ref)>,
+        copy_description: Option<unsafe extern "C" fn(Ref) -> Ref>,
+    }
+    unsafe extern "C" fn changed(store: Ref, keys: Ref, info: *mut c_void) {
+        // The context is owned by Monitor and used only on the main run loop.
+        let Some(previous) = (unsafe { info.cast::<Snapshot>().as_mut() }) else { return };
+        let relevant = (0..unsafe { CFArrayGetCount(keys) }).any(|index| {
+            unsafe { string(CFArrayGetValueAtIndex(keys, index)) }
+                .is_some_and(|key| affects_active_path(&key, &previous.primary))
+        });
+        if relevant
+            && let Some(current) = unsafe { Snapshot::capture(store) }
+            && *previous != current
+        {
+            *previous = current;
+            CHANGED.store(true, Ordering::Relaxed);
         }
     }
     pub struct Monitor {
         store: Ref,
         source: Ref,
+        _snapshot: Box<Snapshot>,
     }
     impl Monitor {
         pub fn new() -> Option<Self> {
@@ -109,7 +191,15 @@ mod platform {
                 if name.is_null() {
                     return None;
                 }
-                let store = SCDynamicStoreCreate(ptr::null(), name, changed, ptr::null_mut());
+                let mut snapshot = Box::<Snapshot>::default();
+                let mut context = StoreContext {
+                    version: 0,
+                    info: ptr::from_mut(snapshot.as_mut()).cast(),
+                    retain: None,
+                    release: None,
+                    copy_description: None,
+                };
+                let store = SCDynamicStoreCreate(ptr::null(), name, changed, ptr::from_mut(&mut context).cast());
                 CFRelease(name);
                 if store.is_null() {
                     return None;
@@ -153,8 +243,14 @@ mod platform {
                     CFRelease(store);
                     return None;
                 }
+                let Some(initial) = Snapshot::capture(store) else {
+                    CFRelease(source);
+                    CFRelease(store);
+                    return None;
+                };
+                *snapshot = initial;
                 CFRunLoopAddSource(CFRunLoopGetMain(), source, kCFRunLoopCommonModes);
-                Some(Self { store, source })
+                Some(Self { store, source, _snapshot: snapshot })
             }
         }
     }
@@ -206,3 +302,7 @@ mod tests {
         assert!(!affects_active_path("State:/Network/Interface/en0/Link", &[]));
     }
 }
+
+#[cfg(all(test, not(target_os = "macos"), feature = "ui-typecheck"))]
+#[path = "../../scripts/network-changes-test.rs"]
+mod callback_tests;

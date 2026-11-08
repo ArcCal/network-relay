@@ -64,7 +64,10 @@ level, profile display name or inactive profiles do not reconnect.
 
 GUI-only recovery observes SystemConfiguration route/address/link changes and
 transport retry status. Interface notifications are filtered to the current
-IPv4/IPv6 primary interfaces; global changes still detect interface switches.
+IPv4/IPv6 primary interfaces. Notifications only trigger recovery when a
+snapshot of primary-interface routing, address or link state changes; repeated
+values and unrelated metadata are ignored. Global changes still detect
+interface switches.
 It stops the old controller worker before starting a
 fresh one, with a one-to-30-second backoff reset after 30 seconds connected.
 Disconnect and Quit cancel pending recovery; right-hand saved server and

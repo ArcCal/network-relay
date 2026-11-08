@@ -5,7 +5,6 @@ use std::time::{Duration, Instant};
 pub(super) struct Recovery {
     pending: Option<Instant>,
     probe_retry: Option<Instant>,
-    wanted: bool,
     delay: Duration,
     connected_since: Option<Instant>,
     suppressed: bool,
@@ -16,7 +15,6 @@ impl Default for Recovery {
         Self {
             pending: None,
             probe_retry: None,
-            wanted: false,
             delay: Duration::from_secs(1),
             connected_since: None,
             suppressed: false,
@@ -32,10 +30,8 @@ impl Recovery {
         if self.pending.is_some() { Status::Reconnecting } else { controller.status.clone() }
     }
     pub fn connect(&mut self, controller: &mut Controller) {
-        self.cancel();
-        self.suppressed = false;
+        *self = Self::default();
         controller.connect();
-        self.wanted = controller.status.is_active();
     }
     pub fn disconnect(&mut self, controller: &mut Controller) {
         self.cancel();
@@ -55,15 +51,10 @@ impl Recovery {
         if self.suppressed {
             return;
         }
-        if self.pending.is_none() {
-            if controller.status.is_active() {
-                self.wanted = true;
-            } else {
-                self.wanted = false;
-                self.connected_since = None;
-            }
+        if self.pending.is_none() && !controller.status.is_active() {
+            self.connected_since = None;
         }
-        if network_changed && self.wanted {
+        if network_changed && (self.pending.is_some() || controller.status.is_active()) {
             self.probe_retry = None;
             self.delay = Duration::from_secs(1);
             self.connected_since = None;
@@ -75,9 +66,7 @@ impl Recovery {
                     self.probe_retry = None;
                     self.connected_since.get_or_insert(now);
                 }
-                Status::Reconnecting
-                    if self.wanted && !controller.detail.contains("relay refused the request with HTTP ") =>
-                {
+                Status::Reconnecting if !controller.detail.contains("relay refused the request with HTTP ") => {
                     // A reset of just the admission stream must not kill healthy
                     // SOCKS flows if the core can renew it on the same session.
                     let deadline = self.probe_retry.get_or_insert(now + Duration::from_secs(2));
@@ -102,7 +91,6 @@ impl Recovery {
         if self.pending.is_some_and(|deadline| now >= deadline) && controller.status == Status::Stopped {
             self.pending = None;
             controller.connect();
-            self.wanted = controller.status.is_active();
         }
     }
     fn restart(&mut self, controller: &mut Controller, now: Instant, delay: Duration) {

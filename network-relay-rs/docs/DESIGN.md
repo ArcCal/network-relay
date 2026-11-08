@@ -63,13 +63,20 @@ an earlier generation cannot overwrite the new instance. Changes to only log
 level, profile display name or inactive profiles do not reconnect.
 
 GUI-only recovery observes SystemConfiguration route/address/link changes and
-transport retry status. It stops the old controller worker before starting a
+transport retry status. Interface notifications are filtered to the current
+IPv4/IPv6 primary interfaces; global changes still detect interface switches.
+It stops the old controller worker before starting a
 fresh one, with a one-to-30-second backoff reset after 30 seconds connected.
 Disconnect and Quit cancel pending recovery; right-hand saved server and
 transport choices supersede it immediately. Gateway/quota responses retain the
 core's in-place retry and admitted flows. The sidebar and menu-bar server names
 are read-only. This adapter does not change the shared controller, protocol core
 or headless entry point.
+
+A transport retry indication first gets a fixed two-second grace period for
+the core to renew an isolated failed probe stream. Readiness cancels this pending
+restart and preserves healthy SOCKS flows. Repeated failures cannot extend that
+deadline; a real path change bypasses it. Terminal errors remain terminal.
 
 Each client caches one HTTP/3 session for new CONNECT requests and the readiness
 probe. Independent request streams share that session; cancelling a flow or

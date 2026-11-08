@@ -74,9 +74,13 @@ server menus only after Save succeeds.
 The sidebar and menu-bar panel show the selected server without a switcher.
 In GUI mode, route/address/link changes and transport retry failures stop the
 old client before opening a fresh connection, with a 1-30 second retry backoff.
+An isolated probe-stream failure has two seconds to recover before full restart,
+so a successful renewal preserves other flows. Path changes bypass this window.
 Explicit Disconnect cancels pending retries. Gateway/quota replies retain the
 existing connections while the protocol core retries. This GUI recovery does
 not change command-line operation.
+RS ignores link/address notifications for interfaces outside the current primary
+IPv4/IPv6 paths, so an unused interface does not interrupt an active proxy.
 
 ## Command-line operation
 

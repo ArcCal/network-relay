@@ -80,6 +80,8 @@ Choose saved servers and transports in the right-hand settings form; these
 choices apply immediately without Save. Network path changes and transport
 retry failures stop the old client before opening a fresh connection, with a
 1-30 second retry backoff. Explicit Disconnect cancels pending retries.
+An isolated probe-stream failure has two seconds to recover before full restart,
+so a successful renewal preserves other flows. Path changes bypass this window.
 Gateway/quota replies retain existing connections while the protocol core retries.
 
 ```bash

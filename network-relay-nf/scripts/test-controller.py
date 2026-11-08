@@ -381,12 +381,15 @@ struct Harness {
         let timedOut = start()
         let beforeTimeout = NativeClient.attempts
         timedOut.emit(.reconnecting("transport timeout"))
+        check(timedOut.stops == 0, "a probe stream may recover without disrupting other flows")
+        controller.retryIfDue(now: ProcessInfo.processInfo.systemUptime + 3)
         check(timedOut.stops == 1, "retry status must discard old native resources")
         timedOut.emit(.exited(0, nil))
         controller.retryIfDue(now: ProcessInfo.processInfo.systemUptime + 100)
         check(NativeClient.attempts == beforeTimeout + 1, "retry must allocate a fresh core")
         let again = NativeClient.instances.last!
         again.emit(.reconnecting("transport timeout"))
+        controller.retryIfDue(now: ProcessInfo.processInfo.systemUptime + 3)
         again.emit(.exited(0, nil))
         controller.retryIfDue(now: ProcessInfo.processInfo.systemUptime + 1)
         check(NativeClient.attempts == beforeTimeout + 1, "repeated failures need bounded backoff")
@@ -433,13 +436,36 @@ struct Harness {
         pass("gateway/quota replies preserve active flows until an actual path change")
 
         try reset()
+        let renewed = start()
+        let beforeRenewed = NativeClient.attempts
+        renewed.emit(.reconnecting("stream reset"))
+        check(renewed.stops == 0, "an isolated probe reset must preserve active flows")
+        renewed.emit(.connected)
+        controller.retryIfDue(now: ProcessInfo.processInfo.systemUptime + 100)
+        check(renewed.stops == 0 && NativeClient.attempts == beforeRenewed && controller.status == .connected,
+              "a renewed probe must cancel full recovery")
+        pass("a recovered probe preserves healthy flows and cancels its full-restart timer")
+
+        try reset()
+        let rejectedCore = start()
+        let beforeRejected = NativeClient.attempts
+        rejectedCore.emit(.reconnecting("temporary transport error"))
+        rejectedCore.emit(.exited(1, "certificate rejected"))
+        controller.retryIfDue(now: ProcessInfo.processInfo.systemUptime + 100)
+        controller.networkChanged()
+        if case .failed = controller.status {} else { preconditionFailure("terminal failure must remain visible") }
+        check(NativeClient.attempts == beforeRejected, "a terminal exit must cancel probe recovery")
+        pass("terminal core errors cancel the probe grace period instead of retrying")
+
+        try reset()
         let scheduled = start()
         let beforeScheduled = NativeClient.attempts
         scheduled.emit(.reconnecting("transport timeout"))
-        try await Task.sleep(nanoseconds: 1_100_000_000)
-        check(NativeClient.attempts == beforeScheduled, "timer must wait for old listener teardown")
+        try await Task.sleep(nanoseconds: 2_100_000_000)
+        check(scheduled.stops == 1 && NativeClient.attempts == beforeScheduled,
+              "real timer must stop a stalled client and wait for listener teardown")
         scheduled.emit(.exited(0, nil))
-        for _ in 0..<100 {
+        for _ in 0..<200 {
             if NativeClient.attempts > beforeScheduled { break }
             try await Task.sleep(nanoseconds: 10_000_000)
         }

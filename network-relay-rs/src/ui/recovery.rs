@@ -4,6 +4,7 @@ use std::time::{Duration, Instant};
 
 pub(super) struct Recovery {
     pending: Option<Instant>,
+    probe_retry: Option<Instant>,
     wanted: bool,
     delay: Duration,
     connected_since: Option<Instant>,
@@ -12,7 +13,14 @@ pub(super) struct Recovery {
 
 impl Default for Recovery {
     fn default() -> Self {
-        Self { pending: None, wanted: false, delay: Duration::from_secs(1), connected_since: None, suppressed: false }
+        Self {
+            pending: None,
+            probe_retry: None,
+            wanted: false,
+            delay: Duration::from_secs(1),
+            connected_since: None,
+            suppressed: false,
+        }
     }
 }
 impl Recovery {
@@ -56,6 +64,7 @@ impl Recovery {
             }
         }
         if network_changed && self.wanted {
+            self.probe_retry = None;
             self.delay = Duration::from_secs(1);
             self.connected_since = None;
             controller.detail = "Network changed; opening a fresh relay connection".into();
@@ -63,11 +72,19 @@ impl Recovery {
         } else if self.pending.is_none() {
             match controller.status {
                 Status::Connected => {
+                    self.probe_retry = None;
                     self.connected_since.get_or_insert(now);
                 }
                 Status::Reconnecting
                     if self.wanted && !controller.detail.contains("relay refused the request with HTTP ") =>
                 {
+                    // A reset of just the admission stream must not kill healthy
+                    // SOCKS flows if the core can renew it on the same session.
+                    let deadline = self.probe_retry.get_or_insert(now + Duration::from_secs(2));
+                    if now < *deadline {
+                        return;
+                    }
+                    self.probe_retry = None;
                     if self
                         .connected_since
                         .take()
@@ -79,7 +96,7 @@ impl Recovery {
                     self.delay = (self.delay * 2).min(Duration::from_secs(30));
                     self.restart(controller, now, delay);
                 }
-                _ => {}
+                _ => self.probe_retry = None,
             }
         }
         if self.pending.is_some_and(|deadline| now >= deadline) && controller.status == Status::Stopped {
@@ -177,7 +194,10 @@ mod tests {
         let _old = accept(&mut recovery, &mut controller, &relay);
         recovery.delay = Duration::from_secs(30);
         controller.status = Status::Reconnecting;
-        recovery.poll(&mut controller, Instant::now(), false);
+        let now = Instant::now();
+        recovery.poll(&mut controller, now, false);
+        recovery.poll(&mut controller, now + Duration::from_secs(2), false);
+        assert!(recovery.pending.is_some());
         let mut config = controller.config.clone();
         config.servers[0].transport = Transport::Http1;
         controller.apply_choice(config).unwrap();
@@ -215,5 +235,58 @@ mod tests {
         let _fresh = accept(&mut recovery, &mut controller, &relay);
         recovery.disconnect(&mut controller);
         controller.stop();
+    }
+    #[test]
+    fn a_recovered_probe_keeps_healthy_connections() {
+        let (mut controller, relay) = setup();
+        let mut recovery = Recovery::default();
+        recovery.connect(&mut controller);
+        let _old = accept(&mut recovery, &mut controller, &relay);
+        let now = Instant::now();
+        controller.status = Status::Reconnecting;
+        recovery.poll(&mut controller, now, false);
+        assert!(recovery.probe_retry.is_some());
+        assert!(recovery.pending.is_none());
+        controller.status = Status::Connected;
+        recovery.poll(&mut controller, now + Duration::from_secs(1), false);
+        recovery.poll(&mut controller, now + Duration::from_secs(5), false);
+        assert!(recovery.probe_retry.is_none());
+        assert_eq!(recovery.status(&controller), Status::Connected);
+        assert!(relay.accept().is_err(), "a recovered stream must not replace the connection");
+        recovery.disconnect(&mut controller);
+        controller.stop();
+    }
+    #[test]
+    fn repeated_probe_failures_have_a_fixed_recovery_deadline() {
+        let (mut controller, relay) = setup();
+        let mut recovery = Recovery::default();
+        recovery.connect(&mut controller);
+        let _old = accept(&mut recovery, &mut controller, &relay);
+        let now = Instant::now();
+        controller.status = Status::Reconnecting;
+        recovery.poll(&mut controller, now, false);
+        let deadline = recovery.probe_retry.unwrap();
+        recovery.poll(&mut controller, now + Duration::from_secs(1), false);
+        assert_eq!(recovery.probe_retry, Some(deadline));
+        recovery.poll(&mut controller, deadline, false);
+        assert!(recovery.probe_retry.is_none());
+        assert!(recovery.pending.is_some(), "a stalled probe must still trigger full recovery");
+        recovery.disconnect(&mut controller);
+        controller.stop();
+    }
+    #[test]
+    fn terminal_failure_cancels_the_probe_recovery_window() {
+        let (mut controller, relay) = setup();
+        let mut recovery = Recovery::default();
+        recovery.connect(&mut controller);
+        let _old = accept(&mut recovery, &mut controller, &relay);
+        controller.status = Status::Reconnecting;
+        recovery.poll(&mut controller, Instant::now(), false);
+        controller.stop();
+        controller.status = Status::Failed("certificate rejected".into());
+        recovery.poll(&mut controller, Instant::now() + Duration::from_secs(10), true);
+        assert!(matches!(controller.status, Status::Failed(_)));
+        assert!(recovery.probe_retry.is_none() && recovery.pending.is_none());
+        assert!(relay.accept().is_err());
     }
 }

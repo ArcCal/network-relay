@@ -83,6 +83,11 @@ admitted flows survive. Saved server and transport choices in right-hand
 settings supersede pending recovery immediately; left-side and menu-bar server
 names are read-only. The protocol core and headless client are unchanged.
 
+A transport retry indication first gets a fixed two-second grace period for
+the core to renew an isolated failed probe stream. Readiness cancels this pending
+restart and preserves healthy SOCKS flows. Repeated failures cannot extend that
+deadline; a real path change bypasses it. A terminal core exit cancels the timer.
+
 Automatic mode tries HTTP/3 for five seconds, then native TCP with ALPN `h2`,
 `http/1.1`. Authentication/security rejection is terminal rather than a reason
 to downgrade; 502, 503 and 504 refusals are temporary and are retried. Forced modes do not silently change transport. The monitor's

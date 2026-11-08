@@ -176,19 +176,34 @@ final class TunnelController: ObservableObject {
         switch update {
         case .log(let lines): appendLog(lines)
         case .connected:
-            if !stopping { connectedSince = ProcessInfo.processInfo.systemUptime; status = .connected }
+            if !stopping {
+                cancelRetry(); restartAfterExit = false
+                connectedSince = ProcessInfo.processInfo.systemUptime; status = .connected
+            }
         case .reconnecting(let why):
             if !stopping {
                 // A gateway/quota response proves the peer still answered.
                 // Preserve admitted flows while the core retries that request.
-                if why.contains("relay refused the request with HTTP ") { status = .reconnecting(why) }
-                else { reconnect(why) }
+                status = .reconnecting(why)
+                if why.contains("relay refused the request with HTTP ") {
+                    cancelRetry(); restartAfterExit = false
+                } else if retryAt == nil {
+                    // Give a probe-only stream reset time to recover without
+                    // interrupting healthy SOCKS flows. Never wait indefinitely.
+                    retryReason = why
+                    retryAt = ProcessInfo.processInfo.systemUptime + 2
+                    restartAfterExit = true
+                    scheduleRetry()
+                }
             }
         case .traffic(let sample):
             if !stopping, !quitting, trafficNodeName != nil { traffic.sample(sample) }
         case .trafficUnavailable:
             if !stopping, !quitting, trafficNodeName != nil { traffic.unavailable() }
         case .exited(let code, let error):
+            // A terminal core exit during the probe grace period must remain
+            // terminal, including authentication and certificate rejection.
+            if !stopping { cancelRetry(); restartAfterExit = false }
             clearTraffic()
             client = nil
             generation = UUID()
@@ -250,7 +265,11 @@ final class TunnelController: ObservableObject {
         }
     }
     func retryIfDue(now: TimeInterval = ProcessInfo.processInfo.systemUptime) {
-        guard !quitting, restartAfterExit, client == nil, let retryAt, now >= retryAt else { return }
+        guard !quitting, restartAfterExit, let retryAt, now >= retryAt else { return }
+        if client != nil {
+            if !stopping { reconnect(retryReason ?? "Opening a fresh relay connection") }
+            return
+        }
         cancelRetry(); restartAfterExit = false
         connect(resetRetry: false)
     }

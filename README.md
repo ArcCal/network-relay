@@ -949,27 +949,33 @@ its results.
 | `build-macos-gui-clients-on-macos.sh` | Apple silicon Mac, macOS 27+ and Xcode 27+ | the Network Relay NF and RS apps | `~/Desktop/Network-Relay-Builds/network-relay-macos-gui-*` |
 | `build-all-targets-on-macos.sh` | Apple silicon Mac, macOS 27+ and Xcode 27+ | everything above, plus `network-relay-vless` for Linux x64/arm64 and the RS client for macOS arm64 | `~/Desktop/YYYYMMDD-HHMMSS` (local time) |
 | [`tools/build-all-macos.sh`](docs/build-all-macos.md) | Apple silicon Mac | every ArcCal VPN application from five repositories | `~/Projects/vpn-build-*` |
-| `network-relay-nf/build-macos.sh`, `network-relay-rs/build-macos.sh` | Apple silicon Mac | one app from the current folder | `dist/` in that app's folder |
+| `network-relay-nf/build-macos.sh`, `network-relay-rs/build-macos.sh` | Apple silicon Mac | one app from fresh main sources | `dist/` in the invoking app's folder |
 | `deploy/package-installer.py` | any system with Python 3 | the standalone installers (no compiling) | `dist/` |
 
-By default, `build-all-targets-on-macos.sh` downloads a fresh, complete main
-checkout to `/tmp/network-relay.*` on every run and keeps it there. Its build
-artifacts go into a Desktop folder named with the local date and time to the
-second. Existing output folders are never overwritten; use `--output DIR`
-to choose another location. `--repo DIR` or `NETWORK_RELAY_SRC` explicitly
-selects a checkout to reuse instead of downloading a new one.
+Every public build entry point downloads complete current main sources into a
+new `/tmp` directory whose name includes a timestamp to the second and a random
+suffix. It then executes the downloaded build script. Existing local checkouts,
+including dirty or outdated ones, are not compiled or updated. Legacy `--repo`
+and source-directory environment overrides no longer select local build input.
+Nested build steps share only their invocation's verified fresh source commit.
 
-The other repository-root scripts keep their source checkout in `~/network-relay`
-(change it with `--repo`), update it with `git pull --ff-only` and build a
-private snapshot of the fetched commit. Run any of them with `--help` for all
-options. Artifacts include logs, `MANIFEST.txt` or source revisions, and
-`SHA256SUMS`.
+Output locations, product names and signing behavior stay unchanged. In
+particular, the all-target Mac script keeps its Desktop folder named with the
+local date and time to the second. Existing output folders are never overwritten.
+Artifacts retain their logs, source revisions and checksums.
 
-When a script ends, successfully or not, every folder in its source checkout
-and its results, including all subfolders, is mode 777, so other users and
-file synchronization tools such as Syncthing can read and change them. File
-modes are left as they are. The private temporary work folders are removed
-after a successful build.
+Downloaded project sources, compiler intermediates and this invocation's build
+caches are private and removed on success, failure or a handled signal. On Linux,
+large compiler work can use a temporary disk-backed directory when `/tmp` is
+small or memory-backed; it is removed too. Available memory, free swap and cgroup
+limits constrain Linux parallelism. Insufficient memory is reported before
+compilation, with guidance to add disk-backed swap or raise the memory limit;
+scripts do not overwrite existing swap or change `/etc/fstab`.
+
+Only final products and their existing build logs remain. Existing user files,
+toolchains and caches are not deleted. CI release jobs freshly fetch their
+selected release commit instead of silently substituting main, so package
+versions continue to match their contents.
 
 ## Tests
 

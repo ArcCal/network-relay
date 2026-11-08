@@ -4,6 +4,7 @@
 import argparse
 import base64
 import copy
+from contextlib import ExitStack
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 import fcntl
@@ -19,6 +20,7 @@ import plistlib
 import re
 import secrets
 import shutil
+import signal
 import socket
 import ssl
 import subprocess
@@ -28,6 +30,7 @@ import time
 import tomllib
 from urllib.parse import urlsplit
 
+sys.dont_write_bytecode = True
 REPO = Path(__file__).resolve().parent.parent
 ETC = Path('/etc/network-relay')
 CONFIG = ETC / 'relay.toml'
@@ -315,6 +318,37 @@ def render_config(identity, password_hash, cert, key, site=SITE):
     return text.encode()
 
 
+def source_bootstrap(arguments):
+    """Reload the source installer from this invocation's fresh remote checkout."""
+    if '--build-from-source' not in arguments or any(option in arguments for option in ('--help', '-h')):
+        return None
+    helper = REPO / 'tools/fresh-build-source.sh'
+    current = subprocess.run(
+        ['bash', '-c', 'source "$1"; relay_source_is_current "$2"', 'source-check', str(helper), str(REPO)],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+    if current.returncode == 0:
+        return None
+    # No build resources exist yet. Let the shell bootstrap own its child and
+    # cleanup traps, rather than leaving an old Python process waiting above it.
+    os.execvp('bash', ['bash', str(REPO / 'deploy/install-debian13.sh'), *arguments])
+
+
+def build_workspace():
+    # /opt is disk-backed on small VPSes whose /tmp is a small RAM filesystem.
+    if shutil.disk_usage('/opt').free < 5 << 30:
+        raise ValueError('Source compilation needs at least 5 GiB free under /opt for temporary tools and build files.')
+    return tempfile.TemporaryDirectory(prefix=f'.network-relay-build-{datetime.now():%Y%m%d-%H%M%S}.', dir='/opt')
+
+
+def build_interrupted(number, _frame):
+    raise SystemExit(128 + number)
+
+
+def ignore_build_interrupts():
+    for number in (signal.SIGHUP, signal.SIGINT, signal.SIGTERM):
+        signal.signal(number, signal.SIG_IGN)
+
+
 def build_binary(args):
     if args.binary:
         binary = args.binary.resolve(strict=True)
@@ -323,27 +357,38 @@ def build_binary(args):
     if not (REPO / 'Cargo.lock').is_file():
         raise ValueError('Download and extract the complete source ZIP, or pass a built program with --binary.')
     env = os.environ.copy()
-    # Keep caches out of the source ZIP and avoid modifying shell profiles.
-    env.pop('CARGO_BUILD_TARGET', None)
-    env['CARGO_HOME'] = '/var/cache/network-relay/cargo'
-    env['RUSTUP_HOME'] = '/opt/network-relay/rustup'
+    # All new tools, caches and intermediate files belong to this invocation.
+    for name in list(env):
+        if (name in ('RUSTC', 'RUSTDOC', 'RUSTFLAGS', 'RUSTDOCFLAGS', 'CARGO_ENCODED_RUSTFLAGS')
+                or name.startswith(('RUSTC_', 'CARGO_BUILD_', 'CARGO_TARGET_'))):
+            env.pop(name)
+    env.pop('CF_API_TOKEN', None)
+    env['CARGO_HOME'] = str(args.build_root / 'cargo')
+    env['RUSTUP_HOME'] = str(args.build_root / 'rustup')
+    env['TMPDIR'] = str(args.build_root / 'tmp')
+    env['SCCACHE_DIR'] = str(args.build_root / 'sccache')
+    env['CCACHE_DIR'] = str(args.build_root / 'ccache')
+    Path(env['TMPDIR']).mkdir(mode=0o700, exist_ok=True)
     cargo_bin = Path(env['CARGO_HOME']) / 'bin'
     env['PATH'] = str(cargo_bin) + os.pathsep + env.get('PATH', '')
-    rustup = cargo_bin / 'rustup'
-    if not rustup.exists():
-        with tempfile.TemporaryDirectory(prefix='network-relay-rust-') as directory:
-            installer = Path(directory) / 'rustup-init.sh'
-            run(['curl', '--proto', '=https', '--tlsv1.2', '--fail', '--show-error', '--location',
-                 '--retry', '3', 'https://sh.rustup.rs', '--output', installer])
-            run(['sh', installer, '-y', '--no-modify-path', '--profile', 'minimal',
-                 '--default-toolchain', 'stable'], env=env)
-    else:
-        run([rustup, 'toolchain', 'install', 'stable', '--profile', 'minimal'], env=env)
+    try:
+        memory = run(['bash', '-c', 'source "$1"; nr_check_build_memory /proc/meminfo; nr_build_memory_kib /proc/meminfo',
+                      'build-memory', REPO / 'install-network-relay-native-build-cloudflare-dns.sh'], capture=True)
+    except subprocess.CalledProcessError as error:
+        raise ValueError((error.stderr or 'Cannot inspect the build memory budget.').strip()) from None
+    jobs = min(args.jobs, max(1, int(memory.stdout.strip()) // (1 << 20)))
+    if jobs < args.jobs:
+        print(f'Build memory budget limits compilation to {jobs} job(s).', file=sys.stderr)
+    installer = args.build_root / 'rustup-init.sh'
+    run(['curl', '--proto', '=https', '--tlsv1.2', '--fail', '--show-error', '--location',
+         '--retry', '3', 'https://sh.rustup.rs', '--output', installer], env=env)
+    run(['sh', installer, '-y', '--no-modify-path', '--profile', 'minimal',
+         '--default-toolchain', 'stable'], env=env)
     # Reduce peak build memory on small VPSes; this does not alter protocol behavior.
-    env['CARGO_BUILD_JOBS'] = str(args.jobs)
+    env['CARGO_BUILD_JOBS'] = str(jobs)
     env['CARGO_PROFILE_RELEASE_LTO'] = 'false'
     env['CARGO_PROFILE_RELEASE_CODEGEN_UNITS'] = '8'
-    env['CARGO_TARGET_DIR'] = '/var/cache/network-relay/target'
+    env['CARGO_TARGET_DIR'] = str(args.build_root / 'target')
     run([cargo_bin / 'cargo', '+stable', 'build', '--locked', '--release', '--bins',
          '--manifest-path', REPO / 'Cargo.toml'], env=env, timeout=7200)
     return Path(env['CARGO_TARGET_DIR']) / 'release/network-relay'
@@ -799,6 +844,7 @@ def apply_install(binary, config_data, state_data, identity, *, automated_cert, 
 
 
 def main():
+    source_bootstrap(sys.argv[1:])
     parser = argparse.ArgumentParser(description='Install or update Network Relay on Debian 12/13 x64 and hand '
                                                  'over an HTTP/2-only mobileconfig that relays selected domains.')
     parser.add_argument('--profile', type=Path, help='import the server address and credentials from an existing '
@@ -825,7 +871,7 @@ def main():
     mode.add_argument('--binary', type=Path,
                       help='prebuilt Linux x86_64 program, default /tmp/network-relay; never falls back to compilation')
     mode.add_argument('--build-from-source', action='store_const', dest='binary', const=None,
-                      help='explicitly compile the downloaded source instead of installing a prebuilt program')
+                      help='download and compile current complete source in temporary directories')
     parser.set_defaults(binary=Path('/tmp/network-relay'))
     parser.add_argument('--jobs', type=int, default=1, help='parallel build jobs, default 1 to reduce memory use')
     parser.add_argument('--cert', type=Path,
@@ -846,7 +892,14 @@ def main():
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:
                 raise ValueError('Another installation is already running.') from None
-            return install(args)
+            with ExitStack() as resources:
+                if args.binary is None:
+                    for number in (signal.SIGHUP, signal.SIGINT, signal.SIGTERM):
+                        previous = signal.signal(number, build_interrupted)
+                        resources.callback(signal.signal, number, previous)
+                    args.build_root = Path(resources.enter_context(build_workspace()))
+                    resources.callback(ignore_build_interrupts)
+                return install(args)
     except (ValueError, OSError, RuntimeError, subprocess.SubprocessError) as error:
         print(f'Installation not completed: {error}', file=sys.stderr)
         return 1

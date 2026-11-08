@@ -194,6 +194,7 @@ class BuildOrchestrationTests(unittest.TestCase):
 
     def variables(self):
         return textwrap.dedent("""\
+            relay_mark_fresh_source() { :; }
             BUILD_ROOT="$PWD/build root"
             SOURCES="$BUILD_ROOT/sources"
             OUT="$BUILD_ROOT/out"

@@ -69,7 +69,6 @@ NF_CHECKOUT="$HOME/Downloads/network-relay-nf-$(date +%Y%m%d-%H%M%S)"
 git clone --branch main --single-branch \
   https://github.com/ArcCal/network-relay.git "$NF_CHECKOUT"
 cd "$NF_CHECKOUT/network-relay-nf"
-export CARGO_TARGET_DIR="$PWD/Core/target"
 set -o pipefail
 {
   git rev-parse HEAD
@@ -92,9 +91,10 @@ open "$PWD/dist/Network Relay NF.app"
 The build runs the Rust tests, Swift model tests and native local boundary smoke
 checks before packaging and ad-hoc signing. Ordinary Cargo runs skip the live
 server matrix; a passing build therefore does not establish native relay
-compatibility. The bundle, ZIP and SHA-256 file are under `dist/`. When the
-script ends, every folder under `network-relay-nf/` and the Cargo target folder
-is mode 777. The startup
+compatibility. Each run compiles complete current main sources from a fresh
+timestamped `/tmp` checkout with private caches. The bundle, ZIP and SHA-256
+file remain under the invoking app's `dist/`; temporary sources and caches are
+removed after success or failure. The startup
 log and About view show the source revision and build time. A `-dirty` suffix
 means files in this application directory differed from the recorded commit;
 a build without Git metadata reports `Unknown`.

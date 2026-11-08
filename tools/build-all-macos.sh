@@ -2,6 +2,137 @@
 # Fresh-source builds of ArcCal's VPN applications on Apple silicon.
 # Compatible with Apple's system Bash 3.2. Sourceable for orchestration tests.
 
+# BEGIN SHARED BUILD CHILD RUNNER
+relay_build_group_active() {
+    ps -A -o pgid= -o stat= | awk -v group="$1" '
+        $1 == group && $2 !~ /^Z/ { active = 1 }
+        END { exit !active }'
+}
+
+relay_build_terminal_group() {
+    PYTHONDONTWRITEBYTECODE=1 python3 - "$1" <<'PY'
+import os
+import signal
+import sys
+
+signal.signal(signal.SIGTTOU, signal.SIG_IGN)
+try:
+    fd = os.open('/dev/tty', os.O_RDWR)
+    try:
+        if sys.argv[1] == 'get':
+            print(os.tcgetpgrp(fd))
+        else:
+            os.tcsetpgrp(fd, int(sys.argv[1]))
+    finally:
+        os.close(fd)
+except OSError:
+    sys.exit(1)
+PY
+}
+
+relay_stop_build_child() {
+    local child=${1:-} group=${2:-} wait_cleanup=${3:-0} child_signal=${4-TERM} attempt
+    [[ $child =~ ^[1-9][0-9]*$ ]] || return 0
+    if [[ $group == "$child" ]]; then
+        if [[ -n $child_signal ]]; then kill -"$child_signal" -- "-$group" 2>/dev/null || true; fi
+        # A terminal reader can have stopped before foreground ownership moved.
+        # Let it handle the pending signal and finish any installer rollback.
+        kill -CONT -- "-$group" 2>/dev/null || true
+        if (( wait_cleanup )); then
+            # Installers may be restoring a live deployment. Do not kill their
+            # rollback or delete their source while that cleanup is running.
+            while relay_build_group_active "$group"; do sleep 0.1; done
+            return 0
+        fi
+        for ((attempt = 0; attempt < 10; attempt++)); do
+            relay_build_group_active "$group" || return 0
+            sleep 0.1
+        done
+        kill -KILL -- "-$group" 2>/dev/null || true
+    else
+        if [[ -n $child_signal ]]; then kill -"$child_signal" "$child" 2>/dev/null || true; fi
+        kill -CONT "$child" 2>/dev/null || true
+    fi
+}
+
+relay_run_build_child() {
+    local relay_child_pid='' relay_child_group='' relay_child_status=0 relay_child_interrupted=0
+    local relay_child_monitor=0 relay_child_actual relay_child_int relay_child_term relay_child_hup relay_child_wait=0
+    local relay_child_tty='' relay_child_parent_group relay_child_final_signal=TERM
+    if [[ ${1:-} == --wait-for-cleanup ]]; then relay_child_wait=1; shift; fi
+    [[ $# -gt 0 ]] || return 2
+    if ! command -v ps >/dev/null || ! ps -A -o pgid= -o stat= >/dev/null 2>&1; then
+        printf 'Build process cleanup requires ps (procps on Linux).\n' >&2
+        return 125
+    fi
+    if { : </dev/tty; } 2>/dev/null; then
+        if ! command -v python3 >/dev/null; then
+            printf 'Interactive build process cleanup requires Python 3.\n' >&2
+            return 125
+        fi
+        relay_child_tty=$(relay_build_terminal_group get) || return 125
+        relay_child_parent_group=$(ps -o pgid= -p "$$") || return 125
+        relay_child_parent_group=${relay_child_parent_group//[[:space:]]/}
+        # A deliberately backgrounded build must not take the user's terminal.
+        [[ $relay_child_tty == "$relay_child_parent_group" ]] || relay_child_tty=''
+    fi
+    relay_child_int=$(trap -p INT)
+    relay_child_term=$(trap -p TERM)
+    relay_child_hup=$(trap -p HUP)
+    case $- in *m*) relay_child_monitor=1 ;; esac
+    trap 'relay_child_interrupted=130; trap "" INT TERM HUP; relay_stop_build_child "$relay_child_pid" "$relay_child_group" "$relay_child_wait"' INT
+    trap 'relay_child_interrupted=143; trap "" INT TERM HUP; relay_stop_build_child "$relay_child_pid" "$relay_child_group" "$relay_child_wait"' TERM
+    trap 'relay_child_interrupted=129; trap "" INT TERM HUP; relay_stop_build_child "$relay_child_pid" "$relay_child_group" "$relay_child_wait"' HUP
+    # Job control creates a group distinct from the caller. Disable it inside
+    # the runner so cargo, rustc and their children stay in that owned group.
+    set -m
+    (
+        set +m
+        trap - EXIT INT TERM HUP
+        "$@"
+    ) &
+    relay_child_pid=$! relay_child_group=$!
+    (( relay_child_monitor )) || set +m
+    relay_child_actual=$(ps -o pgid= -p "$relay_child_pid" 2>/dev/null) || relay_child_actual=''
+    relay_child_actual=${relay_child_actual//[[:space:]]/}
+    if [[ -n $relay_child_actual && $relay_child_actual != "$relay_child_pid" ]]; then
+        # Never send a group signal unless this is the group we just created.
+        relay_child_group=''
+        relay_child_interrupted=125
+        relay_stop_build_child "$relay_child_pid" ''
+    fi
+    if (( relay_child_interrupted )); then
+        relay_stop_build_child "$relay_child_pid" "$relay_child_group" "$relay_child_wait"
+    fi
+    if [[ -n $relay_child_tty && -n $relay_child_group && $relay_child_interrupted == 0 ]]; then
+        if ! relay_build_terminal_group "$relay_child_group" && relay_build_group_active "$relay_child_group"; then
+            relay_child_interrupted=125
+            relay_stop_build_child "$relay_child_pid" "$relay_child_group" "$relay_child_wait"
+        fi
+        kill -CONT -- "-$relay_child_group" 2>/dev/null || true
+    fi
+    if wait "$relay_child_pid"; then relay_child_status=0; else relay_child_status=$?; fi
+    # A command can exit before a helper it spawned. Stop those helpers before
+    # its caller removes sources/caches, and reap our direct child after signals.
+    if (( relay_child_wait && !relay_child_interrupted )) &&
+       [[ $relay_child_status == 129 || $relay_child_status == 130 || $relay_child_status == 143 ]]; then
+        # A terminal signal already reached the foreground group. Do not send
+        # a second signal while a surviving installer is restoring deployment.
+        relay_child_final_signal=''
+    fi
+    relay_stop_build_child "$relay_child_pid" "$relay_child_group" "$relay_child_wait" "$relay_child_final_signal"
+    wait "$relay_child_pid" 2>/dev/null || true
+    [[ -z $relay_child_tty ]] || relay_build_terminal_group "$relay_child_tty" || true
+    trap - INT TERM HUP
+    [[ -z $relay_child_int ]] || eval "$relay_child_int"
+    [[ -z $relay_child_term ]] || eval "$relay_child_term"
+    [[ -z $relay_child_hup ]] || eval "$relay_child_hup"
+    if (( relay_child_interrupted )); then return "$relay_child_interrupted"; fi
+    return "$relay_child_status"
+}
+# END SHARED BUILD CHILD RUNNER
+
+
 say() { printf '\n%s\n' "$*"; }
 die() { printf 'ERROR: %s\n' "$*" >&2; return 1; }
 
@@ -11,7 +142,7 @@ Usage: bash build-all-macos.sh [--jobs N] [--output-parent DIRECTORY]
                                [--no-bootstrap] [--plan] [--help]
 
 Default: install missing build tools, authenticate GitHub if needed, clone
-five private repositories into a NEW directory, and build every product.
+five complete private repositories into a NEW /tmp directory, and build every product.
 Servers: Linux amd64 + arm64. GUI: macOS arm64.
 Headless clients: Linux amd64 + macOS arm64.
 Password utilities: both Linux architectures + macOS arm64.
@@ -27,7 +158,8 @@ Missing SDK/XCTest tools trigger an Xcode installation from the App Store.
 Apple may require sign-in, license acceptance or administrator authentication.
 Unsupported app jobs fail explicitly; other jobs still run. Any failure
 makes the final exit status nonzero. Existing source folders are not reused.
-Afterwards every folder in the build directory is mode 777.
+Temporary sources, work and caches are removed on every exit.
+Afterwards every artifact folder in the build directory is mode 777.
 EOF
 }
 
@@ -47,6 +179,14 @@ sanitize_build_env() {
         esac
     done < <(env)
     export RUSTUP_TOOLCHAIN=stable
+    if [[ -n ${RELAY_BUILD_WORK_ROOT:-} ]]; then
+        export CARGO_HOME="$RELAY_BUILD_WORK_ROOT/cargo-home" CARGO_TARGET_DIR="$RELAY_BUILD_WORK_ROOT/target"
+        if [[ ${RELAY_REUSE_RUST_TOOLCHAIN:-0} == 1 ]]; then
+            export RUSTUP_TOOLCHAIN=relay-existing
+        else
+            export RUSTUP_TOOLCHAIN=${RELAY_BUILD_RUST_TOOLCHAIN:-stable}
+        fi
+    fi
     export CARGO_BUILD_JOBS="${BUILD_JOBS:-2}"
     export CARGO_NET_RETRY=5
     export CARGO_NET_GIT_FETCH_WITH_CLI=true
@@ -57,7 +197,7 @@ sanitize_build_env() {
 ensure_homebrew() {
     local installer
     if [[ ! -x /opt/homebrew/bin/brew ]]; then
-        installer=$(mktemp -t arccal-homebrew)
+        installer=$(mktemp "$TMPDIR/arccal-homebrew.XXXXXX")
         curl --fail --show-error --location --retry 5 --retry-delay 2 \
             https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh -o "$installer"
         /bin/bash "$installer"
@@ -167,13 +307,15 @@ install_tools() {
         fi
     done
     if ! command -v rustup >/dev/null 2>&1; then
-        installer=$(mktemp -t arccal-rustup)
+        installer=$(mktemp "$TMPDIR/arccal-rustup.XXXXXX")
         curl --fail --show-error --location --retry 5 --retry-delay 2 \
             https://sh.rustup.rs -o "$installer"
-        /bin/sh "$installer" -y --profile minimal --default-toolchain stable --no-modify-path
+        /bin/sh "$installer" -y --profile minimal --default-toolchain none --no-modify-path
         rm -f "$installer"
     fi
-    rustup toolchain install stable --profile minimal
+    if [[ ${RELAY_REUSE_RUST_TOOLCHAIN:-0} != 1 ]]; then
+        rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
+    fi
     cargo install --locked cargo-zigbuild
 }
 
@@ -189,7 +331,9 @@ check_tools() {
         die 'Current CF server sources require Rust 1.99 or newer. Update stable with rustup.'
         return 1
     }
-    rustup target add x86_64-unknown-linux-musl aarch64-unknown-linux-musl aarch64-apple-darwin
+    if [[ ${RELAY_REUSE_RUST_TOOLCHAIN:-0} != 1 ]]; then
+        rustup target add x86_64-unknown-linux-musl aarch64-unknown-linux-musl aarch64-apple-darwin
+    fi
     if ! gh auth status --hostname github.com >/dev/null 2>&1; then
         gh auth login --hostname github.com --git-protocol https --web
     fi
@@ -213,10 +357,11 @@ run_job() {
     (
         set -euo pipefail
         sanitize_build_env
-        "$@"
+        relay_run_build_child "$@"
     ) 2>&1 | tee "$log"
     status=$?
     set -e
+    case $status in 129|130|143) exit "$status" ;; esac
     if [[ $status -eq 0 ]]; then
         printf '%s\tPASS\t%s\n' "$id" "$log" >> "$BUILD_RESULTS"
     else
@@ -233,9 +378,9 @@ clone_repo() {
     partial="$SOURCES/.$name.partial"
     [[ ! -e $destination && ! -e $partial ]] || { die "Source destination already exists: $destination"; return 1; }
     for attempt in 1 2 3; do
-        if git -c http.version=HTTP/1.1 -c credential.helper= \
+        if git -c protocol.file.allow=never -c http.version=HTTP/1.1 -c credential.helper= \
             -c 'credential.helper=!gh auth git-credential' \
-            clone --depth 1 --single-branch --branch main --no-tags \
+            clone --recurse-submodules --branch main \
             "https://github.com/ArcCal/$name.git" "$partial"; then
             mv "$partial" "$destination"
             revision=$(git -C "$destination" rev-parse HEAD)
@@ -283,6 +428,7 @@ build_rust() {
     directory=$(source_dir "$repo")
     [[ -z $subdir ]] || directory="$directory/$subdir"
     cd "$directory"
+    export CARGO_TARGET_DIR="$directory/target"
     [[ -f Cargo.toml && -f Cargo.lock ]] || { die "Missing Cargo manifest/lock: $directory"; return 1; }
     local args=(--locked --release --target "$target")
     [[ -z $package ]] || args+=(-p "$package")
@@ -337,6 +483,7 @@ build_app() {
     fi
     directory=$(source_dir "$repo")
     cd "$directory"
+    if [[ $repo == network-relay ]]; then relay_mark_fresh_source "$directory"; fi
     # Preserve each app's own target locations, tests, deployment target,
     # helper packaging and ad-hoc signing. Do not replace its build recipe.
     /bin/bash "$recipe"
@@ -376,6 +523,9 @@ audit_outputs() {
 schedule_builds() {
     local repo arch target
     for repo in masque-vpn network-relay caddy-masque caddy-network-relay cf-masque; do
+        if [[ $PLAN_ONLY == 0 && $repo == network-relay ]] && relay_source_is_current "$SOURCES/network-relay"; then
+            continue
+        fi
         run_job "clone-$repo" clone_repo "$repo"
     done
     for arch in amd64 arm64; do
@@ -429,10 +579,59 @@ write_tool_versions() {
     swift --version
 }
 
+bootstrap_relay_source() {
+    clone_repo network-relay 2>&1 | tee "$LOGS/clone-network-relay.log"
+}
+
+set_build_paths() {
+    SOURCES="$SOURCE_WORK/sources"
+    OUT="$BUILD_ROOT/out"
+    LOGS="$BUILD_ROOT/logs"
+    BUILD_RESULTS="$BUILD_ROOT/BUILD-RESULTS.tsv"
+    SOURCE_REVISIONS="$BUILD_ROOT/SOURCE-REVISIONS.tsv"
+    JOB_FAILURES=0
+    mkdir -p "$SOURCES" "$LOGS" "$OUT/linux-amd64" "$OUT/linux-arm64" \
+        "$OUT/macos-arm64/bin" "$OUT/macos-arm64/apps"
+}
+
+build_downloaded() {
+    [[ $# == 7 ]] || { die 'Invalid internal build invocation.'; return 1; }
+    BUILD_ROOT=$2 SOURCE_WORK=$3 BUILD_JOBS=$4 MACOS_MAJOR=$5 SDK_MAJOR=$6
+    local bootstrap=$7
+    [[ ${SOURCE_WORK##*/} == vpn-sources-* && -O $SOURCE_WORK && ! -L $SOURCE_WORK &&
+       -f $SOURCE_WORK/.owner ]] || { die 'Invalid temporary build workspace.'; return 1; }
+    set_build_paths
+    # shellcheck disable=SC1091
+    source "$SOURCES/network-relay/tools/fresh-build-source.sh"
+    relay_source_is_current "$SOURCES/network-relay" || { die 'The build sources were not downloaded by this invocation.'; return 1; }
+    [[ $(cat "$SOURCE_WORK/.owner") == "$(sed -n '1p' "$RELAY_FRESH_SOURCE_MARKER")" ]] || { die 'Source/work ownership differs.'; return 1; }
+    PLAN_ONLY=0
+    export RUSTUP_TOOLCHAIN=stable
+    relay_prepare_build_environment "$SOURCE_WORK" x86_64-unknown-linux-musl aarch64-unknown-linux-musl aarch64-apple-darwin
+    if [[ $bootstrap == 1 ]]; then install_tools; fi
+    check_tools
+    write_tool_versions 2>&1 | tee "$BUILD_ROOT/TOOL-VERSIONS.txt"
+    say "Source downloads: $SOURCES (complete main checkouts with Git history)."
+    schedule_builds
+    cp "$SOURCE_REVISIONS" "$OUT/SOURCE-REVISIONS.tsv"
+    cp "$BUILD_RESULTS" "$OUT/BUILD-RESULTS.tsv"
+    write_checksums
+    say "Output: $OUT"
+    cat "$BUILD_RESULTS"
+    printf '\nResults: %s\nSources: %s\nLogs: %s\n' "$BUILD_RESULTS" "$SOURCE_REVISIONS" "$LOGS"
+    if [[ $JOB_FAILURES -ne 0 ]]; then
+        printf '\nINCOMPLETE: %s jobs failed. Successfully built artifacts are retained.\n' "$JOB_FAILURES" >&2
+        return 1
+    fi
+    say 'All requested artifacts built and checked. Linux binaries were cross-compiled, not executed on this Mac.'
+    open "$OUT" || true
+}
+
 main() {
+    if [[ ${1:-} == --build-downloaded ]]; then build_downloaded "$@"; return; fi
     BUILD_JOBS=2
     OUTPUT_PARENT="$HOME/Projects"
-    local bootstrap=1
+    local bootstrap=1 package
     PLAN_ONLY=0
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -452,54 +651,69 @@ main() {
     fi
     [[ $(uname -s) == Darwin && $(uname -m) == arm64 ]] || { die 'Run this script on an Apple silicon Mac.'; return 1; }
     [[ $EUID -ne 0 ]] || { die 'Run as your normal macOS user, without sudo.'; return 1; }
+    SOURCE_WORK=$(mktemp -d "/tmp/vpn-sources-$(date +%Y%m%d-%H%M%S).XXXXXX")
+    printf '%s\n' "$$" > "$SOURCE_WORK/.owner"
+    export TMPDIR="$SOURCE_WORK/tmp" HOMEBREW_CACHE="$SOURCE_WORK/homebrew-cache"
+    export HOMEBREW_LOGS="$SOURCE_WORK/homebrew-logs" HOMEBREW_TEMP="$SOURCE_WORK/tmp"
+    mkdir -m 700 -- "$TMPDIR"
     export PATH="$HOME/.cargo/bin:/opt/homebrew/bin:/opt/homebrew/sbin:$PATH"
     sanitize_build_env
     prepare_apple_tools "$bootstrap"
-    if [[ $bootstrap == 1 ]]; then install_tools; fi
-    check_tools
+    # Git and its credential helper must be ready before source bootstrapping.
+    if [[ $bootstrap == 1 ]]; then
+        ensure_homebrew
+        for package in go zig gh; do
+            if ! brew list --versions "$package" >/dev/null 2>&1; then brew install "$package"; fi
+        done
+    fi
+    command -v gh >/dev/null || { die 'GitHub CLI is required; install gh or enable bootstrap.'; return 1; }
+    if ! gh auth status --hostname github.com >/dev/null 2>&1; then
+        gh auth login --hostname github.com --git-protocol https --web
+    fi
     mkdir -p "$OUTPUT_PARENT"
     OUTPUT_PARENT=$(cd "$OUTPUT_PARENT" && pwd -P)
     BUILD_ROOT=$(mktemp -d "$OUTPUT_PARENT/vpn-build-$(date +%Y%m%d-%H%M%S)-XXXXXX")
-    # mktemp creates mode 700; artifacts get ordinary permissions for sharing and sync.
     chmod -- "$(printf '%o' $((0777 & ~$(umask))))" "$BUILD_ROOT"
-    SOURCES="$BUILD_ROOT/sources"
-    OUT="$BUILD_ROOT/out"
-    LOGS="$BUILD_ROOT/logs"
-    BUILD_RESULTS="$BUILD_ROOT/BUILD-RESULTS.tsv"
-    SOURCE_REVISIONS="$BUILD_ROOT/SOURCE-REVISIONS.tsv"
-    JOB_FAILURES=0
-    mkdir -p "$SOURCES" "$LOGS" "$OUT/linux-amd64" "$OUT/linux-arm64" \
-        "$OUT/macos-arm64/bin" "$OUT/macos-arm64/apps"
+    set_build_paths
     printf 'job\tresult\tlog\n' > "$BUILD_RESULTS"
     printf 'repository\tcommit\n' > "$SOURCE_REVISIONS"
     say "Fresh build directory: $BUILD_ROOT"
-    # Keep failures visible before any build jobs have started, and preserve
-    # the failing probe's exit status through the pipeline.
-    write_tool_versions 2>&1 | tee "$BUILD_ROOT/TOOL-VERSIONS.txt"
-    say 'Source downloads are full working trees of main; history is shallow. GitHub may ask you to sign in.'
-    schedule_builds
-    cp "$SOURCE_REVISIONS" "$OUT/SOURCE-REVISIONS.tsv"
-    cp "$BUILD_RESULTS" "$OUT/BUILD-RESULTS.tsv"
-    write_checksums
-    say "Output: $OUT"
-    cat "$BUILD_RESULTS"
-    printf '\nResults: %s\nSources: %s\nLogs: %s\n' "$BUILD_RESULTS" "$SOURCE_REVISIONS" "$LOGS"
-    if [[ $JOB_FAILURES -ne 0 ]]; then
-        printf '\nINCOMPLETE: %s jobs failed. Successfully built artifacts are retained.\n' "$JOB_FAILURES" >&2
-        return 1
+    say '=== clone-network-relay ==='
+    if relay_run_build_child bootstrap_relay_source; then
+        printf 'clone-network-relay\tPASS\t%s\n' "$LOGS/clone-network-relay.log" >> "$BUILD_RESULTS"
+    else
+        local source_status=$?
+        printf 'clone-network-relay\tFAIL(%s)\t%s\n' "$source_status" "$LOGS/clone-network-relay.log" >> "$BUILD_RESULTS"
+        return "$source_status"
     fi
-    say 'All requested artifacts built and checked. Linux binaries were cross-compiled, not executed on this Mac.'
-    open "$OUT" || true
+    # Load the build engine from the just-downloaded commit, never this local copy.
+    # shellcheck disable=SC1091
+    source "$SOURCES/network-relay/tools/fresh-build-source.sh"
+    relay_mark_fresh_source "$SOURCES/network-relay"
+    git -C "$SOURCES/network-relay" show HEAD:tools/build-all-macos.sh > "$SOURCE_WORK/build-driver.sh"
+    relay_run_build_child --wait-for-cleanup "$BASH" "$SOURCE_WORK/build-driver.sh" --build-downloaded \
+        "$BUILD_ROOT" "$SOURCE_WORK" "$BUILD_JOBS" "$MACOS_MAJOR" "$SDK_MAJOR" "$bootstrap"
 }
 
-# Leave the source and artifact folders, and every folder below them, open to all users.
+# Leave only artifacts/logs and remove all owned source, work and cache files.
 open_build_dirs() {
-    [[ -n ${BUILD_ROOT:-} && -d $BUILD_ROOT && ! -L $BUILD_ROOT ]] || return 0
-    find "$BUILD_ROOT" -type d -exec chmod 777 {} + 2>/dev/null || true
+    if [[ -n ${BUILD_ROOT:-} && -d $BUILD_ROOT && ! -L $BUILD_ROOT ]]; then
+        find "$BUILD_ROOT" -type d -exec chmod 777 {} + 2>/dev/null || true
+    fi
+    case ${SOURCE_WORK:-} in
+        /tmp/vpn-sources-*|/private/tmp/vpn-sources-*)
+            if [[ ! -L $SOURCE_WORK ]]; then
+                find -P "$SOURCE_WORK" -type d -exec chmod u+rwx {} + 2>/dev/null || true
+                rm -rf -- "$SOURCE_WORK"
+            fi ;;
+    esac
 }
 
 if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
     set -euo pipefail
     trap open_build_dirs EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    trap 'exit 129' HUP
     main "$@"
 fi

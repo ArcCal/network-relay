@@ -18,6 +18,9 @@ FILES = (
     'deploy/domains/google-ai-social.txt', 'deploy/domains/public-suffix-icann.dat',
     'deploy/domains/LICENSE.domain-list-community', 'deploy/domains/README.md',
     'docs/deploy-debian13.md',
+    'tools/fresh-build-source.sh',
+    'tools/linux-build-memory.sh',
+    'tools/run-build-child.sh',
 )
 
 
@@ -56,8 +59,11 @@ fi
 done
 '''
     script += '''
-bundle_dir=$(mktemp -d "${TMPDIR:-/tmp}/network-relay-installer.XXXXXX")
+bundle_dir=$(mktemp -d "/tmp/network-relay-installer-$(date +%Y%m%d-%H%M%S).XXXXXX")
 trap 'rm -rf -- "$bundle_dir"' EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 base64 --decode <<'NETWORK_RELAY_DEPLOYMENT_BUNDLE' | tar -xz -C "$bundle_dir"
 ''' + payload + '''
 NETWORK_RELAY_DEPLOYMENT_BUNDLE
@@ -66,7 +72,7 @@ NETWORK_RELAY_DEPLOYMENT_BUNDLE
     script += f'bash "$bundle_dir/deploy/{entry}" "$@"' + ('' if source else ' --refresh-profile') + '\n'
     if source:
         script = script.replace('# Debian 12/13 x86_64: upload /tmp/network-relay, then sudo bash this script.',
-                                '# Debian 12/13 x86_64: complete source bundle, compiled on the VPS.')
+                                '# Debian 12/13 x86_64: download current complete source and compile on the VPS.')
         script = script.replace('/tmp/network-relay-install.sh', '/tmp/network-relay-install-from-source.sh')
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(script)

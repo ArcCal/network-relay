@@ -71,12 +71,14 @@ set -o pipefail
 bash build-macos.sh 2>&1 | tee build/build-macos.log
 ```
 
-The build script uses only this app's `build/target` products. It ignores a
-previous shell's `CARGO_TARGET_DIR` so another project's cache cannot select the
-wrong executable. It runs the locked RS application and core package tests, builds the fixed
+The build script downloads complete current main sources into a fresh `/tmp`
+directory and uses private compiler/cache directories. It ignores a previous
+shell's `CARGO_TARGET_DIR` so another project's cache cannot select the wrong
+executable. It runs the locked RS application and core package tests, builds the fixed
 `aarch64-apple-darwin` target, creates an `.app`, packages the icon and signs
-ad hoc. It writes the application, ZIP and checksum in `dist/`. When the script
-ends, every folder under `network-relay-rs/` is mode 777.
+ad hoc. It writes the application, ZIP, checksum and command-line executable
+in the invoking app's `dist/`. Downloaded source, intermediate files and build
+caches are removed on exit, including after failure.
 
 Launch only after the build exits successfully:
 

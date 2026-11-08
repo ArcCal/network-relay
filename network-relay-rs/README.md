@@ -41,8 +41,9 @@ open 'dist/Network Relay RS.app'
 
 The script runs the selected RS application and core package tests, builds the ARM64 application, packages
 the shared icon and applies an ad-hoc signature. It writes a ZIP and SHA-256
-file in `dist/`. When it ends, every folder under `network-relay-rs/` (sources,
-`build/`, `dist/`) is mode 777. It does not notarize or install a system service. The full fresh
+file and the command-line executable in `dist/`. Current main sources are
+downloaded into a new timestamped `/tmp` directory; source, intermediates and
+private caches are removed on exit. It does not notarize or install a system service. The full fresh
 clone procedure and independent TCP/UDP checks are in
 [BUILD-AND-OBSERVE.md](docs/BUILD-AND-OBSERVE.md).
 

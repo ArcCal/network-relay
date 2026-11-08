@@ -510,6 +510,17 @@ class BuildMemoryTests(unittest.TestCase):
                   'cgroup2/lxc/c1': {'memory.max': 'max'}}
         self.assertNotEqual(self.check(4000000, 0, '0::/lxc/c1\n', groups).returncode, 0)
 
+    def test_swap_disallowed_with_unlimited_ram_is_not_counted(self):
+        group = {'memory.max': 'max', 'memory.swap.max': 0, 'memory.swap.current': 0}
+        result = self.check(500000, 2000000, '0::/svc\n', {'cgroup2/svc': group})
+        self.assertNotEqual(result.returncode, 0)
+
+    def test_namespaced_process_path_still_observes_visible_limit(self):
+        group = {'memory.max': 512 << 20, 'memory.current': 0, 'memory.stat': 'inactive_file 0',
+                 'memory.swap.max': 0, 'memory.swap.current': 0}
+        result = self.check(4000000, 0, '0::/../svc\n', {'cgroup2': group})
+        self.assertNotEqual(result.returncode, 0)
+
     def test_reclaimable_cache_and_allowed_swap_count_within_a_limit(self):
         # 768 MiB limit, 400 MiB used of which 300 MiB is inactive file cache,
         # plus 512 MiB of the cgroup's swap allowance: about 1.15 GiB.

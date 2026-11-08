@@ -2,6 +2,137 @@
 # Download the latest source before building Linux servers and macOS GUI clients.
 set -euo pipefail
 unset CDPATH
+
+# BEGIN SHARED BUILD CHILD RUNNER
+relay_build_group_active() {
+    ps -A -o pgid= -o stat= | awk -v group="$1" '
+        $1 == group && $2 !~ /^Z/ { active = 1 }
+        END { exit !active }'
+}
+
+relay_build_terminal_group() {
+    PYTHONDONTWRITEBYTECODE=1 python3 - "$1" <<'PY'
+import os
+import signal
+import sys
+
+signal.signal(signal.SIGTTOU, signal.SIG_IGN)
+try:
+    fd = os.open('/dev/tty', os.O_RDWR)
+    try:
+        if sys.argv[1] == 'get':
+            print(os.tcgetpgrp(fd))
+        else:
+            os.tcsetpgrp(fd, int(sys.argv[1]))
+    finally:
+        os.close(fd)
+except OSError:
+    sys.exit(1)
+PY
+}
+
+relay_stop_build_child() {
+    local child=${1:-} group=${2:-} wait_cleanup=${3:-0} child_signal=${4-TERM} attempt
+    [[ $child =~ ^[1-9][0-9]*$ ]] || return 0
+    if [[ $group == "$child" ]]; then
+        if [[ -n $child_signal ]]; then kill -"$child_signal" -- "-$group" 2>/dev/null || true; fi
+        # A terminal reader can have stopped before foreground ownership moved.
+        # Let it handle the pending signal and finish any installer rollback.
+        kill -CONT -- "-$group" 2>/dev/null || true
+        if (( wait_cleanup )); then
+            # Installers may be restoring a live deployment. Do not kill their
+            # rollback or delete their source while that cleanup is running.
+            while relay_build_group_active "$group"; do sleep 0.1; done
+            return 0
+        fi
+        for ((attempt = 0; attempt < 10; attempt++)); do
+            relay_build_group_active "$group" || return 0
+            sleep 0.1
+        done
+        kill -KILL -- "-$group" 2>/dev/null || true
+    else
+        if [[ -n $child_signal ]]; then kill -"$child_signal" "$child" 2>/dev/null || true; fi
+        kill -CONT "$child" 2>/dev/null || true
+    fi
+}
+
+relay_run_build_child() {
+    local relay_child_pid='' relay_child_group='' relay_child_status=0 relay_child_interrupted=0
+    local relay_child_monitor=0 relay_child_actual relay_child_int relay_child_term relay_child_hup relay_child_wait=0
+    local relay_child_tty='' relay_child_parent_group relay_child_final_signal=TERM
+    if [[ ${1:-} == --wait-for-cleanup ]]; then relay_child_wait=1; shift; fi
+    [[ $# -gt 0 ]] || return 2
+    if ! command -v ps >/dev/null || ! ps -A -o pgid= -o stat= >/dev/null 2>&1; then
+        printf 'Build process cleanup requires ps (procps on Linux).\n' >&2
+        return 125
+    fi
+    if { : </dev/tty; } 2>/dev/null; then
+        if ! command -v python3 >/dev/null; then
+            printf 'Interactive build process cleanup requires Python 3.\n' >&2
+            return 125
+        fi
+        relay_child_tty=$(relay_build_terminal_group get) || return 125
+        relay_child_parent_group=$(ps -o pgid= -p "$$") || return 125
+        relay_child_parent_group=${relay_child_parent_group//[[:space:]]/}
+        # A deliberately backgrounded build must not take the user's terminal.
+        [[ $relay_child_tty == "$relay_child_parent_group" ]] || relay_child_tty=''
+    fi
+    relay_child_int=$(trap -p INT)
+    relay_child_term=$(trap -p TERM)
+    relay_child_hup=$(trap -p HUP)
+    case $- in *m*) relay_child_monitor=1 ;; esac
+    trap 'relay_child_interrupted=130; trap "" INT TERM HUP; relay_stop_build_child "$relay_child_pid" "$relay_child_group" "$relay_child_wait"' INT
+    trap 'relay_child_interrupted=143; trap "" INT TERM HUP; relay_stop_build_child "$relay_child_pid" "$relay_child_group" "$relay_child_wait"' TERM
+    trap 'relay_child_interrupted=129; trap "" INT TERM HUP; relay_stop_build_child "$relay_child_pid" "$relay_child_group" "$relay_child_wait"' HUP
+    # Job control creates a group distinct from the caller. Disable it inside
+    # the runner so cargo, rustc and their children stay in that owned group.
+    set -m
+    (
+        set +m
+        trap - EXIT INT TERM HUP
+        "$@"
+    ) &
+    relay_child_pid=$! relay_child_group=$!
+    (( relay_child_monitor )) || set +m
+    relay_child_actual=$(ps -o pgid= -p "$relay_child_pid" 2>/dev/null) || relay_child_actual=''
+    relay_child_actual=${relay_child_actual//[[:space:]]/}
+    if [[ -n $relay_child_actual && $relay_child_actual != "$relay_child_pid" ]]; then
+        # Never send a group signal unless this is the group we just created.
+        relay_child_group=''
+        relay_child_interrupted=125
+        relay_stop_build_child "$relay_child_pid" ''
+    fi
+    if (( relay_child_interrupted )); then
+        relay_stop_build_child "$relay_child_pid" "$relay_child_group" "$relay_child_wait"
+    fi
+    if [[ -n $relay_child_tty && -n $relay_child_group && $relay_child_interrupted == 0 ]]; then
+        if ! relay_build_terminal_group "$relay_child_group" && relay_build_group_active "$relay_child_group"; then
+            relay_child_interrupted=125
+            relay_stop_build_child "$relay_child_pid" "$relay_child_group" "$relay_child_wait"
+        fi
+        kill -CONT -- "-$relay_child_group" 2>/dev/null || true
+    fi
+    if wait "$relay_child_pid"; then relay_child_status=0; else relay_child_status=$?; fi
+    # A command can exit before a helper it spawned. Stop those helpers before
+    # its caller removes sources/caches, and reap our direct child after signals.
+    if (( relay_child_wait && !relay_child_interrupted )) &&
+       [[ $relay_child_status == 129 || $relay_child_status == 130 || $relay_child_status == 143 ]]; then
+        # A terminal signal already reached the foreground group. Do not send
+        # a second signal while a surviving installer is restoring deployment.
+        relay_child_final_signal=''
+    fi
+    relay_stop_build_child "$relay_child_pid" "$relay_child_group" "$relay_child_wait" "$relay_child_final_signal"
+    wait "$relay_child_pid" 2>/dev/null || true
+    [[ -z $relay_child_tty ]] || relay_build_terminal_group "$relay_child_tty" || true
+    trap - INT TERM HUP
+    [[ -z $relay_child_int ]] || eval "$relay_child_int"
+    [[ -z $relay_child_term ]] || eval "$relay_child_term"
+    [[ -z $relay_child_hup ]] || eval "$relay_child_hup"
+    if (( relay_child_interrupted )); then return "$relay_child_interrupted"; fi
+    return "$relay_child_status"
+}
+# END SHARED BUILD CHILD RUNNER
+
 # Find tools from rustup and Homebrew even if this shell has not loaded them yet.
 for path_entry in /opt/homebrew/bin "${CARGO_HOME:-$HOME/.cargo}/bin"; do
     if [[ -d $path_entry && :$PATH: != *:"$path_entry":* ]]; then PATH="$path_entry:$PATH"; fi
@@ -19,29 +150,29 @@ macOS arm64.
 The Caddy executable includes the Cloudflare DNS plugin.
 Requires an Apple silicon Mac, macOS 27+ and an Xcode macOS 27+ SDK.
 
-  --repo DIR    reuse a checkout instead of downloading a fresh one to
-                /tmp/network-relay.* (also set by NETWORK_RELAY_SRC)
+  --repo DIR    accepted for compatibility; local checkouts are never reused
+                (NETWORK_RELAY_SRC is likewise ignored)
   --output DIR  new or empty artifact directory (default:
                 ~/Desktop/YYYYMMDD-HHMMSS, using local time)
   --jobs N      Rust compilation jobs (default: 2)
   --help        show this help
 
-By default, every run downloads a complete main checkout from GitHub to /tmp
-and keeps it there. With --repo, update that checkout with pull --ff-only.
-Always execute the latest committed scripts.
-Local commits are refused. Uncommitted files are preserved and are never
-used as build inputs. Git credentials must allow reading both repositories.
-Compilation and signing use a separate private /tmp workspace.
-Afterwards every folder in the checkout and the artifacts is mode 777.
+Every run downloads a complete main checkout from GitHub into a new
+/tmp/network-relay-YYYYMMDD-HHMMSS.RANDOM directory, including Git history.
+Always execute the latest committed scripts. Local checkouts and their edits
+are left untouched. Git credentials must allow reading both repositories.
+Compilation, caches and signing use a separate private /tmp workspace,
+removed on success or failure.
+Artifact folders keep mode 777. Temporary source and work are removed on exit.
 HELP
 }
 die() { printf 'build-all-targets-on-macos: %s\n' "$*" >&2; exit 1; }
 physical_dir() { REPLY=$(cd -P -- "$1" && printf '%s/' "$PWD"); REPLY=${REPLY%/}; }
 remote_git() {
     if command -v gh >/dev/null 2>&1; then
-        GIT_TERMINAL_PROMPT=0 git -c 'credential.helper=!gh auth git-credential' "$@"
+        GIT_TERMINAL_PROMPT=0 git -c protocol.file.allow=never -c 'credential.helper=!gh auth git-credential' "$@"
     else
-        GIT_TERMINAL_PROMPT=0 git "$@"
+        GIT_TERMINAL_PROMPT=0 git -c protocol.file.allow=never "$@"
     fi
 }
 empty_dir() {
@@ -85,123 +216,46 @@ github() {
     retry remote_git "$@" && return 0
     return 1
 }
-# Print local edits that an update to $2 would overwrite, one per line.
-blocking_changes() {
-    local incoming line path
-    incoming=$(git -C "$1" -c core.quotePath=false diff --name-only HEAD "$2" --) || return 0
-    git -C "$1" -c core.quotePath=false status --porcelain --untracked-files=all |
-        while IFS= read -r line; do
-            path=${line:3}
-            path=${path##* -> }
-            if grep -Fxq -- "$path" <<< "$incoming"; then printf '  %s\n' "$path"; fi
-        done
-}
+# Always download into a new temporary checkout; local paths are never inputs.
 update_checkout() {
-    local actual_root remote selected_branch fetched has_repo=0 ahead behind blocked script fresh
-    printf -v script '%q' "$0"
-    printf -v fresh '%q' "$HOME/network-relay-build"
-    while [[ $repo == */ && $repo != / ]]; do repo=${repo%/}; done
-    if [[ -e $repo || -L $repo ]]; then
-        if [[ -d $repo && -e $repo/.git ]]; then has_repo=1;
-        elif [[ ! -d $repo || -L $repo ]] || ! empty_dir "$repo"; then
-            explain "$repo already exists, but it is not a Git copy of ArcCal/network-relay." \
-                'Nothing in it was changed. Rename or move that folder, or build in a new folder:' \
-                "  bash $script --repo $fresh"
-        fi
+    if [[ -n $repo ]]; then
+        printf 'Ignoring --repo/NETWORK_RELAY_SRC: every build uses fresh remote sources.\n'
     fi
-    if (( has_repo )); then
-        physical_dir "$repo"; repo=$REPLY
-        actual_root=$(git -C "$repo" rev-parse --show-toplevel && printf '.') || die 'Cannot inspect checkout root.'
-        actual_root=${actual_root%.}; actual_root=${actual_root%$'\n'}
-        [[ $actual_root == "$repo" ]] ||
-            explain "$repo is inside the Git repository $actual_root; select the top folder of the copy." \
-                'Nothing was changed. Pass that folder with --repo DIR, or build in a new folder:' \
-                "  bash $script --repo $fresh"
-        remote=$(git -C "$repo" config --get remote.origin.url) || remote='no origin'
-        # GitHub owner and repository names are case-insensitive.
-        case $(printf '%s' "$remote" | tr '[:upper:]' '[:lower:]') in
-            https://github.com/arccal/network-relay|https://github.com/arccal/network-relay.git|git@github.com:arccal/network-relay.git|ssh://git@github.com/arccal/network-relay.git) ;;
-            *) explain "$repo is a Git copy of $remote, not of ArcCal/network-relay." \
-                   'Nothing was changed. Choose the right folder with --repo DIR, or build in a new folder:' \
-                   "  bash $script --repo $fresh" ;;
-        esac
-        selected_branch=$(git -C "$repo" symbolic-ref --short -q HEAD) || selected_branch=
-        if [[ $selected_branch != main ]]; then
-            explain "$repo is ${selected_branch:+on branch \"$selected_branch\", }not on the main branch, which the build uses." \
-                'Your branch and files were left unchanged. Switch back to main and run this script again:' \
-                "  git -C $(printf '%q' "$repo") switch main" \
-                'or leave this copy as it is and build in a new folder:' \
-                "  bash $script --repo $fresh"
-        fi
-        printf '==> Updating existing checkout with pull --ff-only\n'
-        if ! github -C "$repo" fetch origin main; then
-            access_help ArcCal/network-relay
-            die 'Could not check for updates; no local files were changed.'
-        fi
-        fetched=$(git -C "$repo" rev-parse --verify FETCH_HEAD) || die 'Cannot identify fetched commit.'
-        ahead=$(git -C "$repo" rev-list --count "$fetched..HEAD") || die 'Cannot compare the checkout with GitHub.'
-        if (( ahead )); then
-            explain "Your copy at $repo has $ahead commit(s) that are not on GitHub's main branch" \
-                "(your own commits, or main was rewritten on GitHub). The build always uses GitHub's main," \
-                'and updating could lose or mix in that work, so nothing was changed.' \
-                'Build in a new folder instead; this copy stays exactly as it is:' \
-                "  bash $script --repo $fresh"
-        fi
-        behind=$(git -C "$repo" rev-list --count "HEAD..$fetched") || die 'Cannot compare the checkout with GitHub.'
-        if (( behind )); then
-            blocked=$(blocking_changes "$repo" "$fetched")
-            if [[ -n $blocked ]]; then
-                explain "These files in $repo were changed on this computer, and the update changes them too:" \
-                    "$blocked" \
-                    'Updating would overwrite your changes, so nothing was changed. Either build in a new folder' \
-                    '(this copy stays exactly as it is):' \
-                    "  bash $script --repo $fresh" \
-                    'or set your changes aside, run this script, and then bring them back:' \
-                    "  git -C $(printf '%q' "$repo") stash push --include-untracked" \
-                    "  bash $script" \
-                    "  git -C $(printf '%q' "$repo") stash pop"
-            fi
-            if ! remote_git -C "$repo" pull --ff-only origin main; then
-                explain "Git could not update $repo (its message is above). Your files were left as they were." \
-                    'Run this script again in a few minutes, or build in a new folder:' \
-                    "  bash $script --repo $fresh"
-            fi
-            fetched=$(git -C "$repo" rev-parse --verify FETCH_HEAD) || die 'Cannot identify fetched commit.'
-        else
-            printf 'Already up to date.\n'
-        fi
-        if [[ -n $(git -C "$repo" status --porcelain) ]]; then
-            printf 'Your uncommitted changes in %s were kept; the build does not use them.\n' "$repo"
-        fi
-    else
-        printf '==> Cloning ArcCal/network-relay\n'
-        if ! github clone --single-branch --branch main -- https://github.com/ArcCal/network-relay.git "$repo"; then
-            access_help ArcCal/network-relay
-            die 'Could not download the source code; nothing was changed.'
-        fi
-        physical_dir "$repo"; repo=$REPLY
-        fetched=$(git -C "$repo" rev-parse --verify refs/remotes/origin/main) || die 'Cannot identify cloned commit.'
+    repo=$(mktemp -d "/tmp/network-relay-$(date +%Y%m%d-%H%M%S).XXXXXX")
+    relay_checkout=$repo
+    printf '==> Cloning latest complete ArcCal/network-relay main into %s\n' "$repo"
+    if relay_run_build_child github clone --recurse-submodules --branch main -- https://github.com/ArcCal/network-relay.git "$repo"; then :; else
+        local clone_status=$?
+        case $clone_status in 129|130|143) exit "$clone_status" ;; esac
+        access_help ArcCal/network-relay
+        die 'Could not download current sources; no local checkout will be used.'
     fi
-    commit=$(git -C "$repo" rev-parse --verify HEAD) || die 'Cannot identify checkout commit.'
-    [[ $commit == "$fetched" ]] || die 'Local commits differ from fetched main; no local files were reset.'
+    physical_dir "$repo"; repo=$REPLY
+    # shellcheck disable=SC1091
+    source "$repo/tools/fresh-build-source.sh"
+    relay_mark_fresh_source "$repo"
+    commit=$(git -C "$repo" rev-parse --verify refs/remotes/origin/main) || die 'Cannot identify cloned main commit.'
+    [[ $(git -C "$repo" rev-parse --verify HEAD) == "$commit" ]] || die 'Cloned checkout does not match main.'
 }
 # Called indirectly by EXIT traps.
 # shellcheck disable=SC2317,SC2329
 report_failure() {
     local relay_exit_status=$?
     if (( relay_exit_status )); then
-        printf 'Build/update failed (exit %s). Work retained: %s\n' \
-            "$relay_exit_status" "${build_work:-not created}" >&2
+        printf 'Build/update failed (exit %s). Temporary source and work will be removed.\n' "$relay_exit_status" >&2
     fi
-    open_dirs
+    cleanup_temporary
 }
-# Leave the source folder, and every folder below it, open to all users.
-# shellcheck disable=SC2317,SC2329
-open_dirs() {
-    local dir
-    for dir in "${relay_checkout:-}" "${build_work:-}"; do
-        [[ -n $dir && -d $dir && ! -L $dir ]] || continue
-        find "$dir" -type d -exec chmod 777 {} + 2>/dev/null || true
+# Only directories allocated by this invocation are eligible for removal.
+cleanup_temporary() {
+    local directory
+    for directory in "${relay_checkout:-}" "${build_work:-}"; do
+        case $directory in
+            /tmp/network-relay-*|/private/tmp/network-relay-*|/tmp/relay-mac-*|/private/tmp/relay-mac-*)
+                [[ ! -L $directory ]] || continue
+                find -P "$directory" -type d -exec chmod u+rwx {} + 2>/dev/null || true
+                rm -rf -- "$directory" ;;
+        esac
     done
 }
 # Use an Xcode with the macOS 27 SDK, including one installed as Xcode-beta.app.
@@ -236,13 +290,19 @@ build_updated() {
     local repo=$1 commit=$4 jobs=$5
     build_work=$2 relay_checkout=$1
     [[ $commit =~ ^[0-9a-f]{40}$ && $jobs =~ ^[1-9][0-9]*$ ]] || die 'Invalid internal build arguments.'
-    [[ ${build_work##*/} == relay-mac.* && -d $build_work && ! -L $build_work &&
+    [[ ( $build_work == /tmp/relay-mac-* || $build_work == /private/tmp/relay-mac-* ) && -d $build_work && ! -L $build_work &&
        -f $build_work/.owner && ! -L $build_work/.owner &&
        $(cat "$build_work/.owner") == "$commit" ]] || die 'Invalid private build workspace.'
     trap report_failure EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    trap 'exit 129' HUP
+    # shellcheck disable=SC1091
+    source "$repo/tools/fresh-build-source.sh"
+    relay_source_is_current "$repo" || die 'The internal source handoff is not from this build invocation.'
     git -C "$repo" show "$commit:build-macos-gui-clients-on-macos.sh" > "$build_work/gui-driver.sh"
     [[ -s $build_work/gui-driver.sh ]] || die 'Updated macOS build engine is missing.'
-    exec "$BASH" "$build_work/gui-driver.sh" --build-updated \
+    relay_run_build_child --wait-for-cleanup "$BASH" "$build_work/gui-driver.sh" --build-updated \
         "$repo" "$build_work" "$3" "$commit" all "$jobs"
 }
 main() {
@@ -269,9 +329,11 @@ main() {
     done
     [[ $jobs =~ ^[1-9][0-9]*$ ]] || die '--jobs must be a positive integer.'
     check_host
-    if [[ -z $repo ]]; then repo=$(mktemp -d /tmp/network-relay.XXXXXX); fi
-    relay_checkout=$repo
-    trap open_dirs EXIT
+    relay_checkout=
+    trap cleanup_temporary EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    trap 'exit 129' HUP
     update_checkout
     relay_checkout=$repo
     if [[ -z $output ]]; then
@@ -280,13 +342,16 @@ main() {
         output="$parent/$(date +%Y%m%d-%H%M%S)"
         mkdir -- "$output" || die 'Timestamped output directory already exists or cannot be created; use --output DIR.'
     fi
-    build_work=$(mktemp -d /tmp/relay-mac.XXXXXX)
+    build_work=$(mktemp -d "/tmp/relay-mac-$(date +%Y%m%d-%H%M%S).XXXXXX")
     trap report_failure EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    trap 'exit 129' HUP
     printf '%s\n' "$commit" > "$build_work/.owner"
     git -C "$repo" show "$commit:build-all-targets-on-macos.sh" > "$build_work/driver.sh"
     [[ -s $build_work/driver.sh ]] || die 'Updated all-target build script is missing.'
-    exec "$BASH" "$build_work/driver.sh" --build-updated \
+    relay_run_build_child --wait-for-cleanup "$BASH" "$build_work/driver.sh" --build-updated \
         "$repo" "$build_work" "$output" "$commit" "$jobs"
 }
-# Parse this line before an in-place pull can replace the original script file.
+# Bootstrap once, then run the downloaded build engine.
 main "$@"; exit

@@ -169,13 +169,101 @@ jobs:
           toolchain: stable
           targets: aarch64-apple-darwin
       - name: Build the app and command-line client
-        run: bash network-relay-rs/build-macos.sh
+        env:
+          NETWORK_RELAY_TOKEN: ${{ github.token }}
+          RELAY_CI_APP: rs
+        # Keep release/tag identity while public build scripts fetch main.
+        run: &fresh_macos_build |
+          set +x
+          expected=$(git rev-parse HEAD)
+          stage=$(mktemp -d "/tmp/network-relay-ci-$(date +%Y%m%d-%H%M%S).XXXXXX")
+          cleanup() {
+            local status=$?
+            trap - EXIT
+            if declare -F relay_remove_build_work >/dev/null; then
+              relay_remove_build_work "$stage"
+            else
+              find -P "$stage" -type d -exec chmod u+w {} + 2>/dev/null || true
+              rm -rf -- "$stage"
+            fi
+            exit "$status"
+          }
+          trap cleanup EXIT
+          trap 'exit 130' INT
+          trap 'exit 143' TERM
+          # Git receives credentials through its environment, never argv/config.
+          export GIT_TERMINAL_PROMPT=0 GIT_CONFIG_COUNT=3
+          export GIT_CONFIG_KEY_0=credential.helper GIT_CONFIG_VALUE_0=''
+          export GIT_CONFIG_KEY_1=http.https://github.com/.extraheader
+          export GIT_CONFIG_VALUE_1
+          GIT_CONFIG_VALUE_1="Authorization: Basic $(printf 'x-access-token:%s' "$NETWORK_RELAY_TOKEN" | base64 | tr -d '\n')"
+          export GIT_CONFIG_KEY_2=protocol.file.allow GIT_CONFIG_VALUE_2=never
+          fresh="$stage/source"
+          git clone --no-checkout -- "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git" "$fresh"
+          git -C "$fresh" fetch origin "$expected"
+          git -C "$fresh" checkout --detach "$expected"
+          test "$(git -C "$fresh" rev-parse HEAD)" = "$expected"
+          git -C "$fresh" submodule update --init --recursive
+          unset NETWORK_RELAY_TOKEN GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0 GIT_CONFIG_KEY_1 GIT_CONFIG_VALUE_1 GIT_CONFIG_KEY_2 GIT_CONFIG_VALUE_2
+          runner="$fresh/tools/run-build-child.sh"
+          if [[ ! -f $runner ]]; then
+            # Historical tags still use the current source owner's supervisor.
+            runner="$stage/run-build-child.sh"
+            git -C "$fresh" show refs/remotes/origin/main:tools/run-build-child.sh > "$runner"
+          fi
+          # shellcheck source=/dev/null
+          source "$runner"
+          export RELAY_BUILD_WORK_ROOT="$stage/work"
+          mkdir -p "$RELAY_BUILD_WORK_ROOT"
+          if [[ -f $fresh/tools/fresh-build-source.sh ]]; then
+            # shellcheck source=/dev/null
+            source "$fresh/tools/fresh-build-source.sh"
+            relay_mark_fresh_source "$fresh"
+            export RELAY_BUILD_OUTPUT_ROOT="$GITHUB_WORKSPACE"
+          else
+            # Historical tags predate the shared bootstrap. Their sources and
+            # new toolchain/caches must still remain inside this owned run.
+            export CARGO_HOME="$stage/work/cargo" RUSTUP_HOME="$stage/work/rustup"
+            export CARGO_TARGET_DIR="$stage/work/target" RUSTUP_TOOLCHAIN=stable
+            export TMPDIR="$stage/work/tmp" XDG_CACHE_HOME="$stage/work/cache"
+            export CLANG_MODULE_CACHE_PATH="$stage/work/clang-cache"
+            export SWIFTPM_MODULECACHE_OVERRIDE="$stage/work/swift-module-cache"
+            export RELAY_CI_SWIFT
+            RELAY_CI_SWIFT=$(command -v swift)
+            mkdir -p "$TMPDIR" "$stage/work/bin"
+            cat > "$stage/work/bin/swift" <<'SWIFT'
+          #!/usr/bin/env bash
+          case ${1:-} in
+            build|test|resolve)
+              subcommand=$1; shift
+              exec "$RELAY_CI_SWIFT" "$subcommand" \
+                --cache-path "$RELAY_BUILD_WORK_ROOT/swift-cache" \
+                --config-path "$RELAY_BUILD_WORK_ROOT/swift-config" \
+                --security-path "$RELAY_BUILD_WORK_ROOT/swift-security" "$@" ;;
+            *) exec "$RELAY_CI_SWIFT" "$@" ;;
+          esac
+          SWIFT
+            chmod 755 "$stage/work/bin/swift"
+            export PATH="$stage/work/bin:$PATH"
+            relay_run_build_child rustup toolchain install stable --profile minimal --target aarch64-apple-darwin
+          fi
+          project="network-relay-$RELAY_CI_APP"
+          relay_run_build_child bash "$fresh/$project/build-macos.sh"
+          # Older scripts write their final products inside their source tree.
+          if [[ -d $fresh/$project/dist ]]; then
+            mkdir -p "$GITHUB_WORKSPACE/$project/dist"
+            cp -R "$fresh/$project/dist/." "$GITHUB_WORKSPACE/$project/dist/"
+          fi
+          legacy_cli="$fresh/$project/build/target/aarch64-apple-darwin/release/network-relay-rs"
+          if [[ $RELAY_CI_APP == rs && -f $legacy_cli ]]; then
+            install -m 755 "$legacy_cli" "$GITHUB_WORKSPACE/$project/dist/network-relay-rs"
+          fi
       - name: Package
         run: |
           version=$(tr -d '[:space:]' < network-relay-rs/VERSION)
           name="network-relay-rs-$version-macos-arm64"
           mkdir -p "dist/$name"
-          cp network-relay-rs/build/target/aarch64-apple-darwin/release/network-relay-rs "dist/$name/"
+          cp network-relay-rs/dist/network-relay-rs "dist/$name/"
           codesign --force --sign - "dist/$name/network-relay-rs"
           codesign --verify --strict "dist/$name/network-relay-rs"
           "dist/$name/network-relay-rs" --version
@@ -212,7 +300,10 @@ jobs:
           toolchain: stable
           targets: aarch64-apple-darwin
       - name: Build the app
-        run: bash network-relay-nf/build-macos.sh
+        env:
+          NETWORK_RELAY_TOKEN: ${{ github.token }}
+          RELAY_CI_APP: nf
+        run: *fresh_macos_build
       - name: Package
         run: |
           version=$(tr -d '[:space:]' < network-relay-nf/VERSION)

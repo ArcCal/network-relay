@@ -4,7 +4,7 @@
 # Run from the complete checkout on the server. --plan makes no changes.
 # Token permissions: Zone:DNS:Edit and Zone:Zone:Read for the selected zone.
 # Direct client access uses TCP/UDP 443; DNS-01 has no A/AAAA target prerequisite.
-# DNS validation does not need inbound port 80. No Python helper is used.
+# DNS validation does not need inbound port 80. Python3 supervises terminal-attached builds.
 #
 # Maintainer contract: requirements and deployment lessons
 # ========================================================
@@ -229,7 +229,7 @@ nr_usage() {
 Usage: sudo bash ${0##*/}
        bash ${0##*/} --plan
 
-Build this checkout for the server's native amd64/arm64 architecture. Prompt
+Download current complete source to /tmp and build for native amd64/arm64. Prompt
 only for the relay domain and hidden CF_API_TOKEN (Enter on a rerun keeps the
 domain's saved renewal token; CF_API_TOKEN may be inherited). Install apt
 Certbot with its Cloudflare DNS plugin, obtain a DNS-01 certificate, configure
@@ -869,18 +869,11 @@ nr_backup() {
 }
 # Inspect adjacent module/replacement records in `go version -m` output. Merely
 # finding a module name is insufficient: the binary must use its patched source.
-# Compile a private copy of the checkout with its committed Cargo.lock. Build
+# Compile the fresh temporary checkout with its committed Cargo.lock. Build
 # output and toolchain/cache files stay outside the source and daemon paths.
 # Unset inherited cross-build/compiler hooks; the configured proxy/CA remains.
 nr_build() {
     local jobs=$1 expected url
-    mkdir "$work/source"
-    # Build a snapshot; leave the caller's tracked files and lockfiles untouched.
-    local -a snapshot_excludes=(--exclude=.git --exclude=target --exclude=__pycache__ --exclude=.venv --exclude='relay-servers-*')
-    # A checkout placed directly under /opt may contain this run's work tree.
-    # Exclude it before tar sees its own growing source copy.
-    if [[ $work == "${REPO%/}/"* ]]; then snapshot_excludes+=(--exclude="./${work#"${REPO%/}/"}"); fi
-    tar -C "$REPO" "${snapshot_excludes[@]}" -cf - . | tar -C "$work/source" -xf -
     mkdir -m 700 "$work/tmp"
     export TMPDIR=$work/tmp
     local env_name
@@ -909,7 +902,7 @@ nr_build() {
     export CARGO_TARGET_DIR=$work/target
     export PATH="$CARGO_HOME/bin:$PATH"
     "$work/rustup-init" -y --no-modify-path --profile minimal --default-toolchain "$RUSTUP_TOOLCHAIN"
-    (cd "$work/source"; "$CARGO_HOME/bin/cargo" build --locked --release --bin network-relay --target "$triple" --jobs "$jobs")
+    (cd "$REPO"; "$CARGO_HOME/bin/cargo" build --locked --release --bin network-relay --target "$triple" --jobs "$jobs")
     install -m 755 "$CARGO_TARGET_DIR/$triple/release/network-relay" "$work/$SERVICE"
     "$work/$SERVICE" --version
 }
@@ -1670,15 +1663,16 @@ nr_require_systemd() {
 # MemoryMax) caps the build below what the host reports, so its headroom
 # counts too: arguments are /proc/meminfo, /proc/self/cgroup and
 # /proc/self/mountinfo.
+nr_build_memory_kib() {
+    # shellcheck source=tools/linux-build-memory.sh
+    source "$REPO/tools/linux-build-memory.sh"
+    relay_build_memory_kib "$@"
+}
 nr_check_build_memory() {
-    local available swap headroom
-    available=$(awk '/^(MemAvailable|SwapFree):/ {n += $2} END {print n+0}' "$1") ||
-        nr_die 'Cannot read available memory.'
-    swap=$(awk '/^SwapFree:/ {n = $2} END {print n+0}' "$1")
-    headroom=$(nr_cgroup_headroom "${2:-/proc/self/cgroup}" "${3:-/proc/self/mountinfo}" "$swap")
-    if [[ $headroom =~ ^[0-9]+$ ]] && (( headroom < available )); then available=$headroom; fi
+    local available
+    available=$(nr_build_memory_kib "$@")
     [[ $available =~ ^[0-9]+$ ]] && (( available >= 1024 * 1024 )) ||
-        nr_die 'The build needs about 1 GiB of available memory plus free swap, also within any memory limit on this container or service; add swap or use a larger host.'
+        nr_die 'The build needs about 1 GiB of available memory plus free swap, also within any memory limit on this container or service; add swap on a disk filesystem (not /tmp tmpfs), raise the memory/swap limit, or use a larger host.'
 }
 # The least memory, in KiB, that any memory-limited cgroup of this process
 # (cgroup v2 memory.max, v1 memory.limit_in_bytes) and its ancestors still
@@ -1761,6 +1755,14 @@ nr_main() {
     esac
     nr_host
     [[ $EUID == 0 && -d /run/systemd/system ]] || nr_die 'Run as root on a server booted with systemd.'
+    if ! command -v git >/dev/null || ! command -v ps >/dev/null || ! command -v python3 >/dev/null; then
+        (unset CF_API_TOKEN
+         nr_apt -o DPkg::Lock::Timeout=1800 update
+         DEBIAN_FRONTEND=noninteractive nr_apt -o DPkg::Lock::Timeout=1800 install -y --no-install-recommends ca-certificates git procps python3)
+    fi
+    # shellcheck source=tools/fresh-build-source.sh
+    source "$REPO/tools/fresh-build-source.sh"
+    relay_require_fresh_source "$REPO" install-network-relay-native-build-cloudflare-dns.sh "$@"
     # Keep the token shell-local rather than exposing it to builds/packages.
     local cf_token=${CF_API_TOKEN:-} jobs path plugins free_kib
     unset CF_API_TOKEN
@@ -1779,7 +1781,7 @@ nr_main() {
     jobs=1
     printf 'Defaults: user iphone, one build job, bundled selected-domain profile.\n'
     printf 'DNS-01 needs no A/AAAA records. For direct clients, route DNS-only records here and allow TCP/UDP 443.\n'
-    printf 'This installs packages, builds this checkout, stores the token root-only,\naccepts Let\047s Encrypt terms, and enables the service and certbot.timer.\n'
+    printf 'This installs packages, builds current downloaded source, stores the token root-only,\naccepts Let\047s Encrypt terms, and enables the service and certbot.timer.\n'
     # This script requires the complete checkout, including local transport
     # patches and the repository unit template; it is not a standalone bundle.
     local required=(deploy/domains/google-ai-social.txt deploy/domains/global-services.txt)
@@ -1794,7 +1796,7 @@ nr_main() {
         -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold)
     "${apt[@]}" update
     "${apt[@]}" install -y --no-install-recommends \
-        ca-certificates curl certbot python3-certbot-dns-cloudflare build-essential pkg-config iproute2 openssl
+        ca-certificates curl certbot python3-certbot-dns-cloudflare build-essential pkg-config iproute2 openssl procps
     plugins=$("$CERTBOT" plugins)
     [[ $plugins == *dns-cloudflare* ]] || nr_die 'The apt Certbot cannot load dns-cloudflare.'
     if nr_certificate_valid "$CERT_ROOT/live/$domain/fullchain.pem" "$CERT_ROOT/live/$domain/privkey.pem"; then
@@ -1806,9 +1808,10 @@ nr_main() {
     install -d -m 700 "$TOOLS"
     nr_check_leaf "$TOOLS/backups" rootdir
     install -d -o root -g root -m 700 "$TOOLS/backups"
-    work=$(mktemp -d "$TOOLS/build.XXXXXXXX")
+    work=$(mktemp -d "$TOOLS/build.$(date +%Y%m%d-%H%M%S).XXXXXXXX")
     # Install traps only after this run owns a unique scratch directory.
     trap nr_cleanup EXIT
+    trap 'exit 129' HUP
     trap 'exit 130' INT
     trap 'exit 143' TERM
     # DNS-01 issuance (or reuse/renewal-metadata repair) needs no compiled

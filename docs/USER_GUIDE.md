@@ -202,8 +202,9 @@ To build Linux x64 and arm64 server binaries for upload instead, run
 installs what it needs and writes all three servers (network-relay,
 network-relay-cf-masque and caddy-network-relay), logs and `SHA256SUMS` to a new
 `relay-servers-*` folder. The [build scripts](../README.md#build-scripts)
-section lists every build script. When a build script ends, every folder in its
-source checkout and its results is mode 777.
+section lists every build script. Each invocation downloads complete current
+sources into a new timestamped `/tmp` directory; temporary sources, intermediate
+files and build caches are removed on exit, while artifacts and logs remain.
 
 The supplied service runs as `network-relay` with only low-port bind capability;
 normal forwarding does not require `CAP_NET_ADMIN`. Installation itself requires
@@ -570,8 +571,8 @@ Headless mode does not load/save GUI settings. `--ca-file` adds a test CA while
 retaining certificate-name verification; it is not an insecure mode.
 
 Both app build scripts create ad-hoc-signed local bundles, not notarized public
-releases. When they end, every folder in that app's folder, including `build/`
-and `dist/`, is mode 777. `build-macos-gui-clients-on-macos.sh` in the
+releases. They build a fresh temporary checkout and keep final products in the
+invoking app's output directories. `build-macos-gui-clients-on-macos.sh` in the
 repository root builds both apps from a fresh checkout in one run. Follow their [NF build guide](../network-relay-nf/docs/BUILD-AND-OBSERVE.md)
 and [RS build guide](../network-relay-rs/docs/BUILD-AND-OBSERVE.md) for fresh-source
 procedures, signing observations and TCP/UDP acceptance. Do not infer native Mac

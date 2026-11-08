@@ -3,6 +3,7 @@
 set -euo pipefail
 unset CDPATH CARGO_BUILD_TARGET
 
+RS_BUILD_ARGS=(network-relay-rs/build-macos.sh "$@")
 RS_SIGN=adhoc
 if [[ ${1:-} == --unsigned ]]; then
     RS_SIGN=none
@@ -39,8 +40,19 @@ xcrun --sdk macosx --show-sdk-path >/dev/null 2>&1 || {
 }
 
 RS_ROOT=$(cd "$(dirname "$0")" && pwd)
-# Leave the source and artifact folders, and every folder below them, open to all users.
-rs_open_dirs() { find "$RS_ROOT" -type d -exec chmod 777 {} + 2>/dev/null || true; }
+# The helper re-executes a child; its cross-process environment is tested separately.
+# shellcheck source=/dev/null
+source "$RS_ROOT/../tools/fresh-build-source.sh"
+relay_require_fresh_source "$RS_ROOT/.." "${RS_BUILD_ARGS[@]}"
+RS_OUTPUT_ROOT=$RS_ROOT
+[[ -z ${RELAY_BUILD_OUTPUT_ROOT:-} ]] || RS_OUTPUT_ROOT="$RELAY_BUILD_OUTPUT_ROOT/network-relay-rs"
+RS_WORK=${RELAY_BUILD_WORK_ROOT:-"$RS_ROOT/.build-work"}
+mkdir -p -- "$RS_WORK"
+export RUSTUP_TOOLCHAIN=${RUSTUP_TOOLCHAIN:-stable}
+relay_prepare_build_environment "$RS_WORK" aarch64-apple-darwin
+cd -- "$RS_ROOT"
+# Keep final artifact folders open for sharing and synchronization.
+rs_open_dirs() { find "$RS_OUTPUT_ROOT/dist" -type d -exec chmod 777 {} + 2>/dev/null || true; }
 trap rs_open_dirs EXIT
 RS_VERSION=$(tr -d '[:space:]' < "$RS_ROOT/VERSION")
 RS_SOURCE=$(git -C "$RS_ROOT" rev-parse HEAD 2>/dev/null || printf 'Unknown')
@@ -51,12 +63,15 @@ export RUSTUP_TOOLCHAIN=${RUSTUP_TOOLCHAIN:-stable}
 export MACOSX_DEPLOYMENT_TARGET=27.0
 # Keep the application independent even when the invoking shell has a parent
 # project's CARGO_TARGET_DIR setting.
-export CARGO_TARGET_DIR="$RS_ROOT/build/target"
+export CARGO_TARGET_DIR="$RELAY_BUILD_WORK_ROOT/rust-rs-target"
 APP_BUILD_TIME=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
 export APP_BUILD_TIME
 export APP_SOURCE_REVISION="$RS_SOURCE"
 RS_TARGET=aarch64-apple-darwin
-rustup target add "$RS_TARGET"
+if [[ $RELAY_REUSE_RUST_TOOLCHAIN != 1 ]]; then
+    rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
+    rustup target add --toolchain "$RUSTUP_TOOLCHAIN" "$RS_TARGET"
+fi
 cargo test --locked -p network-relay-rs -p network-relay-rs-core --manifest-path "$RS_ROOT/Cargo.toml"
 cargo build --locked --release --target "$RS_TARGET" --bin network-relay-rs --manifest-path "$RS_ROOT/Cargo.toml"
 RS_LINKS=$(otool -L "$CARGO_TARGET_DIR/$RS_TARGET/release/network-relay-rs")
@@ -65,8 +80,8 @@ if [[ $RS_LINKS == *'/Network.framework/'* ]]; then
     exit 1
 fi
 
-mkdir -p "$RS_ROOT/build" "$RS_ROOT/dist"
-RS_STAGE=$(mktemp -d "$RS_ROOT/build/bundle.XXXXXX")
+mkdir -p "$RS_OUTPUT_ROOT/dist"
+RS_STAGE=$(mktemp -d "$RS_WORK/rs-bundle.XXXXXX")
 trap 'rm -rf "$RS_STAGE"; rs_open_dirs' EXIT
 RS_APP="$RS_STAGE/Network Relay RS.app"
 mkdir -p "$RS_APP/Contents/MacOS" "$RS_APP/Contents/Resources"
@@ -91,12 +106,13 @@ if [[ $RS_SIGN != none ]]; then
     codesign --verify --strict --verbose=2 "$RS_APP"
 fi
 
-RS_OUTPUT="$RS_ROOT/dist/Network Relay RS.app"
+RS_OUTPUT="$RS_OUTPUT_ROOT/dist/Network Relay RS.app"
 rm -rf "$RS_OUTPUT"
 mv "$RS_APP" "$RS_OUTPUT"
 RS_ZIP="NetworkRelayRS-$RS_VERSION-macos-arm64.zip"
-ditto -c -k --keepParent "$RS_OUTPUT" "$RS_ROOT/dist/$RS_ZIP"
-(cd "$RS_ROOT/dist" && shasum -a 256 "$RS_ZIP" > "$RS_ZIP.sha256")
+ditto -c -k --keepParent "$RS_OUTPUT" "$RS_OUTPUT_ROOT/dist/$RS_ZIP"
+(cd "$RS_OUTPUT_ROOT/dist" && shasum -a 256 "$RS_ZIP" > "$RS_ZIP.sha256")
+install -m 755 "$CARGO_TARGET_DIR/$RS_TARGET/release/network-relay-rs" "$RS_OUTPUT_ROOT/dist/network-relay-rs"
 echo "Built $RS_OUTPUT"
-echo "Archive: $RS_ROOT/dist/$RS_ZIP"
+echo "Archive: $RS_OUTPUT_ROOT/dist/$RS_ZIP"
 echo "Source: $APP_SOURCE_REVISION; built: $APP_BUILD_TIME"

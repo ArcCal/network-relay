@@ -3,7 +3,7 @@
 import argparse
 import base64
 import os
-from contextlib import ExitStack, redirect_stdout
+from contextlib import ExitStack, nullcontext, redirect_stdout
 import importlib.util
 import io
 from pathlib import Path
@@ -233,6 +233,8 @@ class DeploymentTests(unittest.TestCase):
                   mock.patch.object(sys, 'argv', ['install.py', *options]),
                   mock.patch('builtins.open', mock.mock_open()),
                   mock.patch.object(deploy.fcntl, 'flock'),
+                  mock.patch.object(deploy, 'source_bootstrap', return_value=None),
+                  mock.patch.object(deploy, 'build_workspace', return_value=nullcontext(self.root)),
                   mock.patch.object(deploy, 'install', return_value=0) as install):
                 self.assertEqual(deploy.main(), 0)
                 self.assertEqual(install.call_args.args[0].binary, expected)
@@ -275,10 +277,14 @@ class DeploymentTests(unittest.TestCase):
         self.assertEqual(list(deploy.BINARY.parent.glob('.network-relay-install-*')), [])
 
     def test_source_build_ignores_inherited_cross_target(self):
+        build_root = self.root / 'build'
+        build_root.mkdir()
         with (mock.patch.dict(os.environ, {'CARGO_BUILD_TARGET': 'aarch64-unknown-linux-musl'}),
-              mock.patch.object(deploy, 'run') as commands):
-            deploy.build_binary(self.args(binary=None))
+              mock.patch.object(deploy, 'run', return_value=subprocess.CompletedProcess([], 0, stdout='1048576\n')) as commands):
+            deploy.build_binary(self.args(binary=None, build_root=build_root))
         self.assertFalse('CARGO_BUILD_TARGET' in commands.call_args.kwargs['env'])
+        for name in ('CARGO_HOME', 'RUSTUP_HOME', 'CARGO_TARGET_DIR', 'TMPDIR', 'SCCACHE_DIR', 'CCACHE_DIR'):
+            self.assertTrue(Path(commands.call_args.kwargs['env'][name]).is_relative_to(build_root), name)
 
     @unittest.skipUnless(BINARY.exists(), 'run cargo build first or set RELAY_BINARY')
     def test_explicit_source_build_installs_build_tools(self):

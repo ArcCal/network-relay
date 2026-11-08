@@ -34,13 +34,22 @@ The installer generates a new random password, stores only its hash, preserves o
 
 ## Source-compiling installer
 
-The [source installer](../network-relay-install-from-source.sh) and its [checksum](../network-relay-install-from-source.sh.sha256) are available in the repository root. It bundles the complete Rust source, Cargo.lock and the patched vendor crates; no prebuilt `/tmp/network-relay` is needed. With DNS pointing at the VPS and TCP 80 plus TCP/UDP 443 open, run:
+The [source installer](../network-relay-install-from-source.sh) and its [checksum](../network-relay-install-from-source.sh.sha256) are available in the repository root. Its bundled files bootstrap a fresh, complete main checkout from GitHub when compilation is selected; GitHub access is required even when bundled source is present. No prebuilt `/tmp/network-relay` is needed. With DNS pointing at the VPS and TCP 80 plus TCP/UDP 443 open, run:
 
 ```bash
 sudo bash /tmp/network-relay-install-from-source.sh --domain relay.example.com
 ```
 
-It installs the compiler and build dependencies, compiles the locked sources with one job by default, obtains or renews the certificate, installs the systemd service and generates the same cleaned root-domain mobileconfig. It recompiles on rerun and refreshes the profile; `--jobs` controls compilation parallelism. Existing accounts reuse their password unless `--reset-password` is supplied. Source compilation requires more RAM and CPU than the prebuilt installer.
+It fetches complete current main sources into a new timestamped `/tmp` directory,
+installs build prerequisites, compiles with the downloaded lockfile, obtains or
+renews the certificate, installs the systemd service and generates the same
+cleaned root-domain mobileconfig. Downloaded source and private compiler caches
+are removed after deployment or failure; installed runtime files and existing
+credentials remain. Compiler work uses private disk-backed temporary storage,
+and available RAM, free swap and cgroup limits are checked before compilation.
+The default is one job; `--jobs` is capped by available memory. It recompiles on
+rerun and refreshes the profile. Existing accounts reuse their password unless
+`--reset-password` is supplied.
 
 Both standalone scripts request the eighteen service URLs and gfwlist anew on each normal run, clean the responses and generate one profile; they do not fall back to a previous downloaded list. The CDN can cache upstream content; the requests ask it to revalidate. Explicit offline or omission options are the only way to change this behavior. With an extracted complete source ZIP, `sudo bash deploy/install-from-source.sh --domain relay.example.com` selects the same source-compiling path.
 
@@ -89,7 +98,13 @@ By default a newly generated profile matches the combined root-domain list descr
 - Validates the staged certificate pair, replaces the program atomically and checks HTTPS on the local machine; on failure, restores the program, configuration, certificate copies, device profile and original file ownership/modes, along with the previous running/enabled state. Backups are kept in `/etc/network-relay/backups/timestamp/`, with the original paths recorded in `manifest.json`. Package installation, certificate issuance and UFW rules are not undone by this rollback.
 - Runs the networked TCP/UDP self-check over all three HTTP versions when it knows the password (a new installation, or `--profile`). If the external test targets are unreachable, the self-check fails but the started service is left running for diagnosis; passing locally does not replace checking UDP 443 from an outside network.
 
-To compile explicitly, extract the complete source ZIP and use `--build-from-source`. Only that mode installs the Rust toolchain and build dependencies and builds as pinned by `Cargo.lock`; it defaults to one build job and disables LTO to reduce peak memory. At least 2 GiB of memory and 3 GiB of free disk are recommended for compilation; `--jobs 2` builds in parallel. `--binary` and `--build-from-source` cannot be combined. The self-contained deployment script has no Rust source; use the source ZIP for compilation.
+To compile explicitly, use the source installer or extract the source ZIP and
+select `--build-from-source`. Compilation uses a newly downloaded main checkout
+and its `Cargo.lock`; it defaults to one build job and disables LTO to reduce
+peak memory. At least 2 GiB of memory and 3 GiB of free disk are recommended;
+usable free swap and cgroup limits also count toward the memory check.
+`--binary` and `--build-from-source` cannot be combined. The prebuilt standalone
+deployment script does not compile sources.
 
 ## Updating and re-running
 

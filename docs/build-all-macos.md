@@ -64,8 +64,10 @@ bash "$HOME/Downloads/build-all-macos.sh"
 
 Use the branch/commit containing this script instead of `main` while its PR
 is unmerged. For a completely fresh source build every time, run the same
-command again: each invocation creates a new directory. Downloaded compiler
-and dependency caches may be reused; existing source folders are never used.
+command again: each invocation creates a new timestamped directory under `/tmp`.
+Existing source folders are never used. Project sources, compiler intermediates
+and per-run dependency caches are removed on every exit; final artifacts and
+logs remain in the output directory.
 Several Rust workspaces and app tests can consume substantial disk space;
 allow approximately 80 GiB free, with actual usage depending on tool versions.
 
@@ -107,7 +109,6 @@ The default build root looks like:
 
 ```text
 ~/Projects/vpn-build-YYYYMMDD-HHMMSS-XXXXXX/
-  sources/                         five fresh, complete working trees
   logs/                            one log per job
   SOURCE-REVISIONS.tsv              exact source commits
   TOOL-VERSIONS.txt                 compiler/SDK versions
@@ -130,8 +131,10 @@ The script prints the exact output location and opens it in Finder after
 all jobs pass. App bundles use the original recipes' ad-hoc signing and are
 not notarized releases.
 When the script ends, successfully or not, every folder in the build
-directory, including sources and `out/`, is mode 777 so other users and file
+directory, including `out/`, is mode 777 so other users and file
 synchronization tools such as Syncthing can use it.
+The private source and compiler/cache directories are separate from this output
+tree and are removed after success, failure or a handled signal.
 The build directory is printed before compiler-version checks; their output
 is displayed in Terminal and saved in `TOOL-VERSIONS.txt`, including errors.
 
@@ -159,7 +162,7 @@ shasum -a 256 -c SHA256SUMS
   A declared Go `toolchain` is honored; otherwise Go uses automatic toolchain
   selection. The standard Caddy commands do not add an optional Cloudflare
   DNS-provider plugin. Existing Certbot-issued certificates remain usable.
-- Git clones use shallow history, complete source trees, HTTP/1.1, and up to
+- Git clones use full history, complete source trees, HTTP/1.1, and up to
   three attempts. Retry cleanup removes only that job's newly created staging
   directory. HTTPS authentication is configured per command, without editing
   global Git configuration.
@@ -184,8 +187,8 @@ bash "$HOME/Downloads/build-all-macos.sh" --no-bootstrap
 
 The default is two concurrent Cargo compilation jobs, with projects built
 sequentially. Individual app scripts retain their own Swift job settings.
-`--no-bootstrap` requires all tools to be installed already; it still adds
-required Rust standard-library targets and authenticates GitHub if needed.
+`--no-bootstrap` requires the necessary tools and Rust targets to be installed
+already and authenticates GitHub if needed.
 It does not install/update Xcode, its SDK, Homebrew, or compiler packages.
 
 ## Maintainer validation

@@ -80,8 +80,10 @@ restart (the program says so when it notices one).
   protocols work.
 - **UDP**: each CONNECT-UDP flow is one VLESS connection with the UDP
   command to the checked address; datagrams travel with a 2-byte length.
-  Payloads over 8190 bytes are dropped, as Xray-core does not pass larger
-  ones back.
+  An empty datagram is encoded as a zero length and stays a datagram on
+  receipt. Payloads over 8190 bytes are dropped, as Xray-core does not pass
+  larger ones back. The tested mihomo and sing-box versions pass empty
+  datagrams; Xray-core v26.10.31 discards them in its own reader/writers.
 - **Names**: looked up with DNS over TCP to `dns_servers`, each lookup over
   its own VLESS connection, A and AAAA pipelined; answers are cached for
   their TTL, including CNAMEs (at most five minutes). Unrelated answer
@@ -215,6 +217,10 @@ network-relay; `network-relay-vless check --server relay.example.com
   tunnels end or are reset, and the program itself serving from one file.
   It uses `XRAY_BIN`, or builds Xray-core from source with Go.
 
-Not tested: other VLESS servers (sing-box, mihomo), a real network between
-the relay and the VLESS server, a CDN or reverse proxy in front of it, and
-long-running load.
+Additional Linux checks against real mihomo and sing-box WebSocket inbounds
+verify empty UDP datagrams interleaved with 1, 1200 and 8190-byte datagrams.
+The same Xray control passes nonempty payloads but drops empty packets before
+they reach the target. These results do not establish TCP half-close support.
+
+Not tested: a real network between the relay and the VLESS server, a CDN or
+reverse proxy in front of it, and long-running load.

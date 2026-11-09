@@ -35,7 +35,10 @@ final class NativeClient {
     private let runID: String
     private let update: @MainActor (NativeUpdate) -> Void
 
-    private final class TrustResult { var rejected = false }
+    private final class TrustResult {
+        var failure: String?
+        var rejected: Bool { failure != nil }
+    }
     private final class Connection {
         let native: NWConnection
         let parent: UInt64
@@ -207,7 +210,30 @@ final class NativeClient {
     private func fail(_ id: UInt64, error: NWError) {
         let trust = connections[id]?.trust ?? groups[id]?.trust
         let flags = failureFlag(error, trust: trust)
-        fail(id, message: flags == 1 ? "TLS certificate or secure handshake validation failed: \(error)" : String(describing: error), flags: flags)
+        let detail = trust?.failure ?? String(describing: error)
+        fail(id, message: flags == 1 ? "TLS certificate or secure handshake validation failed: \(detail)" : detail, flags: flags)
+    }
+    private func terminalTLSWaiting(_ error: NWError, trust: TrustResult?) -> Bool {
+        if trust?.rejected == true { return true }
+        guard case .tls(let status) = error else { return false }
+        // Other TLS waiting states can recover; only known certificate
+        // rejections bypass the normal opening deadline.
+        switch status {
+        case errSSLXCertChainInvalid, errSSLBadCert, errSSLUnknownRootCert, errSSLNoRootCert,
+             errSSLCertExpired, errSSLCertNotYetValid, errSSLHostNameMismatch,
+             errSSLPeerBadCert, errSSLPeerUnsupportedCert, errSSLPeerCertRevoked,
+             errSSLPeerCertExpired, errSSLPeerCertUnknown, errSSLPeerUnknownCA,
+             errSSLBadCertificateStatusResponse, errSSLCertificateRequired:
+            return true
+        default: return false
+        }
+    }
+    private func waiting(_ id: UInt64, error: NWError, context: String) {
+        if terminalTLSWaiting(error, trust: connections[id]?.trust ?? groups[id]?.trust) {
+            fail(id, error: error)
+        } else {
+            log("DEBUG", "Native \(context) waiting: \(error)")
+        }
     }
     private func fail(_ id: UInt64, message: String, flags: UInt64 = 4) {
         guard handle != nil else { return }
@@ -279,7 +305,8 @@ final class NativeClient {
             let fetchOK = SecTrustSetNetworkFetchAllowed(value, false) == errSecSuccess
             var error: CFError?
             let valid = policiesOK && fetchOK && SecTrustEvaluateWithError(value, &error)
-            trustResult.rejected = !valid
+            let reason = error.map { String(describing: $0) } ?? "certificate trust policy rejected"
+            trustResult.failure = valid ? nil : "Certificate validation for \(name) failed: \(reason)"
             complete(valid)
         }, queue)
     }
@@ -315,7 +342,7 @@ final class NativeClient {
             case .ready: onReady()
             case .failed(let error): fail(id, error: error)
             case .cancelled: fail(id, message: "Native connection was cancelled")
-            case .waiting(let error): log("DEBUG", "Native connection waiting: \(error)")
+            case .waiting(let error): waiting(id, error: error, context: "connection")
             default: break
             }
         }
@@ -363,7 +390,7 @@ final class NativeClient {
             case .ready: prepareDatagrams(id, group)
             case .failed(let error): fail(id, error: error)
             case .cancelled: fail(id, message: "Native QUIC group was cancelled")
-            case .waiting(let error): log("DEBUG", "Native QUIC waiting: \(error)")
+            case .waiting(let error): waiting(id, error: error, context: "QUIC")
             default: break
             }
         }

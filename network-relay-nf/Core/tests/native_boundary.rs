@@ -806,6 +806,30 @@ async fn security_failure_rejects_purported_data_immediately() {
 }
 
 #[tokio::test]
+async fn security_failure_during_open_preserves_reason_without_waiting_for_timeout() {
+    for kind in [OPEN_TCP, OPEN_QUIC] {
+        let (bridge, mut events) = instance();
+        let owner = bridge.clone();
+        let pending = tokio::spawn(async move { owner.open(kind, 0, 0, Vec::new()).await });
+        let event = next_event(&mut events).await;
+        assert_eq!(event.kind, kind);
+        let reason = b"Certificate validation for relay.test failed: name mismatch";
+        assert!(bridge.input(ERROR, event.id, 0, 1, reason));
+        let error = match bounded(pending).await.unwrap() {
+            Err(error) => error,
+            Ok(_) => panic!("rejected native TLS connection became ready"),
+        };
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        assert_eq!(error.to_string(), String::from_utf8_lossy(reason));
+        assert!(bridge.resources.lock().unwrap().is_empty());
+        let close = next_event(&mut events).await;
+        assert_eq!((close.kind, close.id), (CLOSE, event.id));
+        assert!(!bridge.input(READY, event.id, 0, 0, b"{}"));
+        assert!(events.try_recv().is_err());
+    }
+}
+
+#[tokio::test]
 async fn malformed_ready_stream_ids_and_empty_data_are_rejected() {
     let (bridge, mut events) = instance();
     let owner = bridge.clone();

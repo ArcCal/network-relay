@@ -109,7 +109,7 @@ impl VlessUdp {
                     let length = reader.read_u16().await? as usize;
                     let mut payload = vec![0; length];
                     reader.read_exact(&mut payload).await?;
-                    if length == 0 || length > MAX_UDP_PAYLOAD {
+                    if length > MAX_UDP_PAYLOAD {
                         continue;
                     }
                     match received.try_send(payload) {
@@ -142,8 +142,8 @@ impl DatagramIo for VlessUdp {
 
     fn send<'a>(&'a self, data: &'a [u8]) -> IoFuture<'a, usize> {
         Box::pin(async move {
-            if data.is_empty() || data.len() > MAX_UDP_PAYLOAD {
-                // Neither travels in VLESS framing; UDP may drop either.
+            if data.len() > MAX_UDP_PAYLOAD {
+                // Keep packets within the supported downstream payload limit.
                 return Ok(data.len());
             }
             let mut frame = Vec::with_capacity(2 + data.len());
@@ -179,5 +179,82 @@ impl DatagramIo for VlessUdp {
 
     fn max_payload(&self) -> usize {
         MAX_UDP_PAYLOAD
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::IpPreference;
+    use crate::vless::UserId;
+    use futures_util::{SinkExt, StreamExt};
+    use std::time::Duration;
+    use tokio_tungstenite::tungstenite::{Bytes, Message};
+
+    async fn peer(initial_reply: Option<Vec<u8>>) -> (VlessConfig, JoinHandle<()>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let config = VlessConfig {
+            server_host: "127.0.0.1".into(),
+            server_port: listener.local_addr().unwrap().port(),
+            user_id: UserId::parse("b4e4fad1-c320-428e-92dc-f8f6944a7dec").unwrap(),
+            path: "/udp".into(),
+            host_header: "vless.test".into(),
+            dns_servers: vec!["127.0.0.1:53".parse().unwrap()],
+            ip_preference: IpPreference::Ipv4First,
+        };
+        let task = tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(tcp).await.unwrap();
+            let Some(Ok(Message::Binary(request))) = ws.next().await else { panic!("missing request") };
+            assert_eq!(request[18], Command::Udp as u8);
+            let mut reply = vec![0, 0];
+            if let Some(initial) = initial_reply {
+                reply.extend(initial);
+            }
+            ws.send(Message::Binary(reply.into())).await.unwrap();
+            while let Some(Ok(message)) = ws.next().await {
+                match message {
+                    Message::Binary(data) => ws.send(Message::Binary(data)).await.unwrap(),
+                    Message::Close(_) => return,
+                    _ => {}
+                }
+            }
+        });
+        (config, task)
+    }
+
+    async fn receive(flow: &UdpSocket) -> Vec<u8> {
+        let mut data = vec![0; MAX_UDP_PAYLOAD];
+        let length = tokio::time::timeout(Duration::from_secs(2), flow.recv(&mut data))
+            .await
+            .expect("missing UDP datagram")
+            .unwrap();
+        data.truncate(length);
+        data
+    }
+
+    #[tokio::test]
+    async fn empty_datagrams_round_trip_between_nonempty_packets() {
+        let (config, task) = peer(None).await;
+        let flow = VlessEgress::new(config).connect_udp("192.0.2.1:53".parse().unwrap()).await.unwrap();
+        for length in [0, 1, 0, 1200, 0] {
+            let payload = vec![0xa5; length];
+            assert_eq!(flow.send(&payload).await.unwrap(), length);
+            assert_eq!(receive(&flow).await, payload);
+        }
+        drop(flow);
+        tokio::time::timeout(Duration::from_secs(2), task).await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn empty_reply_is_a_datagram_and_keeps_the_flow_open() {
+        let (config, task) = peer(Some(vec![0, 0, 0, 1, 42])).await;
+        let flow = VlessEgress::new(config).connect_udp("192.0.2.1:53".parse().unwrap()).await.unwrap();
+        assert_eq!(receive(&flow).await, Bytes::new());
+        assert_eq!(receive(&flow).await, [42]);
+        assert_eq!(flow.send(b"still open").await.unwrap(), 10);
+        assert_eq!(receive(&flow).await, b"still open");
+        drop(flow);
+        tokio::time::timeout(Duration::from_secs(2), task).await.unwrap().unwrap();
     }
 }

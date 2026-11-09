@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Network Relay NF reports certificate failures received while native TCP or QUIC is waiting without replacing them with a generic opening timeout. Trust-evaluation errors retain the expected server name and native reason; recoverable network and TLS waiting states keep their existing retry behavior.
+
+- network-relay-vless preserves zero-length UDP datagrams using the existing VLESS length framing. Empty and nonempty packets can share a flow with compatible downstreams; the tested Xray version still discards empty packets in its own implementation.
+
 - Build entry points download complete current source into timestamped random `/tmp` directories instead of reusing local checkouts. Temporary source, intermediates and per-run caches are removed on every exit; final artifacts and logs keep their existing destinations. Linux builders use temporary disk-backed compiler work when needed and cap parallelism by available RAM, free swap and cgroup limits.
 
 - NF and RS GUI network observers ignore unchanged path notifications instead of restarting healthy proxy sessions. NF compares native path snapshots; RS compares primary-interface routing, address and link state while ignoring unrelated metadata. Real path changes still rebuild the connection, and manual Disconnect remains final.

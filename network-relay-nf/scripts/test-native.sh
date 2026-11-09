@@ -3,6 +3,7 @@
 set -euo pipefail
 NF_ROOT=$(cd "$(dirname "$0")/.." && pwd)
 NF_LIB=${1:?Pass the Rust static-library directory}
+python3 "$NF_ROOT/scripts/test-tls-errors.py" --swiftc "$(xcrun --find swiftc)"
 mkdir -p "$NF_ROOT/build"
 NF_MODULES=$(mktemp -d "$NF_ROOT/build/native-smoke-modules.XXXXXX")
 trap 'rm -rf "$NF_MODULES"' EXIT

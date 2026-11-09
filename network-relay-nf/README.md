@@ -72,6 +72,9 @@ records or point elsewhere. The domain is retained for SNI, certificate checks
 and the relay's HTTP host information. Website names and DNS payloads still
 travel through the tunnel. Connection timeouts keep retrying with a connecting
 indicator and no modal timeout alert; Disconnect stops the retry.
+Certificate rejections are reported promptly with their native trust-evaluation
+reason, including when Network.framework reports them as a waiting state.
+Recoverable network and TLS waiting states retain the connection deadline.
 
 Add opens one unsaved server form. Repeated Add reuses it, and server menus show
 only saved profiles. A new profile joins those menus only after Save succeeds.

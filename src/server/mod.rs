@@ -837,6 +837,8 @@ impl Relay {
             return Err(no_memory());
         }
         let memory = self.inner.memory.try_acquire(crate::limits::MEMORY_PER_TUNNEL).ok_or_else(no_memory)?;
+        let resources =
+            Arc::new(TunnelResources { _permit: permit, _user_slot: user_slot, _memory: memory, _conn: conn.clone() });
         let connecting = async {
             // The user's share first, so that lookups waiting for it do not
             // hold places in the total.
@@ -851,8 +853,14 @@ impl Relay {
                 return Err(Refusal::UserRevoked);
             }
             match a.kind {
-                Kind::Tcp => Ok(Opened::Tcp(connect::open_tcp(egress, &addrs, settings.connect_timeout).await?)),
-                Kind::Udp => Ok(Opened::Udp(connect::open_udp(egress, &addrs, settings.connect_timeout).await?)),
+                Kind::Tcp => Ok(Opened::Tcp(
+                    connect::open_tcp_retained(egress, &addrs, settings.connect_timeout, Some(resources.clone()))
+                        .await?,
+                )),
+                Kind::Udp => Ok(Opened::Udp(
+                    connect::open_udp_retained(egress, &addrs, settings.connect_timeout, Some(resources.clone()))
+                        .await?,
+                )),
                 // Their target is always a refusal, returned above.
                 Kind::Unsupported => Err(Refusal::UnsupportedProtocol),
                 Kind::Malformed => Err(Refusal::MalformedRequest),
@@ -875,13 +883,6 @@ impl Relay {
         }
         .fetch_add(1, Ordering::Relaxed);
         debug!(user = %a.user.name, kind = a.kind.as_str(), %target, "tunnel opened");
-        let resources =
-            Arc::new(TunnelResources { _permit: permit, _user_slot: user_slot, _memory: memory, _conn: conn.clone() });
-        match &opened {
-            Opened::Tcp(connect::Tcp::Egress(tcp)) => tcp.retain_resources(resources.clone()),
-            Opened::Udp(connect::Udp::Egress(udp)) => udp.0.retain_resources(resources.clone()),
-            _ => {}
-        }
         let ctx = TunnelCtx {
             user: a.user.clone(),
             target,
@@ -1172,6 +1173,253 @@ mod tests {
         assert_eq!(relay.active_tunnels(), 0);
         assert_eq!(relay.user_tunnels("alice"), 0);
         assert!(reservations.upgrade().is_none());
+    }
+
+    #[tokio::test]
+    async fn revoked_completed_egress_stays_charged_until_its_socket_closes() {
+        completed_egress_retirement(false).await;
+    }
+
+    #[tokio::test]
+    async fn revoked_unjoined_egress_stays_charged_until_its_socket_closes() {
+        completed_egress_retirement(true).await;
+    }
+
+    async fn completed_egress_retirement(revoke_in_attempt: bool) {
+        use crate::egress::{IoFuture, ResourceGuard};
+        use std::os::fd::AsRawFd;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        struct RevokingEgress {
+            auth: Mutex<Option<Arc<Authenticator>>>,
+            owner: Option<tokio::task::Id>,
+            connected: AtomicBool,
+            revoke_first: AtomicBool,
+            revoke_in_attempt: bool,
+            background_fd: std::sync::atomic::AtomicI32,
+            finish: Mutex<Vec<tokio::sync::oneshot::Sender<()>>>,
+        }
+        impl Egress for RevokingEgress {
+            fn resolve<'a>(&'a self, _: &'a str) -> IoFuture<'a, Vec<std::net::IpAddr>> {
+                Box::pin(async { unreachable!("the target is a literal address") })
+            }
+            fn connect_tcp(&self, peer: SocketAddr) -> IoFuture<'_, crate::egress::TcpStream> {
+                Box::pin(async move {
+                    let tcp = tokio::net::TcpStream::connect(peer).await?;
+                    let local = tcp.local_addr()?;
+                    let reset = socket2::SockRef::from(&tcp).try_clone()?;
+                    // A background owner keeps the actual connection alive,
+                    // as an egress writer may after its foreground is dropped.
+                    let background: std::net::TcpStream = socket2::SockRef::from(&tcp).try_clone()?.into();
+                    let mut background = tokio::net::TcpStream::from_std(background)?;
+                    self.background_fd.store(background.as_raw_fd(), Ordering::Relaxed);
+                    let retained: Arc<Mutex<Option<ResourceGuard>>> = Arc::default();
+                    let held = retained.clone();
+                    let (finish, finished) = tokio::sync::oneshot::channel();
+                    self.finish.lock().unwrap().push(finish);
+                    tokio::spawn(async move {
+                        let _ = finished.await;
+                        let _ = background.write_all(b"done").await;
+                        drop(background);
+                        drop(held);
+                    });
+                    self.connected.store(true, Ordering::Relaxed);
+                    let abort = Arc::new(move || {
+                        let _ = reset.set_linger(Some(Duration::ZERO));
+                        let _ = reset.shutdown(std::net::Shutdown::Both);
+                    });
+                    Ok(crate::egress::TcpStream::new(tcp, local, peer, abort)
+                        .with_resource_retainer(move |guard| *retained.lock().unwrap() = Some(guard)))
+                })
+            }
+            fn connect_udp(&self, _: SocketAddr) -> IoFuture<'_, crate::egress::UdpSocket> {
+                Box::pin(async { unreachable!("this fixture opens TCP") })
+            }
+            fn available(&self) -> bool {
+                // Revoke either before the completed dial is joined or as
+                // it returns to its request. Both refuse the handoff.
+                if self.connected.load(Ordering::Relaxed)
+                    && (tokio::task::try_id() != self.owner) == self.revoke_in_attempt
+                    && self.revoke_first.swap(false, Ordering::Relaxed)
+                {
+                    self.auth.lock().unwrap().as_ref().unwrap().replace(&[]).unwrap();
+                }
+                true
+            }
+            fn failed(&self) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> {
+                Box::pin(std::future::pending())
+            }
+        }
+
+        let mut config = lifecycle_config();
+        config.relay.max_tunnels = Some(1);
+        config.relay.max_tunnels_per_user = 1;
+        let egress = Arc::new(RevokingEgress {
+            auth: Mutex::default(),
+            owner: tokio::task::try_id(),
+            connected: AtomicBool::new(false),
+            revoke_first: AtomicBool::new(true),
+            revoke_in_attempt,
+            background_fd: std::sync::atomic::AtomicI32::new(-1),
+            finish: Mutex::default(),
+        });
+        let mut relay = Relay::with_egress(&config, egress.clone()).unwrap();
+        let memory_limit = relay.inner.connection_memory + crate::limits::MEMORY_PER_TUNNEL;
+        Arc::get_mut(&mut relay.inner).unwrap().memory = MemoryBudget::new(memory_limit);
+        *egress.auth.lock().unwrap() = Some(relay.inner.auth.clone());
+        let target = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let a = authorized(&config, Kind::Tcp, target.local_addr().unwrap());
+        let conn = ConnInfo::new("HTTP/2", "127.0.0.1:1".parse().unwrap(), None);
+
+        let opened = relay.open(&a, &conn, &relay.settings()).await;
+        assert!(matches!(opened, Err(Refusal::UserRevoked)));
+        let (mut peer, _) = target.accept().await.unwrap();
+        let mut data = [0; 4];
+        if !revoke_in_attempt {
+            assert!(tokio::time::timeout(Duration::from_millis(30), peer.read(&mut data)).await.is_err());
+        }
+        let fd = egress.background_fd.load(Ordering::Relaxed);
+        // SAFETY: F_GETFD inspects an integer descriptor; the cleanup gate
+        // keeps its owning background task alive throughout this check.
+        assert_ne!(unsafe { nix::libc::fcntl(fd, nix::libc::F_GETFD) }, -1);
+        assert_eq!(relay.active_tunnels(), 1, "a refused foreground still has a live background socket");
+        assert_eq!(relay.user_tunnels("alice"), 1);
+        assert!(relay.inner.memory.try_acquire(crate::limits::MEMORY_PER_TUNNEL).is_none());
+
+        relay.inner.auth.replace(&config.users).unwrap();
+        assert!(matches!(relay.open(&a, &conn, &relay.settings()).await, Err(Refusal::TooManyUserTunnels)));
+        egress.finish.lock().unwrap().remove(0).send(()).unwrap();
+        if !revoke_in_attempt {
+            peer.read_exact(&mut data).await.unwrap();
+            assert_eq!(&data, b"done");
+            assert_eq!(peer.read(&mut data).await.unwrap(), 0);
+        }
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while relay.active_tunnels() != 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(relay.user_tunnels("alice"), 0);
+        assert!(relay.inner.memory.try_acquire(crate::limits::MEMORY_PER_TUNNEL).is_some());
+
+        let (socket, ctx) = relay.open(&a, &conn, &relay.settings()).await.unwrap();
+        let (mut peer, _) = target.accept().await.unwrap();
+        drop(socket);
+        drop(ctx);
+        assert_eq!(relay.active_tunnels(), 1, "normal background cleanup stays charged too");
+        egress.finish.lock().unwrap().remove(0).send(()).unwrap();
+        peer.read_exact(&mut data).await.unwrap();
+        assert_eq!(&data, b"done");
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while relay.active_tunnels() != 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn refused_udp_egress_stays_charged_until_its_socket_closes() {
+        use crate::egress::{DatagramIo, IoFuture, ResourceGuard};
+        use std::os::fd::AsRawFd;
+
+        struct Datagram {
+            socket: Arc<tokio::net::UdpSocket>,
+            retained: Arc<Mutex<Option<ResourceGuard>>>,
+        }
+        impl DatagramIo for Datagram {
+            fn retain_resources(&self, guard: ResourceGuard) {
+                *self.retained.lock().unwrap() = Some(guard);
+            }
+            fn send<'a>(&'a self, data: &'a [u8]) -> IoFuture<'a, usize> {
+                Box::pin(self.socket.send(data))
+            }
+            fn recv<'a>(&'a self, data: &'a mut [u8]) -> IoFuture<'a, usize> {
+                Box::pin(self.socket.recv(data))
+            }
+            fn local_addr(&self) -> std::io::Result<SocketAddr> {
+                self.socket.local_addr()
+            }
+            fn peer_addr(&self) -> std::io::Result<SocketAddr> {
+                self.socket.peer_addr()
+            }
+            fn max_payload(&self) -> usize {
+                1200
+            }
+        }
+        struct RefusingEgress {
+            connected: AtomicBool,
+            fd: std::sync::atomic::AtomicI32,
+            finish: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+        }
+        impl Egress for RefusingEgress {
+            fn resolve<'a>(&'a self, _: &'a str) -> IoFuture<'a, Vec<std::net::IpAddr>> {
+                Box::pin(async { unreachable!() })
+            }
+            fn connect_tcp(&self, _: SocketAddr) -> IoFuture<'_, crate::egress::TcpStream> {
+                Box::pin(async { unreachable!() })
+            }
+            fn connect_udp(&self, peer: SocketAddr) -> IoFuture<'_, crate::egress::UdpSocket> {
+                Box::pin(async move {
+                    let socket = Arc::new(tokio::net::UdpSocket::bind("127.0.0.1:0").await?);
+                    socket.connect(peer).await?;
+                    self.fd.store(socket.as_raw_fd(), Ordering::Relaxed);
+                    let retained: Arc<Mutex<Option<ResourceGuard>>> = Arc::default();
+                    let (background, held) = (socket.clone(), retained.clone());
+                    let (finish, finished) = tokio::sync::oneshot::channel();
+                    *self.finish.lock().unwrap() = Some(finish);
+                    tokio::spawn(async move {
+                        let _ = finished.await;
+                        background.send(b"done").await.unwrap();
+                        drop(background);
+                        drop(held);
+                    });
+                    self.connected.store(true, Ordering::Relaxed);
+                    Ok(crate::egress::UdpSocket(Arc::new(Datagram { socket, retained })))
+                })
+            }
+            fn available(&self) -> bool {
+                !self.connected.load(Ordering::Relaxed)
+            }
+            fn failed(&self) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> {
+                Box::pin(std::future::pending())
+            }
+        }
+        let config = lifecycle_config();
+        let egress = Arc::new(RefusingEgress {
+            connected: AtomicBool::new(false),
+            fd: std::sync::atomic::AtomicI32::new(-1),
+            finish: Mutex::default(),
+        });
+        let mut relay = Relay::with_egress(&config, egress.clone()).unwrap();
+        let memory_limit = relay.inner.connection_memory + crate::limits::MEMORY_PER_TUNNEL;
+        Arc::get_mut(&mut relay.inner).unwrap().memory = MemoryBudget::new(memory_limit);
+        let target = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let conn = ConnInfo::new("HTTP/2", "127.0.0.1:1".parse().unwrap(), None);
+        let a = authorized(&config, Kind::Udp, target.local_addr().unwrap());
+        assert!(matches!(relay.open(&a, &conn, &relay.settings()).await, Err(Refusal::Unreachable(_))));
+        let fd = egress.fd.load(Ordering::Relaxed);
+        // SAFETY: the background task owns this descriptor until the gate opens.
+        assert_ne!(unsafe { nix::libc::fcntl(fd, nix::libc::F_GETFD) }, -1);
+        assert_eq!(relay.active_tunnels(), 1);
+        assert_eq!(relay.user_tunnels("alice"), 1);
+        assert!(relay.inner.memory.try_acquire(crate::limits::MEMORY_PER_TUNNEL).is_none());
+        egress.finish.lock().unwrap().take().unwrap().send(()).unwrap();
+        let mut data = [0; 4];
+        assert_eq!(target.recv(&mut data).await.unwrap(), 4);
+        assert_eq!(&data, b"done");
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while relay.active_tunnels() != 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(relay.user_tunnels("alice"), 0);
+        assert!(relay.inner.memory.try_acquire(crate::limits::MEMORY_PER_TUNNEL).is_some());
     }
 
     #[tokio::test]

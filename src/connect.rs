@@ -12,7 +12,7 @@ use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::{TcpSocket, TcpStream, UdpSocket};
 use tokio::task::JoinSet;
 
-use crate::egress::{self, Egress};
+use crate::egress::{self, Egress, ResourceGuard};
 use crate::policy::Refusal;
 use crate::sys;
 
@@ -296,9 +296,20 @@ pub async fn open_tcp(
     addrs: &[SocketAddr],
     timeout: Duration,
 ) -> Result<Tcp, Refusal> {
+    open_tcp_retained(egress, addrs, timeout, None).await
+}
+
+/// Keeps admission reserved while spawned egress attempts and their
+/// background cleanup can still own sockets, including refused attempts.
+pub(crate) async fn open_tcp_retained(
+    egress: Option<&Arc<dyn Egress>>,
+    addrs: &[SocketAddr],
+    timeout: Duration,
+    resources: Option<ResourceGuard>,
+) -> Result<Tcp, Refusal> {
     match egress {
         None => tcp(addrs, timeout).await.map(Tcp::Host),
-        Some(egress) => egress_tcp(egress, addrs, timeout).await.map(Tcp::Egress),
+        Some(egress) => egress_tcp(egress, addrs, timeout, resources).await.map(Tcp::Egress),
     }
 }
 
@@ -308,9 +319,19 @@ pub async fn open_udp(
     addrs: &[SocketAddr],
     timeout: Duration,
 ) -> Result<Udp, Refusal> {
+    open_udp_retained(egress, addrs, timeout, None).await
+}
+
+/// Attaches admission before post-connect validation can refuse a flow.
+pub(crate) async fn open_udp_retained(
+    egress: Option<&Arc<dyn Egress>>,
+    addrs: &[SocketAddr],
+    timeout: Duration,
+    resources: Option<ResourceGuard>,
+) -> Result<Udp, Refusal> {
     match egress {
         None => udp(addrs).await.map(Udp::Host),
-        Some(egress) => egress_udp(egress, addrs, timeout).await.map(Udp::Egress),
+        Some(egress) => egress_udp(egress, addrs, timeout, resources).await.map(Udp::Egress),
     }
 }
 
@@ -324,23 +345,35 @@ fn canonical(addr: SocketAddr) -> SocketAddr {
 
 /// An egress connection made during a race. Connections that lose the race
 /// are reset, as they are dropped without ever carrying data.
-struct Attempt(Option<egress::TcpStream>);
+struct Attempt {
+    stream: Option<egress::TcpStream>,
+    // Drop the stream before its reservation, even when it is never joined.
+    _resources: Option<ResourceGuard>,
+}
 
 impl Drop for Attempt {
     fn drop(&mut self) {
-        if let Some(stream) = &self.0 {
+        if let Some(stream) = &self.stream {
             stream.abort();
         }
     }
 }
 
-async fn egress_attempt(egress: Arc<dyn Egress>, addr: SocketAddr) -> io::Result<Attempt> {
-    let attempt = Attempt(Some(egress.connect_tcp(addr).await?));
+async fn egress_attempt(
+    egress: Arc<dyn Egress>,
+    addr: SocketAddr,
+    resources: Option<ResourceGuard>,
+) -> io::Result<Attempt> {
+    let stream = egress.connect_tcp(addr).await?;
+    if let Some(resources) = &resources {
+        stream.retain_resources(resources.clone());
+    }
+    let attempt = Attempt { stream: Some(stream), _resources: resources };
     if !egress.available() {
         return Err(io::Error::new(io::ErrorKind::NotConnected, "egress unavailable"));
     }
     // The egress must connect to the address the rules allowed, not another.
-    if canonical(attempt.0.as_ref().expect("connected").peer_addr()?) != canonical(addr) {
+    if canonical(attempt.stream.as_ref().expect("connected").peer_addr()?) != canonical(addr) {
         return Err(io::Error::new(io::ErrorKind::InvalidData, "egress connected to another address"));
     }
     Ok(attempt)
@@ -351,15 +384,16 @@ async fn egress_tcp(
     egress: &Arc<dyn Egress>,
     addrs: &[SocketAddr],
     timeout: Duration,
+    resources: Option<ResourceGuard>,
 ) -> Result<egress::TcpStream, Refusal> {
     if !egress.available() {
         return Err(unavailable());
     }
-    let mut attempt = race(addrs, timeout, |addr| egress_attempt(egress.clone(), addr)).await?;
+    let mut attempt = race(addrs, timeout, |addr| egress_attempt(egress.clone(), addr, resources.clone())).await?;
     if !egress.available() {
         return Err(unavailable());
     }
-    Ok(attempt.0.take().expect("connected"))
+    Ok(attempt.stream.take().expect("connected"))
 }
 
 /// [`udp`] through an egress: the first address it opens a flow to, within
@@ -369,6 +403,7 @@ async fn egress_udp(
     egress: &Arc<dyn Egress>,
     addrs: &[SocketAddr],
     timeout: Duration,
+    resources: Option<ResourceGuard>,
 ) -> Result<egress::UdpSocket, Refusal> {
     let deadline = tokio::time::Instant::now() + timeout;
     let mut last_error = None;
@@ -378,6 +413,9 @@ async fn egress_udp(
         }
         match tokio::time::timeout_at(deadline, egress.connect_udp(*addr)).await {
             Ok(Ok(sock)) => {
+                if let Some(resources) = &resources {
+                    sock.0.retain_resources(resources.clone());
+                }
                 if !egress.available() {
                     return Err(unavailable());
                 }

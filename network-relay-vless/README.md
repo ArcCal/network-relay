@@ -99,10 +99,16 @@ restart (the program says so when it notices one).
 - **Writing**: each VLESS connection has a task that sends and flushes
   what the tunnel writes (up to 8 messages of 16 KiB queued), since
   network-relay writes to a tunnel as to a kernel socket, without flushing.
+  An explicit flush waits for local socket completion, not a remote
+  acknowledgment. Writer failures wake waiting readers and flushes; received
+  payload and queued UDP replies precede their terminal errors.
   Messages from the server are limited to 256 KiB.
 - **Ending**: when a tunnel ends, queued data and its WebSocket close get
   at most five seconds before the connection is dropped. Tunnel, user and
   memory reservations stay charged until background I/O releases the socket.
+  Failed or canceled connection attempts retain their reservations too.
+  Replying to a received WebSocket Close uses the same bounded close budget;
+  error Close codes and missing or truncated Close handshakes remain errors.
   When the device
   resets it, the VLESS connection is reset (`SO_LINGER` 0) at once.
 
@@ -144,8 +150,11 @@ and this relay cannot remove them.
    a request: the server's response header comes with its first data. The
    relay therefore answers CONNECT and CONNECT-UDP with 2xx once the VLESS
    request is sent; a destination the VLESS server cannot reach, or a user
-   ID it rejects, shows as the tunnel being reset right after (the relay
-   reports an error, not an empty answer). For the same reason only the
+   ID it rejects, usually shows as the tunnel being reset right after.
+   A valid response header followed by a normal WebSocket close cannot be
+   distinguished from an empty destination response: the tested Xray
+   version uses this sequence when the destination refuses its connection.
+   For the same reason only the
    first address of a name is tried in practice; `ip_preference` picks
    which family comes first.
 4. **No half-close.** A WebSocket close ends both directions, so when a

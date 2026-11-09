@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- network-relay-vless propagates background write failures, waits for local socket flush completion, and answers received WebSocket Close frames within the existing five-second cleanup budget. Buffered payload and UDP replies precede their terminal errors; error Close codes remain errors. TCP half-close support is unchanged.
+
+- Egress connection attempts retain tunnel, per-user and memory reservations before post-connect validation and while canceled or unjoined attempts close their sockets. The portable NF test host now sets TCP_NODELAY as the production NF and RS clients already do.
+
 - Network Relay NF reports certificate failures received while native TCP or QUIC is waiting without replacing them with a generic opening timeout. Trust-evaluation errors retain the expected server name and native reason; recoverable network and TLS waiting states keep their existing retry behavior.
 
 - network-relay-vless preserves zero-length UDP datagrams using the existing VLESS length framing. Empty and nonempty packets can share a flow with compatible downstreams; the tested Xray version still discards empty packets in its own implementation.

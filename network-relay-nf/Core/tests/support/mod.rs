@@ -65,6 +65,7 @@ impl Stream {
         })
     }
     fn tcp(tcp: HostStream, parent: u64) -> Arc<Self> {
+        tcp.set_nodelay(true).unwrap();
         let socket = tcp.into_std().unwrap();
         let handle = socket.try_clone().unwrap();
         let stream = Self::split(HostStream::from_std(socket).unwrap(), parent);
@@ -169,6 +170,7 @@ impl Backend {
                                     SocketAddr::new(options.host.parse().unwrap(), options.port);
                                 if event.kind == OPEN_TCP {
                                     let tcp = HostStream::connect(address).await?;
+                                    tcp.set_nodelay(true)?;
                                     let local = tcp.local_addr()?;
                                     let name =
                                         rustls_pki_types::ServerName::try_from(options.server_name)

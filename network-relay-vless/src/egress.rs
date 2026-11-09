@@ -76,7 +76,7 @@ impl Egress for VlessEgress {
 /// half a datagram on the stream.
 struct VlessUdp {
     outgoing: mpsc::Sender<Vec<u8>>,
-    incoming: Mutex<mpsc::Receiver<Vec<u8>>>,
+    incoming: Mutex<mpsc::Receiver<io::Result<Vec<u8>>>>,
     local: SocketAddr,
     peer: SocketAddr,
     tasks: [JoinHandle<()>; 2],
@@ -112,7 +112,7 @@ impl VlessUdp {
                     if length > MAX_UDP_PAYLOAD {
                         continue;
                     }
-                    match received.try_send(payload) {
+                    match received.try_send(Ok(payload)) {
                         Ok(()) | Err(mpsc::error::TrySendError::Full(_)) => {}
                         Err(mpsc::error::TrySendError::Closed(_)) => return Ok(()),
                     }
@@ -121,6 +121,10 @@ impl VlessUdp {
             .await;
             if let Err(e) = result {
                 tracing::debug!("VLESS UDP flow ended: {e}");
+                // Preserve already queued datagrams before reporting the
+                // terminal error. This is one bounded, per-flow wait and is
+                // cancelled when the flow owner aborts its reader task.
+                let _ = received.send(Err(e)).await;
             }
         });
         Self { outgoing, incoming: Mutex::new(incoming), local, peer, tasks: [write, read], retain }
@@ -162,7 +166,7 @@ impl DatagramIo for VlessUdp {
         Box::pin(async move {
             let datagram = self.incoming.lock().await.recv().await.ok_or_else(|| {
                 io::Error::new(io::ErrorKind::ConnectionReset, "the VLESS server closed the UDP flow")
-            })?;
+            })??;
             let n = datagram.len().min(data.len());
             data[..n].copy_from_slice(&datagram[..n]);
             Ok(n)
@@ -192,6 +196,10 @@ mod tests {
     use tokio_tungstenite::tungstenite::{Bytes, Message};
 
     async fn peer(initial_reply: Option<Vec<u8>>) -> (VlessConfig, JoinHandle<()>) {
+        peer_then(initial_reply, None).await
+    }
+
+    async fn peer_then(initial_reply: Option<Vec<u8>>, terminal: Option<Message>) -> (VlessConfig, JoinHandle<()>) {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let config = VlessConfig {
             server_host: "127.0.0.1".into(),
@@ -212,6 +220,10 @@ mod tests {
                 reply.extend(initial);
             }
             ws.send(Message::Binary(reply.into())).await.unwrap();
+            if let Some(message) = terminal {
+                ws.send(message).await.unwrap();
+                return;
+            }
             while let Some(Ok(message)) = ws.next().await {
                 match message {
                     Message::Binary(data) => ws.send(Message::Binary(data)).await.unwrap(),
@@ -256,5 +268,82 @@ mod tests {
         assert_eq!(receive(&flow).await, b"still open");
         drop(flow);
         tokio::time::timeout(Duration::from_secs(2), task).await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn buffered_datagram_precedes_the_original_read_error() {
+        let (config, task) = peer_then(Some(vec![0, 1, 42]), Some(Message::Text("invalid UDP stream".into()))).await;
+        let flow = VlessEgress::new(config).connect_udp("192.0.2.1:53".parse().unwrap()).await.unwrap();
+        assert_eq!(receive(&flow).await, [42]);
+        let mut data = [0; 16];
+        let error = tokio::time::timeout(Duration::from_secs(2), flow.recv(&mut data)).await.unwrap().unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData, "{error}");
+        assert!(error.to_string().contains("text WebSocket message"), "{error}");
+        drop(flow);
+        tokio::time::timeout(Duration::from_secs(2), task).await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn full_receive_queue_cancels_without_holding_a_socket_or_blocking_another_flow() {
+        let (mut config, echo_task) = peer(None).await;
+        let sibling = VlessEgress::new(config.clone()).connect_udp("192.0.2.2:53".parse().unwrap()).await.unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        config.server_port = listener.local_addr().unwrap().port();
+        let (sent, error_sent) = tokio::sync::oneshot::channel();
+        let closing_peer = tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(tcp).await.unwrap();
+            assert!(matches!(ws.next().await, Some(Ok(Message::Binary(_)))));
+            let mut reply = vec![0, 0];
+            for number in 0..UDP_QUEUE {
+                reply.extend_from_slice(&[0, 1, number as u8]);
+            }
+            ws.send(Message::Binary(reply.into())).await.unwrap();
+            ws.send(Message::Text("invalid after a full queue".into())).await.unwrap();
+            sent.send(()).unwrap();
+            assert!(matches!(ws.next().await, Some(Ok(Message::Close(_)))));
+            match ws.flush().await {
+                Ok(()) => {
+                    let mut data = [0; 1];
+                    match ws.get_mut().read(&mut data).await {
+                        Ok(0) => {}
+                        Err(e) if e.kind() == io::ErrorKind::ConnectionReset => {}
+                        other => panic!("the cancelled flow must release its TCP socket: {other:?}"),
+                    }
+                }
+                // Cancellation need not keep the read half alive for our
+                // Close acknowledgment; an unread reply can cause a reset.
+                Err(tokio_tungstenite::tungstenite::Error::Io(e)) if e.kind() == io::ErrorKind::ConnectionReset => {}
+                other => panic!("unexpected Close acknowledgment failure: {other:?}"),
+            }
+        });
+        let stream = VlessStream::open(&config, Command::Udp, "192.0.2.1:53".parse().unwrap()).await.unwrap();
+        let flow = VlessUdp::start(stream, "192.0.2.1:53".parse().unwrap());
+        let admission = Arc::new(tokio::sync::Semaphore::new(1));
+        flow.retain_resources(Arc::new(admission.clone().try_acquire_owned().unwrap()));
+        error_sent.await.unwrap();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while flow.incoming.lock().await.len() != UDP_QUEUE {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(sibling.send(b"independent").await.unwrap(), 11);
+        assert_eq!(receive(&sibling).await, b"independent");
+        assert!(!flow.tasks[1].is_finished(), "the terminal error must wait behind buffered datagrams");
+        drop(flow);
+        tokio::time::timeout(Duration::from_secs(2), closing_peer).await.unwrap().unwrap();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while admission.available_permits() != 1 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(sibling.send(b"still independent").await.unwrap(), 17);
+        assert_eq!(receive(&sibling).await, b"still independent");
+        drop(sibling);
+        tokio::time::timeout(Duration::from_secs(2), echo_task).await.unwrap().unwrap();
     }
 }

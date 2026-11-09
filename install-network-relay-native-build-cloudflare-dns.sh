@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Interactive repeatable deployment: native Linux build + Certbot Cloudflare DNS-01.
-# Requires Debian 12+ or Ubuntu 24.04+, Bash 4+, systemd and amd64/arm64.
+# Requires Debian 11+ or Ubuntu 22.04+, Bash 4+, systemd and amd64/arm64.
 # Run from the complete checkout on the server. --plan makes no changes.
 # Token permissions: Zone:DNS:Edit and Zone:Zone:Read for the selected zone.
 # Direct client access uses TCP/UDP 443; DNS-01 has no A/AAAA target prerequisite.
@@ -16,7 +16,7 @@
 # - Keep a clearly named executable Bash installer in the repository root.
 #   Modify this installer, not application code or shared source templates.
 #   Read repository design/deployment documentation before making changes.
-# - Support Debian 12+ and Ubuntu 24.04+ without an artificial upper version cap.
+# - Support Debian 11+ and Ubuntu 22.04+ without an artificial upper version cap.
 #   Detect native amd64/arm64 and build the corresponding pinned server.
 # - Accept only the domain and hidden CF_API_TOKEN as terminal input. An inherited
 #   token can skip its prompt; on reruns an empty answer reuses this domain's
@@ -235,7 +235,7 @@ domain's saved renewal token; CF_API_TOKEN may be inherited). Install apt
 Certbot with its Cloudflare DNS plugin, obtain a DNS-01 certificate, configure
 renewal/reload, systemd, a website and a protected Apple device profile, then
 stage private client exports, then publish them after HTTPS and TCP/UDP checks.
-Debian 12+ or Ubuntu 24.04+, systemd 249+, 5 GiB free under /opt and 1 GiB of
+Debian 11+ or Ubuntu 22.04+, systemd 247+, 5 GiB free under /opt and 1 GiB of
 available memory plus swap required.
 
 Defaults: user iphone, a generated 22-character mixed-case/digit/symbol password,
@@ -268,11 +268,11 @@ nr_host() {
     [[ $VERSION_ID =~ ^[0-9]+([.][0-9]+)?$ ]] || nr_die 'A released Debian/Ubuntu version is required.'
     major=${VERSION_ID%%.*}; minor=${VERSION_ID#*.}
     case $ID in
-        debian) (( 10#$major >= 12 )) || nr_die 'Debian 12+ is required.' ;;
+        debian) (( 10#$major >= 11 )) || nr_die 'Debian 11+ is required.' ;;
         ubuntu)
-            [[ $VERSION_ID == *.* ]] || nr_die 'Ubuntu 24.04+ is required.'
-            (( 10#$major > 24 || (10#$major == 24 && 10#$minor >= 4) )) || nr_die 'Ubuntu 24.04+ is required.' ;;
-        *) nr_die 'Only Debian 12+ and Ubuntu 24.04+ are supported.' ;;
+            [[ $VERSION_ID == *.* ]] || nr_die 'Ubuntu 22.04+ is required.'
+            (( 10#$major > 22 || (10#$major == 22 && 10#$minor >= 4) )) || nr_die 'Ubuntu 22.04+ is required.' ;;
+        *) nr_die 'Only Debian 11+ and Ubuntu 22.04+ are supported.' ;;
     esac
 }
 # Accept only a bare ASCII DNS hostname. Reject URLs, addresses, wildcards and
@@ -1052,7 +1052,7 @@ $account
 EOF
 }
 # Adapt the repository service template without changing that tracked file.
-# systemd 249+ is the supported manager baseline for this installer.
+# systemd 247+ is supported. PrivateIPC= is available from systemd 248.
 #
 # - Keep the non-root identity and only CAP_NET_BIND_SERVICE for TCP/UDP 443.
 # - Make the host filesystem read-only. LogsDirectory/RuntimeDirectory and
@@ -1073,7 +1073,7 @@ EOF
 nr_unit_text() {
     awk -v service="$SERVICE" -v binary="$BIN" -v config="$CONFIG" \
         -v certroot="$CERT_ROOT" -v exports="$EXPORTS" -v tools="$TOOLS" \
-        -v logs="$LOGS" -v runtime="$RUNTIME" '
+        -v logs="$LOGS" -v runtime="$RUNTIME" -v manager_version="$manager_version" '
         /^(LogsDirectory|RuntimeDirectory|LogsDirectoryMode|RuntimeDirectoryMode)=/ { next }
         /^ExecStart=/ { print "ExecStart=" binary " serve --config " config; next }
         { print }
@@ -1085,7 +1085,7 @@ nr_unit_text() {
             print "UMask=0077"
             print "LimitCORE=0"
             print "UnsetEnvironment=CF_API_TOKEN"
-            print "PrivateIPC=yes"
+            if (manager_version >= 248) print "PrivateIPC=yes"
             print "ProtectProc=invisible"
             print "SystemCallFilter=~@mount @reboot @swap @raw-io @debug @cpu-emulation @obsolete memfd_create"
             print "InaccessiblePaths=-" certroot " -" exports " -" tools " -/dev/shm"
@@ -1651,7 +1651,8 @@ nr_require_systemd() {
     version=$(systemctl --version) || nr_die 'Cannot determine the systemd version.'
     version=${version%%$'\n'*}
     [[ $version =~ ^systemd[[:space:]]([0-9]+) ]] || nr_die 'Cannot determine the systemd version.'
-    (( 10#${BASH_REMATCH[1]} >= 249 )) || nr_die 'systemd 249+ is required for the service sandbox.'
+    manager_version=${BASH_REMATCH[1]}
+    (( 10#$manager_version >= 247 )) || nr_die 'systemd 247+ is required for the service sandbox.'
 }
 # The one-job native build was measured in memory-capped cgroups without swap:
 # it was OOM-killed at 768 MiB and completed at 896 MiB. Require 1 GiB of

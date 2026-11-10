@@ -3,11 +3,12 @@
 set -euo pipefail
 NF_ROOT=$(cd "$(dirname "$0")/.." && pwd)
 NF_LIB=${1:?Pass the Rust static-library directory}
-python3 "$NF_ROOT/scripts/test-tls-errors.py" --swiftc "$(xcrun --find swiftc)"
+NF_SDK=$(xcrun --sdk macosx --show-sdk-path)
+python3 "$NF_ROOT/scripts/test-tls-errors.py" --swiftc "$(xcrun --find swiftc)" \
+    --target arm64-apple-macosx27.0 --sdk "$NF_SDK"
 mkdir -p "$NF_ROOT/build"
 NF_MODULES=$(mktemp -d "$NF_ROOT/build/native-smoke-modules.XXXXXX")
 trap 'rm -rf "$NF_MODULES"' EXIT
-NF_SDK=$(xcrun --sdk macosx --show-sdk-path)
 # Build from source into our own directory. SwiftPM may use either its native
 # layout or Xcode's Products/Release layout; neither is a public module API.
 cp "$NF_ROOT/App/Sources/NetworkRelayNFBridge/include/NetworkRelayNFBridge.h" "$NF_MODULES/"

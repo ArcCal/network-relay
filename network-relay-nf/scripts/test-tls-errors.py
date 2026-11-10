@@ -203,10 +203,17 @@ def declaration(source, signature):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--swiftc", default="swiftc")
+    parser.add_argument("--target", help="Swift target triple supplied by the native build")
+    parser.add_argument("--sdk", help="SDK path supplied by the native build")
     args = parser.parse_args()
     compiler = shutil.which(args.swiftc)
     if compiler is None:
         parser.error("swiftc was not found; install Swift or pass --swiftc PATH")
+    platform_flags = []
+    if args.target is not None:
+        platform_flags += ["-target", args.target]
+    if args.sdk is not None:
+        platform_flags += ["-sdk", args.sdk]
     source = (Path(__file__).resolve().parents[1] /
               "App/Sources/NetworkRelayNF/NativeClient.swift").read_text()
     declarations = [declaration(source, signature) for signature in (
@@ -237,7 +244,7 @@ def main():
                            XDG_CACHE_HOME=str(build / "cache"))
         (build / "Check.swift").write_text(program)
         executable = build / "tls-check"
-        subprocess.run([compiler, "-parse-as-library", "-swift-version", "5", "-warnings-as-errors",
+        subprocess.run([compiler, *platform_flags, "-parse-as-library", "-swift-version", "5", "-warnings-as-errors",
                         str(build / "Check.swift"), "-o", str(executable)], env=environment, check=True)
         subprocess.run([str(executable)], env=environment, check=True)
 

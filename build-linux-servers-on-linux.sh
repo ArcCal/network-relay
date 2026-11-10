@@ -449,6 +449,8 @@ lr_build_rust() {
         --target "$triple" --target-dir "$target_dir" --jobs "$jobs" "$@"
 }
 lr_prepare_caddy() {
+    # A pipe permits direct fallback on timeouts; explicit caller policy wins.
+    export GOPROXY=${GOPROXY-'https://proxy.golang.org|direct'}
     local build_mod="$caddy_src/build-plugins.mod" build_sum="$caddy_src/build-plugins.sum"
     local plugin_import="$caddy_src/cmd/caddy/cloudflare_dns_build.go" path go_version
     [[ -f $caddy_src/go.mod && -f $caddy_src/go.sum && -d $caddy_src/cmd/caddy &&
@@ -490,6 +492,7 @@ lr_prepare_caddy() {
 lr_build_caddy() {
     local arch=$1
     cd -- "$caddy_src"
+    export GOPROXY=${GOPROXY-'https://proxy.golang.org|direct'}
     export GOWORK=off GOFLAGS='' GOOS=linux GOARCH="$arch" GOAMD64=v1 GOARM64=v8.0 CGO_ENABLED=0
     go build -modfile "$caddy_src/build-plugins.mod" -mod=readonly -tags http2legacy -trimpath -p "$jobs" \
         -o "$work/caddy-network-relay-$arch" ./cmd/caddy

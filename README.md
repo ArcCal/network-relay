@@ -964,6 +964,13 @@ particular, the all-target Mac script keeps its Desktop folder named with the
 local date and time to the second. Existing output folders are never overwritten.
 Artifacts retain their logs, source revisions and checksums.
 
+The all-target Mac build exports successful Mac products before building Linux
+targets, so a later failure preserves them and its logs. The run still fails;
+the complete-build manifest and checksums are written only after all builds pass.
+Caddy builds default to the official Go module proxy with direct-source fallback
+on download errors. An explicitly exported `GOPROXY` takes precedence. Existing
+TLS and module checksum verification settings remain unchanged.
+
 Downloaded project sources, compiler intermediates and this invocation's build
 caches are private and removed on success, failure or a handled signal. On Linux,
 large compiler work can use a temporary disk-backed directory when `/tmp` is

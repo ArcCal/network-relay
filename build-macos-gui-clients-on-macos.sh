@@ -528,9 +528,6 @@ rg_servers() {
         rg_binary "$work/caddy-network-relay-$arch" caddy-network-relay "$arch"
     done
 }
-if [[ $mode == all ]]; then rg_step linux-servers-both-architectures rg_servers; fi
-rg_require
-
 rg_app() {
     local source=$1 name=$2 executable description
     [[ -d $source && ! -L $source ]] || rg_die "Missing application: $source"
@@ -571,6 +568,8 @@ rg_step collect-rs-app rg_app "$repo/network-relay-rs/dist/Network Relay RS.app"
 rg_step collect-nf-zip rg_zip "$repo/network-relay-nf/dist" NetworkRelayNF
 rg_step collect-rs-zip rg_zip "$repo/network-relay-rs/dist" NetworkRelayRS
 if [[ $mode == all ]]; then rg_step collect-macos-rust-cli rg_mac_cli; fi
+# Export successful Mac products before an independent Linux build can fail.
+if [[ $mode == all ]]; then rg_step linux-servers-both-architectures rg_servers; fi
 rg_require
 rg_source_record() {
     [[ $(git -C "$1" rev-parse HEAD) == "$3" ]] || rg_die "Source revision changed: $2"

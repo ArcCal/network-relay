@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Mac all-target builds preserve completed Mac products if a later Linux build fails. Caddy builds try direct sources after official Go proxy errors unless an exported `GOPROXY` selects another policy; failed downloads still fail the build.
+
 - Network Relay NF's TLS regression test uses the native build's explicit macOS SDK and arm64 macOS 27.0 target, matching its other smoke checks instead of defaulting to the host OS target. Portable Linux invocation remains unchanged.
 
 - network-relay-vless propagates background write failures, waits for local socket flush completion, and answers received WebSocket Close frames within the existing five-second cleanup budget. Buffered payload and UDP replies precede their terminal errors; error Close codes remain errors. TCP half-close support is unchanged.

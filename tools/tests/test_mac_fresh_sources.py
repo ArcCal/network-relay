@@ -16,6 +16,7 @@ import subprocess
 import tempfile
 import threading
 import unittest
+import zipfile
 
 ROOT = Path(__file__).resolve().parents[2]
 GIT = shutil.which("git")
@@ -192,6 +193,110 @@ class MacFreshSourceTests(unittest.TestCase):
         self.assertFalse(os.path.lexists(output / ".work"))
         checkout = re.search(r"Temporary checkout: ([^\n]+)", result.stdout)[1]
         self.assertFalse(Path(checkout).exists())
+
+
+    def test_linux_build_failure_preserves_successful_gui_artifacts_and_cleans_work(self):
+        # Exercise the real orchestrator, with simulated native inspection and
+        # builds. This verifies artifact handling, not Mac signatures or builds.
+        for name in ("build-all-targets-on-macos.sh", "build-macos-gui-clients-on-macos.sh"):
+            shutil.copyfile(ROOT / name, self.remote / name)
+        tag_commit = self.git("-C", str(self.remote), "rev-parse", "fixture-tag").strip()
+        (self.remote / "build-linux-servers-on-linux.sh").write_text(
+            f"LR_CLOUDFLARE_DNS_TAG=fixture-tag\nLR_CLOUDFLARE_DNS_COMMIT={tag_commit}\n"
+            "lr_prepare_caddy() { echo 'fixture Linux build failure' >&2; return 37; }\n")
+        for name in ("network-relay-nf", "network-relay-rs"):
+            folder = self.remote / name; folder.mkdir()
+            (folder / "build-macos.sh").write_text(r'''#!/bin/bash
+python3 - "$0" <<'BUILD'
+import json,os,pathlib,sys,zipfile
+root=pathlib.Path(sys.argv[1]).parent
+label='NF' if root.name.endswith('-nf') else 'RS'
+keys=['RELAY_BUILD_WORK_ROOT','CARGO_HOME','RUSTUP_HOME','GOCACHE','GOMODCACHE','TMPDIR','HOMEBREW_CACHE','RELAY_FRESH_SOURCE_ROOT']
+pathlib.Path(os.environ['TEST_BUILD_ENV']).write_text(json.dumps({k:os.environ[k] for k in keys}))
+cache=pathlib.Path(os.environ['GOMODCACHE'])/'fixture';cache.mkdir(parents=True,exist_ok=True)
+(cache/'readonly.go').write_text('cached');cache.chmod(0o555)
+app=root/'dist'/f'Network Relay {label}.app'
+binary=app/'Contents/MacOS/FixtureApp';binary.parent.mkdir(parents=True)
+binary.write_bytes(f'fixture {label} executable\n'.encode())
+(app/'Contents/Info.plist').write_text('fixture plist')
+with zipfile.ZipFile(root/'dist'/f'NetworkRelay{label}-fixture-macos-arm64.zip','w') as archive:
+    for path in app.rglob('*'):
+        if path.is_file():archive.write(path,path.relative_to(app.parent))
+if label=='RS':
+    cli=pathlib.Path(os.environ['RELAY_BUILD_WORK_ROOT'])/'rust-rs-target/aarch64-apple-darwin/release/network-relay-rs'
+    cli.parent.mkdir(parents=True);cli.write_text('#!/bin/sh\nexit 0\n');cli.chmod(0o755)
+BUILD
+''')
+        self.git("-C", str(self.remote), "add", ".")
+        self.git("-C", str(self.remote), "commit", "-m", "Exercise successful GUI export before Linux failure")
+        self.git("-C", str(self.remote), "update-server-info")
+        for url in ("https://github.com/ArcCal/caddy-network-relay.git", "https://github.com/caddy-dns/cloudflare.git"):
+            self.git("config", "--file", str(self.config), "--add", f"url.{self.remote_url}.insteadOf", url)
+        native = self.root / "native-tools.py"
+        native.write_text(r'''import json,os,pathlib,shutil,sys,zipfile
+tool=pathlib.Path(sys.argv[1]).name;args=sys.argv[2:]
+with open(os.environ['TEST_NATIVE_CALLS'],'a') as log:log.write(json.dumps([tool,args])+'\n')
+if tool=='plutil':print('FixtureApp')
+elif tool=='file':print('Mach-O 64-bit executable arm64')
+elif tool=='ditto':shutil.copytree(args[-2],args[-1])
+elif tool=='unzip':
+    with zipfile.ZipFile(args[-1]) as archive:assert archive.testzip() is None
+elif tool=='codesign':
+    assert pathlib.Path(args[-1]).exists()
+    if '--verify' in args:assert '--strict' in args
+''')
+        for name in ("plutil", "file", "ditto", "unzip", "codesign"):
+            self.tool(name, 'exec python3 "$TEST_NATIVE_TOOL" "$0" "$@"')
+        for name in ("go", "zig", "cargo-zigbuild"):
+            self.tool(name, "exit 0")
+        self.tool("df", "printf 'Filesystem 1024-blocks Used Available Capacity Mounted\\nfixture 99999999 0 99999999 0%% /\\n'")
+        toolchain = self.root / "installed-rust"
+        (toolchain / "bin").mkdir(parents=True)
+        for name in ("rustc", "cargo"):
+            binary = toolchain / "bin" / name; binary.write_text("#!/bin/sh\nexit 0\n"); binary.chmod(0o755)
+        for target in ("aarch64-apple-darwin", "x86_64-unknown-linux-musl", "aarch64-unknown-linux-musl"):
+            libraries = toolchain / "lib/rustlib" / target / "lib"
+            libraries.mkdir(parents=True); (libraries / "libstd-fixture.rlib").touch()
+        self.tool("rustup", 'case "$1" in which) printf "%s/bin/rustc\\n" "$TEST_INSTALLED_RUST" ;; '
+                  'toolchain) mkdir -p "$RUSTUP_HOME/toolchains"; ln -s "$4" "$RUSTUP_HOME/toolchains/$3" ;; esac')
+        caller_cache = self.root / "caller-cargo"; caller_cache.mkdir()
+        (caller_cache / "sentinel").write_text("preserve")
+        capture = self.root / "private-environment.json"
+        native_calls = self.root / "native-calls.jsonl"
+        output = self.root / "partial-artifacts"
+        result = subprocess.run([BASH, str(ROOT / "build-all-targets-on-macos.sh"), "--output", str(output)],
+                                env=dict(self.env, TEST_INSTALLED_RUST=str(toolchain), TEST_BUILD_ENV=str(capture),
+                                         TEST_NATIVE_TOOL=str(native), TEST_NATIVE_CALLS=str(native_calls),
+                                         CARGO_HOME=str(caller_cache)), capture_output=True, text=True, timeout=30)
+        transcript = result.stdout + result.stderr
+        self.assertNotEqual(result.returncode, 0, transcript)
+        self.assertIn("FAILED (exit 37)", transcript)
+        for label in ("nf", "rs"):
+            self.assertIn(f"==> macos-network-relay-{label}\n    ok", transcript)
+        self.assertNotIn("All selected builds and artifact checks passed.", transcript)
+        self.assertIn("fixture Linux build failure", (output / "logs/linux-servers-both-architectures.log").read_text())
+        values = json.loads(capture.read_text())
+        work = Path(values["RELAY_BUILD_WORK_ROOT"])
+        for key, value in values.items():
+            self.assertTrue(Path(value).is_relative_to(work), (key, value, work))
+            self.assertFalse(Path(value).exists(), (key, value))
+        self.assertFalse(os.path.lexists(output / ".work"))
+        checkout = re.search(r"Temporary checkout: ([^\n]+)", result.stdout)[1]
+        self.assertFalse(Path(checkout).exists())
+        self.assertEqual((caller_cache / "sentinel").read_text(), "preserve")
+        self.assertFalse((output / "MANIFEST.txt").exists())
+        self.assertFalse((output / "SHA256SUMS").exists())
+        calls = [json.loads(line) for line in native_calls.read_text().splitlines()] if native_calls.exists() else []
+        for label in ("NF", "RS"):
+            app = output / f"network-relay-{label.lower()}-macos-arm64.app"
+            self.assertTrue(app.is_dir(), f"Successful {label} application was removed after Linux failure")
+            self.assertEqual((app / "Contents/MacOS/FixtureApp").read_bytes(), f"fixture {label} executable\n".encode())
+            with zipfile.ZipFile(output / f"NetworkRelay{label}-fixture-macos-arm64.zip") as archive:
+                self.assertEqual(archive.read(f"Network Relay {label}.app/Contents/MacOS/FixtureApp"),
+                                 f"fixture {label} executable\n".encode())
+            for path in (Path(values["RELAY_FRESH_SOURCE_ROOT"]) / f"network-relay-{label.lower()}/dist/Network Relay {label}.app", app):
+                self.assertIn(["codesign", ["--verify", "--deep", "--strict", str(path)]], calls)
+        self.assertEqual((output / "network-relay-rs-macos-arm64").read_text(), "#!/bin/sh\nexit 0\n")
 
 
     def test_legacy_all_product_builder_reloads_remote_engine_and_cleans_on_exit(self):

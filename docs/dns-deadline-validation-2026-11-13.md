@@ -143,6 +143,21 @@ Full logs, manifests and downloaded artifacts are retained in the audit
 workspace. Native fixture success does not establish installed-profile,
 physical iPhone or WAN acceptance.
 
+## Installer payload follow-up
+
+The first post-merge workflow, `43526947906`, passed Rust tests but correctly
+failed the installer-source consistency check: the standalone source installer
+still embedded the old `src/egress.rs` and `src/policy.rs`. Both standalone
+installers were regenerated with the existing packager and their checksums
+verified. The download-only installer is byte-identical. The source archive
+contains 230 files, all matching current source; only those two entries changed.
+The first local full installer rerun also failed its disk-space prerequisite.
+After removing only this audit's generated Go build cache, 5.5 GiB was available
+for a fresh run. The repeated installer suite passes 100 tests with 11
+explicit environment/privilege skips, and all 90 build-tool tests pass. Both
+standalone shell syntax checks and SHA-256 checks pass. Skipped tests are not
+counted as passes. Earlier failed runs remain recorded as failures.
+
 ## Remaining limits
 
 One lookup can still consume the entire budget before all configured resolvers

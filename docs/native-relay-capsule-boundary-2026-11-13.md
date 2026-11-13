@@ -73,8 +73,10 @@ failure is relevant to that configuration, while the measured lower H3
 loopback throughput alone cannot explain the report. H3 avoids the 63-byte
 failure in these tests, but its separate startup/PMTU losses and different CPU
 cost prevent treating a global transport-default change as regression-free.
-Physical iPhone, installed-system-profile, current uncommitted candidates and
-the user's real network remain separate acceptance scopes.
+Physical iPhone, installed-system-profile, current candidate behavior and
+the user's real network remain separate acceptance scopes. The candidate UDP
+and inner-HTTP/3 comparisons are recorded in
+[native candidate validation](native-candidate-validation-2026-11-13.md).
 
 ## Standards constraint
 

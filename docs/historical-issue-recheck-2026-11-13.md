@@ -2,7 +2,7 @@
 
 All69 PR summaries (network-relay1-50,Caddy1-19), all69 discussion timelines, all69 review-submission lists and all69 inline-review-thread lists retrieved. Discussion count14 across3 PRs; submitted reviews0; inline threads0; no reported fetch errors. Issue search returned zero results. Historical claims are not independent current validation; inventory remains open.
 
-Historical failures remain open unless matching evidence establishes their cause and correction. Passing later tests alone does not close an unexplained failure. Product changes remain uncommitted.
+Historical failures remain open unless matching evidence establishes their cause and correction. Passing later tests alone does not close an unexplained failure. Candidate changes are committed and pushed on separate audit branches. Main remains unchanged; failures are not waived.
 
 ## H01: Slow Apple system Relay with generated mobileconfig
 
@@ -10,7 +10,7 @@ Source: User report; network-relay PR19
 
 Status: OPEN: native baseline now measured; field/WAN cause unknown
 
-Runs 43429591616 and 43431073499 each passed 96 positive cases / 608 samples and 16 rejection controls for an HTTP/1 origin. Separate UDP and inner HTTP/3 runs revealed failures tracked in H17 and H18. Both baseline one-click installers already generate H2-only profiles; low-level profile generation permits H3. Installed-profile, WAN/iPhone, RTT/loss and current-candidate native acceptance remain open. Source-derived candidate input remains blocked pending authorization. Native H2 UDP63 truncation is now reproduced on macOS15.8.2 and27.0.1 before server DATA parsing, tracked inH18; it is a concrete failure mechanism, not full field attribution.
+Runs 43429591616 and 43431073499 each passed 96 positive cases / 608 samples and 16 rejection controls for an HTTP/1 origin. Separate UDP and inner HTTP/3 runs revealed failures tracked in H17 and H18. Both baseline one-click installers already generate H2-only profiles; low-level profile generation permits H3. Installed-profile, WAN/iPhone, RTT/loss and current-candidate native acceptance remain open. Candidate upload and branch pushes are authorized; ongoing native comparisons retain all failures in the native candidate report. Native H2 UDP63 truncation is now reproduced on macOS15.8.2 and27.0.1 before server DATA parsing, tracked inH18; it is a concrete failure mechanism, not full field attribution.
 
 ## H02: Earlier CF H3 timeout around ten minutes
 
@@ -155,3 +155,16 @@ Source: caddy-network-relay PR11 discussion and commit184dd1a
 Status: CURRENT POLICY IDENTIFIED; large-scale resource acceptance remains separate
 
 PR11 initially restored 16 pre-first-byte slots. Later commit184dd1a intentionally moved pending-header accounting to first byte because RFC9000 section3.2 implicitly opens lower stream IDs. Current TestH3UnwrittenStreamsAreBounded allows 200 implicit empty streams; TestH3IncompleteHeadersPerConnection still rejects 17 started incomplete requests. Do not restore the obsolete16-empty-stream rule. QUIC stream/connection bounds and native high-concurrency behavior must be assessed separately.
+
+## H20: Native H3 TCP downloads intermittently stop before completion
+
+Source: macOS baseline run43478717847 and candidate-repeat run43476603192
+
+Status: OPEN: baseline and candidate observations; causal attribution unresolved
+
+Unchanged Caddy baseline macOS 27: four 64 MiB downloads on one H3 connection all timeout near 120.85 seconds after 44-47 MiB forwarded per stream. Candidate macOS 15: one of three serial 64 MiB downloads times out on actual H3 auto route. HTTP/1.1 TLS origin; distinct from H2 UDP 63. Same bounded observer runs 43482779652/43482785124 are pending; no transport policy relaxation. Partial ABBA cannot establish regression or improvement.
+
+Further baseline run 43480897922 reproduces four parallel H3 timeouts near
+120.06 seconds after about 5-7 MB per stream; both candidate phases pass.
+Flow observations 43482779652 and 43482785124 pass 32/112/16 per binary but
+do not reproduce the stall. Unchanged-binary watchdog 43488457625 is pending.

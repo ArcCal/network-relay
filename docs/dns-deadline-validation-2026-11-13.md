@@ -70,8 +70,8 @@ Local validation passed:
 - Root server and VLESS all-target Clippy with warnings denied; CF/WARP
   all-target compilation with the default egress deadline implementation.
 
-Dedicated macOS validation of this repair is pending separately from the
-instrumented native H3 investigation. No macOS acceptance is claimed here.
+Dedicated macOS validation of the final repair passes as recorded below.
+It is separate from the instrumented native H3 investigation.
 
 The selection regression was also run against the exact production portion of
 commit `649cd2532d0d047f20d25826809eabe7060c2e12` with the new test. After the
@@ -106,8 +106,42 @@ source and test at that revision were identical to main. After reviewing RFC
 timeout or the exact existing `SendAfterClosing` error. It still requires the
 complete buffered reply, a terminal error within the original deadline, and
 prompt failure of subsequent flushes and writes. Production transport code is
-unchanged. The corrected test and partial-answer repair require new native
-runs; the earlier failed runs do not count as full-suite acceptance.
+unchanged. Both final native runs confirm the exact `SendAfterClosing` error;
+the earlier failed runs remain failures and are not relabeled as passes.
+
+## Final native acceptance
+
+Both runs test the exact source revision
+`e3a68147f77191ff5ee6afe297a1599f760d09bd` with Rust 1.99.1 on arm64.
+The diagnostic workflow revision is
+`abb966352880c7521cbd9a1e23e9c2f6e70906b0`. Source manifests include both
+lockfiles, the policy and egress interfaces, DNS implementation and transport
+tests. Every recorded file hash matches the local reviewed source. Both
+commands exit zero and leave tracked source unchanged.
+
+| OS | Run | Policy tests | VLESS tests | New name after backup success |
+| --- | --- | ---: | ---: | ---: |
+| macOS 15.8.2 | [43526507633](https://github.com/ArcCal/network-relay/actions/runs/43526507633) | 5 passed | 49 passed | 2.297 ms |
+| macOS 27.0.1 | [43526503566](https://github.com/ArcCal/network-relay/actions/runs/43526503566) | 5 passed | 49 passed | 1.862 ms |
+
+There are no ignored tests in either native VLESS run. The Linux-only
+`a_stalled_writer_releases_its_socket_after_the_stream_is_dropped` test is
+excluded by its existing target condition; it passes in the 50-test Linux
+suite and is not counted as a macOS pass. Both native suites include the new
+partial-family deadline regression and the strengthened close checks.
+The timing comparison is a controlled local failure fixture, not a production
+latency claim.
+
+Verified artifact ZIP identities:
+
+| OS | Artifact ID | ZIP SHA-256 |
+| --- | --- | --- |
+| 15 | 14086285400 | `aa2f9046fc2bcb0c34cfb0b4add2be648db3d29a47cd82d12a0ba42797d31e17` |
+| 27 | 14086320419 | `bb4aeb82167cc0772e60c86419451c6199c4fa5ba796ae0258c978a374dac4af` |
+
+Full logs, manifests and downloaded artifacts are retained in the audit
+workspace. Native fixture success does not establish installed-profile,
+physical iPhone or WAN acceptance.
 
 ## Remaining limits
 

@@ -837,11 +837,27 @@ mod tests {
         let mut payload = Vec::new();
         let result =
             tokio::time::timeout(CLOSE_WAIT + Duration::from_millis(500), stream.read_to_end(&mut payload)).await;
-        peer.abort();
-        let _ = peer.await;
         assert_eq!(payload, b"complete reply");
         let error = result.expect("peer Close left the blocked writer alive without a deadline").unwrap_err();
-        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        // Depending on kernel buffering, the writer either stays blocked
+        // until its deadline or observes Close before its next queued feed.
+        // RFC 6455 forbids that later data write. Its original error must
+        // remain visible rather than being replaced by a close timeout.
+        let after_close = ws_error(tungstenite::Error::Protocol(tungstenite::error::ProtocolError::SendAfterClosing));
+        assert!(
+            error.kind() == io::ErrorKind::TimedOut
+                || (error.kind() == after_close.kind() && error.to_string() == after_close.to_string()),
+            "unexpected blocked-upload close error: {error}"
+        );
+        eprintln!("blocked-upload close result: {error}");
+        tokio::time::timeout(Duration::from_millis(500), async {
+            stream.flush().await.expect_err("a failed pending upload must not flush successfully");
+            stream.write_all(b"late").await.expect_err("writes must fail after peer Close");
+        })
+        .await
+        .expect("closed writer still waits for peer progress");
+        peer.abort();
+        let _ = peer.await;
     }
 
     #[tokio::test]

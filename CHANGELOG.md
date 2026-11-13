@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- VLESS DNS preserves an already validated A or AAAA answer when the other family reaches the caller's shorter deadline. An expired budget does not start a query or create a cached failure.
+
 - VLESS DNS failures are cached when the relay's shared lookup deadline expires, including after an admission wait. Caller cancellation still does not cache a failure, and a late failed lookup cannot overwrite a fresh successful answer.
 
 - VLESS DNS reuses the last successful resolver for new names instead of repeatedly waiting for a dead first entry. Sequential failover wraps around and resumes after an interrupted attempt on the next uncached lookup; duplicate resolver addresses are queried only once per lookup.

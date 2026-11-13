@@ -86,6 +86,29 @@ waiting for its 2.5-second timeout. This is a controlled DNS failure fixture,
 not a WAN latency claim. All seven real Xray cases and all-target VLESS Clippy
 also pass again with the final selection implementation.
 
+## Partial answers and native close-test follow-up
+
+A further regression reproduced loss of an already validated A or AAAA answer
+when the caller's deadline expired before the other family replied. Resolver
+attempts now share the caller's deadline, allowing the existing partial-answer
+path to return usable addresses. The new test failed at 300 ms before this
+change and passes for both address families afterward. An already expired
+budget starts no upstream query and creates no cached failure.
+
+All 50 VLESS unit tests, all seven explicitly enabled Xray interoperability
+tests, formatting, and all-target Clippy pass locally with this follow-up.
+
+The first macOS 15 and 27 runs against `97bf42c` passed all DNS tests and all
+five selected policy tests. Both failed the same pre-existing WebSocket close
+test: it required a timeout even when a queued write failed first. The transport
+source and test at that revision were identical to main. After reviewing RFC
+6455 sections 5.5.1 and 7.1.7, the test now accepts either the bounded close
+timeout or the exact existing `SendAfterClosing` error. It still requires the
+complete buffered reply, a terminal error within the original deadline, and
+prompt failure of subsequent flushes and writes. Production transport code is
+unchanged. The corrected test and partial-answer repair require new native
+runs; the earlier failed runs do not count as full-suite acceptance.
+
 ## Remaining limits
 
 One lookup can still consume the entire budget before all configured resolvers

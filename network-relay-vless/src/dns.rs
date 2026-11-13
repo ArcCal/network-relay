@@ -39,6 +39,7 @@ pub struct Resolver {
 struct LookupOrder {
     start: (usize, u64),
     active: Option<usize>,
+    deadline: Option<tokio::time::Instant>,
 }
 
 /// Why a resolver could not answer.
@@ -56,18 +57,18 @@ impl Resolver {
 
     pub async fn lookup_until(&self, host: &str, deadline: tokio::time::Instant) -> io::Result<Vec<IpAddr>> {
         let mut order = self.lookup_order();
+        order.deadline = Some(deadline);
         match tokio::time::timeout_at(deadline, self.lookup_ordered(host, &mut order)).await {
-            Ok(result) => result,
-            Err(_) => {
-                // Continue beyond this attempt on the next uncached lookup,
-                // unless another lookup has already selected a working peer.
-                if let Some(index) = order.active {
-                    let next = (index + 1) % self.config.dns_servers.len();
-                    let mut preferred = self.preferred.lock().unwrap_or_else(|e| e.into_inner());
-                    if *preferred == order.start {
-                        *preferred = (next, preferred.1.wrapping_add(1));
-                    }
+            Ok(result) => {
+                if result.as_ref().is_err_and(|e| e.kind() == io::ErrorKind::TimedOut)
+                    && tokio::time::Instant::now() >= deadline
+                {
+                    self.advance_after_timeout(&order);
                 }
+                result
+            }
+            Err(_) => {
+                self.advance_after_timeout(&order);
                 let error = io::Error::new(io::ErrorKind::TimedOut, "DNS lookup timed out");
                 let name = host.strip_suffix('.').unwrap_or(host).to_ascii_lowercase();
                 self.remember(name, Err(Arc::new(copy_error(&error))), FAILURE_TTL);
@@ -84,7 +85,19 @@ impl Resolver {
     }
 
     fn lookup_order(&self) -> LookupOrder {
-        LookupOrder { start: *self.preferred.lock().unwrap_or_else(|e| e.into_inner()), active: None }
+        LookupOrder { start: *self.preferred.lock().unwrap_or_else(|e| e.into_inner()), active: None, deadline: None }
+    }
+
+    fn advance_after_timeout(&self, order: &LookupOrder) {
+        // Continue beyond this attempt on the next uncached lookup,
+        // unless another lookup has already selected a working peer.
+        if let Some(index) = order.active {
+            let next = (index + 1) % self.config.dns_servers.len();
+            let mut preferred = self.preferred.lock().unwrap_or_else(|e| e.into_inner());
+            if *preferred == order.start {
+                *preferred = (next, preferred.1.wrapping_add(1));
+            }
+        }
     }
 
     fn prefer(&self, index: usize) {
@@ -107,6 +120,10 @@ impl Resolver {
         let mut last = io::Error::new(io::ErrorKind::TimedOut, "no resolver answered");
         let mut tried = Vec::with_capacity(self.config.dns_servers.len());
         for offset in 0..self.config.dns_servers.len() {
+            if order.deadline.is_some_and(|deadline| tokio::time::Instant::now() >= deadline) {
+                last = io::Error::new(io::ErrorKind::TimedOut, "DNS lookup timed out");
+                break;
+            }
             let index = (order.start.0 + offset) % self.config.dns_servers.len();
             let server = self.config.dns_servers[index];
             if tried.contains(&server) {
@@ -114,7 +131,7 @@ impl Resolver {
             }
             tried.push(server);
             order.active = Some(index);
-            match self.ask(server, &fqdn).await {
+            match self.ask(server, &fqdn, order.deadline).await {
                 Ok((mut addrs, ttl)) => {
                     self.prefer(index);
                     self.config.ip_preference.apply(&mut addrs);
@@ -134,7 +151,9 @@ impl Resolver {
                 }
             }
         }
-        self.remember(name, Err(Arc::new(copy_error(&last))), FAILURE_TTL);
+        if order.active.is_some() {
+            self.remember(name, Err(Arc::new(copy_error(&last))), FAILURE_TTL);
+        }
         Err(last)
     }
 
@@ -206,9 +225,15 @@ impl Resolver {
 
     /// Asks one resolver for the A and/or AAAA records of `name`, both
     /// queries pipelined on one connection.
-    async fn ask(&self, server: SocketAddr, name: &Name) -> Result<(Vec<IpAddr>, Duration), Failure> {
+    async fn ask(
+        &self,
+        server: SocketAddr,
+        name: &Name,
+        lookup_deadline: Option<tokio::time::Instant>,
+    ) -> Result<(Vec<IpAddr>, Duration), Failure> {
         let retry = Failure::Retry;
         let deadline = tokio::time::Instant::now() + PER_SERVER;
+        let deadline = lookup_deadline.map_or(deadline, |outer| outer.min(deadline));
         let preference = self.config.ip_preference;
         let mut types = Vec::new();
         if preference.wants_ipv4() {
@@ -640,6 +665,18 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn an_already_expired_budget_does_not_query_or_cache() {
+        let (resolver, requests, server) = timeout_peer(1, None).await;
+        let result = resolver.lookup_until("victim.test", tokio::time::Instant::now()).await;
+        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::TimedOut);
+        assert_eq!(requests.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert!(resolver.cache.lock().unwrap().is_empty());
+        assert_eq!(*resolver.preferred.lock().unwrap(), (0, 0));
+        server.abort();
+        let _ = server.await;
+    }
+
+    #[tokio::test]
     async fn a_failed_preferred_resolver_wraps_to_a_recovered_earlier_one() {
         use std::sync::atomic::Ordering;
         let (resolver, requests, server) = timeout_peer(2, Some((0, Duration::ZERO))).await;
@@ -889,6 +926,16 @@ mod tests {
     }
 
     async fn partial_answer_with_truncation(qtype: RecordType, failure_first: Option<bool>, ttl: u32, truncated: bool) {
+        partial_answer_with_budget(qtype, failure_first, ttl, truncated, None).await;
+    }
+
+    async fn partial_answer_with_budget(
+        qtype: RecordType,
+        failure_first: Option<bool>,
+        ttl: u32,
+        truncated: bool,
+        budget: Option<Duration>,
+    ) {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
         let server = tokio::spawn(async move {
@@ -949,7 +996,14 @@ mod tests {
             ip_preference: IpPreference::Ipv4First,
         };
         let resolver = Resolver::new(Arc::new(config));
-        let result = tokio::time::timeout(Duration::from_secs(4), resolver.lookup("victim.test")).await.unwrap();
+        let result = tokio::time::timeout(Duration::from_secs(4), async {
+            match budget {
+                Some(budget) => resolver.lookup_until("victim.test", tokio::time::Instant::now() + budget).await,
+                None => resolver.lookup("victim.test").await,
+            }
+        })
+        .await
+        .unwrap();
         if ttl == 0 {
             assert!(result.is_err(), "failed families must not become an empty success");
             server.abort();
@@ -979,6 +1033,13 @@ mod tests {
     #[tokio::test]
     async fn ipv6_survives_an_unanswered_a_query() {
         partial_answer(RecordType::AAAA, None, 10).await;
+    }
+
+    #[tokio::test]
+    async fn a_usable_family_survives_the_callers_shorter_deadline() {
+        for qtype in [RecordType::A, RecordType::AAAA] {
+            partial_answer_with_budget(qtype, None, 10, false, Some(Duration::from_millis(300))).await;
+        }
     }
     #[tokio::test]
     async fn successful_family_survives_servfail_in_either_reply_order() {

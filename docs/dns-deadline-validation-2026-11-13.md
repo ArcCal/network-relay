@@ -24,7 +24,9 @@ first entry again. If the total deadline interrupts a lookup, the next uncached
 lookup continues after the interrupted resolver. All fallback attempts remain
 sequential and wrap around the configured list. A generation counter prevents
 an older timeout from overriding a newer successful selection, including when
-the successful resolver has the same index. Duplicate addresses are tried once.
+the successful resolver has the same index. Duplicate addresses are tried once,
+including during startup probes. The duplicate-address regression exercises
+both paths, and all-target Clippy passes after the probe correction.
 
 ## Specification review before editing
 

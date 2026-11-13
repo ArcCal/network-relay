@@ -143,7 +143,12 @@ impl Resolver {
     /// user ID and relays to a resolver.
     pub async fn probe(&self) -> io::Result<()> {
         let mut last = io::Error::new(io::ErrorKind::TimedOut, "no resolver answered");
+        let mut tried = Vec::with_capacity(self.config.dns_servers.len());
         for server in &self.config.dns_servers {
+            if tried.contains(server) {
+                continue;
+            }
+            tried.push(*server);
             let attempt = async {
                 let mut stream = VlessStream::open(&self.config, Command::Tcp, *server).await?;
                 let id = random_id();
@@ -679,6 +684,8 @@ mod tests {
         config.dns_servers = vec![config.dns_servers[0]; 8];
         assert!(resolver.lookup("victim.test").await.is_err());
         assert_eq!(requests.load(Ordering::SeqCst), 1);
+        assert!(resolver.probe().await.is_err());
+        assert_eq!(requests.load(Ordering::SeqCst), 2, "startup probes must also skip duplicate addresses");
         server.abort();
         let _ = server.await;
     }

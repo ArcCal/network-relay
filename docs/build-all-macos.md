@@ -5,7 +5,8 @@ It downloads fresh source and cross-compiles the Linux software; no Linux
 VM, Docker, existing checkout, enrollment, server password, or VPN settings
 are needed. Mac mini M6 uses the same `arm64` target as other Apple silicon.
 Existing source/build directories and installed applications are not replaced.
-When the script ends, every folder in the new build directory is mode 777.
+New artifact directories are at most mode 755 and respect a stricter caller
+umask. Existing directory permissions are preserved.
 
 ## First run
 
@@ -130,9 +131,9 @@ its intended VPS. The other binaries retain their own program names.
 The script prints the exact output location and opens it in Finder after
 all jobs pass. App bundles use the original recipes' ad-hoc signing and are
 not notarized releases.
-When the script ends, successfully or not, every folder in the build
-directory, including `out/`, is mode 777 so other users and file
-synchronization tools such as Syncthing can use it.
+New artifact directories, including `out/`, allow read sharing when the caller's
+umask permits it, without granting group or world write access. Existing output
+directory permissions are preserved on success and failure.
 The private source and compiler/cache directories are separate from this output
 tree and are removed after success, failure or a handled signal.
 The build directory is printed before compiler-version checks; their output
@@ -157,10 +158,14 @@ shasum -a 256 -c SHA256SUMS
   settings breaking cross-compilation or app packaging. GUI scripts keep
   the target directories they expect.
 - Caddy is built from the full respective checkout using `./cmd/caddy`.
-  This preserves its vendored HTTP/3 and HTTP/2 patches. Caddy Network Relay
-  uses `http2legacy`; Caddy Masque's production build does not need that tag.
-  A declared Go `toolchain` is honored; otherwise Go uses automatic toolchain
-  selection. The standard Caddy commands do not add an optional Cloudflare
+  Caddy Network Relay's built metadata must retain all four reviewed local
+  replacements: quic-go, x/net, go-jose/v3 and go-jose/v4. The private build is
+  verified before publication, so a missing replacement leaves any previous
+  output intact. Caddy Network Relay uses `http2legacy`; Caddy Masque's
+  production build does not need that tag. A declared Go `toolchain` is honored
+  only if it meets the secure patch floor (Go 1.26.11, Go 1.27.4 or newer).
+  Otherwise selection starts at `go1.27.4+auto`, allowing an upgrade for a newer
+  manifest. The standard Caddy commands do not add an optional Cloudflare
   DNS-provider plugin. Existing Certbot-issued certificates remain usable.
 - Git clones use full history, complete source trees, HTTP/1.1, and up to
   three attempts. Retry cleanup removes only that job's newly created staging

@@ -1,5 +1,32 @@
 # Validation record
 
+## November 13, 2026 local follow-up
+
+The exact production-feature vendor suite passes 484 tests. The broader and
+feature-disabled suites pass 751 and 733 tests respectively, and no_std and
+minimum Rust 1.91 checks pass for the isolated accepted candidate. The complete
+serial CF suite passes 115 tests with two explicitly ignored long/diagnostic
+tests before freezing. The retained packet fixture exercises the actual
+NetStack and includes 131072 deterministic mutations; this is bounded fuzz
+coverage, not a proof about all input sequences.
+
+The separate 3900-second requested soak finishes in 3950.46 seconds with
+independent hash/resource/connection-identity verification. Its accepted binary
+SHA256 is `d6392c76005c8bbc0361e353fd316a5c4a6ed769092c672d10ee452a6e23aa67`.
+The exact runtime changes and a retained regression fixture are copied locally
+with before/after hashes and backups. Post-copy full workspace checks pass: 154 tests and two explicitly ignored,
+including all 39 retained packet controls; strict Clippy, project formatting,
+Rust 1.91 all-target/all-feature checks and the independently locked reuse
+example pass. No business code is committed. A standalone vendor test generated an
+ignored Cargo.lock inside the isolated tree; it is preserved in frozen evidence
+but not copied into the product or used for the CF workspace dependency graph.
+Strict product vendor provenance passes without loosening the file-set check.
+
+Evidence: `/workspace/scratch/ipv6-reassembly-integration/promotion/`.
+The pre-copy soak remains associated with its frozen snapshot; it is not
+relabeled as execution of the later added test fixture or documentation files.
+The earlier records below keep their original scope.
+
 Fixtures use ephemeral keys and a local synthetic WARP peer; no live
 Cloudflare account or real enrollment is used. Tests write their evidence to
 `target/evidence` (not tracked). Earlier records about the removed private
@@ -147,7 +174,7 @@ The current audit reproduced the stall in an independent duplex TCP test
 without HTTP or QUIC. With receive backpressure and packet loss, registry
 smoltcp 0.14.0 could replace retransmission with zero-window probing while
 bytes were still in flight. Official upstream fixes correct this interaction
-and scaled-window/FIN handling. This adapter now uses unmodified official
+and scaled-window/FIN handling. At that earlier milestone the adapter used unmodified official
 revision `336a1dd1aaf0eeb1afab5e3b4b479e818a23c03e`, not a local fork.
 The failing IPv4/IPv6 TCP regression passes with that revision. Fresh full
 acceptance, the extended 128-transfer H3 diagnostic and the new fixed-binary

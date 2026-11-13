@@ -28,8 +28,8 @@ ring = "0.17"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "logging"] }
 rustls-pki-types = { version = "1", features = ["std"] }
 serde = { version = "1", features = ["derive"] }
-# Official upstream RTO/zero-window recovery fixes; no local fork or patch.
-smoltcp = { git = "https://github.com/smoltcp-rs/smoltcp", rev = "336a1dd1aaf0eeb1afab5e3b4b479e818a23c03e", default-features = false, features = ["std", "async", "medium-ip", "proto-ipv4", "proto-ipv6", "socket-tcp", "socket-udp", "socket-tcp-cubic", "assembler-max-segment-count-32"] }
+# Pinned upstream plus the reviewed TCP conformance patch; see vendor/smoltcp.
+smoltcp = { path = "../../vendor/smoltcp", default-features = false, features = ["std", "async", "medium-ip", "proto-ipv4", "proto-ipv6", "socket-tcp", "socket-udp", "socket-tcp-cubic", "assembler-max-segment-count-32", "relay-bounded-reassembly"] }
 socket2 = { version = "0.6", features = ["all"] }
 thiserror = "2"
 time = "0.3"

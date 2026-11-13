@@ -8,6 +8,7 @@ import hashlib
 import io
 import os
 from pathlib import Path
+import secrets
 import tarfile
 import textwrap
 
@@ -24,7 +25,46 @@ FILES = (
 )
 
 
+def check_output(path):
+    if path.is_symlink() or (path.exists() and not path.is_file()):
+        raise ValueError(f'Refusing a linked or non-regular package output: {path}')
+
+
+def create_output_directory(parent):
+    """Bound every new parent's mode without widening existing directories."""
+    missing = []
+    current = parent
+    while not current.exists():
+        missing.append(current)
+        current = current.parent
+    for directory in reversed(missing):
+        directory.mkdir(mode=0o755, exist_ok=True)
+
+
+def atomic_write(path, data, mode, *, force_mode=False):
+    check_output(path)
+    temporary = path.parent / ('.relay-installer-' + secrets.token_hex(16))
+    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC, mode)
+    try:
+        try:
+            # Keep ownership if constructing the buffered stream fails.
+            with os.fdopen(fd, 'wb', closefd=False) as stream:
+                if force_mode:
+                    os.fchmod(stream.fileno(), mode)
+                stream.write(data)
+                stream.flush()
+                os.fsync(stream.fileno())
+        finally:
+            os.close(fd)
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def package(out, source=False):
+    checksum = out.with_name(out.name + '.sha256')
+    for path in (out, checksum):
+        check_output(path)
     files = list(FILES)
     if source:
         files += ['Cargo.toml', 'Cargo.lock', 'deploy/relay.example.toml']
@@ -74,23 +114,14 @@ NETWORK_RELAY_DEPLOYMENT_BUNDLE
         script = script.replace('# Debian 12/13 x86_64: upload /tmp/network-relay, then sudo bash this script.',
                                 '# Debian 12/13 x86_64: download current complete source and compile on the VPS.')
         script = script.replace('/tmp/network-relay-install.sh', '/tmp/network-relay-install-from-source.sh')
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(script)
-    out.chmod(0o755)
-    digest = hashlib.sha256(out.read_bytes()).hexdigest()
-    out.with_name(out.name + '.sha256').write_text(f'{digest}  {out.name}\n')
+    create_output_directory(out.parent)
+    data = script.encode()
+    digest = hashlib.sha256(data).hexdigest()
+    checksum_mode = checksum.stat().st_mode & 0o777 if checksum.exists() else 0o644
+    atomic_write(out, data, 0o755, force_mode=True)
+    atomic_write(checksum, f'{digest}  {out.name}\n'.encode(), checksum_mode, force_mode=checksum.exists())
     mode = 'source compilation on VPS' if source else 'no compiler required'
     print(f'Wrote {out}: {out.stat().st_size} bytes; {len(files)} bundled files; {mode}.')
-
-
-def open_dirs(*roots):
-    """Leave the source and artifact folders, and every folder below them, open to all users."""
-    for root in roots:
-        for folder, _, _ in os.walk(root):
-            try:
-                os.chmod(folder, 0o777)
-            except OSError:
-                pass
 
 
 if __name__ == '__main__':
@@ -100,4 +131,3 @@ if __name__ == '__main__':
     args = parser.parse_args()
     out = args.out or Path('dist/network-relay-install-from-source.sh' if args.source else 'dist/network-relay-install.sh')
     package(out, args.source)
-    open_dirs(ROOT, out.resolve().parent)

@@ -108,6 +108,12 @@ the new directory and retains the old copy; settings in the new directory take
 precedence. Deleting this app's stored settings removes both directories and
 their corresponding preference domains.
 
+Settings imports are limited to 4 MiB of UTF-8 text and 64 levels of value
+nesting or table paths. The file reader enforces the byte limit before loading
+the complete text. Saved settings and exports use exclusive private staging
+files and atomic replacement; an export does not delete an unrelated `.new`
+sibling.
+
 ## Portable checks
 
 ```bash

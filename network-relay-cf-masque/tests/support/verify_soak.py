@@ -40,6 +40,8 @@ def verify(log: Path, manifest_path: Path, evidence_only: bool = False) -> dict:
         binary = ROOT / manifest["binary_path"] if "binary_path" in manifest else manifest_path.parent / "runner"
         require(file_sha256(binary) == manifest["binary_sha256"],
                 "retained executable no longer matches its frozen hash")
+    require(file_sha256(Path(__file__)) == manifest["source_sha256"].get("tests/support/verify_soak.py"),
+            "evidence verifier changed after the frozen build")
     production_names = {
         name for name in manifest["source_sha256"]
         if name.startswith(("src/", "crates/", "vendor/")) or name in {"Cargo.toml", "Cargo.lock"}
@@ -48,7 +50,8 @@ def verify(log: Path, manifest_path: Path, evidence_only: bool = False) -> dict:
         str(path.relative_to(ROOT))
         for directory in ("src", "crates", "vendor")
         for path in (ROOT / directory).rglob("*")
-        if path.is_file() and (path.suffix == ".rs" or path.name in {"Cargo.toml", "Cargo.lock"})
+        if path.is_file() and (directory == "vendor" or path.suffix == ".rs"
+                               or path.name in {"Cargo.toml", "Cargo.lock"})
     } | {"Cargo.toml", "Cargo.lock"}
     require(current_names == production_names, "production file set changed after the frozen build")
     for name in sorted(production_names):

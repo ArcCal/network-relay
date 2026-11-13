@@ -27,12 +27,14 @@ Xray-core inbound with these settings serves it:
     "settings": { "clients": [{ "id": "b4e4fad1-c320-428e-92dc-f8f6944a7dec" }], "decryption": "none" },
     "streamSettings": { "network": "ws", "security": "none",
                         "wsSettings": { "path": "/J2kV4jxviMDXceRQYVXiv6YwCc462T6P0Dayx5JYR8R" } },
-    "sniffing": { "enabled": true, "destOverride": ["http", "quic", "tls"] }
+    "sniffing": { "enabled": true, "destOverride": ["http", "quic", "tls"], "routeOnly": true }
   }]
 }
 ```
 
-(The ID and path are examples; use your own.)
+(The ID and path are examples; use your own.) Keep `routeOnly` enabled,
+or disable sniffing, so the downstream uses the destination address the
+relay checked. Apply destination restrictions on the downstream too.
 
 | Setting | Supported |
 |---|---|
@@ -89,7 +91,12 @@ restart (the program says so when it notices one).
   their TTL, including CNAMEs (at most five minutes). Unrelated answer
   records are ignored. A usable answer is retained if the other address
   family fails or times out; waiting does not renew the answer's TTL. Names
-  never reach this host's resolver.
+  never reach this host's resolver. NXDOMAIN and NODATA are cached only
+  for a relevant SOA's negative lifetime, bounded by any CNAME TTL and
+  five minutes; without an SOA or with a zero TTL they are not cached.
+  Completed lookup failures are cached for one second (RFC 9520), keeping
+  their error distinct from NXDOMAIN/NODATA. The shared cache holds at most
+  4096 names. Cancellation does not create a failure entry.
   The relay allows a lookup five seconds; each resolver gets 2.5.
 - **Failures**: a VLESS server that refuses the connection or is down gives
   502; a timeout 504. Every tunnel needs the VLESS server; nothing is ever
@@ -125,7 +132,7 @@ and this relay cannot remove them.
    exposed. Use it only on a network you trust (the same host, a private
    network or an encrypted tunnel such as WireGuard), and do not reuse the
    ID elsewhere.
-2. **Sniffing overrides the checked destination.** With `sniffing.enabled`
+2. **Sniffing can override the checked destination.** With `sniffing.enabled`
    and `destOverride` `http`, `tls` and `quic`, Xray-core reads the HTTP
    Host, the TLS server name or the QUIC server name of the first data
    and, unless `routeOnly` is `true`, connects to that name instead of the
@@ -133,8 +140,8 @@ and this relay cannot remove them.
    HTTP, TLS and QUIC traffic the relay's `blocked_destinations` and the
    relay's own name lookup do not decide where the connection goes: a
    device can CONNECT to an allowed address and send a Host or SNI naming
-   another. Only the port stays the checked one. Tested: with the example
-   inbound a request to an allowed address with `Host: localhost` reached
+   another. Only the port stays the checked one. Tested: with `routeOnly`
+   disabled, a request to an allowed address with `Host: localhost` reached
    a loopback server the relay blocks (`tests/xray_interop.rs`, with
    loopback allowed on the Xray side); with `"routeOnly": true` it reached
    the checked address. To keep the relay's rules authoritative, set
@@ -213,8 +220,10 @@ network-relay; `network-relay-vless check --server relay.example.com
   Xray-core's own results), response parsing, the configuration's checks
   and that errors and the log hide the user ID, data written without a
   flush still reaching a slow WebSocket server, a server that closes
-  without answering being an error, and the program's `serve --check` and
-  `profile` with the example file.
+  without answering being an error, DNS failure/negative cache lifetimes,
+  cancellation, distinct pipelined DNS IDs, truncated DNS replies,
+  predecode question-count allocation bounds and empty reads, and the
+  program's `serve --check` and `profile` with the example file.
 - `scripts/test-xray.sh`: the same relay against a real Xray-core server
   with the inbound above (on loopback, with loopback destinations allowed in
   its freedom outbound, and a hosts entry for the fixture name): network-relay's

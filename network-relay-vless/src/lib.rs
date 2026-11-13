@@ -3,6 +3,7 @@
 
 pub mod config;
 mod dns;
+mod dns_wire;
 pub mod egress;
 mod transport;
 pub mod vless;

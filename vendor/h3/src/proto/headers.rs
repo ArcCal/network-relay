@@ -82,6 +82,17 @@ impl Header {
         }
         let method = self.pseudo.method.ok_or(HeaderError::MissingMethod)?;
         let has_protocol = self.pseudo.protocol.is_some() || self.pseudo.other_protocol.is_some();
+        let http_scheme = self.pseudo.scheme.as_ref()
+            .is_some_and(|scheme| *scheme == Scheme::HTTP || *scheme == Scheme::HTTPS);
+        // RFC 9114 section 4.3.1 forbids userinfo in HTTP(S) authorities.
+        // Classic CONNECT likewise contains only a host and port (section 4.4).
+        // http::uri::Authority accepts userinfo, so it needs an explicit check.
+        if (http_scheme || (method == Method::CONNECT && !has_protocol))
+            && (self.pseudo.authority.as_ref().is_some_and(|a| a.as_str().contains('@'))
+                || self.fields.get_all("host").iter().any(|h| h.as_bytes().contains(&b'@')))
+        {
+            return Err(HeaderError::MalformedRequest("userinfo in request authority".into()));
+        }
         if method == Method::CONNECT && !has_protocol {
             //= https://www.rfc-editor.org/rfc/rfc9114#section-4.4
             //# The :scheme and :path pseudo-header fields are omitted.
@@ -883,6 +894,27 @@ mod tests {
                 .map(|(n, v)| HeaderField::new(n.as_bytes().to_vec(), v.as_bytes().to_vec()))
                 .collect::<Vec<_>>(),
         )
+    }
+
+    #[test]
+    fn http_authority_and_host_forbid_userinfo() {
+        for scheme in ["http", "https"] {
+            for field in [":authority", "host"] {
+                for authority in ["user@example.com", "user:password@example.com"] {
+                    let fields = [(":method", "GET"), (":scheme", scheme), (":path", "/"), (field, authority)];
+                    assert_matches!(request(&fields).unwrap().into_request_parts(), Err(HeaderError::MalformedRequest(_)));
+                }
+                for authority in ["example.com", "[::1]:443"] {
+                    let fields = [(":method", "GET"), (":scheme", scheme), (":path", "/"), (field, authority)];
+                    assert!(request(&fields).unwrap().into_request_parts().is_ok());
+                }
+            }
+        }
+        let fields = [(":method", "CONNECT"), (":authority", "user@example.com:443")];
+        assert_matches!(request(&fields).unwrap().into_request_parts(), Err(HeaderError::MalformedRequest(_)));
+        // Non-HTTP schemes can define an authority that includes userinfo.
+        let fields = [(":method", "GET"), (":scheme", "ftp"), (":path", "/"), (":authority", "user@example.com")];
+        assert!(request(&fields).unwrap().into_request_parts().is_ok());
     }
 
     #[test]

@@ -1,0 +1,19 @@
+target
+corpus
+artifacts
+
+# Preserve the upstream tracked parser seeds when this source is vendored.
+!/corpus/
+/corpus/*
+!/corpus/packet_parser/
+/corpus/packet_parser/*
+!/corpus/packet_parser/arp.bin
+!/corpus/packet_parser/icmpv4_reply.bin
+!/corpus/packet_parser/icmpv4_request.bin
+!/corpus/packet_parser/icmpv4_unreachable.bin
+!/corpus/packet_parser/icmpv6_nbr_solicitation.bin
+!/corpus/packet_parser/tcpv4_data.bin
+!/corpus/packet_parser/tcpv4_fin.bin
+!/corpus/packet_parser/tcpv4_rst.bin
+!/corpus/packet_parser/tcpv4_syn.bin
+!/corpus/packet_parser/udpv4.bin

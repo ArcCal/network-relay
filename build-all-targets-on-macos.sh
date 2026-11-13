@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 # Download the latest source before building Linux servers and macOS GUI clients.
 set -euo pipefail
+if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
+    # New artifacts may be shared, but never writable by other users.
+    # Respect a caller's stricter umask and preserve all existing directory modes.
+    umask "$(printf '%03o' "$(( $(umask) | 0022 ))")"
+fi
 unset CDPATH
 
 # BEGIN SHARED BUILD CHILD RUNNER
@@ -163,7 +168,8 @@ Always execute the latest committed scripts. Local checkouts and their edits
 are left untouched. Git credentials must allow reading both repositories.
 Compilation, caches and signing use a separate private /tmp workspace,
 removed on success or failure.
-Artifact folders keep mode 777. Temporary source and work are removed on exit.
+Existing folder modes are preserved; new artifact folders are at most 755, subject to your umask.
+Temporary source and work are removed on exit.
 HELP
 }
 die() { printf 'build-all-targets-on-macos: %s\n' "$*" >&2; exit 1; }

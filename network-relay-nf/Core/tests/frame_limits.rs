@@ -121,11 +121,28 @@ async fn http3_client_bounds_frame_payloads() {
 
     let huge: u64 = 1 << 40;
     let oversized: u64 = (64 << 10) + 1;
-    for (control, response, want) in [
-        (vec![], Some(frame_header(0x01, huge)), EXCESSIVE_LOAD),
-        (vec![], Some(frame_header(0x01, oversized)), EXCESSIVE_LOAD),
-        (frame_header(0x07, huge), None, FRAME_ERROR),
-        (frame_header(0x06, huge), None, FRAME_UNEXPECTED),
+    for (control, response, want, finish) in [
+        (
+            vec![],
+            Some(frame_header(0x01, huge)),
+            EXCESSIVE_LOAD,
+            false,
+        ),
+        (
+            vec![],
+            Some(frame_header(0x01, oversized)),
+            EXCESSIVE_LOAD,
+            false,
+        ),
+        (frame_header(0x07, huge), None, FRAME_ERROR, false),
+        (frame_header(0x06, huge), None, FRAME_UNEXPECTED, false),
+        // A clean FIN cannot hide a truncated ignored response frame.
+        (
+            vec![],
+            Some([frame_header(RESERVED, 2), b"x".to_vec()].concat()),
+            FRAME_ERROR,
+            true,
+        ),
     ] {
         let backend = support::Backend::start(ca.clone());
         let client = Client::new(&settings, backend.bridge.clone()).unwrap();
@@ -146,6 +163,9 @@ async fn http3_client_bounds_frame_payloads() {
                 .unwrap()
                 .unwrap();
             send.write_all(response).await.unwrap();
+            if finish {
+                send.finish().unwrap();
+            }
             _request = Some((send, recv));
         }
         let closed = tokio::time::timeout(Duration::from_secs(10), conn.closed())

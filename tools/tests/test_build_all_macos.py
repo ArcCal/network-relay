@@ -29,7 +29,7 @@ import sys
 
 tool = Path(sys.argv[0]).name
 args = sys.argv[1:]
-watched = ["GOOS", "GOARCH", "GOAMD64", "GOARM64", "CGO_ENABLED", "GOFLAGS",
+watched = ["GOOS", "GOARCH", "GOAMD64", "GOARM64", "CGO_ENABLED", "GOFLAGS", "GOROOT", "GOTOOLCHAIN",
            "CARGO_TARGET_DIR", "CARGO_BUILD_TARGET", "RUSTFLAGS", "CC", "SDKROOT"]
 with open(os.environ["MOCK_COMMAND_LOG"], "a", encoding="utf-8") as log:
     log.write(json.dumps({"tool": tool, "args": args, "cwd": os.getcwd(),
@@ -87,8 +87,28 @@ elif tool == "swift":
     if args == ["--version"]:
         print("Apple Swift version 6.3")
 elif tool == "go":
-    if "version" in args:
-        print("go version go1.27.2 darwin/arm64")
+    if args[:2] == ["version", "-m"]:
+        print("\tpath\tgithub.com/arccal/caddy-network-relay/cmd/caddy")
+        replacements = [
+            ("github.com/quic-go/quic-go", "./third_party/quic-go"),
+            ("golang.org/x/net", "./third_party/x-net"),
+            ("github.com/go-jose/go-jose/v3", "./third_party/go-jose-v3"),
+            ("github.com/go-jose/go-jose/v4", "./third_party/go-jose-v4"),
+        ]
+        for module, replacement in replacements:
+            print("\tdep\t" + module + "\tv0.0.0")
+            if module != os.environ.get("MOCK_MISSING_GO_REPLACEMENT"):
+                print("\t=>\t" + replacement + "\t(devel)")
+        print("\tbuild\tGOARCH=" + os.environ["GOARCH"])
+        print("\tbuild\tCGO_ENABLED=0")
+        if not os.environ.get("MOCK_MISSING_TLS_POLICY"):
+            print("\tbuild\t-tags=http2legacy,relay_tls9846_v1")
+    elif args == ["env", "GOROOT"]:
+        print(os.environ["MOCK_INSTALLED_GOROOT"])
+    elif args == ["env", "GOVERSION"]:
+        print(os.environ.get("MOCK_GO_VERSION", "go1.27.4"))
+    elif args == ["version"]:
+        print("go version " + os.environ.get("MOCK_GO_VERSION", "go1.27.4") + " darwin/arm64")
     elif "build" in args:
         emit_binary(args[args.index("-o") + 1], "linux-" + os.environ["GOARCH"])
 elif tool == "file":
@@ -186,6 +206,11 @@ class BuildOrchestrationTests(unittest.TestCase):
         environment = self.env.copy()
         if extra_env:
             environment.update(extra_env)
+        if 'build_go' in body:
+            policy = self.root / 'build root/sources/caddy-network-relay/deploy/go-tls'
+            policy.mkdir(parents=True, exist_ok=True)
+            (policy / 'prepare.py').write_text("import os, pathlib, sys\nassert sys.argv[1] == os.environ['MOCK_INSTALLED_GOROOT']\nif os.environ.get('MOCK_GO_VERSION', 'go1.27.4') not in ('go1.26.11', 'go1.27.4'): raise SystemExit('No reviewed TLS source policy')\npathlib.Path(sys.argv[2]).mkdir(parents=True, exist_ok=True)\n")
+            environment['MOCK_INSTALLED_GOROOT'] = str(self.root / 'installed-go')
         return subprocess.run(
             [BASH, "-c", "set -euo pipefail\nsource " + shlex.quote(str(SCRIPT)) + "\n" + self.variables() + textwrap.dedent(body)],
             cwd=self.root, env=environment, text=True, stdout=subprocess.PIPE,
@@ -310,13 +335,80 @@ class BuildOrchestrationTests(unittest.TestCase):
         builds = [item for item in self.commands("go") if "build" in item["args"]]
         self.assertEqual(len(builds), 2, result.stdout)
         self.assertNotIn("http2legacy", builds[0]["args"])
-        self.assertIn("http2legacy", builds[1]["args"])
+        self.assertIn("http2legacy,relay_tls9846_v1", builds[1]["args"])
+        self.assertIn("relay_tls9846_v1", builds[0]["args"])
         for item, architecture in zip(builds, ("amd64", "arm64")):
             self.assertEqual(item["env"]["GOOS"], "linux")
             self.assertEqual(item["env"]["GOARCH"], architecture)
             self.assertEqual(item["env"]["CGO_ENABLED"], "0")
             self.assertIn("./cmd/caddy", item["args"])
             self.assertIn("-trimpath", item["args"])
+            self.assertTrue(item["env"]["GOROOT"].endswith("/.relay-build/go-tls"))
+            self.assertEqual(item["env"]["GOTOOLCHAIN"], "local")
+
+    def test_caddy_relay_missing_jose_fork_keeps_existing_output(self):
+        for module in ("github.com/go-jose/go-jose/v3", "github.com/go-jose/go-jose/v4"):
+            with self.subTest(module=module):
+                repository = self.root / "build root/sources/caddy-network-relay"
+                (repository / ".git").mkdir(parents=True, exist_ok=True)
+                (repository / "go.mod").write_text("module example.test/caddy\ngo 1.26.11\n")
+                output = self.root / "build root/out/linux-arm64/caddy-network-relay"
+                output.parent.mkdir(parents=True, exist_ok=True)
+                output.write_text("previous verified artifact")
+                result = self.run_bash("""
+                    run_job caddy-relay-negative build_go caddy-network-relay arm64 http2legacy caddy-network-relay
+                    printf 'FAILURES=%s\\n' "$JOB_FAILURES"
+                    """, {"MOCK_MISSING_GO_REPLACEMENT": module})
+                self.assertEqual(result.returncode, 0, result.stdout)
+                self.assertIn("FAILURES=1", result.stdout)
+                self.assertIn("Missing reviewed replacement", result.stdout)
+                self.assertEqual(output.read_text(), "previous verified artifact")
+
+    def test_missing_tls_policy_keeps_existing_output(self):
+        repository = self.root / "build root/sources/caddy-network-relay"
+        (repository / ".git").mkdir(parents=True)
+        (repository / "go.mod").write_text("module example.test/caddy\ngo 1.26.11\n")
+        output = self.root / "build root/out/linux-arm64/caddy-network-relay"
+        output.parent.mkdir(parents=True)
+        output.write_text("previous verified artifact")
+        result = self.run_bash("""
+            run_job caddy-relay-negative build_go caddy-network-relay arm64 http2legacy caddy-network-relay
+            printf 'FAILURES=%s\n' "$JOB_FAILURES"
+            """, {"MOCK_MISSING_TLS_POLICY": "1"})
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("FAILURES=1", result.stdout)
+        self.assertIn("TLS policy build tag", result.stdout)
+        self.assertEqual(output.read_text(), "previous verified artifact")
+
+    def test_unreviewed_go_source_is_refused_before_compile(self):
+        repository = self.root / "build root/sources/caddy-network-relay"
+        (repository / ".git").mkdir(parents=True)
+        (repository / "go.mod").write_text("module example.test/caddy\ngo 1.26.11\n")
+        result = self.run_bash("""
+            run_job caddy-relay-unreviewed build_go caddy-network-relay arm64 http2legacy caddy-network-relay
+            printf 'FAILURES=%s\n' "$JOB_FAILURES"
+            """, {"MOCK_GO_VERSION": "go1.28.0"})
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("FAILURES=1", result.stdout)
+        self.assertIn("No reviewed TLS source policy", result.stdout)
+        self.assertFalse(any(item["args"][0] == "build" for item in self.commands("go")))
+        self.assertFalse((self.root / "build root/out/linux-arm64/caddy-network-relay").exists())
+
+    def test_caddy_unsafe_go_patch_is_rejected_before_compile(self):
+        repository = self.root / "build root/sources/caddy-network-relay"
+        (repository / ".git").mkdir(parents=True)
+        (repository / "go.mod").write_text("module example.test/caddy\ngo 1.26.11\n")
+        for version in ("go1.26.10", "go1.27.3", "go1.27rc1"):
+            with self.subTest(version=version):
+                self.log.unlink(missing_ok=True)
+                result = self.run_bash("""
+                    run_job caddy-relay-unsafe build_go caddy-network-relay arm64 http2legacy caddy-network-relay
+                    printf 'FAILURES=%s\\n' "$JOB_FAILURES"
+                    """, {"MOCK_GO_VERSION": version})
+                self.assertEqual(result.returncode, 0, result.stdout)
+                self.assertIn("FAILURES=1", result.stdout)
+                self.assertFalse(any(item["args"][0] == "build" for item in self.commands("go")))
+                self.assertFalse((self.root / "build root/out/linux-arm64/caddy-network-relay").exists())
 
     def test_original_app_recipe_spaces_and_checksum_manifest(self):
         repository = self.root / "build root/sources/network-relay"
@@ -524,7 +616,7 @@ class BuildOrchestrationTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout)
         self.assertTrue((self.root / "build root/versions-recorded").exists())
         recorded = (self.root / "build root/TOOL-VERSIONS.txt").read_text()
-        for version in ("cargo-zigbuild 0.23.4", "go version go1.27.2", "Apple Swift version 6.3"):
+        for version in ("cargo-zigbuild 0.23.4", "go version go1.27.4", "Apple Swift version 6.3"):
             self.assertIn(version, recorded)
         self.assertIn("Fresh build directory:", result.stdout)
         self.assertEqual([item["args"] for item in self.commands("cargo-zigbuild")], [["--version"]])

@@ -96,6 +96,15 @@ values. Packet send counters indicate local transport acceptance, not remote
 delivery. Shutdown invalidates flows before waiting briefly for worker and
 transport cleanup.
 
+The pinned TCP/IP dependency includes the reviewed local patch recorded in
+[`../../vendor/smoltcp/UPSTREAM.json`](../../vendor/smoltcp/UPSTREAM.json).
+Sender limits use the current path MTU, peer MSS and negotiated options.
+Startup byte and packet limits follow the selected RFC 5681 profile; the
+larger experimental initial window is not enabled. An explicitly unusable
+peer MSS is refused safely instead of emitting above the peer's advertised
+limit. Omitted MSS uses the IPv4/IPv6 defaults. Established congestion windows
+are preserved during ordinary MTU changes.
+
 The `test-support` feature exposes packet-stack primitives for synthetic peers.
 It is excluded from the default production API and does not provide a direct
 host-network egress implementation.

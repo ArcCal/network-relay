@@ -155,7 +155,7 @@ where
                 request_end: self.request_end_send.clone(),
                 stream_id: stream.id(),
             }),
-            frame_stream: stream,
+            frame_stream: stream.for_server_request(),
             send_grease_frame,
             max_field_section_size: self.max_field_section_size,
             shared: self.inner.shared.clone(),

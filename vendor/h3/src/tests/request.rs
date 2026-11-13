@@ -1251,6 +1251,36 @@ async fn request_invalid_frame_first() {
 }
 
 #[tokio::test]
+async fn request_forbidden_frame_type_precedes_payload_errors() {
+    for bytes in [
+        &[0x04, 0x02, 0x33, 0x02][..], // SETTINGS with an invalid boolean
+        &[0x03, 0x00][..],             // CANCEL_PUSH without its push ID
+        &[0x07, 0x02, 0x00, 0x00][..], // GOAWAY with an extra byte
+        &[0x0d, 0x01, 0x40][..],       // MAX_PUSH_ID with a truncated integer
+        &[0x05, 0x00][..],             // PUSH_PROMISE received by a server
+    ] {
+        for headers_first in [false, true] {
+            request_sequence_unexpected(|buf| {
+                if headers_first {
+                    request_encode(buf, Request::post("https://localhost/").body(()).unwrap());
+                }
+                buf.extend_from_slice(bytes);
+            })
+            .await;
+        }
+    }
+}
+
+#[tokio::test]
+async fn request_truncated_unknown_frame_is_frame_error() {
+    request_sequence_frame_error(|buf| {
+        request_encode(buf, Request::post("https://localhost/").body(()).unwrap());
+        buf.extend_from_slice(&[0x21, 0x05, b'x']);
+    })
+    .await;
+}
+
+#[tokio::test]
 async fn request_invalid_frame_after_header() {
     for frame in invalid_request_frames() {
         request_sequence_unexpected(|mut buf| {
@@ -1360,26 +1390,33 @@ async fn request_invalid_trailing_byte() {
 }
 
 #[tokio::test]
-async fn request_invalid_data_frame_length_too_large() {
-    request_sequence_frame_error(|mut buf| {
+async fn request_data_frame_absorbs_headers_type_then_forbidden_frame() {
+    request_sequence_unexpected(|mut buf| {
         request_encode(
             &mut buf,
             Request::post("http://localhost/salut").body(()).unwrap(),
         );
         FrameType::DATA.encode(&mut buf);
 
-        //= https://www.rfc-editor.org/rfc/rfc9114#section-7.1
-        //= type=test
-        //# A frame payload that contains additional bytes
-        //# after the identified fields or a frame payload that terminates before
-        //# the end of the identified fields MUST be treated as a connection
-        //# error of type H3_FRAME_ERROR.
+        // RFC 9114 section 7.2.7: a MAX_PUSH_ID on a request stream is
+        // H3_FRAME_UNEXPECTED, regardless of its payload's validity.
         VarInt::from(5u32).encode(&mut buf);
         buf.put_slice(b"fada");
 
+        // The fifth DATA byte is the following HEADERS type. Its length byte
+        // is then interpreted as MAX_PUSH_ID, forbidden on a request stream.
         let mut trailers = HeaderMap::new();
         trailers.insert("trailer", "value".parse().unwrap());
         trailers_encode(buf, trailers);
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn request_truncated_data_frame_is_frame_error() {
+    request_sequence_frame_error(|buf| {
+        request_encode(buf, Request::post("https://localhost/").body(()).unwrap());
+        buf.extend_from_slice(&[0x00, 0x05, b'f', b'a', b'd', b'a']);
     })
     .await;
 }
@@ -1482,9 +1519,6 @@ where
             req_send.write_all(&buf[..]).await.unwrap();
             req_send.finish().unwrap();
 
-            // wait to give the server time to return the error before dropping send
-            tokio::time::sleep(Duration::from_millis(100)).await;
-
             loop {
                 match req_recv.read(&mut buf).await {
                     Ok(Some(i)) => {
@@ -1497,9 +1531,6 @@ where
                 }
             }
 
-            // drop the SendRequest to let driver know there will be no more requests
-            drop(send);
-
             Result::<(), quinn::ReadError>::Ok(())
         };
 
@@ -1509,7 +1540,21 @@ where
             );
         };
 
-        tokio::join!(client, driver)
+        if expected_error_code.is_some() {
+            // Dropping the last sender records a local H3_NO_ERROR immediately.
+            // Keep it alive until the driver observes the peer's close, even
+            // when the raw request stream has already failed or finished.
+            let result = tokio::join!(client, driver);
+            drop(send);
+            result
+        } else {
+            let client = async {
+                let result = client.await;
+                drop(send);
+                result
+            };
+            tokio::join!(client, driver)
+        }
     };
 
     let server_fut = async {

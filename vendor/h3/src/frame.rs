@@ -36,6 +36,12 @@ impl<S, B> FrameStream<S, B> {
         }
     }
 
+    /// Reject control and push frames before decoding a server request's payloads.
+    pub(crate) fn for_server_request(mut self) -> Self {
+        self.decoder.server_request = true;
+        self
+    }
+
     /// Unwraps the Framed streamer and returns the underlying stream **without** data loss for
     /// partially received/read frames.
     pub fn into_inner(self) -> BufRecvStream<S, B> {
@@ -88,7 +94,7 @@ where
                 Poll::Ready(false) => continue,
                 Poll::Pending => return Poll::Pending,
                 Poll::Ready(true) => {
-                    if self.stream.buf_mut().has_remaining() {
+                    if self.stream.buf_mut().has_remaining() || self.decoder.skip > 0 {
                         // Reached the end of receive stream, but there is still some data:
                         // The frame is incomplete.
                         return Poll::Ready(Err(FrameStreamError::UnexpectedEnd));
@@ -217,6 +223,7 @@ pub struct FrameDecoder {
     expected: Option<usize>,
     /// Payload bytes of an unknown frame still to be discarded.
     skip: usize,
+    server_request: bool,
 }
 
 impl FrameDecoder {
@@ -249,7 +256,7 @@ impl FrameDecoder {
             // Unknown frames are skipped, and other frames' sizes checked,
             // from their headers: no frame payload but DATA, which is
             // streamed, is buffered beyond MAX_BUFFERED_PAYLOAD.
-            match Frame::admit(&mut src.cursor()) {
+            match Frame::admit(&mut src.cursor(), self.server_request) {
                 Ok(frame::Admission::Skip(header, len)) => {
                     //= https://www.rfc-editor.org/rfc/rfc9114#section-9
                     //# Implementations MUST ignore unknown or unsupported
@@ -573,6 +580,31 @@ mod tests {
             CHUNK_COUNT.div_ceil(FRAMES_PER_CHUNK),
             "transport was polled while complete frames were still buffered"
         );
+    }
+
+    #[tokio::test]
+    async fn poll_next_unknown_frame_checks_its_declared_length_at_fin() {
+        for declared in [0u32, 1, 5] {
+            for actual in 0..=declared {
+                let mut wire = BytesMut::new();
+                FrameType::RESERVED.encode(&mut wire);
+                VarInt::from(declared).encode(&mut wire);
+                wire.resize(wire.len() + actual as usize, b'x');
+                let mut recv = FakeRecv::default();
+                // Exercise both a single chunk and payload split from its header.
+                recv.chunk(wire.split_to(wire.len() - actual as usize).freeze());
+                if actual != 0 {
+                    recv.chunk(wire.freeze());
+                }
+                let mut stream: FrameStream<_, ()> = FrameStream::new(BufRecvStream::new(recv));
+                let result = poll_fn(|cx| stream.poll_next(cx)).await;
+                if actual == declared {
+                    assert_matches!(result, Ok(None));
+                } else {
+                    assert_matches!(result, Err(FrameStreamError::UnexpectedEnd));
+                }
+            }
+        }
     }
 
     #[tokio::test]

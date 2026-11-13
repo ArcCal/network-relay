@@ -16,7 +16,7 @@ use std::time::Duration;
 
 use anyhow::{bail, ensure, Context, Result};
 use bytes::{Buf, Bytes};
-use hickory_proto::op::{Message, MessageType, ResponseCode};
+use hickory_proto::op::{Message, OpCode, ResponseCode};
 use hickory_proto::rr::{rdata, RData, Record, RecordType};
 use http::{header::AUTHORIZATION, Method, Request, StatusCode};
 use network_relay::check::{self, H3};
@@ -199,9 +199,9 @@ async fn udp_echo(ip: Ipv4Addr) -> Fixture {
 /// 127.0.0.3, other names do not exist; there are no AAAA records.
 fn dns_answer(query: &[u8]) -> Option<Vec<u8>> {
     let query = Message::from_vec(query).ok()?;
-    let question = query.queries().first()?.clone();
-    let mut answer = Message::new();
-    answer.set_id(query.id()).set_message_type(MessageType::Response).set_recursion_available(true);
+    let question = query.queries.first()?.clone();
+    let mut answer = Message::response(query.metadata.id, OpCode::Query);
+    answer.metadata.recursion_available = true;
     answer.add_query(question.clone());
     let name = question.name().to_ascii().to_ascii_lowercase();
     let address = match name.as_str() {
@@ -209,7 +209,7 @@ fn dns_answer(query: &[u8]) -> Option<Vec<u8>> {
         "blocked.test." => Some(BLOCKED),
         "." => None,
         _ => {
-            answer.set_response_code(ResponseCode::NXDomain);
+            answer.metadata.response_code = ResponseCode::NXDomain;
             None
         }
     };
@@ -398,7 +398,7 @@ fn body(response: &[u8]) -> &str {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "needs an Xray-core binary in XRAY_BIN; run scripts/test-xray.sh"]
 async fn network_relay_check_passes_over_every_http_version() -> Result<()> {
-    let xray = Xray::start(false).await?;
+    let xray = Xray::start(true).await?;
     let dns = dns(ALLOWED).await;
     let site = web(ALLOWED, free_port(ALLOWED), "fixture site").await;
     let relay = relay(xray.port, UUID, dns.port).await?;
@@ -419,7 +419,7 @@ async fn network_relay_check_passes_over_every_http_version() -> Result<()> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "needs an Xray-core binary in XRAY_BIN; run scripts/test-xray.sh"]
 async fn tcp_bulk_data_and_udp_datagrams_round_trip() -> Result<()> {
-    let xray = Xray::start(false).await?;
+    let xray = Xray::start(true).await?;
     let dns = dns(ALLOWED).await;
     let echo = tcp_echo(ALLOWED).await;
     let udp = udp_echo(ALLOWED).await;
@@ -478,7 +478,7 @@ async fn tcp_bulk_data_and_udp_datagrams_round_trip() -> Result<()> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "needs an Xray-core binary in XRAY_BIN; run scripts/test-xray.sh"]
 async fn destination_rules_and_name_errors_apply_before_the_vless_server() -> Result<()> {
-    let xray = Xray::start(false).await?;
+    let xray = Xray::start(true).await?;
     let dns = dns(ALLOWED).await;
     let port = free_port(BLOCKED);
     let blocked = web(BLOCKED, port, "blocked site").await;
@@ -504,7 +504,7 @@ async fn destination_rules_and_name_errors_apply_before_the_vless_server() -> Re
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "needs an Xray-core binary in XRAY_BIN; run scripts/test-xray.sh"]
 async fn a_rejected_user_id_or_a_missing_server_fails_closed() -> Result<()> {
-    let xray = Xray::start(false).await?;
+    let xray = Xray::start(true).await?;
     let dns = dns(ALLOWED).await;
     let site = web(ALLOWED, free_port(ALLOWED), "fixture site").await;
     let get = b"GET / HTTP/1.1\r\nHost: example\r\n\r\n";
@@ -581,7 +581,7 @@ fn connections_to(port: u16) -> usize {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "needs an Xray-core binary in XRAY_BIN; run scripts/test-xray.sh"]
 async fn ended_and_reset_tunnels_close_their_vless_connections() -> Result<()> {
-    let xray = Xray::start(false).await?;
+    let xray = Xray::start(true).await?;
     let dns = dns(ALLOWED).await;
     let echo = tcp_echo(ALLOWED).await;
     let udp = udp_echo(ALLOWED).await;
@@ -643,7 +643,7 @@ async fn ended_and_reset_tunnels_close_their_vless_connections() -> Result<()> {
 #[ignore = "needs an Xray-core binary in XRAY_BIN; run scripts/test-xray.sh"]
 async fn the_program_serves_from_one_file_and_passes_its_own_check() -> Result<()> {
     let program = env!("CARGO_BIN_EXE_network-relay-vless");
-    let xray = Xray::start(false).await?;
+    let xray = Xray::start(true).await?;
     let dns = dns(ALLOWED).await;
     let site = web(ALLOWED, free_port(ALLOWED), "fixture site").await;
     let dir = Dir::new("program")?;

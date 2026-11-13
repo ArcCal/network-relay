@@ -211,8 +211,11 @@ bash scripts/test.sh
 bash scripts/soak.sh
 ```
 
-`test.sh` builds the client harnesses, runs this workspace's tests, strict
-Clippy and formatting, checks the reuse example, and then runs
+`test.sh` first verifies the pinned smoltcp source and reversible local TCP
+patch, then runs its upstream unit regressions with the exact production
+features in a disposable copy. It builds the client harnesses, runs this
+workspace's tests, strict Clippy and formatting, checks the reuse example,
+and then runs
 network-relay's own tests twice: as network-relay, and with every tunnel of
 its HTTP/1.1, HTTP/2 and HTTP/3 integration suite going through an egress
 (`NETWORK_RELAY_TEST_EGRESS=loopback`), the code path this server uses.
@@ -229,6 +232,18 @@ distinct from Cloudflare or native Apple GUI/device validation. `soak.sh`
 first requires the finite tests to pass, then runs at least one hour of real
 elapsed time with held TCP/UDP flows and metrics. Test evidence is written to
 `target/evidence`. [VALIDATION.md](docs/VALIDATION.md) records the results.
+
+For a bounded bulk diagnostic with held flows and unchanged idle limits:
+
+```bash
+DIAG_BULK_INBOUND=h1 DIAG_BULK_ROUNDS=16 WARP_BULK_DIAGNOSTICS=1 \
+  cargo test --locked --test warp_matrix diagnose_bulk_with_persistent_pairings -- \
+  --ignored --exact --nocapture --test-threads=1
+```
+
+Select `h1`, `h2` or `h3` for the ingress. The diagnostic covers both WARP
+transports and retains progress/failure snapshots; it is separate from the
+required real-time soak and cannot turn a failed soak into a pass.
 
 The NF client core runs with its own Linux bridge for native hooks. This does
 not execute Apple Network.framework, the NF GUI or a device profile; those

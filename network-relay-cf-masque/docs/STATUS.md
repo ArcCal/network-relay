@@ -1,6 +1,6 @@
 # Implementation status
 
-Updated November 1, 2026 UTC. Test results are in [VALIDATION.md](VALIDATION.md);
+Updated November 13, 2026 UTC. Test results are in [VALIDATION.md](VALIDATION.md);
 [AUDIT.md](AUDIT.md) records the current review and fixes.
 
 This project was restored after its removal and rebuilt on network-relay
@@ -17,9 +17,10 @@ project's own.
 | Server DNS through WARP | Implemented | Peer-observed DNS, TCP fallback, negatives and post-failure denial |
 | One standalone configuration file | `[warp]` and inline `[warp.registration]` in network-relay's file | CLI tests: single file, missing `[warp]`, legacy options refused, secret-free errors |
 | IPv6 optional with a warning | `WarpConfig::warnings()`; printed and logged at start | CLI and unit tests: warning without `tunnel_ipv6`/`endpoint_v6`, server keeps running |
+| Bounded IPv4/IPv6 receive reassembly | 16 contexts per family, 1500-byte reassembled packets, absolute 60-second expiry; overlap poisoning and independent atomic fragments | Exact-feature vendor tests, packet/mutation controls and a frozen 3950.46-second synthetic soak pass; see the November 13 validation record |
 | Large file integrity/half-close | Implemented | 64 MiB transfers in all six pairings |
 | NF/RS client compatibility | Their cores in this repository, used as they are | 12 ingress/egress pairs, 96 TCP/UDP checks, authentication and TLS negatives; NF uses its Linux bridge, not Network.framework |
-| Long-held TCP/UDP stability | Implemented | 128 H3 bulk transfers and a fresh 3926-second soak passed: 12 held flows, one outer generation per mode, no packet queue drops; earlier restoration results are historical |
+| Long-held TCP/UDP stability | Implemented | Latest frozen synthetic soak passes in 3950.46 seconds: 12 held flows, one outer generation per mode, no reported packet queue drops; older unexplained failures remain open |
 | Actual Cloudflare exit IP, live download, live soak | Not established | Requires a host with authorized WARP connectivity |
 | Native Apple NF GUI/profile/device execution | Not executed here | Linux tests cannot substitute for it |
 
@@ -40,6 +41,8 @@ project's own.
 3. UDP payloads are bounded by the WARP MTU, 1252/1232 bytes (IPv4/IPv6) at
    MTU 1280. Larger datagrams are dropped without fragmentation; the flow
    continues. They are never sent through the VPS network instead.
+   Receive-side reassembly now accepts complete IP packets up to 1500 bytes;
+   this does not increase the outbound UDP ceiling or fragment outgoing packets.
 4. The Cloudflare enrollment must already exist. Registration/refresh,
    account lifecycle and license management are outside this project.
 5. Linux x86_64 is the development target. Windows is not supported;

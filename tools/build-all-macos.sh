@@ -159,7 +159,7 @@ Apple may require sign-in, license acceptance or administrator authentication.
 Unsupported app jobs fail explicitly; other jobs still run. Any failure
 makes the final exit status nonzero. Existing source folders are not reused.
 Temporary sources, work and caches are removed on every exit.
-Afterwards every artifact folder in the build directory is mode 777.
+New artifact folders are at most 755, subject to your umask; existing modes are preserved.
 EOF
 }
 
@@ -301,7 +301,7 @@ prepare_apple_tools() {
 install_tools() {
     local installer package
     ensure_homebrew
-    for package in go zig gh; do
+    for package in go zig gh python; do
         if ! brew list --versions "$package" >/dev/null 2>&1; then
             brew install "$package"
         fi
@@ -321,7 +321,7 @@ install_tools() {
 
 check_tools() {
     local tool major minor
-    for tool in git gh cargo rustc rustup zig cargo-zigbuild go file shasum \
+    for tool in git gh cargo rustc rustup zig cargo-zigbuild go python3 file shasum \
                 swift swiftc xcrun plutil codesign ditto sips iconutil; do
         command -v "$tool" >/dev/null 2>&1 || { die "Missing tool: $tool"; return 1; }
     done
@@ -453,20 +453,73 @@ build_rust() {
     done
 }
 
+verify_go_security_version() {
+    local version=$1
+    if [[ $version =~ ^go1\.26\.([0-9]+)$ ]]; then
+        (( 10#${BASH_REMATCH[1]} >= 11 )) && return 0
+    elif [[ $version =~ ^go1\.27\.([0-9]+)$ ]]; then
+        (( 10#${BASH_REMATCH[1]} >= 4 )) && return 0
+    elif [[ $version =~ ^go1\.([0-9]+)(\.[0-9]+)?$ ]]; then
+        (( 10#${BASH_REMATCH[1]} > 27 )) && return 0
+    fi
+    die "Caddy requires Go 1.26.11 or Go 1.27.4 or newer; selected $version."
+    return 1
+}
+
+verify_relay_go_replacements() {
+    local info=$1 replacement
+    for replacement in github.com/quic-go/quic-go=./third_party/quic-go \
+                       golang.org/x/net=./third_party/x-net \
+                       github.com/go-jose/go-jose/v3=./third_party/go-jose-v3 \
+                       github.com/go-jose/go-jose/v4=./third_party/go-jose-v4; do
+        awk -F '\t' -v module="${replacement%%=*}" -v path="${replacement#*=}" '
+            ($2 == "dep" || $2 == "mod") && $3 == module { pending=1; next }
+            pending { if ($2 == "=>" && $3 == path) found=1; pending=0 }
+            END { exit !found }
+        ' <<< "$info" || { die "Missing reviewed replacement: $replacement"; return 1; }
+    done
+}
+
 build_go() {
-    local repo arch tags name directory toolchain
+    local repo arch tags name directory toolchain version artifact info policy_source GOROOT
+    local PATH=$PATH
     repo=$1; arch=$2; tags=$3; name=$4
     directory=$(source_dir "$repo")
     cd "$directory"
     toolchain=$(awk '$1 == "toolchain" { print $2; exit }' go.mod)
-    export GOTOOLCHAIN=${toolchain:-auto}
+    # A secure floor still permits automatic upgrades for a newer manifest.
+    export GOTOOLCHAIN=${toolchain:-go1.27.4+auto}
+    unset GOROOT
     go version
+    version=$(go env GOVERSION)
+    verify_go_security_version "$version" || return 1
+    policy_source=$(source_dir caddy-network-relay)
+    python3 "$policy_source/deploy/go-tls/prepare.py" "$(go env GOROOT)" "$directory/.relay-build/go-tls" || return 1
+    export GOROOT="$directory/.relay-build/go-tls" GOTOOLCHAIN=local
+    export PATH="$GOROOT/bin:$PATH"
+    tags="${tags:+$tags,}relay_tls9846_v1"
     export CGO_ENABLED=0 GOOS=linux GOARCH="$arch"
     if [[ $arch == amd64 ]]; then export GOAMD64=v1; else export GOARM64=v8.0; fi
     local args=(-mod=readonly -trimpath -ldflags '-s -w')
     [[ -z $tags ]] || args+=(-tags "$tags")
-    go build "${args[@]}" -o "$OUT/linux-$arch/$name" ./cmd/caddy
-    verify_binary "$OUT/linux-$arch/$name" "linux-$arch"
+    # Verify a private build before publishing into the final output tree.
+    artifact="$directory/.relay-build/$arch/$name"
+    mkdir -p "${artifact%/*}"
+    go build "${args[@]}" -o "$artifact" ./cmd/caddy || return 1
+    verify_binary "$artifact" "linux-$arch" || return 1
+    info=$(go version -m "$artifact")
+    awk -F '\t' '
+        $2 == "build" && $3 ~ /^-tags=/ {
+            value=substr($3, 7); gsub(/^"|"$/, "", value)
+            count=split(value, tags, /[,[:space:]]+/)
+            for (i=1; i<=count; i++) if (tags[i] == "relay_tls9846_v1") found=1
+        }
+        END { exit !found }
+    ' <<< "$info" || { die 'Missing reviewed TLS policy build tag: relay_tls9846_v1.'; return 1; }
+    if [[ $repo == caddy-network-relay ]]; then
+        verify_relay_go_replacements "$info" || return 1
+    fi
+    cp "$artifact" "$OUT/linux-$arch/$name"
 }
 
 build_app() {
@@ -662,7 +715,7 @@ main() {
     # Git and its credential helper must be ready before source bootstrapping.
     if [[ $bootstrap == 1 ]]; then
         ensure_homebrew
-        for package in go zig gh; do
+        for package in go zig gh python; do
             if ! brew list --versions "$package" >/dev/null 2>&1; then brew install "$package"; fi
         done
     fi
@@ -673,7 +726,7 @@ main() {
     mkdir -p "$OUTPUT_PARENT"
     OUTPUT_PARENT=$(cd "$OUTPUT_PARENT" && pwd -P)
     BUILD_ROOT=$(mktemp -d "$OUTPUT_PARENT/vpn-build-$(date +%Y%m%d-%H%M%S)-XXXXXX")
-    chmod -- "$(printf '%o' $((0777 & ~$(umask))))" "$BUILD_ROOT"
+    chmod -- "$(printf '%o' $((0755 & ~$(umask))))" "$BUILD_ROOT"
     set_build_paths
     printf 'job\tresult\tlog\n' > "$BUILD_RESULTS"
     printf 'repository\tcommit\n' > "$SOURCE_REVISIONS"
@@ -696,10 +749,7 @@ main() {
 }
 
 # Leave only artifacts/logs and remove all owned source, work and cache files.
-open_build_dirs() {
-    if [[ -n ${BUILD_ROOT:-} && -d $BUILD_ROOT && ! -L $BUILD_ROOT ]]; then
-        find "$BUILD_ROOT" -type d -exec chmod 777 {} + 2>/dev/null || true
-    fi
+cleanup_build_sources() {
     case ${SOURCE_WORK:-} in
         /tmp/vpn-sources-*|/private/tmp/vpn-sources-*)
             if [[ ! -L $SOURCE_WORK ]]; then
@@ -711,7 +761,8 @@ open_build_dirs() {
 
 if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
     set -euo pipefail
-    trap open_build_dirs EXIT
+    umask "$(printf '%03o' "$(( $(umask) | 0022 ))")"
+    trap cleanup_build_sources EXIT
     trap 'exit 130' INT
     trap 'exit 143' TERM
     trap 'exit 129' HUP

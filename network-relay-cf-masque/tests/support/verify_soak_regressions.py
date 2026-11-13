@@ -61,8 +61,10 @@ def main() -> int:
         log = directory / f"soak-synthetic-{os.getpid()}.jsonl"
         manifest_path = directory / "manifest.json"
         names = {path for section in ("src", "crates", "vendor") for path in (ROOT / section).rglob("*")
-                 if path.is_file() and (path.suffix == ".rs" or path.name in {"Cargo.toml", "Cargo.lock"})}
-        names |= {ROOT / "Cargo.toml", ROOT / "Cargo.lock"}
+                 if path.is_file() and (section == "vendor" or path.suffix == ".rs"
+                                        or path.name in {"Cargo.toml", "Cargo.lock"})}
+        names |= {ROOT / "Cargo.toml", ROOT / "Cargo.lock",
+                  ROOT / "tests/support/verify_soak.py"}
         baseline = {"result": "passed", "exit_code": 0, "requested_seconds": 3600,
                     "selftest_synthetic": True, "live_cloudflare": False,
                     "process_id": os.getpid(), "evidence_log": str(log.relative_to(ROOT)),
@@ -114,6 +116,10 @@ def main() -> int:
             ("over_socket_limit", "invalid socket accounting"),
             ("bad_production_hash", "production source changed"),
             ("changed_production_file_set", "production file set"),
+            ("bad_vendor_metadata_hash", "production source changed"),
+            ("bad_verifier_hash", "evidence verifier changed"),
+            ("missing_vendor_metadata", "production file set"),
+            ("unrecorded_vendor_input", "production file set"),
         ]:
             cases.append((label, expected))
         for label, expected in cases:
@@ -155,6 +161,14 @@ def main() -> int:
                 manifest["source_sha256"]["src/main.rs"] = "0" * 64
             elif label == "changed_production_file_set":
                 del manifest["source_sha256"]["src/main.rs"]
+            elif label == "bad_verifier_hash":
+                manifest["source_sha256"]["tests/support/verify_soak.py"] = "0" * 64
+            elif label == "bad_vendor_metadata_hash":
+                manifest["source_sha256"]["vendor/smoltcp/UPSTREAM.json"] = "0" * 64
+            elif label == "missing_vendor_metadata":
+                del manifest["source_sha256"]["vendor/smoltcp/UPSTREAM.json"]
+            elif label == "unrecorded_vendor_input":
+                manifest["source_sha256"]["vendor/smoltcp/unrecorded-input.txt"] = "0" * 64
             write_case(changed_rows, manifest)
             if label == "wrong_log_digest":
                 manifest["evidence_sha256"] = "0" * 64

@@ -29,6 +29,8 @@ static NEXT_FIXTURE: AtomicUsize = AtomicUsize::new(0);
 /// Target port whose tunnel sends this many bytes at once and never reads.
 const FLOOD_PORT: u16 = 19;
 const FLOOD: usize = 3 << 20;
+/// An ordinary DNS plus destination-connect budget can exceed ten seconds.
+const DELAY_PORT: u16 = 81;
 
 struct Fixture {
     address: SocketAddr,
@@ -273,6 +275,9 @@ async fn tunnel(
         );
     }
     let flood = request.uri().port_u16() == Some(FLOOD_PORT);
+    if request.uri().port_u16() == Some(DELAY_PORT) {
+        tokio::time::sleep(Duration::from_secs(11)).await;
+    }
     let mut response = http::Response::builder().status(200);
     if udp {
         response = response.header("capsule-protocol", "?1");
@@ -305,6 +310,43 @@ async fn echo(stream: &mut network_relay_rs_core::stream::Stream, bytes: &[u8]) 
     })
     .await
     .expect("CONNECT stream stopped making progress");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn destination_setup_can_exceed_ten_seconds_without_blocking_other_streams() {
+    let fixture = Fixture::start().await;
+    let mut backend = fixture.backend();
+    let client = Arc::new(Client::new(&fixture.config(), backend.bridge.clone()).unwrap());
+    let delayed_client = client.clone();
+    let delayed =
+        tokio::spawn(async move { delayed_client.open("127.0.0.1", DELAY_PORT, false).await });
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while fixture.requests.load(Ordering::SeqCst) == 0 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let mut immediate =
+        tokio::time::timeout(Duration::from_secs(5), client.open("127.0.0.1", 7, false))
+            .await
+            .expect("a pending response serialized independent requests")
+            .unwrap();
+    echo(&mut immediate.stream, b"while DNS and connect are pending").await;
+    let mut delayed = delayed
+        .await
+        .unwrap()
+        .expect("valid destination setup timed out");
+    echo(&mut delayed.stream, b"after the delayed response").await;
+    assert_eq!(fixture.connection_count(), 1);
+    assert_eq!(
+        fixture.requests.load(Ordering::SeqCst),
+        2,
+        "CONNECT was replayed"
+    );
+    drop((delayed, immediate, client));
+    backend.shutdown().await;
+    assert_eq!(backend.resource_count(), 0);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

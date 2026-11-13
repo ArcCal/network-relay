@@ -41,6 +41,53 @@ fn asks_for_udp_upgrade<B>(req: &Request<B>) -> bool {
         .any(|v| v.split(',').any(|t| t.trim().eq_ignore_ascii_case(CONNECT_UDP_PROTOCOL)))
 }
 
+/// Host is a URI host and optional numeric port, not a generic authority:
+/// userinfo is forbidden (RFC 9110 section 7.2, RFC 3986 sections 3.2.2-3).
+pub(super) fn valid_host(value: &str) -> bool {
+    let (host, port) = if let Some(literal) = value.strip_prefix('[') {
+        let Some((literal, rest)) = literal.split_once(']') else { return false };
+        let future =
+            literal.strip_prefix(['v', 'V']).and_then(|v| v.split_once('.')).is_some_and(|(version, address)| {
+                !version.is_empty()
+                    && version.bytes().all(|b| b.is_ascii_hexdigit())
+                    && !address.is_empty()
+                    && address.bytes().all(|b| registered(b) || b == b':')
+            });
+        if literal.parse::<std::net::Ipv6Addr>().is_err() && !future {
+            return false;
+        }
+        ("", rest)
+    } else {
+        value.find(':').map_or((value, ""), |at| value.split_at(at))
+    };
+    if !port.is_empty() && !port.strip_prefix(':').is_some_and(|p| p.bytes().all(|b| b.is_ascii_digit())) {
+        return false;
+    }
+    valid_authority_component(host, false)
+}
+
+fn registered(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || b"-._~!$&'()*+,;=".contains(&byte)
+}
+
+/// RFC 3986 registered-name syntax, or userinfo when colons are allowed.
+pub(super) fn valid_authority_component(value: &str, allow_colon: bool) -> bool {
+    let mut bytes = value.as_bytes();
+    while let Some((&byte, rest)) = bytes.split_first() {
+        bytes = if byte == b'%' {
+            if !rest.get(..2).is_some_and(|hex| hex.iter().all(u8::is_ascii_hexdigit)) {
+                return false;
+            }
+            &rest[2..]
+        } else if registered(byte) || allow_colon && byte == b':' {
+            rest
+        } else {
+            return false;
+        };
+    }
+    true
+}
+
 fn builder() -> Builder {
     let mut builder = Builder::new();
     // Bound the entire HTTP/1 read buffer, including headers and any bytes
@@ -323,10 +370,19 @@ impl Relay {
         req: Request<h2::RecvStream>,
         mut response: h2::server::SendResponse<Bytes>,
     ) -> Result<()> {
-        // h2 rejects malformed requests (RFC 9113 §8.1.1, §8.3, §8.5; RFC
-        // 8441 §4) with a PROTOCOL_ERROR stream reset before they get here.
+        // h2 validates the general request structure; also validate URI and
+        // protocol-name syntax before authentication (RFC 9113 section 8.1.1,
+        // RFC 8441 section 4, RFC 9110 sections 5.6.2 and 7.8).
         let protocol = req.extensions().get::<h2::ext::Protocol>().map(|p| p.as_str());
         let is_connect = req.method() == Method::CONNECT;
+        let bad_protocol = protocol.is_some_and(|value| {
+            value.is_empty()
+                || !value.bytes().all(|byte| byte.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&byte))
+        });
+        if bad_protocol || !super::valid_authority(req.uri(), is_connect && protocol.is_none()) {
+            response.send_reset(h2::Reason::PROTOCOL_ERROR);
+            return Ok(());
+        }
         let kind = Kind::of_connect(is_connect, protocol, req.uri().scheme_str());
         let settings = self.settings();
         let incoming = Incoming {
@@ -426,10 +482,15 @@ impl Relay {
         // CONNECT-UDP requests.
         // section 3.2 also asks for 400 when the Host value is invalid; an empty
         // one is valid (for a target URI without authority).
-        let bad_host = req.headers().get(HOST).is_some_and(|host| {
-            !host.is_empty() && host.to_str().ok().and_then(|h| h.parse::<http::uri::Authority>().ok()).is_none()
-        });
-        if bad_host || req.version() == http::Version::HTTP_11 && req.headers().get_all(HOST).iter().count() != 1 {
+        let bad_host = req.headers().get(HOST).is_some_and(|host| !host.to_str().is_ok_and(valid_host));
+        // An absolute-form URI is validated directly; in origin form, a
+        // nonempty Host containing only a port reconstructs an HTTP(S) URI
+        // with an empty host (RFC 9112 section 3.3, RFC 9110 sections 4.2.1-2).
+        let bad_target = !super::valid_authority(req.uri(), false)
+            || req.uri().authority().is_none()
+                && req.headers().get(HOST).is_some_and(|host| host.as_bytes().starts_with(b":"));
+        let host_count = req.headers().get_all(HOST).iter().count();
+        if bad_host || bad_target || host_count > 1 || req.version() == http::Version::HTTP_11 && host_count == 0 {
             return Response::builder()
                 .status(StatusCode::BAD_REQUEST)
                 .header(CONNECTION, "close")
@@ -536,5 +597,31 @@ impl Relay {
         }
         .body(Full::default())
         .expect("valid")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::valid_host;
+
+    #[test]
+    fn host_uses_host_and_port_grammar_without_userinfo() {
+        for host in ["", "relay.test", "relay.test:", "relay.test:443", "[::1]:443", "[V1.a:b]:80", "r%65lay.test"] {
+            assert!(valid_host(host), "{host:?}");
+        }
+        for host in [
+            "user@relay.test",
+            "relay.test:abc",
+            "relay.test:443:80",
+            "[not-ipv6]",
+            "[::1]extra",
+            "[::1]:abc",
+            "[v.a]",
+            "[v1.]",
+            "relay%2.test",
+            "relay.test/path",
+        ] {
+            assert!(!valid_host(host), "{host:?}");
+        }
     }
 }

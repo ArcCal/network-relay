@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 # Build the independent Rust application without changing another project.
 set -euo pipefail
+if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
+    # New artifacts may be shared, but never writable by other users.
+    # Respect a caller's stricter umask and preserve all existing directory modes.
+    umask "$(printf '%03o' "$(( $(umask) | 0022 ))")"
+fi
 unset CDPATH CARGO_BUILD_TARGET
 
 RS_BUILD_ARGS=(network-relay-rs/build-macos.sh "$@")
@@ -51,9 +56,6 @@ mkdir -p -- "$RS_WORK"
 export RUSTUP_TOOLCHAIN=${RUSTUP_TOOLCHAIN:-stable}
 relay_prepare_build_environment "$RS_WORK" aarch64-apple-darwin
 cd -- "$RS_ROOT"
-# Keep final artifact folders open for sharing and synchronization.
-rs_open_dirs() { find "$RS_OUTPUT_ROOT/dist" -type d -exec chmod 777 {} + 2>/dev/null || true; }
-trap rs_open_dirs EXIT
 RS_VERSION=$(tr -d '[:space:]' < "$RS_ROOT/VERSION")
 RS_SOURCE=$(git -C "$RS_ROOT" rev-parse HEAD 2>/dev/null || printf 'Unknown')
 if [[ $RS_SOURCE != Unknown ]] && [[ -n $(git -C "$RS_ROOT" status --porcelain -- .) ]]; then
@@ -82,7 +84,7 @@ fi
 
 mkdir -p "$RS_OUTPUT_ROOT/dist"
 RS_STAGE=$(mktemp -d "$RS_WORK/rs-bundle.XXXXXX")
-trap 'rm -rf "$RS_STAGE"; rs_open_dirs' EXIT
+trap 'rm -rf "$RS_STAGE"' EXIT
 RS_APP="$RS_STAGE/Network Relay RS.app"
 mkdir -p "$RS_APP/Contents/MacOS" "$RS_APP/Contents/Resources"
 cp "$CARGO_TARGET_DIR/$RS_TARGET/release/network-relay-rs" "$RS_APP/Contents/MacOS/network-relay-rs"

@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 # Independent native app. No existing project or system configuration is changed.
 set -euo pipefail
+if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
+    # New artifacts may be shared, but never writable by other users.
+    # Respect a caller's stricter umask and preserve all existing directory modes.
+    umask "$(printf '%03o' "$(( $(umask) | 0022 ))")"
+fi
 unset CDPATH CARGO_BUILD_TARGET
 # Find tools from rustup and Homebrew even if this shell has not loaded them yet.
 for NF_PATH in /opt/homebrew/bin "${CARGO_HOME:-$HOME/.cargo}/bin"; do
@@ -36,9 +41,6 @@ mkdir -p -- "$NF_WORK"
 export RUSTUP_TOOLCHAIN=${RUSTUP_TOOLCHAIN:-stable}
 relay_prepare_build_environment "$NF_WORK" aarch64-apple-darwin
 cd -- "$NF_ROOT"
-# Keep final artifact folders open for sharing and synchronization.
-nf_open_dirs() { find "$NF_OUTPUT_ROOT/dist" -type d -exec chmod 777 {} + 2>/dev/null || true; }
-trap nf_open_dirs EXIT
 NF_VERSION=$(tr -d '[:space:]' < "$NF_ROOT/VERSION")
 NF_SOURCE=$(git -C "$NF_ROOT" rev-parse HEAD 2>/dev/null || printf 'Unknown')
 if [[ $NF_SOURCE != Unknown ]] && [[ -n $(git -C "$NF_ROOT" status --porcelain -- .) ]]; then
@@ -67,7 +69,7 @@ NF_BIN=$(swift build "${NF_SWIFT_FLAGS[@]}" -c release --arch arm64 --show-bin-p
 bash "$NF_ROOT/scripts/test-native.sh" "$NF_LIB"
 mkdir -p "$NF_OUTPUT_ROOT/dist"
 NF_STAGE=$(mktemp -d "$NF_WORK/nf-bundle.XXXXXX")
-trap 'rm -rf "$NF_STAGE"; nf_open_dirs' EXIT
+trap 'rm -rf "$NF_STAGE"' EXIT
 NF_APP="$NF_STAGE/Network Relay NF.app"
 mkdir -p "$NF_APP/Contents/MacOS" "$NF_APP/Contents/Resources"
 cp "$NF_BIN/NetworkRelayNF" "$NF_APP/Contents/MacOS/NetworkRelayNF"

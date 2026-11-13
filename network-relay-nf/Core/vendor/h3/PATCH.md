@@ -81,3 +81,7 @@ The relay integration tests cover trailers without FIN, empty DATA, ordinary
 half-close, bulk transfers and the malformed requests above; `proto::headers`
 has unit tests for each rule (run the crate's tests with `--all-features`). Ordinary HTTP responses still allow trailers.
 Remove these changes when equivalent fixes are available upstream.
+
+- `frame.rs`: clean FIN while an ignored frame still has unreceived payload is
+  H3_FRAME_ERROR (RFC 9114 section 7.1), rather than clean EOF. The skip counter
+  remains part of frame completion after buffered bytes have been discarded.

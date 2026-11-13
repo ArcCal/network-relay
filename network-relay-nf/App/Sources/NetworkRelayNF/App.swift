@@ -708,7 +708,7 @@ struct SettingsForm: View {
         let imported: NetworkRelayNFModel.Configuration
         do {
             imported = try NetworkRelayNFModel.Configuration.importing(
-                String(contentsOf: url, encoding: .utf8), scope: scope, preserving: base)
+                NetworkRelayNFModel.readSettingsText(from: url), scope: scope, preserving: base)
         } catch {
             message = .error("Could not import “\(url.lastPathComponent)”: \(error.localizedDescription)")
             return

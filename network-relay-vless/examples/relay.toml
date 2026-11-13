@@ -55,6 +55,9 @@ log_requests = false
 # The VLESS server, as host:port. Matches an Xray-core inbound with
 #   "protocol": "vless", "settings": {"clients": [{"id": <uuid>}], "decryption": "none"},
 #   "streamSettings": {"network": "ws", "security": "none", "wsSettings": {"path": <path>}}
+# Disable sniffing on that inbound, or set its "sniffing.routeOnly" to
+# true, so sniffed Host/SNI names cannot replace the checked destination.
+# Apply destination restrictions on the VLESS server too.
 # A host name is looked up with this host's resolver, each time a tunnel
 # opens; an IP address avoids that.
 server = "vless.example.net:80"

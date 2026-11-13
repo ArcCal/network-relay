@@ -176,23 +176,32 @@ class MacFreshSourceTests(unittest.TestCase):
                   'toolchain) mkdir -p "$RUSTUP_HOME/toolchains"; ln -s "$4" "$RUSTUP_HOME/toolchains/$3" ;; esac')
         self.tool("df", "printf 'Filesystem 1024-blocks Used Available Capacity Mounted\\nfixture 99999999 0 99999999 0%% /\\n'")
         cache = self.root / "caller-cargo"; cache.mkdir(); (cache / "sentinel").write_text("preserve")
-        capture = self.root / "private-environment.json"
-        output = self.root / "failed-artifacts"
-        result = subprocess.run([BASH, str(ROOT / "build-macos-gui-clients-on-macos.sh"), "--output", str(output)],
-                                env=dict(self.env, TEST_INSTALLED_RUST=str(toolchain), TEST_BUILD_ENV=str(capture),
-                                         CARGO_HOME=str(cache)), capture_output=True, text=True)
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("FAILED (exit 37)", result.stdout + result.stderr)
-        values = json.loads(capture.read_text())
-        work = Path(values["RELAY_BUILD_WORK_ROOT"])
-        for key, value in values.items():
-            self.assertTrue(Path(value).is_relative_to(work), (key, value, work))
-            self.assertFalse(Path(value).exists(), (key, value))
-        self.assertEqual((cache / "sentinel").read_text(), "preserve")
-        self.assertTrue((output / "logs/macos-network-relay-nf.log").is_file())
-        self.assertFalse(os.path.lexists(output / ".work"))
-        checkout = re.search(r"Temporary checkout: ([^\n]+)", result.stdout)[1]
-        self.assertFalse(Path(checkout).exists())
+        for mask, expected in ((0o000, 0o755), (0o077, 0o700)):
+            for existing in (False, True):
+                with self.subTest(umask=oct(mask), existing=existing):
+                    capture = self.root / f"private-environment-{mask}-{existing}.json"
+                    output = self.root / f"failed-artifacts-{mask}-{existing}"
+                    if existing:
+                        output.mkdir(mode=0o700)
+                        output.chmod(0o700)
+                    result = subprocess.run(
+                        [BASH, str(ROOT / "build-macos-gui-clients-on-macos.sh"), "--output", str(output)],
+                        env=dict(self.env, TEST_INSTALLED_RUST=str(toolchain), TEST_BUILD_ENV=str(capture),
+                                 CARGO_HOME=str(cache)), capture_output=True, text=True, umask=mask)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn("FAILED (exit 37)", result.stdout + result.stderr)
+                    values = json.loads(capture.read_text())
+                    work = Path(values["RELAY_BUILD_WORK_ROOT"])
+                    for key, value in values.items():
+                        self.assertTrue(Path(value).is_relative_to(work), (key, value, work))
+                        self.assertFalse(Path(value).exists(), (key, value))
+                    self.assertEqual((cache / "sentinel").read_text(), "preserve")
+                    self.assertTrue((output / "logs/macos-network-relay-nf.log").is_file())
+                    self.assertEqual(output.stat().st_mode & 0o777, 0o700 if existing else expected)
+                    self.assertEqual((output / "logs").stat().st_mode & 0o777, expected)
+                    self.assertFalse(os.path.lexists(output / ".work"))
+                    checkout = re.search(r"Temporary checkout: ([^\n]+)", result.stdout)[1]
+                    self.assertFalse(Path(checkout).exists())
 
 
     def test_linux_build_failure_preserves_successful_gui_artifacts_and_cleans_work(self):

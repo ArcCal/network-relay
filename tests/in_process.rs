@@ -2038,6 +2038,7 @@ async fn http1_requests_need_exactly_one_host() {
              Upgrade: connect-udp\r\nAuthorization: {auth}\r\n\r\n"
         ),
         "GET / HTTP/1.1\r\n\r\n".to_string(),
+        "GET / HTTP/1.0\r\nHost: relay.test\r\nHost: other.test\r\n\r\n".to_string(),
     ];
     for request in cases {
         let tcp = tokio::net::TcpStream::connect(relay.addr).await.unwrap();
@@ -2051,7 +2052,15 @@ async fn http1_requests_need_exactly_one_host() {
             }
         })
         .await;
-        assert_eq!(String::from_utf8_lossy(&head).trim(), "HTTP/1.1 400 Bad Request", "{request:?}");
+        let line = String::from_utf8_lossy(&head);
+        if request.starts_with("GET / HTTP/1.0\r\n") {
+            assert!(
+                matches!(line.trim(), "HTTP/1.0 400 Bad Request" | "HTTP/1.1 400 Bad Request"),
+                "{request:?}: {line}"
+            );
+        } else {
+            assert_eq!(line.trim(), "HTTP/1.1 400 Bad Request", "{request:?}");
+        }
     }
     assert_eq!(relay.relay.active_tunnels(), 0);
 }
@@ -2307,6 +2316,63 @@ async fn raw_h3_request(conn: &quinn::Connection, fields: &[(&str, &str)]) -> Re
 }
 
 #[tokio::test]
+async fn http2_invalid_protocol_tokens_are_protocol_errors() {
+    let relay = TestRelay::start("").await;
+    let (mut sender, _driver) = raw_h2(&relay).await;
+    for protocol in ["", "not a token", "not/a-token", "caf\u{e9}"] {
+        let request = Request::builder()
+            .method(Method::CONNECT)
+            .uri("https://relay.test/")
+            .extension(h2::ext::Protocol::from(protocol))
+            .body(())
+            .unwrap();
+        let (response, _send) = sender.send_request(request, false).unwrap();
+        let error = within("invalid protocol token reset", response).await.unwrap_err();
+        assert_eq!(error.reason(), Some(h2::Reason::PROTOCOL_ERROR), "{protocol:?}");
+    }
+}
+
+#[tokio::test]
+async fn malformed_http2_authorities_are_protocol_errors() {
+    let relay = TestRelay::start("").await;
+    let (mut sender, _driver) = raw_h2(&relay).await;
+    for (scheme, authority) in [
+        ("https", "user@relay.test"),
+        ("https", "user:password@relay.test"),
+        ("https", "relay.test:abc"),
+        ("https", "[not-ipv6]"),
+        ("https", ":443"),
+        ("ftp", "user@relay.test:abc"),
+        ("ftp", "user@[not-ipv6]"),
+        ("ftp", "us%zz@relay.test"),
+    ] {
+        let uri = http::Uri::builder().scheme(scheme).authority(authority).path_and_query("/").build().unwrap();
+        let (response, _send) = sender.send_request(Request::builder().uri(uri).body(()).unwrap(), true).unwrap();
+        let error = within("invalid authority reset", response).await.unwrap_err();
+        assert_eq!(error.reason(), Some(h2::Reason::PROTOCOL_ERROR), "{authority}");
+    }
+    for authority in ["user@relay.test:443", "relay.test", "relay.test:", "[::1]", "[::1]:", ":443"] {
+        let uri = http::Uri::builder().authority(authority).build().unwrap();
+        let request = Request::builder().method(Method::CONNECT).uri(uri).body(()).unwrap();
+        let (response, _send) = sender.send_request(request, false).unwrap();
+        assert_eq!(
+            within("invalid CONNECT authority reset", response).await.unwrap_err().reason(),
+            Some(h2::Reason::PROTOCOL_ERROR),
+            "{authority}"
+        );
+    }
+    let uri = "https://relay.test/";
+    let (response, _send) = sender.send_request(Request::builder().uri(uri).body(()).unwrap(), true).unwrap();
+    assert_eq!(within("connection remains usable", response).await.unwrap().status(), StatusCode::OK);
+    let request = Request::builder().uri("ftp://user@relay.test/").body(()).unwrap();
+    let (response, _send) = sender.send_request(request, true).unwrap();
+    assert_eq!(within("non-HTTP scheme authority", response).await.unwrap().status(), StatusCode::OK);
+    let request = Request::builder().uri("ftp://user:pass%40word@relay.test/").body(()).unwrap();
+    let (response, _send) = sender.send_request(request, true).unwrap();
+    assert_eq!(within("encoded userinfo", response).await.unwrap().status(), StatusCode::OK);
+}
+
+#[tokio::test]
 async fn malformed_http3_requests_are_message_errors() {
     let relay = TestRelay::start("").await;
     let (_sender, conn, _driver) = raw_h3(&relay, true).await;
@@ -2319,6 +2385,12 @@ async fn malformed_http3_requests_are_message_errors() {
         &[(":method", "CONNECT"), (":scheme", "https"), (":authority", "127.0.0.1:80"), ("authorization", &auth)],
         &[(":method", "CONNECT"), (":path", "/"), (":authority", "127.0.0.1:80"), ("authorization", &auth)],
         &[(":method", "CONNECT"), ("host", "127.0.0.1:80"), ("authorization", &auth)],
+        &[(":method", "CONNECT"), (":authority", "user@relay.test:443"), ("authorization", &auth)],
+        &[(":method", "CONNECT"), (":authority", "relay.test")],
+        &[(":method", "CONNECT"), (":authority", "relay.test:")],
+        &[(":method", "CONNECT"), (":authority", "[::1]")],
+        &[(":method", "CONNECT"), (":authority", "[::1]:")],
+        &[(":method", "CONNECT"), (":authority", ":443")],
         // RFC 8441 §4 (RFC 9220): extended CONNECT carries :scheme and :path.
         &[(":method", "CONNECT"), (":protocol", "connect-udp"), (":authority", "relay.test"), (":path", udp_path)],
         &[(":method", "CONNECT"), (":protocol", "connect-udp"), (":authority", "relay.test"), (":scheme", "https")],
@@ -2326,6 +2398,16 @@ async fn malformed_http3_requests_are_message_errors() {
         &[(":method", "GET"), (":authority", "relay.test"), (":path", "/")],
         &[(":method", "GET"), (":scheme", "https"), (":authority", "relay.test")],
         &[(":method", "GET"), (":method", "GET"), (":scheme", "https"), (":authority", "relay.test"), (":path", "/")],
+        // RFC 9114 section 4.3.1: HTTP(S) authorities exclude userinfo.
+        &[(":method", "GET"), (":scheme", "https"), (":authority", "user@relay.test"), (":path", "/")],
+        &[(":method", "GET"), (":scheme", "https"), (":authority", "user:password@relay.test"), (":path", "/")],
+        &[(":method", "GET"), (":scheme", "https"), (":authority", "relay.test:abc"), (":path", "/")],
+        &[(":method", "GET"), (":scheme", "https"), (":authority", "[not-ipv6]"), (":path", "/")],
+        &[(":method", "GET"), (":scheme", "https"), (":authority", ":443"), (":path", "/")],
+        &[(":method", "GET"), (":scheme", "ftp"), (":authority", "user@relay.test:abc"), (":path", "/")],
+        &[(":method", "GET"), (":scheme", "ftp"), (":authority", "user@[not-ipv6]"), (":path", "/")],
+        &[(":method", "GET"), (":scheme", "ftp"), (":authority", "us%zz@relay.test"), (":path", "/")],
+        &[(":method", "GET"), (":scheme", "https"), ("host", "user@relay.test"), (":path", "/")],
         // RFC 9114 §4.3: response pseudo-headers in a request.
         &[(":method", "GET"), (":scheme", "https"), (":authority", "relay.test"), (":path", "/"), (":status", "200")],
         // :protocol is only defined for CONNECT.
@@ -2356,6 +2438,11 @@ async fn malformed_http3_requests_are_message_errors() {
     // frame (type 1) comes back.
     let ok = [(":method", "GET"), (":scheme", "https"), (":authority", "relay.test"), (":path", "/")];
     assert_eq!(raw_h3_request(&conn, &ok).await, Ok(1));
+    let other_scheme = [(":method", "GET"), (":scheme", "ftp"), (":authority", "user@relay.test"), (":path", "/")];
+    assert_eq!(raw_h3_request(&conn, &other_scheme).await, Ok(1));
+    let encoded_userinfo =
+        [(":method", "GET"), (":scheme", "ftp"), (":authority", "user:pass%40word@relay.test"), (":path", "/")];
+    assert_eq!(raw_h3_request(&conn, &encoded_userinfo).await, Ok(1));
     // An extended CONNECT with a protocol h3 does not know is well-formed:
     // without credentials it gets the website, not a reset.
     let tcp = [
@@ -3447,6 +3534,13 @@ async fn http1_connect_needs_an_authority_form_target_and_a_valid_host() {
         (format!("CONNECT /anything HTTP/1.1\r\nHost: {echo}\r\nProxy-Authorization: {auth}\r\n\r\n"), "400"),
         (format!("CONNECT http://{echo}/ HTTP/1.1\r\nHost: {echo}\r\nProxy-Authorization: {auth}\r\n\r\n"), "400"),
         (format!("CONNECT {echo} HTTP/1.1\r\nHost: bad host value\r\nProxy-Authorization: {auth}\r\n\r\n"), "400"),
+        (format!("CONNECT {echo} HTTP/1.1\r\nHost: user@relay.test\r\nProxy-Authorization: {auth}\r\n\r\n"), "400"),
+        (format!("CONNECT {echo} HTTP/1.1\r\nHost: relay.test:abc\r\nProxy-Authorization: {auth}\r\n\r\n"), "400"),
+        (format!("CONNECT {echo} HTTP/1.1\r\nHost: [not-ipv6]\r\nProxy-Authorization: {auth}\r\n\r\n"), "400"),
+        (format!("CONNECT relay.test HTTP/1.1\r\nHost: relay.test\r\nProxy-Authorization: {auth}\r\n\r\n"), "400"),
+        (format!("CONNECT relay.test: HTTP/1.1\r\nHost: relay.test\r\nProxy-Authorization: {auth}\r\n\r\n"), "400"),
+        ("GET https://:443/ HTTP/1.1\r\nHost: relay.test\r\n\r\n".to_string(), "400"),
+        ("GET / HTTP/1.1\r\nHost: :443\r\n\r\n".to_string(), "400"),
         (format!("CONNECT {echo} HTTP/1.1\r\nHost: {echo}\r\nProxy-Authorization: {auth}\r\n\r\n"), "200"),
     ] {
         let tcp = tokio::net::TcpStream::connect(relay.addr).await.unwrap();

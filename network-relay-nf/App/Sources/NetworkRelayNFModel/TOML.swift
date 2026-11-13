@@ -1,6 +1,28 @@
 // Adapted from Masque NF; independent Network Relay NF copy.
 import Foundation
 
+private let maximumSettingsTextBytes = 4 << 20
+
+/// Read an import with the same byte limit as the parser, before allocating
+/// an arbitrarily large String from a user-selected file.
+public func readSettingsText(from file: URL) throws -> String {
+    let handle = try FileHandle(forReadingFrom: file)
+    defer { try? handle.close() }
+    var data = Data()
+    while data.count <= maximumSettingsTextBytes {
+        let count = min(64 << 10, maximumSettingsTextBytes + 1 - data.count)
+        guard let chunk = try handle.read(upToCount: count), !chunk.isEmpty else { break }
+        data.append(chunk)
+    }
+    guard data.count <= maximumSettingsTextBytes else {
+        throw TOMLError(line: 1, "the settings file exceeds 4 MiB")
+    }
+    guard let text = String(data: data, encoding: .utf8) else {
+        throw CocoaError(.fileReadInapplicableStringEncoding, userInfo: [NSFilePathErrorKey: file.path])
+    }
+    return text
+}
+
 /// A TOML value, as far as the app's files need: strings, whole numbers,
 /// booleans, arrays and tables. What else TOML has (floats, dates,
 /// multi-line strings) is refused with the line it is on.
@@ -30,6 +52,10 @@ public struct TOMLError: Error, Equatable, LocalizedError {
 /// `[tables]`, `[[arrays of tables]]`, arrays that span lines, and inline
 /// tables.
 public func parseTOML(_ text: String) throws -> [String: TOMLValue] {
+    // Check bytes before expanding every scalar into parser storage.
+    guard text.utf8.count <= maximumSettingsTextBytes else {
+        throw TOMLError(line: 1, "the settings file exceeds 4 MiB")
+    }
     var parser = TOMLParser(Array(text.unicodeScalars))
     return try parser.document()
 }
@@ -38,6 +64,7 @@ private struct TOMLParser {
     private let s: [Unicode.Scalar]
     private var i = 0
     private var line = 1
+    private var valueDepth = 0
     private var root: [String: TOMLValue] = [:]
     /// The table that `key = value` lines go into.
     private var current: [String] = []
@@ -132,6 +159,7 @@ private struct TOMLParser {
         while true {
             skipBlank()
             path.append(try key())
+            guard path.count <= 64 else { throw error("table paths exceed 64 levels") }
             skipBlank()
             guard peek() == "." else { return path }
             i += 1
@@ -196,6 +224,7 @@ private struct TOMLParser {
         _ table: inout [String: TOMLValue], _ path: ArraySlice<String>, line: Int,
         _ change: (inout [String: TOMLValue], Int) throws -> Void
     ) throws {
+        guard path.count <= 64 else { throw TOMLError(line: line, "table paths exceed 64 levels") }
         guard let first = path.first else {
             try change(&table, line)
             return
@@ -232,6 +261,9 @@ private struct TOMLParser {
     // MARK: Values
 
     private mutating func value() throws -> TOMLValue {
+        guard valueDepth < 64 else { throw error("values exceed 64 nesting levels") }
+        valueDepth += 1
+        defer { valueDepth -= 1 }
         skipBlank()
         switch peek() {
         case "\"":

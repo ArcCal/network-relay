@@ -40,7 +40,7 @@ pub const MTU: usize = 1280;
 /// The least the stack goes down to (the IPv4 minimum, RFC 791).
 const MIN_MTU: usize = 576;
 /// Receive window per TCP connection: with window scaling, enough for about
-/// 80 Mbit/s at 200 ms round-trip time. Memory is touched only as it fills.
+/// 10.5 Mbit/s at 200 ms round-trip time. Memory is touched only as it fills.
 const TCP_RX_BUFFER: usize = 256 << 10;
 const TCP_TX_BUFFER: usize = 128 << 10;
 const UDP_PACKETS: usize = 128;

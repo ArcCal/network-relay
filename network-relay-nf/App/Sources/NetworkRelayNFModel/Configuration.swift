@@ -235,6 +235,9 @@ public struct Configuration: Codable, Equatable {
         // Also when an older version or the user made the folder.
         try fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: folder.path)
         try writePrivately(try JSONEncoder().encode(self), to: file)
+        // Retire the previous implementation's staging file only in this
+        // private settings directory. Generic exports leave siblings alone.
+        try? fm.removeItem(at: folder.appendingPathComponent(file.lastPathComponent + ".new"))
     }
 
 
@@ -281,23 +284,26 @@ public func clientChange(from old: Configuration, to new: Configuration) -> Clie
 /// from the start, is written and then renamed over the old one, so a crash
 /// or a full disk never leaves it half written.
 public func writePrivately(_ data: Data, to file: URL) throws {
-    let fm = FileManager.default
-    let new = file.deletingLastPathComponent().appendingPathComponent(file.lastPathComponent + ".new")
-    try? fm.removeItem(at: new)
-    guard fm.createFile(atPath: new.path, contents: nil, attributes: [.posixPermissions: 0o600]) else {
-        throw CocoaError(.fileWriteUnknown, userInfo: [NSFilePathErrorKey: new.path])
+    // Create an exclusive, unpredictable 0600 file and keep its descriptor.
+    // Reopening a predictable sibling could follow a symlink planted between
+    // creation and opening when exporting into a shared directory.
+    let newPath = file.deletingLastPathComponent().appendingPathComponent(".relay-private-\(UUID().uuidString)").path
+    let descriptor = open(newPath, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0o600)
+    guard descriptor >= 0 else {
+        throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
     }
-    do {
-        let handle = try FileHandle(forWritingTo: new)
-        defer { try? handle.close() }
-        try handle.write(contentsOf: data)
-        try handle.synchronize()
-        guard rename(new.path, file.path) == 0 else {
-            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
-        }
-    } catch {
-        try? fm.removeItem(at: new)
-        throw error
+    let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
+    defer {
+        try? handle.close()
+        _ = unlink(newPath)
+    }
+    guard fchmod(descriptor, 0o600) == 0 else {
+        throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+    }
+    try handle.write(contentsOf: data)
+    try handle.synchronize()
+    guard rename(newPath, file.path) == 0 else {
+        throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
     }
 }
 

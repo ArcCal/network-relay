@@ -152,16 +152,34 @@ fn expected_hash(bytes: usize) -> String {
     format!("{:x}", hash.finalize())
 }
 
-async fn echo_stream<S: AsyncRead + AsyncWrite + Unpin>(stream: S, bytes: usize) -> Result<String> {
+#[derive(Default)]
+struct EchoProgress {
+    written: AtomicUsize,
+    read: AtomicUsize,
+    last_write_ms: AtomicUsize,
+    last_read_ms: AtomicUsize,
+    sent_fin: AtomicBool,
+    received_eof: AtomicBool,
+}
+
+async fn echo_stream<S: AsyncRead + AsyncWrite + Unpin>(
+    stream: S,
+    bytes: usize,
+    progress: Arc<EchoProgress>,
+    started: Instant,
+) -> Result<String> {
     let (mut read, mut write) = tokio::io::split(stream);
     let sending = async {
         let mut buf = vec![0; CHUNK];
         for offset in (0..bytes).step_by(CHUNK) {
             let count = CHUNK.min(bytes - offset);
             fill_pattern(&mut buf[..count], offset);
-            write.write_all(&buf[..count]).await?;
+            write.write_all(&buf[..count]).await.with_context(|| format!("echo write DATA at {offset}"))?;
+            progress.written.store(offset + count, Ordering::Relaxed);
+            progress.last_write_ms.store(started.elapsed().as_millis() as usize, Ordering::Relaxed);
         }
-        write.shutdown().await?; // The peer waits for this FIN before closing its half.
+        write.shutdown().await.context("echo write FIN")?; // The peer waits for this FIN before closing its half.
+        progress.sent_fin.store(true, Ordering::Relaxed);
         Ok::<(), anyhow::Error>(())
     };
     let receiving = async {
@@ -169,11 +187,14 @@ async fn echo_stream<S: AsyncRead + AsyncWrite + Unpin>(stream: S, bytes: usize)
         let mut count = 0usize;
         let mut buf = vec![0; CHUNK];
         loop {
-            let n = read.read(&mut buf).await?;
+            let n = read.read(&mut buf).await.with_context(|| format!("echo read DATA/FIN after {count} bytes"))?;
             if n == 0 {
+                progress.received_eof.store(true, Ordering::Relaxed);
                 break;
             }
             count += n;
+            progress.read.store(count, Ordering::Relaxed);
+            progress.last_read_ms.store(started.elapsed().as_millis() as usize, Ordering::Relaxed);
             ensure!(count <= bytes, "echo produced extra bytes");
             hash.update(&buf[..n]);
         }
@@ -191,25 +212,83 @@ async fn bulk(fixture: &Fixture, inbound: &str, bytes: usize) -> Result<serde_js
     let expected = expected_hash(bytes);
     let actual = match inbound {
         "h1" | "h2" => {
-            // These are exactly the standard client's transport helpers.
-            let mut response;
-            let stream;
-            if inbound == "h1" {
-                let (mut sender, _driver) = check::h1_sender(&opts, &opts.addresses).await?;
-                response = sender.send_request(connect_request(target).body(Empty::<Bytes>::new())?).await?;
-                ensure!(response.status() == StatusCode::OK, "TCP CONNECT failed: {}", response.status());
-                stream = TokioIo::new(hyper::upgrade::on(&mut response).await?);
-                tokio::time::timeout(Duration::from_secs(240), echo_stream(stream, bytes))
+            let progress = Arc::new(EchoProgress::default());
+            let mut observer = tokio::task::JoinSet::new();
+            let observed = progress.clone();
+            let warp = fixture.warp.clone();
+            let peer = fixture.peer.packet_stack();
+            if std::env::var_os("WARP_BULK_DIAGNOSTICS").is_some() {
+                observer.spawn(async move {
+                    loop {
+                        tokio::time::sleep(Duration::from_secs(5)).await;
+                        let elapsed = started.elapsed().as_millis() as usize;
+                        let last = observed
+                            .last_write_ms
+                            .load(Ordering::Relaxed)
+                            .max(observed.last_read_ms.load(Ordering::Relaxed));
+                        if elapsed.saturating_sub(last) >= 5000 {
+                            save_evidence(
+                                "h12-bulk-stall",
+                                serde_json::json!({
+                            "elapsed_ms":elapsed,"written":observed.written.load(Ordering::Relaxed),
+                            "read":observed.read.load(Ordering::Relaxed),"last_progress_ms":last,
+                            "egress":warp.status(),"egress_tcp":warp.tcp_snapshot(),
+                            "peer_tcp":peer.tcp_snapshot(),"peer_failure":peer.failure_reason(),
+                            "live_cloudflare":false}),
+                            )?;
+                        }
+                    }
+                    #[allow(unreachable_code)]
+                    Ok::<(), anyhow::Error>(())
+                });
+            }
+            let transfer = async {
+                let hash = if inbound == "h1" {
+                    let (mut sender, _driver) = check::h1_sender(&opts, &opts.addresses).await?;
+                    let mut response =
+                        sender.send_request(connect_request(target).body(Empty::<Bytes>::new())?).await?;
+                    ensure!(response.status() == StatusCode::OK, "TCP CONNECT failed: {}", response.status());
+                    let stream = TokioIo::new(hyper::upgrade::on(&mut response).await?);
+                    tokio::time::timeout(
+                        Duration::from_secs(240),
+                        echo_stream(stream, bytes, progress.clone(), started),
+                    )
                     .await
                     .context("H1 bulk deadline")??
-            } else {
-                let (mut sender, _driver) = check::h2_sender(&opts, &opts.addresses).await?;
-                response = sender.send_request(connect_request(target).body(Empty::<Bytes>::new())?).await?;
-                ensure!(response.status() == StatusCode::OK, "TCP CONNECT failed: {}", response.status());
-                stream = TokioIo::new(hyper::upgrade::on(&mut response).await?);
-                tokio::time::timeout(Duration::from_secs(240), echo_stream(stream, bytes))
+                } else {
+                    let (mut sender, _driver) = check::h2_sender(&opts, &opts.addresses).await?;
+                    let mut response =
+                        sender.send_request(connect_request(target).body(Empty::<Bytes>::new())?).await?;
+                    ensure!(response.status() == StatusCode::OK, "TCP CONNECT failed: {}", response.status());
+                    let stream = TokioIo::new(hyper::upgrade::on(&mut response).await?);
+                    tokio::time::timeout(
+                        Duration::from_secs(240),
+                        echo_stream(stream, bytes, progress.clone(), started),
+                    )
                     .await
                     .context("H2 bulk deadline")??
+                };
+                Ok::<String, anyhow::Error>(hash)
+            }
+            .await;
+            match transfer {
+                Ok(hash) => hash,
+                Err(error) => {
+                    save_evidence(
+                        "h12-bulk-failure",
+                        serde_json::json!({
+                        "error":format!("{error:#}"),"inbound":inbound,"elapsed_ms":started.elapsed().as_millis(),
+                        "written":progress.written.load(Ordering::Relaxed),"read":progress.read.load(Ordering::Relaxed),
+                        "last_write_ms":progress.last_write_ms.load(Ordering::Relaxed),
+                        "last_read_ms":progress.last_read_ms.load(Ordering::Relaxed),
+                        "sent_fin":progress.sent_fin.load(Ordering::Relaxed),
+                        "received_eof":progress.received_eof.load(Ordering::Relaxed),
+                        "egress":fixture.warp.status(),"egress_tcp":fixture.warp.tcp_snapshot(),
+                        "peer":fixture.peer.snapshot(),"peer_stack":fixture.peer.stack_diagnostics(),
+                        "peer_errors":fixture.peer.errors(),"live_cloudflare":false}),
+                    )?;
+                    return Err(error);
+                }
             }
         }
         "h3" => {
@@ -719,9 +798,11 @@ async fn one_hour_forced_h2_and_h3_soak_with_resource_metrics() -> Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
-#[ignore = "diagnoses repeated H3 bulk with unchanged client idle limits; not a one-hour soak"]
-async fn diagnose_h3_bulk_with_persistent_pairings() -> Result<()> {
+#[ignore = "diagnoses repeated TCP bulk with unchanged client idle limits; not a one-hour soak"]
+async fn diagnose_bulk_with_persistent_pairings() -> Result<()> {
     let rounds: usize = std::env::var("DIAG_BULK_ROUNDS").unwrap_or_else(|_| "16".into()).parse()?;
+    let inbound = std::env::var("DIAG_BULK_INBOUND").unwrap_or_else(|_| "h3".into());
+    ensure!(["h1", "h2", "h3"].contains(&inbound.as_str()), "invalid ingress");
     let mut fixtures = Vec::new();
     for transport in [Transport::H2, Transport::H3] {
         let fixture = Fixture::start(transport).await?;
@@ -734,9 +815,9 @@ async fn diagnose_h3_bulk_with_persistent_pairings() -> Result<()> {
         for (transport, fixture, flows) in &mut fixtures {
             flows.check()?;
             standard_check(fixture).await?;
-            eprintln!("H3 bulk diagnostic round {round}, WARP {}", transport_name(*transport));
+            eprintln!("{inbound} bulk diagnostic round {round}, WARP {}", transport_name(*transport));
             let before = fixture.peer.snapshot();
-            match bulk(fixture, "h3", BULK_BYTES).await {
+            match bulk(fixture, &inbound, BULK_BYTES).await {
                 Ok(result) => results.push(serde_json::json!({"round": round, "warp_transport": transport_name(*transport), "bulk": result, "peer_before": before, "peer_after": fixture.peer.snapshot(), "egress": fixture.warp.status(), "persistent_tcp": flows.tcp_metrics(), "persistent_udp": flows.udp_metrics()})),
                 Err(error) => {
                     save_evidence("h3-bulk-diagnostic", serde_json::json!({"result": "failed", "one_hour_soak": false, "live_cloudflare": false, "round": round, "warp_transport": transport_name(*transport), "error_chain": format!("{error:#}"), "prior_results": results, "peer_before": before, "peer_after": fixture.peer.snapshot(), "egress": fixture.warp.status(), "persistent_tcp": flows.tcp_metrics(), "persistent_udp": flows.udp_metrics()}))?;

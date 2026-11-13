@@ -370,6 +370,34 @@ struct Incoming<'a> {
     headers: &'a HeaderMap,
 }
 
+/// All authorities use RFC 3986 host/port syntax. Userinfo is allowed only
+/// outside HTTP(S) and classic CONNECT (RFC 9113/9114 request control data).
+fn valid_authority(uri: &http::Uri, classic_connect: bool) -> bool {
+    let Some(authority) = uri.authority() else { return !classic_connect };
+    let http = uri
+        .scheme_str()
+        .is_some_and(|scheme| scheme.eq_ignore_ascii_case("http") || scheme.eq_ignore_ascii_case("https"));
+    if (classic_connect || http) && authority.host().is_empty() {
+        return false;
+    }
+    let mut host = authority.as_str();
+    if let Some((userinfo, remaining)) = host.split_once('@') {
+        if classic_connect || http || !over_tcp::valid_authority_component(userinfo, true) {
+            return false;
+        }
+        host = remaining;
+    }
+    if classic_connect
+        && !host
+            .strip_prefix(authority.host())
+            .and_then(|port| port.strip_prefix(':'))
+            .is_some_and(|port| !port.is_empty())
+    {
+        return false;
+    }
+    over_tcp::valid_host(host)
+}
+
 /// Per-connection bookkeeping, logged when the connection and all its
 /// tunnels are gone.
 struct ConnInfo {

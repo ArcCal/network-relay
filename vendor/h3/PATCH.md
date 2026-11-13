@@ -87,6 +87,17 @@ Original source and MIT license retained. Changes are confined to:
   SETTINGS_ENABLE_CONNECT_PROTOCOL (RFC 9220 section 3, RFC 8441 section 3)
   only take the values 0 and 1; any other value is a connection error of type
   H3_SETTINGS_ERROR. Upstream accepted any value and read it as a boolean.
+- `frame.rs`: a clean FIN while an unknown frame's payload is still being
+  discarded is H3_FRAME_ERROR (RFC 9114 section 7.1), even when discarding
+  consumed every buffered byte. Complete unknown frames remain ignored.
+- `frame.rs`, `proto/frame.rs`, `server/connection.rs`: server request streams
+  reject control frames and PUSH_PROMISE from their type, before reading or
+  validating their payload (RFC 9114 sections 7.2.3 through 7.2.7). Malformed
+  payloads cannot replace the required H3_FRAME_UNEXPECTED with a settings
+  or frame-layout error. Unknown extension frames remain ignored.
+- `proto/headers.rs`: reject userinfo in HTTP(S) request authorities and Host
+  fields, and classic CONNECT authorities (RFC 9114 sections 4.3.1 and 4.4).
+  The URI parser alone accepts it. Non-HTTP schemes retain their URI behavior.
 - Client extensions used by network-relay-cf-masque for its Cloudflare WARP
   egress, all off unless a client asks for them: `ext.rs` adds
   `Protocol::from_static` for an outbound vendor `:protocol` (`cf-connect-ip`)

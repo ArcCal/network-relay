@@ -73,3 +73,46 @@ async fn a_shorter_write_after_an_abandoned_write_is_sent_and_counted_separately
     assert!(events.try_recv().is_err());
     drop(io);
 }
+
+#[tokio::test]
+async fn failed_queued_child_does_not_kill_its_listener() {
+    let (tx, mut events) = mpsc::channel(32);
+    let bridge = Bridge::new(tx);
+    let owner = bridge.clone();
+    let opening = tokio::spawn(async move { owner.listen("127.0.0.1:0".parse().unwrap()).await });
+    let event = next_event(&mut events).await;
+    assert_eq!(event.kind, LISTEN);
+    assert!(
+        bridge.input(
+            READY,
+            event.id,
+            0,
+            0,
+            &serde_json::to_vec(&Ready {
+                local: "127.0.0.1:1080".into(),
+                ..Ready::default()
+            })
+            .unwrap()
+        )
+    );
+    let listener = bounded(opening).await.unwrap().unwrap();
+    let ready = Ready {
+        local: "127.0.0.1:1080".into(),
+        peer: "127.0.0.1:50000".into(),
+        ..Ready::default()
+    };
+    let failed = bridge.accept(event.id, 0, ready.clone());
+    assert_ne!(failed, 0);
+    assert!(bridge.input(ERROR, failed, 0, 4, b"connection reset before acceptance"));
+    let healthy = bridge.accept(event.id, 0, ready);
+    assert_ne!(healthy, 0);
+    let (accepted, _) = bounded(listener.accept()).await.unwrap();
+    assert_eq!(accepted.id(), healthy);
+    drop(accepted);
+    assert!(bridge.input(ERROR, event.id, 0, 1, b"listener access denied"));
+    let error = bounded(listener.accept()).await.err().unwrap();
+    assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+    assert_eq!(error.to_string(), "listener access denied");
+    drop(listener);
+    assert!(bridge.resources.lock().unwrap().is_empty());
+}

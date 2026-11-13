@@ -162,7 +162,7 @@ Rust 1.99.1 (or RUSTUP_TOOLCHAIN), Zig and cargo-zigbuild produce static musl
 executables named network-relay-rs-linux-amd64 and -arm64. Both architectures
 are inspected; native files also run --version and --help. SHA256SUMS,
 MANIFEST.txt and logs stay with the artifacts. All temporary work is removed on exit.
-Afterwards artifact folders are mode 777; private source and caches stay private.
+New artifact folders respect the caller's umask and are never group/world writable; existing folder modes are preserved.
 Sources stay in /tmp. Compiler work uses a private disk-backed directory when
 /tmp is small or memory-backed; all temporary work is removed on exit.
 Available memory plus permitted swap limits compilation parallelism.
@@ -172,14 +172,6 @@ HELP
 }
 
 lc_die() { printf 'build-linux-clients-on-linux: %s\n' "$*" >&2; exit 1; }
-# Leave the source and artifact folders, and every folder below them, open to all users.
-lc_open_dirs() {
-    local dir
-    for dir in "$@"; do
-        [[ -n $dir && -d $dir && ! -L $dir ]] || continue
-        find "$dir" -type d -exec chmod 777 {} + 2>/dev/null || true
-    done
-}
 
 lc_value() { [[ $# -ge 2 && -n $2 && $2 != --* ]] || lc_die "Pass a value to $1."; }
 
@@ -534,6 +526,9 @@ lc_main() {
 
 # Sourcing is reserved for read-only helper tests.
 [[ ${BASH_SOURCE[0]} == "$0" ]] || return 0
+# New artifacts may be shared, but never writable by other users.
+# Respect a caller's stricter umask and preserve all existing directory modes.
+umask "$(printf '%03o' "$(( $(umask) | 0022 ))")"
 set -euo pipefail
 unset CDPATH
 # An older downloaded launcher may still use the previous internal protocol.
@@ -568,7 +563,7 @@ source "$checkout/tools/linux-build-memory.sh"
 [[ -d $stage && ! -L $stage && -O $stage && ${stage##*/} == network-relay-linux-clients-work.[0-9]* ]] ||
     lc_die 'Invalid private compiler workspace.'
 output_ready=0
-trap 'status=$?; if [[ $output_ready == 1 ]]; then lc_open_dirs "$output"; rm -f -- "$output/.work"; fi; if (( status )); then printf "Build incomplete (exit %s); artifacts/logs: %s\n" "$status" "${output:-not created}" >&2; fi' EXIT
+trap 'status=$?; if [[ $output_ready == 1 ]]; then rm -f -- "$output/.work"; fi; if (( status )); then printf "Build incomplete (exit %s); artifacts/logs: %s\n" "$status" "${output:-not created}" >&2; fi' EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 lc_host
@@ -585,7 +580,7 @@ if [[ -z $output ]]; then
         lc_explain "Cannot create the output folder in $PWD (this folder is not writable)." \
             'Run the script from your home folder (cd ~) or choose a folder with --output DIR.'
     # mktemp creates mode 700; artifacts get ordinary permissions for sharing and sync.
-    chmod -- "$(printf '%o' $((0777 & ~$(umask))))" "$output"
+    chmod -- "$(printf '%o' $((0755 & ~$(umask))))" "$output"
 elif [[ -e $output || -L $output ]]; then
     if [[ ! -d $output || -L $output ]] || ! lc_empty_dir "$output"; then lc_die '--output must be a new or empty directory.'; fi
 else

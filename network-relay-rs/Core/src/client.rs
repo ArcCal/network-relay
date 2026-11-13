@@ -19,6 +19,9 @@ use tokio::{
 };
 
 const WAIT: Duration = Duration::from_secs(10);
+// The relay can spend five seconds resolving and ten seconds connecting a
+// destination. Keep response waiting separate from transport setup deadlines.
+const RESPONSE_WAIT: Duration = Duration::from_secs(20);
 // The readiness probe sends no application datagrams. Refresh it before the
 // Rust server's minimum supported UDP idle expiry (120 seconds), without
 // changing any independent SOCKS flow or generating Internet probe traffic.
@@ -444,7 +447,7 @@ impl Client {
                 .insert(h2::ext::Protocol::from_static(proto::CONNECT_UDP_PROTOCOL));
         }
         let (response, send) = sender.send_request(request, false)?;
-        let response = tokio::time::timeout(WAIT, response).await??;
+        let response = tokio::time::timeout(RESPONSE_WAIT, response).await??;
         check(response.status(), response.headers(), udp, StatusCode::OK)?;
         let keep = Keep {
             connection: Some(session),
@@ -490,7 +493,8 @@ impl Client {
             request.headers_mut().insert(HOST, host_header);
             request
         };
-        let mut response = tokio::time::timeout(WAIT, sender.send_request(request)).await??;
+        let mut response =
+            tokio::time::timeout(RESPONSE_WAIT, sender.send_request(request)).await??;
         let expected = if udp {
             StatusCode::SWITCHING_PROTOCOLS
         } else {
@@ -633,7 +637,7 @@ impl Client {
             sid = stream.id().into_inner(),
             "HTTP/3 request HEADERS sent; waiting for response"
         );
-        let response = tokio::time::timeout(WAIT, stream.recv_response())
+        let response = tokio::time::timeout(RESPONSE_WAIT, stream.recv_response())
             .await
             .context("no HTTP/3 response")??;
         check(response.status(), response.headers(), udp, StatusCode::OK)?;
@@ -874,11 +878,16 @@ impl UdpFlow {
     }
     pub async fn send(&mut self, payload: &[u8]) -> Result<()> {
         ensure!(payload.len() <= 65507, "UDP payload exceeds IPv4 maximum");
-        let mut value = bytes::BytesMut::with_capacity(payload.len() + 1);
-        value.extend_from_slice(&[0]);
-        value.extend_from_slice(payload);
-        let mut wire = bytes::BytesMut::new();
-        proto::capsule::encode(0, &value, &mut wire);
+        // Encode the Capsule and context directly, avoiding an intermediate
+        // allocation and a second copy of every UDP payload.
+        let value_len = payload.len() as u64 + 1;
+        let mut wire = bytes::BytesMut::with_capacity(
+            1 + proto::varint::encoded_len(value_len) + value_len as usize,
+        );
+        proto::varint::encode(proto::capsule::types::DATAGRAM, &mut wire);
+        proto::varint::encode(value_len, &mut wire);
+        proto::varint::encode(proto::datagram::CONTEXT_ID_UDP_PAYLOAD, &mut wire);
+        wire.extend_from_slice(payload);
         self.stream.write_all(&wire).await?;
         Ok(())
     }
@@ -1107,5 +1116,30 @@ listen = ["127.0.0.1:1080"]
         peer.write_all(&[0, 2, 0]).await.unwrap();
         peer.shutdown().await.unwrap();
         assert!(watch_probe(&mut flow).await.is_err());
+    }
+}
+
+#[cfg(test)]
+mod udp_send_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn outgoing_capsules_preserve_empty_maximum_and_varint_boundary_payloads() {
+        for size in [0, 1, 62, 63, 16_382, 16_383, 65_507] {
+            let payload: Vec<u8> = (0..size).map(|i| (i % 251) as u8).collect();
+            let (stream, mut peer) = tokio::io::duplex(65_536);
+            let mut flow = UdpFlow::new(Stream::new(stream, Keep::default()));
+            flow.send(&payload).await.unwrap();
+            let mut wire = vec![0; 2 + proto::varint::encoded_len(size as u64 + 1) + size];
+            peer.read_exact(&mut wire).await.unwrap();
+            let mut view = &wire[..];
+            assert_eq!(proto::varint::decode(&mut view).unwrap(), 0);
+            assert_eq!(proto::varint::decode(&mut view).unwrap(), size as u64 + 1);
+            assert_eq!(proto::varint::decode(&mut view).unwrap(), 0);
+            assert_eq!(view, payload);
+        }
+        let (stream, _peer) = tokio::io::duplex(128);
+        let mut flow = UdpFlow::new(Stream::new(stream, Keep::default()));
+        assert!(flow.send(&vec![0; 65_508]).await.is_err());
     }
 }

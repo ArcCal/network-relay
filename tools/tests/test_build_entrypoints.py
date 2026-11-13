@@ -68,6 +68,10 @@ elif tool in ("cargo", "record-build"):
               "toolchain": os.environ.get("RUSTUP_TOOLCHAIN"),
               "config_copied": (p(env["CARGO_HOME"]) / "config.toml").exists(),
               "credential_mode": (p(env["CARGO_HOME"]) / "credentials.toml").stat().st_mode & 0o777}
+    probe = p(record["work"]) / "mode-probe"
+    probe.mkdir(exist_ok=True)
+    record["new_directory_mode"] = probe.stat().st_mode & 0o777
+    record["private_source_mode"] = p(record["source"]).parent.stat().st_mode & 0o777
     source = p(record["source"])
     record["version"] = (source / "remote-version").read_text()
     record["history"] = subprocess.check_output([os.environ["TEST_REAL_GIT"], "-C", str(source), "rev-list", "--all", "--count"], text=True).strip()
@@ -115,6 +119,12 @@ class BuildEntrypointTests(unittest.TestCase):
             target = self.remote / name
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(ROOT / name, target)
+        # These fixtures execute stub compilers. Give their cloned helpers a
+        # stable memory snapshot; real low-memory accounting is covered by
+        # test_build_memory.py with explicit host/cgroup fixtures.
+        memory_helper = self.remote / "tools/linux-build-memory.sh"
+        with memory_helper.open("a") as stream:
+            stream.write("\nrelay_build_memory_kib() { printf '8388608\\n'; }\n")
         (self.remote / "probe.sh").write_text(PROBE)
         self.commit("one")
         self.git("-C", str(self.remote), "branch", "archive")
@@ -158,9 +168,10 @@ class BuildEntrypointTests(unittest.TestCase):
         self.git("-C", str(self.remote), "add", ".")
         self.git("-C", str(self.remote), "-c", "commit.gpgsign=false", "commit", "--quiet", "-m", version)
 
-    def run_build(self, script="probe.sh", *args, **environment):
+    def run_build(self, script="probe.sh", *args, run_umask=-1, **environment):
         result = subprocess.run(["bash", str(self.caller / script), *args], cwd=self.caller,
-                                env=dict(self.env, **environment), capture_output=True, text=True)
+                                env=dict(self.env, **environment), capture_output=True, text=True,
+                                umask=run_umask)
         record = json.loads(Path(self.env["TEST_RECORD"]).read_text()) if Path(self.env["TEST_RECORD"]).exists() else None
         return result, record
 
@@ -324,13 +335,26 @@ class BuildEntrypointTests(unittest.TestCase):
     def test_native_recipes_use_fresh_private_targets_on_failure(self):
         self.commit("two")
         for name in ("network-relay-nf", "network-relay-rs"):
-            with self.subTest(name=name):
-                result, record = self.run_build(f"{name}/build-macos.sh", TEST_MAC="1", TEST_CARGO_EXIT="37")
-                self.assertEqual(result.returncode, 37, result.stderr)
-                self.assertEqual(record["version"], "two")
-                self.assertTrue(Path(record["cwd"]).is_relative_to(Path(record["source"])))
-                self.assertIsNone(record["ambient_target"])
-                self.assert_private_and_cleaned(record)
+            dist = self.caller / name / "dist"
+            dist.mkdir(mode=0o700)
+            dist.chmod(0o700)
+            private = dist / "private"
+            private.mkdir(mode=0o700)
+            (private / "sentinel").write_text("preserve")
+            for mask, expected in ((0o000, 0o755), (0o077, 0o700)):
+                with self.subTest(name=name, umask=oct(mask)):
+                    result, record = self.run_build(f"{name}/build-macos.sh", run_umask=mask,
+                                                   TEST_MAC="1", TEST_CARGO_EXIT="37")
+                    self.assertEqual(result.returncode, 37, result.stderr)
+                    self.assertEqual(record["version"], "two")
+                    self.assertTrue(Path(record["cwd"]).is_relative_to(Path(record["source"])))
+                    self.assertIsNone(record["ambient_target"])
+                    self.assertEqual(record["new_directory_mode"], expected)
+                    self.assertEqual(record["private_source_mode"], 0o700)
+                    self.assertEqual(dist.stat().st_mode & 0o777, 0o700)
+                    self.assertEqual(private.stat().st_mode & 0o777, 0o700)
+                    self.assertEqual((private / "sentinel").read_text(), "preserve")
+                    self.assert_private_and_cleaned(record)
 
     def test_cf_build_forwards_target_and_retains_only_final_binary(self):
         result, record = self.run_build("network-relay-cf-masque/scripts/build.sh", "--target", "aarch64-unknown-linux-musl")
@@ -437,6 +461,56 @@ shift
                     self.assertEqual((invalid / ".work").read_text(), "caller file")
                     self.assertEqual(invalid.stat().st_mode & 0o777, 0o750)
                 self.assertFalse(any(item["tool"] in ("cargo", "record-build") for item in self.commands()))
+
+    def test_failed_linux_backends_preserve_private_output_modes(self):
+        # Stop at the first prerequisite step, after the real artifact/log
+        # setup. No compiler, package manager or remote service is used.
+        wrapper = '''source() {
+    if [[ $1 == /etc/os-release ]]; then
+        ID=debian; VERSION_ID=13
+        lr_ensure_system() { printf 'fixture prerequisite failure\\n'; return 37; }
+        lc_ensure_system() { printf 'fixture prerequisite failure\\n'; return 37; }
+    else builtin source "$@"; fi
+}
+export -f source
+source "$1/tools/fresh-build-source.sh"
+relay_mark_fresh_source "$1"
+shift
+"$BASH" "$@"
+'''
+        for name, label in (("build-linux-clients-on-linux.sh", "network-relay-linux-clients"),
+                            ("build-linux-servers-on-linux.sh", "relay-servers")):
+            for mask, expected in ((0o000, 0o755), (0o077, 0o700)):
+                for existing in (False, True):
+                    with self.subTest(script=name, umask=oct(mask), existing=existing), tempfile.TemporaryDirectory(
+                            prefix=f"{label}.20261108-010203.", dir="/tmp") as temporary:
+                        stage = Path(temporary)
+                        checkout = stage / "network-relay-checkout"
+                        self.git("clone", "--quiet", str(self.remote), str(checkout))
+                        commit = self.git("-C", str(checkout), "rev-parse", "HEAD")
+                        (stage / ".owner").write_text(commit + "\n")
+                        work = self.directory / f"{label}-work.20261108-010203.{mask}-{existing}"
+                        work.mkdir(mode=0o700)
+                        output = self.directory / f"{label}-output-{mask}-{existing}"
+                        if existing:
+                            output.mkdir(mode=0o700)
+                            output.chmod(0o700)
+                        command = ["bash", "-c", wrapper, "backend", str(checkout), str(ROOT / name),
+                                   "--build-updated", str(checkout), str(stage), str(output), commit,
+                                   "2", "0", "--fresh-sources-v1", str(work)]
+                        result = subprocess.run(command, cwd=self.caller, env=self.env,
+                                                capture_output=True, text=True, umask=mask)
+                        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                        log = output / "logs/system-prerequisites.log"
+                        self.assertTrue(log.exists(), result.stdout + result.stderr)
+                        self.assertEqual(log.read_text(), "fixture prerequisite failure\n")
+                        self.assertEqual(output.stat().st_mode & 0o777, 0o700 if existing else expected)
+                        self.assertEqual(log.parent.stat().st_mode & 0o777, expected)
+                        self.assertEqual(log.stat().st_mode & 0o777, 0o600 if mask else 0o644)
+                        self.assertEqual(stage.stat().st_mode & 0o777, 0o700)
+                        self.assertEqual(work.stat().st_mode & 0o777, 0o700)
+                        self.assertFalse(os.path.lexists(output / ".work"))
+        self.assertFalse(any(item["tool"] in ("cargo", "record-build") for item in self.commands()))
 
     def test_linux_launchers_run_downloaded_driver_and_clean_failed_source(self):
         driver = '''#!/usr/bin/env bash

@@ -66,6 +66,9 @@ and parent connection until released. Session creation and request-stream
 capacity waits are bounded. At most four sessions are owned by one client,
 including sessions retained by draining flows. A request is not automatically
 replayed after HEADERS submission or a response timeout.
+Response waiting is bounded at 20 seconds, allowing the relay's default
+five-second DNS and ten-second destination-connect budgets. Transport setup
+and stream-capacity waits retain their separate ten-second deadlines.
 
 HTTP/2 likewise shares one cached TLS connection for independent CONNECT and
 CONNECT-UDP streams, including the readiness probe. A connection that received

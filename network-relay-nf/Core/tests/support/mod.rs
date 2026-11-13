@@ -218,7 +218,7 @@ impl Backend {
                                         .map_err(io::Error::other)?;
                                     if idle_stream_zero {
                                         let ready = std::time::Instant::now();
-                                        let (mut send, mut recv) =
+                                        let (send, mut recv) =
                                             connection.open_bi().await.map_err(io::Error::other)?;
                                         assert_eq!(u64::from(send.id()), 0);
                                         let events = zero_events.clone();

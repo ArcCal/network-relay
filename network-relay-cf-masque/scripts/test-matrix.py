@@ -66,7 +66,12 @@ def main() -> int:
     directory.mkdir()
     binary = directory / "runner"
     shutil.copy2(executable, binary)
-    source_files = sorted({path for directory in ["src", "tests", "crates"] for path in (ROOT / directory).rglob("*") if path.is_file() and (path.suffix == ".rs" or path.name in {"Cargo.toml", "Cargo.lock"})} | {ROOT / "Cargo.toml", ROOT / "Cargo.lock"})
+    source_files = sorted({path for directory in ["src", "tests", "crates", "vendor"]
+                           for path in (ROOT / directory).rglob("*")
+                           if path.is_file() and (directory == "vendor" or path.suffix == ".rs"
+                                                  or path.name in {"Cargo.toml", "Cargo.lock"})}
+                          | {ROOT / "Cargo.toml", ROOT / "Cargo.lock",
+                             ROOT / "tests/support/verify_soak.py"})
     manifest = {"launched_at_utc": datetime.now(timezone.utc).isoformat(), "requested_seconds": args.soak_seconds, "live_cloudflare": False, "binary_path": str(binary.relative_to(ROOT)), "binary_sha256": hashlib.sha256(binary.read_bytes()).hexdigest(), "source_sha256": {str(path.relative_to(ROOT)): hashlib.sha256(path.read_bytes()).hexdigest() for path in source_files}}
     (directory / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
     environment["SOAK_SECONDS"] = str(args.soak_seconds)

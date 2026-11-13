@@ -164,12 +164,12 @@ servers use the same committed private snapshot. Caddy uses current main;
 caddy-dns/cloudflare uses its pinned v0.2.4 release. Fetched commits are fixed for this
 run and recorded in MANIFEST.txt. Credentials must allow both private repos.
 Optional NETWORK_RELAY_TOKEN / CADDY_NETWORK_RELAY_TOKEN provide read tokens.
-Rust defaults to 1.99.1; Go defaults to go1.27.3+auto (honors module requirements).
+Rust defaults to 1.99.1; Go defaults to go1.27.4+auto (honors module requirements).
 
 Any failed source, build, verification or checksum step fails the run.
 Successful runs retain six binaries, logs, MANIFEST.txt and SHA256SUMS;
 all source, work and cache directories are removed on every exit.
-Afterwards artifact folders are mode 777; private source and caches stay private.
+New artifact folders respect the caller's umask and are never group/world writable; existing folder modes are preserved.
 Sources stay in /tmp. Compiler work uses a private disk-backed directory when
 /tmp is small or memory-backed; all temporary work is removed on exit.
 Available memory plus permitted swap limits compilation parallelism.
@@ -181,14 +181,6 @@ HELP
 LR_CLOUDFLARE_DNS_TAG=v0.2.4
 LR_CLOUDFLARE_DNS_COMMIT=a8737d095ad5a48ca031cea6ab704057dbc2d250
 lr_die() { printf 'build-linux-servers-on-linux: %s\n' "$*" >&2; exit 1; }
-# Leave the source and artifact folders, and every folder below them, open to all users.
-lr_open_dirs() {
-    local dir
-    for dir in "$@"; do
-        [[ -n $dir && -d $dir && ! -L $dir ]] || continue
-        find "$dir" -type d -exec chmod 777 {} + 2>/dev/null || true
-    done
-}
 lr_value() { [[ $# -ge 2 && -n $2 && $2 != --* ]] || lr_die "Pass a value to $1."; }
 lr_physical_dir() { REPLY=$(cd -P -- "$1" && printf '%s/' "$PWD"); REPLY=${REPLY%/}; }
 lr_empty_dir() {
@@ -454,7 +446,9 @@ lr_prepare_caddy() {
     local build_mod="$caddy_src/build-plugins.mod" build_sum="$caddy_src/build-plugins.sum"
     local plugin_import="$caddy_src/cmd/caddy/cloudflare_dns_build.go" path go_version
     [[ -f $caddy_src/go.mod && -f $caddy_src/go.sum && -d $caddy_src/cmd/caddy &&
-       -d $caddy_src/third_party/x-net && -d $caddy_src/third_party/quic-go ]] ||
+       -d $caddy_src/third_party/x-net && -d $caddy_src/third_party/quic-go &&
+       -d $caddy_src/third_party/go-jose-v3 && -d $caddy_src/third_party/go-jose-v4 &&
+       -f $caddy_src/deploy/go-tls/prepare.py && -f $caddy_src/deploy/go-tls/source-manifest.json ]] ||
         lr_die 'Complete caddy-network-relay source is required.'
     [[ -f $cloudflare_src/go.mod ]] || lr_die 'Cloudflare DNS plugin source is required.'
     grep -Eq 'ID:[[:space:]]*"network_relay"' "$caddy_src/app.go"
@@ -462,8 +456,8 @@ lr_prepare_caddy() {
     grep -Eq 'ID:[[:space:]]*"dns\.providers\.cloudflare"' "$cloudflare_src/cloudflare.go"
     cd -- "$caddy_src"
     export GOWORK=off GOFLAGS='' GOOS=linux GOARCH="$host_arch" GOAMD64=v1 GOARM64=v8.0 CGO_ENABLED=0
-    # Alternate module files keep tracked source and the reviewed transport
-    # replacements intact while adding the freshly fetched DNS plugin.
+    # Alternate module files keep tracked source and all four reviewed
+    # library replacements intact while adding the freshly fetched DNS plugin.
     for path in "$build_mod" "$build_sum" "$plugin_import"; do
         [[ ! -e $path && ! -L $path ]] || lr_die "Build overlay already exists: $path"
     done
@@ -473,17 +467,21 @@ lr_prepare_caddy() {
     # The first go command may download the selected Go toolchain.
     lr_retry go version
     go_version=$(go env GOVERSION)
-    # The manifest only states Go 1.26.0; the transport's reviewed toolchain
-    # requirement is stricter and must also apply to an explicit override.
+    # An explicit toolchain override must also meet the reviewed security
+    # patch floor, even if its minor version satisfies the manifest.
     if [[ $go_version =~ ^go1\.26\.([0-9]+)$ ]]; then
-        (( 10#${BASH_REMATCH[1]} >= 9 )) || lr_die 'Caddy requires Go 1.26.9 or Go 1.27.2 or newer.'
+        (( 10#${BASH_REMATCH[1]} >= 11 )) || lr_die 'Caddy requires Go 1.26.11 or Go 1.27.4 or newer.'
     elif [[ $go_version =~ ^go1\.27\.([0-9]+)$ ]]; then
-        (( 10#${BASH_REMATCH[1]} >= 2 )) || lr_die 'Caddy requires Go 1.26.9 or Go 1.27.2 or newer.'
+        (( 10#${BASH_REMATCH[1]} >= 4 )) || lr_die 'Caddy requires Go 1.26.11 or Go 1.27.4 or newer.'
     elif [[ $go_version =~ ^go1\.([0-9]+)(\.[0-9]+)?$ ]]; then
-        (( 10#${BASH_REMATCH[1]} > 27 )) || lr_die 'Caddy requires Go 1.26.9 or Go 1.27.2 or newer.'
+        (( 10#${BASH_REMATCH[1]} > 27 )) || lr_die 'Caddy requires Go 1.26.11 or Go 1.27.4 or newer.'
     else
         lr_die "Unrecognized release Go toolchain: $go_version"
     fi
+    # Prepare only exact reviewed TLS source versions in private compiler space.
+    python3 "$caddy_src/deploy/go-tls/prepare.py" "$(go env GOROOT)" "$work/go-tls"
+    export GOROOT="$work/go-tls" GOTOOLCHAIN=local
+    export PATH="$GOROOT/bin:$PATH"
     # A sibling path keeps the caller's username/output path out of Go build info.
     go mod edit -modfile "$build_mod" \
         -replace github.com/caddy-dns/cloudflare=../cloudflare-src
@@ -494,7 +492,9 @@ lr_build_caddy() {
     cd -- "$caddy_src"
     export GOPROXY=${GOPROXY-'https://proxy.golang.org|direct'}
     export GOWORK=off GOFLAGS='' GOOS=linux GOARCH="$arch" GOAMD64=v1 GOARM64=v8.0 CGO_ENABLED=0
-    go build -modfile "$caddy_src/build-plugins.mod" -mod=readonly -tags http2legacy -trimpath -p "$jobs" \
+    export GOROOT="$work/go-tls" GOTOOLCHAIN=local
+    export PATH="$GOROOT/bin:$PATH"
+    go build -modfile "$caddy_src/build-plugins.mod" -mod=readonly -tags http2legacy,relay_tls9846_v1 -trimpath -p "$jobs" \
         -o "$work/caddy-network-relay-$arch" ./cmd/caddy
 }
 lr_check_replacement() {
@@ -519,12 +519,22 @@ lr_collect() {
         lr_die "Artifact must be static: $source"
     if [[ $name == caddy-network-relay ]]; then
         info=$(go version -m "$source")
+    awk -F '\t' '
+        $2 == "build" && $3 ~ /^-tags=/ {
+            value=substr($3, 7); gsub(/^"|"$/, "", value)
+            count=split(value, tags, /[,[:space:]]+/)
+            for (i=1; i<=count; i++) if (tags[i] == "relay_tls9846_v1") found=1
+        }
+        END { exit !found }
+    ' <<< "$info" || lr_die 'Missing reviewed TLS policy build tag: relay_tls9846_v1.'
         grep -Eq '^[[:space:]]*path[[:space:]]+github\.com/arccal/caddy-network-relay/cmd/caddy$' <<< "$info"
         grep -Eq "^[[:space:]]*build[[:space:]]+GOARCH=$arch$" <<< "$info"
         grep -Eq '^[[:space:]]*build[[:space:]]+CGO_ENABLED=0$' <<< "$info"
-        lr_check_replacement "$info" github.com/caddy-dns/cloudflare ../cloudflare-src
-        lr_check_replacement "$info" golang.org/x/net ./third_party/x-net
-        lr_check_replacement "$info" github.com/quic-go/quic-go ./third_party/quic-go
+        lr_check_replacement "$info" github.com/caddy-dns/cloudflare ../cloudflare-src || lr_die "Missing reviewed replacement: github.com/caddy-dns/cloudflare=../cloudflare-src"
+        lr_check_replacement "$info" golang.org/x/net ./third_party/x-net || lr_die "Missing reviewed replacement: golang.org/x/net=./third_party/x-net"
+        lr_check_replacement "$info" github.com/quic-go/quic-go ./third_party/quic-go || lr_die "Missing reviewed replacement: github.com/quic-go/quic-go=./third_party/quic-go"
+        lr_check_replacement "$info" github.com/go-jose/go-jose/v3 ./third_party/go-jose-v3 || lr_die "Missing reviewed replacement: github.com/go-jose/go-jose/v3=./third_party/go-jose-v3"
+        lr_check_replacement "$info" github.com/go-jose/go-jose/v4 ./third_party/go-jose-v4 || lr_die "Missing reviewed replacement: github.com/go-jose/go-jose/v4=./third_party/go-jose-v4"
     fi
     # Foreign executables cannot run directly on the host. Their ELF headers
     # and Go build metadata are still mandatory checks.
@@ -624,6 +634,9 @@ lr_main() {
 
 # Sourcing provides the portable build helpers without inspecting or changing a host.
 [[ ${BASH_SOURCE[0]} == "$0" ]] || return 0
+# New artifacts may be shared, but never writable by other users.
+# Respect a caller's stricter umask and preserve all existing directory modes.
+umask "$(printf '%03o' "$(( $(umask) | 0022 ))")"
 set -euo pipefail
 unset CDPATH
 # An older downloaded launcher may still use the previous internal protocol.
@@ -658,7 +671,7 @@ source "$checkout/tools/linux-build-memory.sh"
 [[ -d $stage && ! -L $stage && -O $stage && ${stage##*/} == relay-servers-work.[0-9]* ]] ||
     lr_die 'Invalid private compiler workspace.'
 output_ready=0
-trap 'status=$?; if [[ $output_ready == 1 ]]; then lr_open_dirs "$output"; rm -f -- "$output/.work"; fi; if (( status )); then printf "Build incomplete (exit %s); artifacts/logs: %s\n" "$status" "${output:-not created}" >&2; fi' EXIT
+trap 'status=$?; if [[ $output_ready == 1 ]]; then rm -f -- "$output/.work"; fi; if (( status )); then printf "Build incomplete (exit %s); artifacts/logs: %s\n" "$status" "${output:-not created}" >&2; fi' EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 lr_host
@@ -675,7 +688,7 @@ if [[ -z $output ]]; then
         lr_explain "Cannot create the output folder in $PWD (this folder is not writable)." \
             'Run the script from your home folder (cd ~) or choose a folder with --output DIR.'
     # mktemp creates mode 700; artifacts get ordinary permissions for sharing and sync.
-    chmod -- "$(printf '%o' $((0777 & ~$(umask))))" "$output"
+    chmod -- "$(printf '%o' $((0755 & ~$(umask))))" "$output"
 elif [[ -e $output || -L $output ]]; then
     if [[ ! -d $output || -L $output ]] || ! lr_empty_dir "$output"; then
         lr_die '--output must be a new or empty directory.'
@@ -698,7 +711,7 @@ printf 'Artifacts: %s\nTemporary checkout: %s\nWork directory: %s\n' "$output" "
 failures=0
 export RUSTUP_TOOLCHAIN=${RUSTUP_TOOLCHAIN:-1.99.1}
 if (( install_deps )); then
-    export GOTOOLCHAIN=${GOTOOLCHAIN:-go1.27.3+auto}
+    export GOTOOLCHAIN=${GOTOOLCHAIN:-go1.27.4+auto}
 else
     export GOTOOLCHAIN=${GOTOOLCHAIN:-local}
 fi

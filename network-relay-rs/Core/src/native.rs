@@ -598,18 +598,24 @@ impl TcpListener {
         self._io.local_addr()
     }
     pub async fn accept(&self) -> io::Result<(Io, SocketAddr)> {
-        let (id, _, ready) = self
-            .accepted
-            .lock()
-            .await
-            .recv()
-            .await
-            .ok_or(io::ErrorKind::BrokenPipe)?;
-        let peer = ready
-            .peer
-            .parse()
-            .map_err(|_| io::ErrorKind::AddrNotAvailable)?;
-        Ok((self.bridge.accepted_io(id, ready)?, peer))
+        loop {
+            let accepted = self.accepted.lock().await.recv().await;
+            // A queued child can fail independently before it is accepted.
+            // Preserve an actual listener failure, but skip a stale child.
+            if let Some((flags, data)) = &*self._io.failure.lock().unwrap() {
+                return Err(native_error(*flags, data));
+            }
+            let (id, _, ready) = accepted.ok_or(io::ErrorKind::BrokenPipe)?;
+            let peer = ready
+                .peer
+                .parse()
+                .map_err(|_| io::ErrorKind::AddrNotAvailable)?;
+            match self.bridge.accepted_io(id, ready) {
+                Ok(io) => return Ok((io, peer)),
+                Err(error) if error.kind() == io::ErrorKind::NotConnected => continue,
+                Err(error) => return Err(error),
+            }
+        }
     }
 }
 pub struct UdpSocket {

@@ -98,9 +98,26 @@ impl Frame<PayloadLen> {
     pub const MAX_ENCODED_SIZE: usize = VarInt::MAX_SIZE * 7;
 
     /// Checks a frame's header before its payload is buffered.
-    pub fn admit<T: Buf>(buf: &mut T) -> Result<Admission, FrameError> {
+    pub fn admit<T: Buf>(buf: &mut T, server_request: bool) -> Result<Admission, FrameError> {
         let start = buf.remaining();
-        let (Ok(ty), Ok(len)) = (FrameType::decode(buf), buf.get_var()) else {
+        let Ok(ty) = FrameType::decode(buf) else {
+            return Ok(Admission::Incomplete);
+        };
+        // Placement alone forbids these frames on a server request stream
+        // (RFC 9114 sections 7.2.3 through 7.2.7), whatever their payload.
+        if server_request
+            && matches!(
+                ty,
+                FrameType::CANCEL_PUSH
+                    | FrameType::SETTINGS
+                    | FrameType::PUSH_PROMISE
+                    | FrameType::GOAWAY
+                    | FrameType::MAX_PUSH_ID
+            )
+        {
+            return Err(FrameError::UnsupportedFrame(ty.0));
+        }
+        let Ok(len) = buf.get_var() else {
             return Ok(Admission::Incomplete);
         };
         let header = start - buf.remaining();

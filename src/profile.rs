@@ -147,6 +147,10 @@ fn check(opts: &ProfileOptions) -> Result<()> {
     );
     ensure!(opts.port != 0, "the relay port must be between 1 and 65535");
     crate::auth::validate_user_name(&opts.user)?;
+    ensure!(
+        opts.password.as_ref().is_none_or(|password| !password.bytes().any(|b| b.is_ascii_control())),
+        "the relay password must not contain control characters (RFC 7617 section 2)"
+    );
     check_domain(&opts.host)?;
     for d in
         opts.match_domains.iter().chain(&opts.excluded_domains).chain(&opts.match_fqdns).chain(&opts.excluded_fqdns)
@@ -406,6 +410,19 @@ pub fn warnings(opts: &ProfileOptions) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn basic_password_control_characters_cannot_be_put_in_apple_profiles() {
+        for control in (0u8..=31).chain(std::iter::once(127)) {
+            let password = format!("valid-password{}suffix", char::from(control));
+            let opts = ProfileOptions::new("relay.example.com", "iphone", &password);
+            assert!(generate(&opts).is_err(), "mobileconfig accepted control {control}");
+            assert!(generate_ddm(&opts).is_err(), "DDM accepted control {control}");
+        }
+        let opts = ProfileOptions::new("relay.example.com", "iphone", "valid:password");
+        assert!(generate(&opts).is_ok(), "colons in a password are valid Basic credentials");
+        assert!(generate_ddm(&opts).is_ok());
+    }
 
     #[test]
     fn uuids_are_version_4() {

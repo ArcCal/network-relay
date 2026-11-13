@@ -2,6 +2,7 @@
 set -euo pipefail
 source "$(dirname -- "$0")/env.sh"
 cd "$CF_RELAY_ROOT"
+python3 scripts/verify-smoltcp.py --test
 python3 scripts/prepare-client-tests.py
 cargo test --locked --workspace --all-features -- --test-threads=1
 cargo clippy --locked --workspace --all-targets --all-features --no-deps -- -D warnings

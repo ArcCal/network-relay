@@ -292,6 +292,9 @@ fn closed_before_response() -> io::Error {
 
 impl AsyncRead for VlessStream {
     fn poll_read(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut ReadBuf<'_>) -> Poll<io::Result<()>> {
+        if buf.remaining() == 0 {
+            return Poll::Ready(Ok(()));
+        }
         let this = &mut *self;
         this.writing.reader.register(cx.waker());
         loop {
@@ -479,6 +482,25 @@ mod tests {
         drop(stream);
         let request = server.await.unwrap();
         assert_eq!(request, vless::request(&config(port).user_id, Command::Tcp, peer));
+    }
+
+    #[tokio::test]
+    async fn an_empty_read_completes_without_waiting_for_a_peer_response() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(tcp).await.unwrap();
+            assert!(matches!(ws.next().await, Some(Ok(Message::Binary(_)))));
+            assert!(matches!(ws.next().await, Some(Ok(Message::Close(_)))));
+            let _ = ws.flush().await;
+        });
+        let mut stream =
+            VlessStream::open(&config(port), Command::Tcp, "192.0.2.7:443".parse().unwrap()).await.unwrap();
+        let result = tokio::time::timeout(Duration::from_millis(100), stream.read(&mut [])).await;
+        drop(stream);
+        tokio::time::timeout(Duration::from_secs(2), server).await.unwrap().unwrap();
+        assert_eq!(result.expect("an empty read must not depend on peer data").unwrap(), 0);
     }
 
     #[tokio::test]

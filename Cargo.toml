@@ -67,3 +67,7 @@ opt-level = 3
 
 [profile.dev.package.blake2]
 opt-level = 3
+
+# Reviewed TLS 1.3 key-update correction; see the vendored PATCH.md.
+[patch.crates-io]
+rustls = { path = "vendor/rustls" }

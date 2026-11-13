@@ -3,6 +3,11 @@
 # All A && B || die guards intentionally reject failure of either predicate.
 # shellcheck disable=SC2015
 set -euo pipefail
+if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
+    # New artifacts may be shared, but never writable by other users.
+    # Respect a caller's stricter umask and preserve all existing directory modes.
+    umask "$(printf '%03o' "$(( $(umask) | 0022 ))")"
+fi
 
 # BEGIN SHARED BUILD CHILD RUNNER
 relay_build_group_active() {
@@ -142,17 +147,8 @@ done
 export PATH
 
 rg_die() { printf 'build-macos-gui-clients-on-macos: %s\n' "$*" >&2; exit 1; }
-# Leave the source and artifact folders, and every folder below them, open to all users.
-rg_open_dirs() {
-    local dir
-    for dir in "$@"; do
-        [[ -n $dir && -d $dir && ! -L $dir ]] || continue
-        find "$dir" -type d -exec chmod 777 {} + 2>/dev/null || true
-    done
-}
 rg_cleanup_sources() {
     local directory
-    if [[ ${rg_output_owned:-0} == 1 ]]; then rg_open_dirs "$output"; fi
     for directory in "${checkout:-}" "${work:-}"; do
         case $directory in
             /tmp/network-relay-*|/private/tmp/network-relay-*|/tmp/relay-mac-*|/private/tmp/relay-mac-*)
@@ -199,7 +195,8 @@ Every run downloads complete main sources, including Git history, into a new
 fetched script. Local checkouts are left untouched. Builds and signing use /tmp.
 App names include the software, macOS and arm64. Logs, source revisions and
 SHA256SUMS are kept with the artifacts. Temporary work is removed on every exit.
-Artifact folders keep mode 777. Temporary source and work are removed on exit.
+Existing folder modes are preserved; new artifact folders are at most 755, subject to your umask.
+Temporary source and work are removed on exit.
 RUSTUP_TOOLCHAIN defaults to 1.99.1. Existing local checkouts are never deleted.
 HELP
 }
@@ -343,7 +340,6 @@ source "$checkout/tools/fresh-build-source.sh"
 relay_source_is_current "$checkout" || rg_die 'The internal source handoff is not from this build invocation.'
 repo="$work/sources/network-relay"
 logs=
-rg_output_owned=0
 rg_work_link_created=0
 trap 'status=$?; if (( status )); then printf "Build failed (exit %s). Artifacts/logs: %s\nTemporary source and work will be removed.\n" "$status" "${output:-not created}" >&2; fi; rg_cleanup_sources' EXIT
 trap 'exit 130' INT
@@ -359,7 +355,7 @@ if [[ -z $output ]]; then
     stem=macos-gui; [[ $mode != all ]] || stem=all
     output=$(mktemp -d "$parent/network-relay-$stem-$(date -u +%Y%m%d-%H%M%S).XXXXXX")
     # mktemp creates mode 700; artifacts get ordinary permissions for sharing and sync.
-    chmod -- "$(printf '%o' $((0777 & ~$(umask))))" "$output"
+    chmod -- "$(printf '%o' $((0755 & ~$(umask))))" "$output"
 elif [[ -e $output || -L $output ]]; then
     [[ -d $output && ! -L $output ]] && rg_empty "$output" || rg_die '--output must be new or empty, and not a symlink.'
 else
@@ -367,7 +363,6 @@ else
 fi
 rg_dir "$output"; output=$REPLY
 [[ $output/ != "$work/"* && $work/ != "$output/"* ]] || rg_die 'Output and work directories cannot overlap.'
-rg_output_owned=1
 logs="$output/logs"
 mkdir -- "$logs"
 mkdir -m 700 -- "$work/sources"
@@ -445,7 +440,7 @@ else
 fi
 export HOMEBREW_CACHE="$work/homebrew-cache" HOMEBREW_LOGS="$work/homebrew-logs" HOMEBREW_TEMP="$work/tmp"
 export COPYFILE_DISABLE=1
-export GOTOOLCHAIN=${GOTOOLCHAIN:-go1.27.3+auto} GOWORK=off GOFLAGS='' GOAMD64=v1 GOARM64=v8.0
+export GOTOOLCHAIN=${GOTOOLCHAIN:-go1.27.4+auto} GOWORK=off GOFLAGS='' GOAMD64=v1 GOARM64=v8.0
 rg_attributes() { find -P "$1" \( -type f -o -type d \) -exec xattr -c {} +; }
 # Rust comes from static.rust-lang.org; explain a download that keeps failing.
 rg_rust_help() {

@@ -19,13 +19,15 @@ POLICY = {"GOSUMDB": "sum.example.invalid+0123456789abcdef https://sum.example.i
 FAKE_GO = r'''
 import json, os, pathlib, sys
 args = sys.argv[1:]
-keys = ("GOPROXY", "GOSUMDB", "GONOSUMDB", "GOPRIVATE", "GOINSECURE")
+keys = ("GOPROXY", "GOSUMDB", "GONOSUMDB", "GOPRIVATE", "GOINSECURE", "GOROOT", "GOTOOLCHAIN")
 with open(os.environ["TEST_GO_LOG"], "a") as log:
     log.write(json.dumps({"args": args, "env": {k: os.environ[k] for k in keys if k in os.environ}}) + "\n")
 if args == ["version"]:
-    print("go version go1.27.3 linux/amd64")
+    print("go version " + os.environ.get("TEST_GO_VERSION", "go1.27.4") + " linux/amd64")
+elif args == ["env", "GOROOT"]:
+    print(os.environ["TEST_INSTALLED_GOROOT"])
 elif args == ["env", "GOVERSION"]:
-    print("go1.27.3")
+    print(os.environ.get("TEST_GO_VERSION", "go1.27.4"))
 elif args[:2] == ["mod", "edit"]:
     pass
 elif args[0] in ("get", "build"):
@@ -77,17 +79,21 @@ class CaddyDownloadTests(unittest.TestCase):
         caddy = case / "caddy-src"
         cloudflare = case / "cloudflare-src"
         for directory in (caddy / "cmd/caddy", caddy / "third_party/x-net",
-                          caddy / "third_party/quic-go", cloudflare, case / "output/logs"):
+                          caddy / "third_party/quic-go", caddy / "third_party/go-jose-v3",
+                          caddy / "third_party/go-jose-v4", cloudflare, case / "output/logs"):
             directory.mkdir(parents=True, exist_ok=True)
         (caddy / "go.mod").write_text("module fixture.example/caddy\n\ngo 1.26.0\n")
         (caddy / "go.sum").write_text("fixture checksum\n")
+        (caddy / "deploy/go-tls").mkdir(parents=True)
+        (caddy / "deploy/go-tls/source-manifest.json").write_text("{}")
+        (caddy / "deploy/go-tls/prepare.py").write_text("import os, pathlib, sys\nif os.environ.get('TEST_GO_VERSION', 'go1.27.4') not in ('go1.26.11', 'go1.27.4'): raise SystemExit('No reviewed TLS source policy')\npathlib.Path(sys.argv[2]).mkdir(parents=True)\n")
         (caddy / "app.go").write_text('ID: "network_relay"\n')
         (caddy / "handler.go").write_text('ID: "http.handlers.network_relay"\n')
         (cloudflare / "go.mod").write_text("module github.com/caddy-dns/cloudflare\n")
         (cloudflare / "cloudflare.go").write_text('ID: "dns.providers.cloudflare"\n')
         log = case / "go.jsonl"
         result = subprocess.run(["bash", "-c", DRIVER, "caddy-test", str(ROOT), str(case)],
-                                env=dict(self.env, TEST_GO_LOG=str(log), **environment),
+                                env=dict(self.env, TEST_GO_LOG=str(log), TEST_INSTALLED_GOROOT=str(case / "installed-go"), **environment),
                                 capture_output=True, text=True, timeout=10)
         commands = [json.loads(line) for line in log.read_text().splitlines()]
         return result, commands, case
@@ -99,6 +105,28 @@ class CaddyDownloadTests(unittest.TestCase):
             for key, value in POLICY.items():
                 self.assertEqual(command["env"].get(key), value, command)
 
+    def test_affected_go_patch_releases_stop_before_dependency_or_binary_build(self):
+        for version in ("go1.26.10", "go1.27.3", "go1.25.14", "go1.27rc1"):
+            with self.subTest(version=version):
+                result, commands, case = self.run_helpers(TEST_GO_VERSION=version)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertFalse(any(command["args"][0] in ("get", "build") for command in commands))
+                self.assertFalse((case / "caddy-network-relay-amd64").exists())
+
+    def test_security_fixed_go_patch_releases_are_accepted(self):
+        for version in ("go1.26.11", "go1.27.4"):
+            with self.subTest(version=version):
+                result, commands, case = self.run_helpers(TEST_GO_VERSION=version)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertTrue((case / "caddy-network-relay-amd64").is_file())
+
+    def test_unreviewed_future_go_source_stops_before_dependencies_or_build(self):
+        result, commands, case = self.run_helpers(TEST_GO_VERSION="go1.28.0")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('No reviewed TLS source policy', result.stderr)
+        self.assertFalse(any(command['args'][0] in ('get', 'build') for command in commands))
+        self.assertFalse((case / 'caddy-network-relay-amd64').exists())
+
     def test_default_proxy_reaches_separate_prepare_and_build_stages(self):
         result, commands, case = self.run_helpers()
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -106,6 +134,10 @@ class CaddyDownloadTests(unittest.TestCase):
         self.assertEqual(sum(command["args"][0] == "get" for command in commands), 1)
         build = next(command["args"] for command in commands if command["args"][0] == "build")
         self.assertIn("-mod=readonly", build)
+        self.assertIn("http2legacy,relay_tls9846_v1", build)
+        build_env = next(command["env"] for command in commands if command["args"][0] == "build")
+        self.assertEqual(build_env["GOTOOLCHAIN"], "local")
+        self.assertTrue(build_env["GOROOT"].endswith("/go-tls"))
         self.assertTrue((case / "caddy-network-relay-amd64").is_file())
 
     def test_explicit_proxy_and_security_policy_are_preserved(self):

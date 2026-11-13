@@ -1,5 +1,28 @@
 # WARP adapter audit
 
+## November 13, 2026 local follow-up
+
+The current uncommitted tree includes the reviewed TCP persist correction and
+bounded IPv4/IPv6 receive reassembly. Original Apple Relay schemas and RFCs
+791, 1122, 3168, 4443, 5722, 6946, 7112, 8200 and 9673 were checked before
+server changes. Fixed context and packet bounds, overlap poisoning, absolute
+expiry, complete first-header validation, extension-header order and bounded
+ICMP responses retain security constraints. Outbound UDP MTU limits are unchanged.
+
+The accepted frozen synthetic soak runs for 3950.46 seconds. Independent
+verification checks 131 samples spanning 3924.03 seconds, six TCP and six UDP
+held flows, exact TCP hashes, one outer generation per transport and zero
+reported packet queue drops. RSS is 116636-131476 KiB and FD count is 40-43.
+The previous 3842.91-second reset and older ten-minute timeout remain unexplained.
+This is not live Cloudflare acceptance or proof that all historical failures
+share the repaired TCP cause.
+
+See [the parent audit](../../docs/audit-2026-11-13.md) and [VALIDATION.md](VALIDATION.md)
+for source-specific gates. The historical review below describes its original
+inputs and must not be read as the current dependency or native-device inventory.
+
+## Original review
+
 Initial review October 31-November 1, 2026 (America/Los_Angeles). This review concerns
 `network-relay-cf-masque/`, with parent commit
 `136fbae9bdf07cd49219fe71af4094eba7384de8` treated as immutable. The
@@ -22,7 +45,7 @@ utilities.
 | QUIC integers, Capsule encoding and Capsule content-header validation | Parent `proto::varint`, `proto::capsule::encode` and `proto::valid_capsule_headers` |
 | HTTP/3 and Quinn integration | Existing dependencies on the immutable parent `vendor/h3` and `vendor/h3-quinn`; no copied implementation |
 | Endpoint public-key PEM decoding | Rustls `SubjectPublicKeyInfoDer` / `PemObject` |
-| TCP/IP loss and zero-window recovery | Unmodified official smoltcp revision `336a1dd1aaf0eeb1afab5e3b4b479e818a23c03e` |
+| TCP/IP loss and zero-window recovery | Pinned smoltcp revision `336a1dd1aaf0eeb1afab5e3b4b479e818a23c03e` with the later reviewed local TCP conformance patch in `../vendor/smoltcp` |
 
 The WARP adapter retains only the behavior the parent does not supply:
 enrollment loading, pinned device-authenticated WARP transport, IP packet
@@ -86,9 +109,10 @@ Independent synthetic-peer wire encoders remain test fixtures.
    remained unacknowledged. The resulting sequence/window state stopped both
    directions. Registry smoltcp 0.14.0 lacked the official upstream
    [RTO/probe interaction fix](https://github.com/smoltcp-rs/smoltcp/commit/bfe5f95404c0f2d0fb26836183869ad7a5d90295).
-   The adapter now pins an unmodified official revision containing that fix,
+   The initial repair pinned the official revision containing that fix,
    fast-retransmit retry corrections and the subsequent scaled-window/FIN
-   correction. There is no local dependency patch or copied TCP implementation.
+   correction. The later conformance follow-up below retains that upstream
+   base and records its additional local TCP patch explicitly.
    The new IPv4/IPv6 regression transfers 40 MiB each way with receive
    backpressure and deterministic 1% packet loss. It failed repeatedly before
    the dependency change and passed afterward. Client idle limits and the
@@ -104,6 +128,45 @@ Independent synthetic-peer wire encoders remain test fixtures.
    not establish a direct attack by unauthenticated frontend clients. The
    follow-up treats parent revision `5b58468b3c9358ffabbb7e28bba59d856b0a2fd9`
    as immutable and changes only this subproject.
+
+## TCP conformance follow-up, November 13, 2026
+
+A local wire audit found that congestion control used the peer's advertised
+MSS while segmentation used the smaller path/option limit. With MTU 1280 and
+peer MSS 1460, the first timeout emitted 1240+220 bytes before an ACK,
+exceeding the actual 1240-byte SMSS. Small peer MSS also exposed excessive
+initial bytes, and separate small writes exceeded RFC 5681's initial segment
+count despite staying within its byte limit. Lost-SYN fallback, IPv6 omitted
+MSS, unusable small-MSS offers and the actual sent-data frontier needed
+corresponding corrections.
+
+The pinned upstream source is now vendored with four Rust-file changes. A
+fifth packaging-only ignore adjustment keeps all ten upstream parser seeds
+visible for normal source export. It updates
+effective MSS before ACK/loss handling, preserves grown congestion windows,
+caps only startup/fallback, and avoids recomputing CUBIC's cube root for
+unchanged MSS. A bounded startup packet gate is released only by an ACK of
+new DATA. Explicit MSS 0-47 is refused with cleanup and listener reuse;
+omission uses 536 for IPv4 and 1220 for IPv6. ACK validation and fast
+retransmission use the actually transmitted frontier, separate from the
+rewindable retransmission cursor; ACK/RST replies retain the correct SND.NXT.
+No larger experimental initial window or buffer increase was adopted.
+
+Official RFC 9293 section 3.7.1 and ACK-processing requirements, RFC 5681
+sections 2/3.1/3.2 and RFC 9438 section 4.8 were checked before changes,
+alongside Apple's relay profile/DDM TCP+UDP CONNECT definitions. Independent
+in-memory wire fixtures passed 150 cases on the frozen candidate, including
+both timestamp modes, tiny writes, SYN loss, safe refusal and hash/EOF
+progress. Focused socket units cover acknowledgement bounds, retransmission,
+sequence wrap and lifecycle cases. Full product gates and the subsequent
+real-time soak are recorded separately in [VALIDATION.md](VALIDATION.md).
+
+The earlier requested 3900-second baseline soak failed after 3842.91 seconds
+process runtime during an H1-ingress/WARP-H3 bulk transfer. Its 120 completed
+samples do not constitute a pass. A separate unchanged-runtime diagnostic
+passed 32 H1 bulk transfers, but did not establish the reset's cause. All
+ingress modes now retain progress and failure snapshots without relaxing
+the existing deadlines or repolling a stalled transfer.
 
 ## Standards and private protocol boundary
 

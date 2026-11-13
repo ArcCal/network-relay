@@ -88,7 +88,7 @@ where
                 Poll::Ready(false) => continue,
                 Poll::Pending => return Poll::Pending,
                 Poll::Ready(true) => {
-                    if self.stream.buf_mut().has_remaining() {
+                    if self.stream.buf_mut().has_remaining() || self.decoder.skip > 0 {
                         // Reached the end of receive stream, but there is still some data:
                         // The frame is incomplete.
                         return Poll::Ready(Err(FrameStreamError::UnexpectedEnd));
@@ -744,6 +744,23 @@ mod tests {
             |cx| to_bytes(stream.poll_data(cx)),
             Ok(Some(b)) if &*b == b"dy"
         );
+    }
+
+    #[tokio::test]
+    async fn truncated_unknown_frame_at_fin_is_not_a_clean_eof() {
+        for payload in [&b""[..], &b"x"[..]] {
+            let mut recv = FakeRecv::default();
+            let mut wire = BytesMut::new();
+            FrameType::RESERVED.encode(&mut wire);
+            VarInt::from_u32(2).encode(&mut wire);
+            wire.extend_from_slice(payload);
+            recv.chunk(wire.freeze());
+            let mut stream: FrameStream<_, ()> = FrameStream::new(BufRecvStream::new(recv));
+            assert_poll_matches!(
+                |cx| stream.poll_next(cx),
+                Err(FrameStreamError::UnexpectedEnd)
+            );
+        }
     }
 
     // Helpers

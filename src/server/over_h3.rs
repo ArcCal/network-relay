@@ -399,6 +399,11 @@ impl Relay {
             .get::<h3::ext::Protocol>()
             .map(|p| p.as_str().to_string())
             .or_else(|| req.extensions().get::<h3::ext::OtherProtocol>().map(|p| p.as_str().to_string()));
+        if !super::valid_authority(req.uri(), is_connect && protocol.is_none()) {
+            stream.stop_stream(h3::error::Code::H3_MESSAGE_ERROR);
+            stream.stop_sending(h3::error::Code::H3_MESSAGE_ERROR);
+            return;
+        }
         let kind = Kind::of_connect(is_connect, protocol.as_deref(), req.uri().scheme_str());
         let authority = req.uri().authority().map(|a| a.as_str().to_string());
         let path_and_query = req.uri().path_and_query().map_or("/", |p| p.as_str()).to_string();

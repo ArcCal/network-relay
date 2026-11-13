@@ -162,9 +162,34 @@ Source: macOS baseline run43478717847 and candidate-repeat run43476603192
 
 Status: OPEN: baseline and candidate observations; causal attribution unresolved
 
-Unchanged Caddy baseline macOS 27: four 64 MiB downloads on one H3 connection all timeout near 120.85 seconds after 44-47 MiB forwarded per stream. Candidate macOS 15: one of three serial 64 MiB downloads times out on actual H3 auto route. HTTP/1.1 TLS origin; distinct from H2 UDP 63. Same bounded observer runs 43482779652/43482785124 are pending; no transport policy relaxation. Partial ABBA cannot establish regression or improvement.
+Unchanged Caddy baseline macOS 27: four 64 MiB downloads on one H3 connection all timeout near 120.85 seconds after 44-47 MiB forwarded per stream. Candidate macOS 15: one of three serial 64 MiB downloads times out on actual H3 auto route. HTTP/1.1 TLS origin; distinct from H2 UDP 63. No transport policy relaxation. Partial ABBA cannot establish regression or improvement.
 
 Further baseline run 43480897922 reproduces four parallel H3 timeouts near
 120.06 seconds after about 5-7 MB per stream; both candidate phases pass.
 Flow observations 43482779652 and 43482785124 pass 32/112/16 per binary but
-do not reproduce the stall. Unchanged-binary watchdog 43488457625 is pending.
+do not reproduce the stall. Unchanged-binary watchdog 43488457625 passes its
+baseline 96/336/48 and both Go controls without a stall capture, but fails when
+the runner filesystem fills during candidate collection. Replacement runs
+43491680899 / 43491697222 complete with three four-stream stalls: macOS 27
+baseline and macOS 15 baseline/candidate. Every phase retains more than 32 GiB
+free. All independent Go and rejection controls pass; the native stalls remain
+failures. Four server streams wait in QUIC writes while origin progress stops
+for about 47 seconds. The macOS 15 socket captures show small continuing UDP
+traffic; macOS 27 socket captures are empty and cannot establish queue state.
+These observations exclude ENOSPC for these three cases but do not establish
+the blocked-write cause or assign fault to either endpoint. Extended flow
+observations 43495250468 / 43495255618 complete with failures. macOS 27 captures
+five four-stream stalls at exact peer connection-level credit exhaustion for
+at least 80 seconds, despite remaining per-stream credit and DATA_BLOCKED
+notification. Why credit updates stop remains unresolved. Late short setup
+failures at 64 existing connections are a distinct capacity observation;
+macOS 15 reproduces no long stall. Periodic blocked-notification experiment
+43500071883 preserves limits and remains pending; no repair is accepted.
+
+macOS 15 run 43480903425 adds an unchanged Rust H3 serial-download timeout and
+two Caddy candidate phases with four simultaneous H3 download timeouts. Caddy
+forwards about 20-23 MB per stream in one failure and 4-5 MB in the other,
+with low server CPU during the wait. All 64 rejection controls pass and final
+baseline-repeat passes; the overall four-phase comparison fails. Evidence now
+includes both server implementations; shared symptoms do not establish a
+shared root cause or prove which endpoint is responsible.

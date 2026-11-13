@@ -1,8 +1,12 @@
 # Native candidate validation, 2026-11-13
 
-Snapshot updated 2026-11-13 19:05 UTC. Validation remains in progress. The user authorizes candidate branch commits
+Snapshot updated 2026-11-13 20:25 UTC. Validation remains in progress. The user authorizes candidate branch commits
 and pushes, with no merge into main and no release or production deployment.
 Both repositories use `audit/security-performance-candidate-20261113`.
+
+The [evidence snapshot](native-candidate-evidence-2026-11-13.md) preserves
+verified artifact digests, focused throughput distributions and captured stall
+counts after hosted artifacts expire.
 
 ## Exact inputs
 
@@ -37,10 +41,14 @@ The diagnostic branch changes only its workflow, Swift probe and Python driver.
 | [43478006183](https://github.com/ArcCal/network-relay/actions/runs/43478006183) / [43478011129](https://github.com/ArcCal/network-relay/actions/runs/43478011129) | Caddy baseline/candidate UDP boundaries and inner HTTP/3 | Both fail; all four phase/suite outcomes retained. Details below. |
 | [43479807369](https://github.com/ArcCal/network-relay/actions/runs/43479807369) | NF and RS candidate native build entrypoints on macOS 27 | Pass; all 1,031 source hashes match. NF: 115 Rust, 71 Swift, 17 native lifecycle checks. RS: 132 Rust. Four/five fixture-dependent Rust tests remain ignored. |
 | [43480886469](https://github.com/ArcCal/network-relay/actions/runs/43480886469) / [43480891905](https://github.com/ArcCal/network-relay/actions/runs/43480891905) | Rust complete-phase collection, macOS 27 / 15 | Both OS versions: baseline and candidate each pass 96/608/16; full units fail the same 12 tests (159/161 passed). Both workflows fail their final unit gate. |
-| [43480897922](https://github.com/ArcCal/network-relay/actions/runs/43480897922) / [43480903425](https://github.com/ArcCal/network-relay/actions/runs/43480903425) | Caddy synchronized controls, full race and ABBA, macOS 27 / 15 | macOS 27: full race passes; original candidate early test fails 1/20, synchronized variants pass 20/20 each. Baseline-repeat H3 download times out; other three TCP phases pass. macOS 15 running. |
+| [43480897922](https://github.com/ArcCal/network-relay/actions/runs/43480897922) / [43480903425](https://github.com/ArcCal/network-relay/actions/runs/43480903425) | Caddy synchronized controls, full race and ABBA, macOS 27 / 15 | Both full race suites pass; synchronized variants pass 20/20 each. Both ABBA runs fail H3 downloads. macOS 27 baseline-repeat fails; macOS 15 baseline Rust and both Caddy candidate phases fail. |
 | [43482779652](https://github.com/ArcCal/network-relay/actions/runs/43482779652) / [43482785124](https://github.com/ArcCal/network-relay/actions/runs/43482785124) | Baseline/candidate H3 download flow observation, macOS 27 / 15 | Both OS versions pass 32/112/16 per phase, with no stall reproduced. Instrumented timings excluded. |
-| [43484311466](https://github.com/ArcCal/network-relay/actions/runs/43484311466) | Rust four-phase ABBA on macOS 27 | Running after substantial control drift in the two-phase result; same frozen binaries reused in reverse order. |
-| [43488457625](https://github.com/ArcCal/network-relay/actions/runs/43488457625) | Unchanged-binary download watchdog, macOS 27 | Queued; 12 download rounds per binary, snapshots only after 15 seconds, plus independent native Go large/concurrent controls. |
+| [43484311466](https://github.com/ArcCal/network-relay/actions/runs/43484311466) | Rust four-phase ABBA on macOS 27 | All 384 positive cases / 2,432 samples pass. One baseline trust rejection reports generic connection loss instead of the expected certificate error; 63/64 exact negative controls pass. Same 12 unit failures remain. Overall failure. |
+| [43488457625](https://github.com/ArcCal/network-relay/actions/runs/43488457625) | Initial unchanged-binary watchdog, macOS 27 | Baseline passes 96/336/48 and both Go controls; no stall captured. Candidate evidence writing and Go linking fail with filesystem ENOSPC. Incomplete environment failure, not candidate acceptance. |
+| [43490427677](https://github.com/ArcCal/network-relay/actions/runs/43490427677) | Initial watchdog, macOS 15 | Cancelled during build and superseded after the macOS 27 disk failure; not a pass. |
+| [43491444643](https://github.com/ArcCal/network-relay/actions/runs/43491444643) | Initial disk safeguard workflow | Rejected before execution because `runner.temp` is unavailable in job-level `env`. Fixed using a runner step; actionlint then passes. |
+| [43491680899](https://github.com/ArcCal/network-relay/actions/runs/43491680899) / [43491697222](https://github.com/ArcCal/network-relay/actions/runs/43491697222) | Watchdog with bounded disk usage, macOS 27 / 15 | Both fail on native H3 stalls: macOS 27 baseline; macOS 15 baseline and candidate. All independent Go controls pass. Minimum phase disk reserves exceed 32 GiB; candidate source and controls match. |
+| [43494363421](https://github.com/ArcCal/network-relay/actions/runs/43494363421) / [43494379234](https://github.com/ArcCal/network-relay/actions/runs/43494379234) | Sustained uploads, Rust/macOS 27 and Caddy/macOS 15 | Both pass all four ABBA phases: 96/2304/64 per run. Source, controls, payloads and disk reserves independently verified; performance attribution remains limited. |
 
 The 12 Rust unit failures exercise code and tests already present in the
 baseline: three Linux-only UDP cases, a Linux kernel minimum-buffer assumption,
@@ -78,6 +86,26 @@ Caddy H2 serial-upload throughput ratios across the two phases are 0.655 and
 therefore be treated as causal performance improvements or regressions from
 this run alone. Run 43484311466 adds reversed binary order with the same frozen
 binaries. All native unit failures remain visible in the final workflow gate.
+
+The completed Rust ABBA run independently verifies all 209 source inputs and
+unchanged control binaries across four phases. All positive cases pass, and
+both candidate phases plus baseline-repeat pass their 16 rejection controls.
+Initial baseline `rust-0-h3-reject-trust` returns `NSURLErrorDomain -1005`
+instead of the required `-1202`, with zero origin requests. This does not show
+a trust bypass, but also does not establish the expected certificate rejection;
+the analysis retains a failed negative control and does not certify the ABBA.
+The two native unit suites retain exactly the same 12 failed test names.
+
+Timing concerns remain open. In this Rust ABBA, H2 serial and parallel upload
+median ratios are 0.878 and 0.875, while the unchanged Caddy control ratios are
+1.474 and 1.182. Individual Rust serial-upload observations range from 301 to
+705 MiB/s in the candidate. In the Caddy macOS 27 ABBA, H3 parallel-upload
+median throughput ratio is 0.815, while server CPU per GiB falls from 11.68 to
+10.96 seconds. Caddy H2 serial-download ratio is 0.847, almost identical to
+the unchanged Rust control's 0.845. These short loopback transfers, control
+drift, limited observations and retained failures prevent a blanket speedup or
+no-performance-regression claim. Security fixes and allocation savings are
+supported separately; end-to-end performance acceptance remains incomplete.
 
 ## Protocol failures and new download-stall evidence
 
@@ -132,6 +160,28 @@ controls pass 20/20 on baseline and 19/20 on candidate; both synchronized varian
 pass 20/20. Original-test failures are retained, not relabelled as passes or
 presented as a proven production repair.
 
+The complete macOS 15 run 43480903425 also passes 559 race events / 180 top-level
+tests, with the same two deployment skips. Original early controls pass 20/20
+on baseline and 18/20 on candidate; both synchronized variants pass 20/20.
+All four native phases and 64 rejection controls are retained. Initial baseline
+has 95 attempted positive cases / 604 samples: the unchanged Rust H3 serial
+download times out on its first sample, then its other two samples succeed.
+The skipped four-way case following that failure is not a pass. Caddy candidate
+and candidate-repeat each attempt 96 cases / 608 samples, but four concurrent
+downloads on a single H3 connection time out in each phase. Baseline-repeat
+passes 96/608/16. Caddy forwards 19,954,888-22,751,857 bytes per stream in the
+first failed candidate case and 4,176,443-5,166,390 bytes in the second, with
+only 0.63 and 0.21 CPU seconds over the respective 120-second waits.
+This extends the intermittent stall observations to the unchanged Rust server;
+it does not identify the responsible endpoint or establish a common cause.
+
+Valid macOS 15 Caddy H3 serial/parallel-upload median ratios are 0.667/0.881;
+the unchanged Rust controls are 0.840/0.967. The candidate serial-upload
+observations span 85.8-202.6 MiB/s. Together with the macOS 27 parallel-upload
+ratio, this remains an unresolved performance concern rather than an accepted
+improvement. Failed and missing cases are excluded from timings and retained
+as functional failures.
+
 Because the uninstrumented baseline still stalls, run 43488457625 uses unchanged
 binaries and gathers server stacks, client samples and filtered UDP socket
 queues only after a transfer exceeds 15 seconds. Twelve bounded download rounds
@@ -139,7 +189,108 @@ per binary increase exposure without raising the 120-second request timeout.
 The same native host also runs existing independent Go serial 64 MiB and
 24-tunnel controls (64 MiB each way per tunnel, eight H3 streams on one connection)
 on both pinned server sources. The latter passes locally in 6.950 seconds.
-No transport limit or security policy is changed; findings remain pending.
+No transport limit or security policy is changed. The initial macOS 27 baseline
+passes 96 download cases / 336 samples / 48 rejections and both Go controls,
+without a stall capture. Candidate reaches 57 recorded positive cases / 199
+samples before filesystem ENOSPC interrupts evidence writing. Its final server
+log is empty; retained successful native reports cannot establish the missing
+outer-route evidence. Both candidate Go controls fail while linking, before
+test execution. The overall run fails. There is no retained disk telemetry to
+identify what consumed space or explain earlier download stalls.
+
+Diagnostic revision `3857bc2fac674065205ccb9032c8f51c8cb82d05` preserves exact
+server binaries, prebuilds both independent Go test executables and removes only
+the job-owned compilation caches before measurements. It requires 4 GiB free
+initially and records a 2 GiB reserve before/after each positive case. The probe
+explicitly removes its completed download file, and the driver owns and removes
+each completed probe's temporary directory. These are diagnostic lifecycle
+changes, not product fixes. Local checks validate the low-space failure record,
+workflow expressions, shell/Python syntax and the prebuilt Go invocation with
+64 MiB bidirectional H1/H2/H3 transfers. Both native reruns complete with
+96 cases / 336 samples / 48 rejection controls per binary. All exact rejection
+controls and all eight independent Go controls pass across the two hosts.
+macOS 15 has one four-stream H3 timeout in each binary; macOS 27 has one in
+baseline, while candidate passes. Every phase retains at least 32.85 GiB free;
+macOS 15 retains at least 42.22 GiB. These three stalls are not ENOSPC failures.
+
+Each stalled case has four snapshots showing four server goroutines waiting in
+`quic-go.SendStream.write` at `send_stream.go:316`. The origin's write counters
+do not advance for about 47 seconds. On macOS 15, client and server CPU are
+idle, socket queues are zero and small amounts of bidirectional UDP traffic
+continue. The macOS 27 filtered UDP capture is empty despite exit zero, so no
+queue claim is made for that host. Native stack samples show the main thread
+waiting for task completion and an idle worker; they do not expose enough of
+Apple's network internals to assign fault. QUIC write waiting alone does not
+prove exhausted flow credit or identify a scheduling/congestion defect.
+
+Extended read-only flow runs 43495250468 / 43495255618 use 16 download rounds
+per binary, both observers built before measurement, owned compilation-cache
+cleanup and disk reserves. macOS 27 completes with five four-stream timeouts:
+one baseline and four candidate. Every captured stall exhausts exactly the
+peer's connection-level MAX_DATA while all four streams retain individual
+credit. DATA_BLOCKED is observed and the equality persists for at least 80
+seconds. This establishes the immediate flow-control blockage, not why peer
+credit updates stop or which endpoint is responsible.
+
+The longer fixture also accumulates 64 still-open H3 connections, matching the
+per-client security cap. Late immediate setup failures occur in the macOS 27
+baseline and both macOS 15 phases at that count. Their closure error code is
+not retained, so attribution to the cap is strongly consistent but indirect.
+The macOS 15 first attempt fails runner allocation; its completed retry has no
+long download stall. Both extended comparisons fail; missing cases and
+incorrect rejection errors remain failures. Exact counts and artifact digests
+are preserved in the linked evidence snapshot.
+
+Experiment 43500071883 tests periodic DATA_BLOCKED notifications at the
+existing keepalive cadence using the same candidate source in both arms,
+after RFC 9000 sections 4.1-4.2 and Apple schema review. It preserves receiver
+credit, quotas and security checks. Local credit/resumption and race/bulk
+controls pass; native execution is pending and no product repair is adopted.
+
+Sustained upload runs 43494363421 (Rust/macOS 27) and 43494379234 (Caddy/macOS
+15) both complete successfully. Each independently verified ABBA has 96 cases,
+2,304 samples and 64 exact rejection controls, with 24 uploads of 64 MiB per
+case across direct/H2/H3 routes and concurrency one/four. Rust's 209 and Caddy's
+975 source inputs match, repeated binary hashes and unchanged controls match,
+and minimum disk reserves are 33.19 / 43.06 GiB. Each host transfers 144 GiB.
+Prior full unit and race outcomes are not rerun or relabelled by this matrix.
+
+| Tested candidate | Route / concurrency | Baseline MiB/s | Candidate MiB/s | Ratio | Unchanged other-server ratio |
+| --- | --- | ---: | ---: | ---: | ---: |
+| Rust / macOS 27 | H2 / 1 | 647.2 | 599.9 | 0.927 | 1.050 |
+| Rust / macOS 27 | H2 / 4 | 571.5 | 602.5 | 1.054 | 0.933 |
+| Rust / macOS 27 | H3 / 1 | 121.0 | 142.7 | 1.180 | 0.818 |
+| Rust / macOS 27 | H3 / 4 | 114.4 | 138.9 | 1.215 | 0.920 |
+| Caddy / macOS 15 | H2 / 1 | 292.2 | 346.3 | 1.185 | 1.057 |
+| Caddy / macOS 15 | H2 / 4 | 305.8 | 319.3 | 1.044 | 1.126 |
+| Caddy / macOS 15 | H3 / 1 | 111.6 | 119.5 | 1.071 | 1.106 |
+| Caddy / macOS 15 | H3 / 4 | 108.7 | 113.8 | 1.047 | 1.090 |
+
+These are medians of four case observations per binary/configuration. The
+previous Rust H2 parallel and large Caddy H3 upload declines are not reproduced
+in this focused run. Rust H2 serial remains an unresolved timing concern;
+unchanged Caddy H2 serial improves while tested Rust declines. On macOS 27,
+unchanged Caddy H3 serial observations range from 103.0 to 218.8 MiB/s and
+several direct controls also drift. On macOS 15, unchanged Rust H3 improves
+more than the Caddy candidate. These controls prevent assigning all differences
+to the candidate or claiming universal no-regression. All raw distributions and
+server CPU/GiB are retained. This upload-only result does not close H3 download
+stalls, native UDP failures, or installed-profile/WAN acceptance.
+
+Run 43497806792 further isolates the unresolved Rust H2 serial concern. Both
+executables are built before any measurements, then eight phases use
+baseline/candidate order ABBABAAB with direct and H2 routes, concurrency one
+and four, and 24 uploads of 64 MiB per case. The unchanged Caddy control,
+source/binary checks, exact rejection controls and disk reserves remain. This
+run completes successfully: 128 cases / 3,072 samples / 128 exact rejection
+controls, all 209 source inputs and eight-phase binary/provenance checks pass,
+with at least 33.55 GiB free. It uploads 192 GiB. Rust H2 serial median is
+612.0 -> 512.2 MiB/s (ratio 0.837), versus unchanged Caddy 0.958 and direct
+Rust 0.875. Rust H2 parallel ratio is 0.994. Server CPU/GiB for Rust H2 serial
+rises from 1.027 to 1.393 seconds, while unchanged Caddy rises from 1.280 to
+1.453. Both source and control distributions vary substantially. The repeated
+serial concern remains unresolved; functional success is not performance
+acceptance, and no previous failures are waived.
 
 ## Post-update local client interoperability
 
@@ -198,13 +349,27 @@ introduced. See [the boundary report](native-relay-capsule-boundary-2026-11-13.m
 - `/workspace/scratch/macos-resume/native-clients27-analysis.json`
 - `/workspace/scratch/macos-resume/rust-candidate27-complete-analysis.json`
 - `/workspace/scratch/macos-resume/rust-candidate15-complete-analysis.json`
+- `/workspace/scratch/macos-resume/rust-abba27-analysis.json`
 - `/workspace/scratch/macos-resume/caddy-candidate27-complete-analysis.json`
+- `/workspace/scratch/macos-resume/caddy-candidate15-complete-analysis.json`
+- `/workspace/scratch/macos-resume/caddy-candidate15-stall-observations.json`
 - `/workspace/scratch/macos-resume/h3-flow27-analysis.json`
 - `/workspace/scratch/macos-resume/h3-flow15-analysis.json`
 - `/workspace/scratch/macos-resume/h3-flow27-credit-observations.json`
+- `/workspace/scratch/macos-resume/h3-watchdog27-analysis.json`
+- `/workspace/scratch/macos-resume/h3-watchdog27-disk-failure-review.json`
+- `/workspace/scratch/macos-resume/prebuilt-go-control-validation.jsonl`
 - `/workspace/scratch/macos-resume/final-client-interop-analysis.json`
 
 Downloaded workflow artifacts are checked against GitHub's ZIP SHA256 before
 extraction. Failed, skipped, cancelled and unexecuted checks remain distinct
 from passes. This record is not an exhaustive certification of every possible
 execution path or deployment.
+
+Latest focused evidence:
+
+- `/workspace/scratch/macos-resume/sustained-rust27-analysis.json`
+- `/workspace/scratch/macos-resume/sustained-caddy15-analysis.json`
+- `/workspace/scratch/macos-resume/h3-watchdog15-bounded-analysis.json`
+- `/workspace/scratch/macos-resume/h3-watchdog27-bounded-analysis.json`
+- `/workspace/scratch/macos-resume/bounded-h3-stall-stack-observations.json`

@@ -4,6 +4,8 @@
 
 - VLESS DNS failures are cached when the relay's shared lookup deadline expires, including after an admission wait. Caller cancellation still does not cache a failure, and a late failed lookup cannot overwrite a fresh successful answer.
 
+- VLESS DNS reuses the last successful resolver for new names instead of repeatedly waiting for a dead first entry. Sequential failover wraps around and resumes after an interrupted attempt on the next uncached lookup; duplicate resolver addresses are queried only once per lookup.
+
 - Mac all-target builds preserve completed Mac products if a later Linux build fails. Caddy builds try direct sources after official Go proxy errors unless an exported `GOPROXY` selects another policy; failed downloads still fail the build.
 
 - Network Relay NF's TLS regression test uses the native build's explicit macOS SDK and arm64 macOS 27.0 target, matching its other smoke checks instead of defaulting to the host OS target. Portable Linux invocation remains unchanged.

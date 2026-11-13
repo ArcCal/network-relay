@@ -102,6 +102,13 @@ restart (the program says so when it notices one).
   that reaches the deadline caches a one-second timeout failure. Cancelling
   earlier or timing out before admission does not create a failure entry.
   A slower concurrent failure never replaces a still-valid successful answer.
+  Lookups start with the most recently successful resolver and try the others
+  sequentially in circular configuration order. If the total deadline expires,
+  the next uncached lookup starts after the interrupted resolver, unless another
+  lookup has selected a working resolver in the meantime. This avoids repeatedly
+  waiting for a dead first entry and eventually reaches later entries without
+  adding concurrent DNS requests. Duplicate addresses are tried only once per
+  lookup. Configured resolvers should be interchangeable for destination names.
 - **Failures**: a VLESS server that refuses the connection or is down gives
   502; a timeout 504. Every tunnel needs the VLESS server; nothing is ever
   sent directly. At start the program sends one DNS query through the VLESS

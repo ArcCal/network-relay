@@ -33,6 +33,12 @@ type Lookup = Result<Vec<IpAddr>, Arc<io::Error>>;
 pub struct Resolver {
     config: Arc<VlessConfig>,
     cache: Mutex<HashMap<String, (Lookup, Instant)>>,
+    preferred: Mutex<(usize, u64)>,
+}
+
+struct LookupOrder {
+    start: (usize, u64),
+    active: Option<usize>,
 }
 
 /// Why a resolver could not answer.
@@ -45,13 +51,23 @@ enum Failure {
 
 impl Resolver {
     pub fn new(config: Arc<VlessConfig>) -> Self {
-        Self { config, cache: Mutex::default() }
+        Self { config, cache: Mutex::default(), preferred: Mutex::default() }
     }
 
     pub async fn lookup_until(&self, host: &str, deadline: tokio::time::Instant) -> io::Result<Vec<IpAddr>> {
-        match tokio::time::timeout_at(deadline, self.lookup(host)).await {
+        let mut order = self.lookup_order();
+        match tokio::time::timeout_at(deadline, self.lookup_ordered(host, &mut order)).await {
             Ok(result) => result,
             Err(_) => {
+                // Continue beyond this attempt on the next uncached lookup,
+                // unless another lookup has already selected a working peer.
+                if let Some(index) = order.active {
+                    let next = (index + 1) % self.config.dns_servers.len();
+                    let mut preferred = self.preferred.lock().unwrap_or_else(|e| e.into_inner());
+                    if *preferred == order.start {
+                        *preferred = (next, preferred.1.wrapping_add(1));
+                    }
+                }
                 let error = io::Error::new(io::ErrorKind::TimedOut, "DNS lookup timed out");
                 let name = host.strip_suffix('.').unwrap_or(host).to_ascii_lowercase();
                 self.remember(name, Err(Arc::new(copy_error(&error))), FAILURE_TTL);
@@ -63,6 +79,22 @@ impl Resolver {
     /// The addresses of `host`, in the configured family order. An empty
     /// list means the name exists without addresses of those families.
     pub async fn lookup(&self, host: &str) -> io::Result<Vec<IpAddr>> {
+        let mut order = self.lookup_order();
+        self.lookup_ordered(host, &mut order).await
+    }
+
+    fn lookup_order(&self) -> LookupOrder {
+        LookupOrder { start: *self.preferred.lock().unwrap_or_else(|e| e.into_inner()), active: None }
+    }
+
+    fn prefer(&self, index: usize) {
+        let mut preferred = self.preferred.lock().unwrap_or_else(|e| e.into_inner());
+        // Increment even for the same index: an older timeout must not
+        // displace a resolver which has since answered another lookup.
+        *preferred = (index, preferred.1.wrapping_add(1));
+    }
+
+    async fn lookup_ordered(&self, host: &str, order: &mut LookupOrder) -> io::Result<Vec<IpAddr>> {
         let name = host.strip_suffix('.').unwrap_or(host).to_ascii_lowercase();
         let now = Instant::now();
         if let Some((result, expires)) = self.cache.lock().unwrap_or_else(|e| e.into_inner()).get(&name) {
@@ -73,14 +105,26 @@ impl Resolver {
         let fqdn = Name::from_ascii(format!("{name}."))
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "not a valid DNS name"))?;
         let mut last = io::Error::new(io::ErrorKind::TimedOut, "no resolver answered");
-        for server in &self.config.dns_servers {
-            match self.ask(*server, &fqdn).await {
+        let mut tried = Vec::with_capacity(self.config.dns_servers.len());
+        for offset in 0..self.config.dns_servers.len() {
+            let index = (order.start.0 + offset) % self.config.dns_servers.len();
+            let server = self.config.dns_servers[index];
+            if tried.contains(&server) {
+                continue;
+            }
+            tried.push(server);
+            order.active = Some(index);
+            match self.ask(server, &fqdn).await {
                 Ok((mut addrs, ttl)) => {
+                    self.prefer(index);
                     self.config.ip_preference.apply(&mut addrs);
                     self.remember(name, Ok(addrs.clone()), ttl);
                     return Ok(addrs);
                 }
                 Err(Failure::Final(e, ttl)) => {
+                    if e.kind() == io::ErrorKind::NotFound {
+                        self.prefer(index);
+                    }
                     self.remember(name, Err(Arc::new(copy_error(&e))), ttl);
                     return Err(e);
                 }
@@ -442,6 +486,7 @@ mod tests {
             }
         }
         assert!(resolver.cache.lock().unwrap().is_empty());
+        assert_eq!(*resolver.preferred.lock().unwrap(), (0, 0), "cancellation must not change resolver preference");
         tokio::time::timeout(Duration::from_secs(2), server).await.unwrap().unwrap();
     }
 
@@ -551,6 +596,89 @@ mod tests {
         let deadline = tokio::time::Instant::now() + network_relay::policy::DNS_TIMEOUT;
         let result = tokio::time::timeout_at(deadline, resolver.lookup_until("victim.test", deadline)).await;
         assert_eq!(result.unwrap().unwrap(), vec!["198.51.100.77".parse::<IpAddr>().unwrap()]);
+        server.abort();
+        let _ = server.await;
+    }
+
+    #[tokio::test]
+    async fn a_working_backup_does_not_pay_the_dead_first_resolver_again() {
+        use std::sync::atomic::Ordering;
+        let (resolver, requests, server) = timeout_peer(2, Some((1, Duration::ZERO))).await;
+        assert_eq!(resolver.lookup("first.test").await.unwrap().len(), 1);
+        assert_eq!(requests.load(Ordering::SeqCst), 2);
+        let started = Instant::now();
+        let next = tokio::time::timeout(Duration::from_secs(1), resolver.lookup("second.test")).await;
+        assert_eq!(next.unwrap().unwrap().len(), 1);
+        eprintln!("uncached name after backup success: {:?}", started.elapsed());
+        assert_eq!(requests.load(Ordering::SeqCst), 3, "new names should use the working resolver first");
+        server.abort();
+        let _ = server.await;
+    }
+
+    #[tokio::test]
+    async fn repeated_deadlines_eventually_reach_later_resolvers_without_overlap() {
+        use std::sync::atomic::Ordering;
+        let (resolver, requests, server) = timeout_peer(8, Some((7, Duration::ZERO))).await;
+        for index in 0..8 {
+            let name = format!("name{index}.test");
+            let deadline = tokio::time::Instant::now() + Duration::from_millis(200);
+            let result = resolver.lookup_until(&name, deadline).await;
+            if index == 7 {
+                assert_eq!(result.unwrap().len(), 1);
+            } else {
+                assert_eq!(result.unwrap_err().kind(), io::ErrorKind::TimedOut);
+            }
+            assert_eq!(requests.load(Ordering::SeqCst), index + 1, "only one resolver fits this deadline");
+        }
+        server.abort();
+        let _ = server.await;
+    }
+
+    #[tokio::test]
+    async fn a_failed_preferred_resolver_wraps_to_a_recovered_earlier_one() {
+        use std::sync::atomic::Ordering;
+        let (resolver, requests, server) = timeout_peer(2, Some((0, Duration::ZERO))).await;
+        resolver.prefer(1);
+        assert_eq!(resolver.lookup("first.test").await.unwrap().len(), 1);
+        assert_eq!(requests.load(Ordering::SeqCst), 2);
+        let next = tokio::time::timeout(Duration::from_secs(1), resolver.lookup("second.test")).await;
+        assert_eq!(next.unwrap().unwrap().len(), 1);
+        assert_eq!(requests.load(Ordering::SeqCst), 3);
+        server.abort();
+        let _ = server.await;
+    }
+
+    #[tokio::test]
+    async fn an_older_timeout_does_not_displace_a_newer_successful_preference() {
+        let (resolver, requests, server) = timeout_peer(2, None).await;
+        let deadline = tokio::time::Instant::now() + Duration::from_millis(200);
+        let completed = async {
+            while requests.load(std::sync::atomic::Ordering::SeqCst) == 0 {
+                tokio::task::yield_now().await;
+            }
+            // The same index has answered another lookup after this one
+            // started. A generation check, not just the index, protects it.
+            resolver.prefer(0);
+        };
+        let (result, ()) = tokio::time::timeout(Duration::from_secs(2), async {
+            tokio::join!(resolver.lookup_until("victim.test", deadline), completed)
+        })
+        .await
+        .unwrap();
+        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::TimedOut);
+        assert_eq!(*resolver.preferred.lock().unwrap(), (0, 1));
+        server.abort();
+        let _ = server.await;
+    }
+
+    #[tokio::test]
+    async fn repeated_configured_addresses_are_not_requeried_in_one_lookup() {
+        use std::sync::atomic::Ordering;
+        let (mut resolver, requests, server) = caching_peer(ResponseCode::ServFail, None, false).await;
+        let config = Arc::make_mut(&mut resolver.config);
+        config.dns_servers = vec![config.dns_servers[0]; 8];
+        assert!(resolver.lookup("victim.test").await.is_err());
+        assert_eq!(requests.load(Ordering::SeqCst), 1);
         server.abort();
         let _ = server.await;
     }

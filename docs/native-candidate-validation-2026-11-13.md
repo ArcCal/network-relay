@@ -1,6 +1,6 @@
 # Native candidate validation, 2026-11-13
 
-Snapshot updated 2026-11-13 20:25 UTC. Validation remains in progress. The user authorizes candidate branch commits
+Snapshot updated 2026-11-13 21:13 UTC. Recorded runs are complete; candidate acceptance remains incomplete. The user authorizes candidate branch commits
 and pushes, with no merge into main and no release or production deployment.
 Both repositories use `audit/security-performance-candidate-20261113`.
 
@@ -17,6 +17,10 @@ counts after hosted artifacts expire.
 
 Caddy follow-up `49549117e643ad4a05bb1a639ca17cf8521a4356` changes only the early
 datagram test's synchronization. Its runtime inputs match 169dc2f exactly.
+Later Caddy follow-up `795912b` changes only the large-transfer test's bounded
+cleanup wait. It fixes a locally reproduced asynchronous assertion race;
+50 single-worker repeats and full-size transfer checks pass. Native artifacts
+retain the original test and its failure. Production inputs remain identical.
 All commits use the required anonymous author/committer and are unsigned.
 
 The authorized Rust workflow input reconstructs 209 exact source files from
@@ -245,7 +249,34 @@ Experiment 43500071883 tests periodic DATA_BLOCKED notifications at the
 existing keepalive cadence using the same candidate source in both arms,
 after RFC 9000 sections 4.1-4.2 and Apple schema review. It preserves receiver
 credit, quotas and security checks. Local credit/resumption and race/bulk
-controls pass; native execution is pending and no product repair is adopted.
+controls pass. Native execution completes with one control-arm four-stream
+timeout at 120.11 seconds and exact connection credit exhaustion at 22,950,380
+bytes for 80.24 seconds. The periodic arm passes all 96 cases / 336 samples /
+48 exact rejection controls, as do all six independent Go controls across the
+two arms. Its longest case is only 4.45 seconds: no recovery from a native
+stall or repeated notification at unchanged credit is observed. This does not
+establish the experiment as a repair. Unchanged repeats on macOS 15 and 27,
+runs 43503924416 / 43503936645, both fail with one/two periodic-arm stalls and
+unchanged notification counters. The old timer experiment is rejected as a
+repair. The macOS 15 independent bulk-test cleanup assertion also fails and
+is retained separately. No product repair is adopted.
+
+A local active-peer control then reproduces the idle-based timer's limitation
+three times: peer heartbeats continually postpone notifications. Diagnostic
+follow-up 43504865652 measures blocked duration at unchanged receiver credit
+independently of peer activity, retaining the original notification interval.
+Quiet-peer, active-peer, disabled-keepalive, resumed-payload and cessation
+checks pass locally, together with selected race and H1/H2/H3 bulk controls.
+The native run completes with one control and one periodic four-stream timeout.
+Repeated metadata is actually emitted: the periodic DATA_BLOCKED counter rises
+from 11 to 16 while connection credit remains exactly 118,468,148 bytes for
+89.994 seconds. All six independent Go controls and all 96 exact rejection
+controls pass. The complete local overlay race suite passes 567 events / 183
+top-level tests with one external E2E skip. The native failure rejects this
+notification experiment as a repair. No notification overlay is promoted to
+product code. Captured counts and the artifact digest are in the evidence
+snapshot. Peer credit-update behavior and installed-profile acceptance remain
+unresolved.
 
 Sustained upload runs 43494363421 (Rust/macOS 27) and 43494379234 (Caddy/macOS
 15) both complete successfully. Each independently verified ABBA has 96 cases,
@@ -373,3 +404,30 @@ Latest focused evidence:
 - `/workspace/scratch/macos-resume/h3-watchdog15-bounded-analysis.json`
 - `/workspace/scratch/macos-resume/h3-watchdog27-bounded-analysis.json`
 - `/workspace/scratch/macos-resume/bounded-h3-stall-stack-observations.json`
+
+A separate Linux x86_64 memory-only TLS control isolates the Rustls patch from
+HTTP/2 and Apple clients. Identical dependency locks and harness, strict TLS 1.3
+AES-128-GCM, one CPU affinity and eight prebuilt balanced observations verify
+4 GiB each (plus two 512 MiB warmups). Candidate encryption/decryption median
+ratios are 1.028 / 1.021; every decrypted byte is verified. This does not
+reproduce the native serial-upload decline in the isolated Linux TLS path,
+but does not rule out ARM64, HTTP/2, scheduling or native-client interactions.
+Inputs, binary hashes and observations are retained at
+`/workspace/scratch/tls-upload-bulk-control/analysis.json`.
+
+Existing native CPU records also expose control drift: in the eight-phase run,
+serial direct requests in the Rust-labelled group use 1.357 times the probe
+CPU/GiB despite bypassing Relay; Rust H2 probe CPU/GiB is 1.258 times baseline
+and server CPU/GiB is 1.357 times baseline. Unchanged Caddy H2 server CPU/GiB
+rises by 1.135. This confirms variation in unchanged paths, without proving
+that all candidate timing differences are environmental. The serial H2
+performance concern remains open. Descriptive observations are retained in
+`/workspace/scratch/macos-resume/h2-upload-cpu-observations.json`.
+
+The source comparison also narrows the changed direct-egress H2 path: request
+authority/protocol validation and TLS dependency changes are present, while
+the H2 payload-copy and flow-control loops are unchanged. Request validation
+is performed per CONNECT request. This does not rule out compiler, TLS,
+platform or runtime effects, and it does not waive the measured native serial
+throughput concern. No request validation or TLS security guard is removed
+to obtain a faster benchmark.

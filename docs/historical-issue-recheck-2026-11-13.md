@@ -184,7 +184,16 @@ at least 80 seconds, despite remaining per-stream credit and DATA_BLOCKED
 notification. Why credit updates stop remains unresolved. Late short setup
 failures at 64 existing connections are a distinct capacity observation;
 macOS 15 reproduces no long stall. Periodic blocked-notification experiment
-43500071883 preserves limits and remains pending; no repair is accepted.
+43500071883 preserves limits and completes with another control-arm credit
+stall. Its periodic arm and all six Go controls pass, but no native recovery
+or repeated notification at unchanged credit is observed. Unchanged repeats
+43503924416 / 43503936645 complete with one/two periodic-arm stalls and no
+notification-counter progress. The old timer experiment is rejected. A new
+blocked-duration clock is locally validated, including a complete race suite,
+but native run 43504865652 still has one timeout per arm. Repeated notifications
+are observed (11 to 16), with peer credit unchanged at 118,468,148 bytes for
+89.994 seconds. All six independent Go controls pass. Both notification
+experiments are rejected as repairs; no runtime change is adopted.
 
 macOS 15 run 43480903425 adds an unchanged Rust H3 serial-download timeout and
 two Caddy candidate phases with four simultaneous H3 download timeouts. Caddy

@@ -137,8 +137,30 @@ metadata instead of idle keepalive PING when connection credit is exhausted
 and data remains queued. Existing cadence, credit, quotas and security policy
 are preserved. Both arms use 12 rounds to avoid the known extended-fixture
 connection accumulation. Local strict-TLS credit/resumption controls and race
-checks including H1/H2/H3 64 MiB transfers pass. Native result is pending; this
-is not a production change or accepted repair.
+checks including H1/H2/H3 64 MiB transfers pass. Native execution completes
+with overall failure because the control arm stalls; this is not a production
+change or accepted repair.
+
+Artifact 14075426349 ZIP SHA256:
+`47ead287972a26f3a2fa8135dcd7f6888c7ab02b234ca5ab81dd741a07510b90`.
+Both arms collect 96 positive cases / 336 samples / 48 exact rejection
+controls. All source, overlay, prepared-Go and executed-binary checks pass.
+Minimum free disk is 33.188 / 32.748 GiB. All six race-enabled independent Go
+controls pass, covering bounded credit/resumption, H1/H2/H3 transfers and 24
+concurrent tunnels. The deliberate 16,384-byte credit control observes one
+notification without the overlay and seven with it, then verifies all
+131,072 resumed bytes under strict TLS.
+
+Control case `caddy-2-auto-67108864-4-download` times out at 120.115 seconds.
+Observed MAX_DATA, sent stream offsets and DATA_BLOCKED limit all equal
+22,950,380 bytes across five blocked snapshots spanning 80.236 seconds.
+The DATA_BLOCKED counter stays at two during that interval. The periodic arm
+passes every case, but its longest is only 4.444 seconds. Neither arm records
+a snapshot-to-snapshot increase in the notification counter at unchanged
+connection credit. There is no native evidence of the experimental branch
+rescuing a stall; a passing intermittent run is insufficient causal proof.
+Unchanged repeats 43503924416 (macOS 15) and 43503936645 (macOS 27) both
+fail with periodic-arm stalls; their retained results are detailed below.
 
 ## Balanced H2 follow-up
 
@@ -163,3 +185,165 @@ acceptance. Previous unit, UDP and H3 download failures remain unchanged.
 | rust / direct / 4 | 960.1, 895.7, 558.6, 949.7, 1578.4, 1563.7, 1476.4, 1575.9 | 943.2, 1146.0, 1209.2, 1071.5, 909.8, 997.6, 1635.0, 1234.2 | 0.910 | 0.000 | 0.000 |
 | rust / h2 / 1 | 658.0, 449.8, 350.5, 357.8, 764.6, 566.0, 819.7, 819.9 | 469.4, 425.8, 532.4, 492.0, 454.7, 579.2, 834.6, 806.8 | 0.837 | 1.027 | 1.393 |
 | rust / h2 / 4 | 385.1, 389.5, 404.2, 393.4, 720.6, 705.0, 756.6, 608.6 | 481.3, 480.0, 461.4, 525.2, 633.9, 351.6, 752.9, 661.6 | 0.994 | 1.347 | 1.420 |
+
+## Isolated Linux TLS upload control
+
+This compares original Rustls 0.23.46 with the patched candidate using identical
+dependency locks and a harness that verifies every plaintext byte, strict
+TLS 1.3 AES-128-GCM and CPU affinity 0. Both executables are built before eight
+balanced 4 GiB observations; two 512 MiB warmups precede measurement. It is a
+memory-only Linux x86_64 control, not HTTP/2, Apple or field acceptance.
+
+| Variant | Encryption MiB/s observations | Decryption MiB/s observations |
+| --- | --- | --- |
+| baseline | 6417.0, 6979.6, 7064.7, 7200.5 | 5107.4, 5831.0, 5682.5, 5881.6 |
+| candidate | 7197.3, 7081.0, 7233.6, 7236.1 | 5851.7, 5792.6, 5957.9, 5899.1 |
+
+Candidate median ratios are 1.028 for encryption and 1.021 for decryption.
+No decline is reproduced in this isolated control; the native H2 concern remains.
+
+harness SHA256: `eb2a97bb3e1d7f094ad1bb8fd3ec6902b1e0172486da9235fdbd31a5ea31f8ae`.
+
+dependency lock SHA256: `d7ac7344f211a9788858f2724e75da0a3525748dd616f5cd7158371ee59e718f`.
+
+baseline binary SHA256: `83b0e5768f158462406923a1428a562942ebd8932512a2297774208d7178befc`.
+
+candidate binary SHA256: `f65f3e2c24bd1e2fc080ef28c0ecfab5fd6bab29e163884201e9467a3b14fca7`.
+
+The balanced native run's unchanged direct probe in the Rust-labelled group
+has a median CPU/GiB ratio of 1.357. Rust H2 probe/server CPU ratios are
+1.258 / 1.357; unchanged Caddy H2 server CPU ratio is 1.135. These are actual
+control variations, not a complete causal explanation of the candidate's
+throughput difference. Native serial H2 acceptance remains open.
+
+## Blocked notification timer isolation
+
+The first notification experiment's deadline is based on the most recently
+received packet. Three local strict-TLS reproductions with client keepalive
+10 ms and server keepalive 50 ms observe only one notification in 400 ms;
+all three fail the expected repetition check. Peer activity can indefinitely
+postpone this experimental notification. In the native control stall, packet
+counters continue increasing by approximately one packet per direction every
+20 seconds while connection credit and the blocked counter remain fixed.
+The aggregate capture does not identify those packets' frame types.
+
+A diagnostic-only follow-up, run 43504865652 at
+`c671f010bb76c6b6634c5002c86a9accc0f3364e`, adds a blocked-duration clock that
+is reset when receiver credit increases, not on unrelated peer traffic. It
+uses the same keepalive interval and existing congestion/timer path. It sends
+accurate metadata only when credit is exhausted and data remains queued;
+receiver credit, connection caps, timeouts, TLS and authentication are preserved.
+The original Apple schema and RFC 9000 sections 4.1-4.2 were checked before
+the overlay edits. Production sources are unchanged.
+
+Local race-enabled tests observe eight notifications with a quiet peer and
+eight with an active peer, at the same 16,384-byte credit. Disabling server
+keepalive leaves exactly one notification. Each test then verifies 131,072
+resumed bytes and verifies notifications cease after transfer completion.
+Unchanged controls pass all three modes three times with one notification
+each. Race-enabled H1/H2/H3 64 MiB bidirectional transfers and early datagrams
+also pass. The completed native outcome below rejects this as a repair.
+
+Patched connection SHA256:
+`f8538cb15e4b04c39f7a1305b5a191a6eda1192f859c33ac5a9a1cbb150b1018`.
+
+Strict flow-control test SHA256:
+`ef77fb0fa351a0c45edb00376aa047153164def7a4ec9083d3878545e3bc8b00`.
+
+The blocked-duration overlay's complete Linux root-package race suite passes
+567 test/subtest events and 183 top-level tests in 499.852 seconds. One external
+E2E test is skipped, not passed. This is the diagnostic overlay, not a product
+change. Log SHA256:
+`b37cad4cff53f5463cfef7f53626e336d011cb09a8c8d3fafa127d09b13b9644`.
+
+Original idle-timer repeat 43503924416 on macOS 15 completes with failure.
+Control passes 96 cases / 336 samples / 48 exact rejections; periodic collects
+the same counts but one four-stream H3 case times out at 120.531 seconds.
+Peer MAX_DATA and summed offsets stay at 139,164,128 bytes for 80.297 seconds;
+the DATA_BLOCKED counter stays at 12. Source/overlay identities pass and free
+disk remains above 42.32 GiB. Independent periodic-arm H1/H2/H3 bulk-data
+subtests pass, but their parent test fails with one tunnel still open at its
+final assertion. This cleanup failure is retained and investigated separately;
+it is not relabeled a pass. Artifact 14075573887 ZIP SHA256:
+`ded70b5800fe5db9ddc0269eb333c798a57c47d38a012fbb6c0a871bc991e8e7`.
+
+## Large-transfer cleanup assertion
+
+The macOS 15 parent-test failure prompted an unchanged-server control. With
+GOMAXPROCS=4, 50 race-enabled repetitions pass. With GOMAXPROCS=1, 47 pass and
+three retain the original failure. A diagnostic observation added only after
+the failed assertion records the counter falling from one to zero after
+1.269, 1.164 and 1.152 ms. Each original failure remains a failure. This
+demonstrates that client close does not synchronize the server handler's
+deferred quota release. It does not retroactively measure cleanup duration
+in the native failure.
+
+Caddy follow-up `795912b` changes only TestLargeTransfers: wait at most two
+seconds for the counter to become zero, then retain the failure if it does
+not. The same single-worker race test passes 50/50 with the correction, and
+64 MiB bidirectional H1/H2/H3 integrity checks pass. Payload assertions and
+server runtime are unchanged. Apple Relay schema and RFC 9110 section 9.3.6
+were rechecked before editing. No native artifact is relabeled as passing;
+those artifacts use the earlier test. The current production inputs still
+match the native candidates; this one newer test file is recorded separately
+in the source correspondence manifest.
+
+The macOS 15 Go controls in both arms also retain the same UDP socket-buffer
+observation: requested 7,168 KiB, actual 6,144 KiB, initially 768 KiB. This is
+a measured platform limit relevant to interpreting loopback throughput, not
+an established cause of connection-credit exhaustion. No host socket limit
+is changed. Packet-loss declarations in a trace do not measure exact wire
+loss, and the earlier credit stalls include traces with no loss declarations.
+
+The macOS 27 repeat 43503936645 also completes with failure. Control passes
+96 cases / 336 samples / 48 exact rejections. Periodic has the same counts
+with two four-stream H3 timeouts at 120.886 and 120.706 seconds. Connection
+credit stays at 80,858,937 and 43,527,077 bytes for 80.307 and 80.359 seconds;
+DATA_BLOCKED counters stay at two and four. Both traces have zero recorded
+loss declarations, which does not prove zero wire loss. All six independent
+Go controls and all exact rejection controls pass, and all source/overlay
+identities match. Free disk remains above 32.53 GiB. Artifact 14076591929
+ZIP SHA256:
+`b0ad5dafc39c72432a3e067fc947294970377630226839733d450aa6e0a73325`.
+Together with the local active-peer reproduction and macOS 15 repeat, this
+rejects the original idle-timer experiment as a repair. The blocked-duration
+follow-up 43504865652 is evaluated separately below.
+
+## Final blocked-duration result
+
+Run 43504865652 completes with failure. Both arms collect 96 positive cases /
+336 samples / 48 exact rejection controls. Each arm has one four-stream H3
+download timeout: control 120.409 seconds and periodic 120.346 seconds. All
+six race-enabled independent Go controls pass, including quiet-peer, active-peer
+and disabled-keepalive credit/resumption controls, H1/H2/H3 bulk transfers and
+24 concurrent tunnels. All source, overlay, prepared-Go and binary identities
+match. Free disk stays above 32.54 GiB in each arm. Artifact 14077497664 ZIP
+SHA256:
+`c0ff110c6aa0b0055833edb0ba4f2d5988ad949c8b52942563019a22a1f95a23`.
+
+Control remains blocked at 70,837,980 bytes for 80.377 seconds with notification
+count four. The periodic arm stays at 118,468,148 bytes for 89.994 seconds,
+while its DATA_BLOCKED count grows from 11 to 16. All four data streams retain
+individual credit and have no FIN or STOP_SENDING before cancellation. No
+valid periodic case exceeds 4.147 seconds; there is no hidden slow recovery
+being counted as a success. The periodic blocked snapshots are preserved here:
+
+| UTC timestamp | DATA_BLOCKED count | Packets sent | Packets received | Largest sent 1-RTT | Largest ACKed 1-RTT |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 2026-11-13T21:08:10.490244Z | 11 | 84517 | 8704 | 84521 | 84521 |
+| 2026-11-13T21:08:20.456465Z | 12 | 84519 | 8704 | 84523 | 84521 |
+| 2026-11-13T21:08:40.583847Z | 14 | 84521 | 8707 | 84526 | 84526 |
+| 2026-11-13T21:08:50.458733Z | 15 | 84523 | 8707 | 84528 | 84526 |
+| 2026-11-13T21:09:10.609327Z | 15 | 84523 | 8709 | 84528 | 84528 |
+| 2026-11-13T21:09:20.464367Z | 16 | 84525 | 8709 | 84530 | 84528 |
+| 2026-11-13T21:09:40.483776Z | 16 | 84525 | 8711 | 84530 | 84530 |
+
+The send counter establishes repeated metadata emission, while peer credit
+remains unchanged. Aggregate largest-ACK values do not establish delivery of
+every preceding packet or explain receiver behavior. Zero recorded loss
+declarations do not prove zero wire loss. This experiment rejects repeated
+blocked notification at the tested interval as a repair for the reproduced
+stall. It is not promoted into product code. Sender credit limits, quotas and
+security policy remain intact. Why peer credit updates stop, native H2 UDP
+63-byte truncation, the Rust serial H2 performance concern and actual installed
+profile/iPhone/WAN acceptance remain open.

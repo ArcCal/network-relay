@@ -162,6 +162,13 @@ impl UdpSocket {
 pub trait Egress: Send + Sync + 'static {
     /// Looks up the addresses of `host`, a name (never an IP literal).
     fn resolve<'a>(&'a self, host: &'a str) -> IoFuture<'a, Vec<IpAddr>>;
+    /// Resolves within the caller's existing deadline, including time already
+    /// spent waiting for admission. An egress can use this to cache completed
+    /// timeout failures without treating caller cancellation as a DNS failure.
+    /// The caller still enforces the deadline if the egress does not use it.
+    fn resolve_until<'a>(&'a self, host: &'a str, _deadline: tokio::time::Instant) -> IoFuture<'a, Vec<IpAddr>> {
+        self.resolve(host)
+    }
     /// Opens a TCP connection to `peer`, an address the destination rules
     /// allow. The connection's peer address must be `peer`.
     fn connect_tcp(&self, peer: SocketAddr) -> IoFuture<'_, TcpStream>;

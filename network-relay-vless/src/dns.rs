@@ -18,8 +18,8 @@ use crate::dns_wire::decode_answer;
 use crate::transport::VlessStream;
 use crate::vless::Command;
 
-/// How long one resolver gets; the relay allows a lookup five seconds in
-/// all, so a second resolver still has time when the first does not answer.
+/// Upper bound for one resolver. The caller's deadline also bounds the
+/// whole lookup, including any admission wait before it starts.
 const PER_SERVER: Duration = Duration::from_millis(2500);
 /// Answers are cached for their TTL, but no longer than this.
 const MAX_TTL: Duration = Duration::from_secs(300);
@@ -46,6 +46,18 @@ enum Failure {
 impl Resolver {
     pub fn new(config: Arc<VlessConfig>) -> Self {
         Self { config, cache: Mutex::default() }
+    }
+
+    pub async fn lookup_until(&self, host: &str, deadline: tokio::time::Instant) -> io::Result<Vec<IpAddr>> {
+        match tokio::time::timeout_at(deadline, self.lookup(host)).await {
+            Ok(result) => result,
+            Err(_) => {
+                let error = io::Error::new(io::ErrorKind::TimedOut, "DNS lookup timed out");
+                let name = host.strip_suffix('.').unwrap_or(host).to_ascii_lowercase();
+                self.remember(name, Err(Arc::new(copy_error(&error))), FAILURE_TTL);
+                Err(error)
+            }
+        }
     }
 
     /// The addresses of `host`, in the configured family order. An empty
@@ -129,6 +141,11 @@ impl Resolver {
         }
         let now = Instant::now();
         let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
+        // A slower concurrent failure must not replace a fresh successful
+        // answer that completed while this lookup was still waiting.
+        if result.is_err() && cache.get(&name).is_some_and(|(found, expires)| found.is_ok() && *expires > now) {
+            return;
+        }
         if cache.len() >= CACHE_ENTRIES {
             cache.retain(|_, (_, expires)| *expires > now);
             if cache.len() >= CACHE_ENTRIES {
@@ -417,7 +434,7 @@ mod tests {
         };
         let resolver = Resolver::new(Arc::new(config));
         {
-            let lookup = resolver.lookup("victim.test");
+            let lookup = resolver.lookup_until("victim.test", tokio::time::Instant::now() + Duration::from_secs(5));
             tokio::pin!(lookup);
             tokio::select! {
                 result = &mut lookup => panic!("peer has not replied: {result:?}"),
@@ -426,6 +443,142 @@ mod tests {
         }
         assert!(resolver.cache.lock().unwrap().is_empty());
         tokio::time::timeout(Duration::from_secs(2), server).await.unwrap().unwrap();
+    }
+
+    // A real WebSocket/VLESS peer: all configured DNS destinations are quiet
+    // except the optional selected one. Read through Close on timed-out attempts.
+    async fn timeout_peer(
+        servers: u16,
+        answer: Option<(u16, Duration)>,
+    ) -> (Resolver, Arc<std::sync::atomic::AtomicUsize>, tokio::task::JoinHandle<()>) {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let requests = Arc::new(AtomicUsize::new(0));
+        let count = requests.clone();
+        let server = tokio::spawn(async move {
+            let mut connections = tokio::task::JoinSet::new();
+            loop {
+                tokio::select! {
+                    accepted = listener.accept() => {
+                        let (tcp, _) = accepted.unwrap();
+                        let count = count.clone();
+                        connections.spawn(async move {
+                            let mut ws = tokio_tungstenite::accept_async(tcp).await.unwrap();
+                            let header = ws.next().await.unwrap().unwrap().into_data();
+                            let destination = u16::from_be_bytes([header[19], header[20]]);
+                            let mut wire = Vec::new();
+                            let mut response = loop {
+                                if let WsMessage::Binary(bytes) = ws.next().await.unwrap().unwrap() {
+                                    wire.extend_from_slice(&bytes);
+                                }
+                                if wire.len() >= 2 {
+                                    let length = u16::from_be_bytes([wire[0], wire[1]]) as usize;
+                                    if wire.len() >= length + 2 {
+                                        break Message::from_vec(&wire[2..length + 2]).unwrap();
+                                    }
+                                }
+                            };
+                            count.fetch_add(1, Ordering::SeqCst);
+                            if let Some((index, delay)) = answer.filter(|(index, _)| destination == 53 + index) {
+                                assert!(index < servers);
+                                tokio::time::sleep(delay).await;
+                                response.metadata.message_type = MessageType::Response;
+                                response.add_answer(Record::from_rdata(
+                                    response.queries[0].name().clone(),
+                                    10,
+                                    RData::A(rdata::A("198.51.100.77".parse().unwrap())),
+                                ));
+                                let bytes = response.to_vec().unwrap();
+                                let mut frame = vec![0, 0];
+                                frame.extend_from_slice(&(bytes.len() as u16).to_be_bytes());
+                                frame.extend_from_slice(&bytes);
+                                ws.send(WsMessage::Binary(frame.into())).await.unwrap();
+                            }
+                            while let Some(Ok(message)) = ws.next().await {
+                                if matches!(message, WsMessage::Close(_)) {
+                                    let _ = ws.flush().await;
+                                    break;
+                                }
+                            }
+                        });
+                    }
+                    finished = connections.join_next(), if !connections.is_empty() => {
+                        finished.unwrap().unwrap();
+                    }
+                }
+            }
+        });
+        let config = VlessConfig {
+            server_host: "127.0.0.1".into(),
+            server_port: port,
+            user_id: UserId::parse("b4e4fad1-c320-428e-92dc-f8f6944a7dec").unwrap(),
+            path: "/ws".into(),
+            host_header: "vless.test".into(),
+            dns_servers: (53..53 + servers).map(|port| SocketAddr::from(([127, 0, 0, 1], port))).collect(),
+            ip_preference: IpPreference::Ipv4Only,
+        };
+        (Resolver::new(Arc::new(config)), requests, server)
+    }
+
+    #[tokio::test]
+    async fn silent_resolvers_cache_failure_at_the_relay_deadline() {
+        use network_relay::policy::{Policy, Refusal, Target};
+        use std::sync::atomic::Ordering;
+        let (resolver, requests, server) = timeout_peer(2, None).await;
+        let egress = crate::VlessEgress::new((*resolver.config).clone());
+        let policy = Policy::new(&network_relay::config::Relay::default());
+        let target = Target { host: "victim.test".into(), port: 443 };
+        let result =
+            tokio::time::timeout(Duration::from_secs(6), policy.resolve(&target, Some(&egress), async {})).await;
+        assert_eq!(result.unwrap(), Err(Refusal::DnsTimeout));
+        assert_eq!(requests.load(Ordering::SeqCst), 2);
+        let target = Target { host: "VICTIM.test.".into(), port: 443 };
+        for _ in 0..100 {
+            let cached =
+                tokio::time::timeout(Duration::from_millis(100), policy.resolve(&target, Some(&egress), async {}))
+                    .await;
+            assert_eq!(cached.unwrap(), Err(Refusal::DnsTimeout));
+        }
+        assert_eq!(requests.load(Ordering::SeqCst), 2, "cached timeouts must not requery");
+        server.abort();
+        let _ = server.await;
+    }
+
+    #[tokio::test]
+    async fn multiple_resolvers_do_not_shorten_a_healthy_first_attempt() {
+        let (resolver, _, server) = timeout_peer(8, Some((0, Duration::from_secs(1)))).await;
+        let deadline = tokio::time::Instant::now() + network_relay::policy::DNS_TIMEOUT;
+        let result = tokio::time::timeout_at(deadline, resolver.lookup_until("victim.test", deadline)).await;
+        assert_eq!(result.unwrap().unwrap(), vec!["198.51.100.77".parse::<IpAddr>().unwrap()]);
+        server.abort();
+        let _ = server.await;
+    }
+
+    #[tokio::test]
+    async fn a_timed_out_lookup_does_not_evict_a_concurrent_success() {
+        let (resolver, requests, server) = timeout_peer(1, None).await;
+        let deadline = tokio::time::Instant::now() + Duration::from_millis(200);
+        let success = async {
+            while requests.load(std::sync::atomic::Ordering::SeqCst) == 0 {
+                tokio::task::yield_now().await;
+            }
+            resolver.remember(
+                "victim.test".into(),
+                Ok(vec!["198.51.100.77".parse().unwrap()]),
+                Duration::from_secs(10),
+            );
+        };
+        let (result, ()) = tokio::time::timeout(Duration::from_secs(2), async {
+            tokio::join!(resolver.lookup_until("victim.test", deadline), success)
+        })
+        .await
+        .unwrap();
+        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::TimedOut);
+        assert_eq!(resolver.lookup("victim.test").await.unwrap(), vec!["198.51.100.77".parse::<IpAddr>().unwrap()]);
+        assert_eq!(requests.load(std::sync::atomic::Ordering::SeqCst), 1);
+        server.abort();
+        let _ = server.await;
     }
 
     async fn caching_peer(

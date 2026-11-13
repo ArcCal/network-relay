@@ -44,6 +44,10 @@ impl Egress for VlessEgress {
         Box::pin(self.resolver.lookup(host))
     }
 
+    fn resolve_until<'a>(&'a self, host: &'a str, deadline: tokio::time::Instant) -> IoFuture<'a, Vec<IpAddr>> {
+        Box::pin(self.resolver.lookup_until(host, deadline))
+    }
+
     fn connect_tcp(&self, peer: SocketAddr) -> IoFuture<'_, TcpStream> {
         Box::pin(async move {
             let stream = VlessStream::open(&self.config, Command::Tcp, peer).await?;

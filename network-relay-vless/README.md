@@ -97,7 +97,11 @@ restart (the program says so when it notices one).
   Completed lookup failures are cached for one second (RFC 9520), keeping
   their error distinct from NXDOMAIN/NODATA. The shared cache holds at most
   4096 names. Cancellation does not create a failure entry.
-  The relay allows a lookup five seconds; each resolver gets 2.5.
+  The relay allows a lookup five seconds, including its admission wait;
+  each resolver gets up to 2.5 seconds within that same deadline. A lookup
+  that reaches the deadline caches a one-second timeout failure. Cancelling
+  earlier or timing out before admission does not create a failure entry.
+  A slower concurrent failure never replaces a still-valid successful answer.
 - **Failures**: a VLESS server that refuses the connection or is down gives
   502; a timeout 504. Every tunnel needs the VLESS server; nothing is ever
   sent directly. At start the program sends one DNS query through the VLESS

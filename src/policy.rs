@@ -366,12 +366,13 @@ impl Policy {
         let addrs: Vec<SocketAddr> = match (target.ip(), egress) {
             (Some(ip), _) => vec![SocketAddr::new(ip, target.port)],
             (None, Some(egress)) => {
+                let deadline = tokio::time::Instant::now() + DNS_TIMEOUT;
                 let lookup = async {
                     let _held = permit.await;
                     if !egress.available() {
                         return Err(unavailable());
                     }
-                    let found = egress.resolve(&target.host).await;
+                    let found = egress.resolve_until(&target.host, deadline).await;
                     if !egress.available() {
                         return Err(unavailable());
                     }
@@ -380,7 +381,7 @@ impl Policy {
                         _ => Refusal::DnsError(e.to_string()),
                     })
                 };
-                match tokio::time::timeout(DNS_TIMEOUT, lookup).await {
+                match tokio::time::timeout_at(deadline, lookup).await {
                     Err(_) => return Err(Refusal::DnsTimeout),
                     Ok(found) => found?.into_iter().map(|ip| SocketAddr::new(ip, target.port)).collect(),
                 }
@@ -626,6 +627,7 @@ mod tests {
         struct TestEgress {
             replies: HashMap<&'static str, Reply>,
             calls: Mutex<Vec<String>>,
+            deadlines: Mutex<Vec<tokio::time::Instant>>,
             available: AtomicBool,
             active: AtomicUsize,
             started: tokio::sync::Notify,
@@ -636,6 +638,7 @@ mod tests {
                 Self {
                     replies: HashMap::new(),
                     calls: Mutex::default(),
+                    deadlines: Mutex::default(),
                     available: AtomicBool::new(true),
                     active: AtomicUsize::new(0),
                     started: tokio::sync::Notify::new(),
@@ -671,6 +674,11 @@ mod tests {
         }
 
         impl Egress for TestEgress {
+            fn resolve_until<'a>(&'a self, host: &'a str, deadline: tokio::time::Instant) -> IoFuture<'a, Vec<IpAddr>> {
+                self.deadlines.lock().unwrap().push(deadline);
+                self.resolve(host)
+            }
+
             fn resolve<'a>(&'a self, host: &'a str) -> IoFuture<'a, Vec<IpAddr>> {
                 Box::pin(async move {
                     self.calls.lock().unwrap().push(host.into());
@@ -791,6 +799,7 @@ mod tests {
             assert_eq!(none, Err(Refusal::DnsTimeout), "no permit, no lookup");
             assert_eq!(start.elapsed(), DNS_TIMEOUT);
             assert!(egress.calls().is_empty());
+            assert!(egress.deadlines.lock().unwrap().is_empty());
             let permits = Arc::new(tokio::sync::Semaphore::new(1));
             let permit = async {
                 tokio::time::sleep(Duration::from_secs(4)).await;
@@ -800,6 +809,7 @@ mod tests {
             assert_eq!(p.resolve(&t("slow.example", 80), Some(&egress), permit).await, Err(Refusal::DnsTimeout));
             assert_eq!(start.elapsed(), DNS_TIMEOUT);
             assert_eq!(egress.calls(), ["slow.example"]);
+            assert_eq!(*egress.deadlines.lock().unwrap(), [start + DNS_TIMEOUT]);
             assert_eq!(egress.active.load(Ordering::Relaxed), 0, "the abandoned lookup was dropped");
             assert_eq!(permits.available_permits(), 1, "and its permit released");
         }

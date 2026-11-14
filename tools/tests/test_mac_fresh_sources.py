@@ -205,14 +205,34 @@ class MacFreshSourceTests(unittest.TestCase):
 
 
     def test_linux_build_failure_preserves_successful_gui_artifacts_and_cleans_work(self):
+        self.check_all_target_export_and_cleanup(linux_failure=True)
+
+    @unittest.skipIf(os.geteuid() == 0, "read-only cache regression requires an unprivileged user")
+    def test_successful_all_target_build_cleans_readonly_caches_and_preserves_external_links(self):
+        self.check_all_target_export_and_cleanup(linux_failure=False)
+
+    def check_all_target_export_and_cleanup(self, *, linux_failure):
         # Exercise the real orchestrator, with simulated native inspection and
         # builds. This verifies artifact handling, not Mac signatures or builds.
         for name in ("build-all-targets-on-macos.sh", "build-macos-gui-clients-on-macos.sh"):
             shutil.copyfile(ROOT / name, self.remote / name)
         tag_commit = self.git("-C", str(self.remote), "rev-parse", "fixture-tag").strip()
+        linux_recipes = "lr_prepare_caddy() { echo 'fixture Linux build failure' >&2; return 37; }\n"
+        if not linux_failure:
+            linux_recipes = r'''
+lr_prepare_caddy() { :; }
+lr_build_rust() {
+    mkdir -p "$2/$3/release"
+    printf 'fixture executable\n' > "$2/$3/release/$5"
+    chmod 755 "$2/$3/release/$5"
+}
+lr_build_caddy() {
+    printf 'fixture executable\n' > "$work/caddy-network-relay-$1"
+    chmod 755 "$work/caddy-network-relay-$1"
+}
+'''
         (self.remote / "build-linux-servers-on-linux.sh").write_text(
-            f"LR_CLOUDFLARE_DNS_TAG=fixture-tag\nLR_CLOUDFLARE_DNS_COMMIT={tag_commit}\n"
-            "lr_prepare_caddy() { echo 'fixture Linux build failure' >&2; return 37; }\n")
+            f"LR_CLOUDFLARE_DNS_TAG=fixture-tag\nLR_CLOUDFLARE_DNS_COMMIT={tag_commit}\n" + linux_recipes)
         for name in ("network-relay-nf", "network-relay-rs"):
             folder = self.remote / name; folder.mkdir()
             (folder / "build-macos.sh").write_text(r'''#!/bin/bash
@@ -222,8 +242,13 @@ root=pathlib.Path(sys.argv[1]).parent
 label='NF' if root.name.endswith('-nf') else 'RS'
 keys=['RELAY_BUILD_WORK_ROOT','CARGO_HOME','RUSTUP_HOME','GOCACHE','GOMODCACHE','TMPDIR','HOMEBREW_CACHE','RELAY_FRESH_SOURCE_ROOT']
 pathlib.Path(os.environ['TEST_BUILD_ENV']).write_text(json.dumps({k:os.environ[k] for k in keys}))
-cache=pathlib.Path(os.environ['GOMODCACHE'])/'fixture';cache.mkdir(parents=True,exist_ok=True)
-(cache/'readonly.go').write_text('cached');cache.chmod(0o555)
+cache=pathlib.Path(os.environ['GOMODCACHE'])/'github.com/pkg/errors@v0.9.1'
+cache.mkdir(parents=True,exist_ok=True)
+cached=cache/'readonly.go'
+if not cached.exists():cached.write_text('cached');cached.chmod(0o444)
+cache.chmod(0o555);cache.parent.chmod(0o555);cache.parent.parent.chmod(0o555)
+link=pathlib.Path(os.environ['GOMODCACHE'])/'external-toolchain'
+if not link.is_symlink():link.symlink_to(os.environ['TEST_EXTERNAL_CACHE'],target_is_directory=True)
 app=root/'dist'/f'Network Relay {label}.app'
 binary=app/'Contents/MacOS/FixtureApp';binary.parent.mkdir(parents=True)
 binary.write_bytes(f'fixture {label} executable\n'.encode())
@@ -242,21 +267,40 @@ BUILD
         for url in ("https://github.com/ArcCal/caddy-network-relay.git", "https://github.com/caddy-dns/cloudflare.git"):
             self.git("config", "--file", str(self.config), "--add", f"url.{self.remote_url}.insteadOf", url)
         native = self.root / "native-tools.py"
-        native.write_text(r'''import json,os,pathlib,shutil,sys,zipfile
+        native.write_text(r'''import hashlib,json,os,pathlib,shutil,sys,zipfile
 tool=pathlib.Path(sys.argv[1]).name;args=sys.argv[2:]
 with open(os.environ['TEST_NATIVE_CALLS'],'a') as log:log.write(json.dumps([tool,args])+'\n')
 if tool=='plutil':print('FixtureApp')
-elif tool=='file':print('Mach-O 64-bit executable arm64')
+elif tool=='file':
+    path=args[-1]
+    if 'unknown-linux-musl' in path or pathlib.Path(path).name.startswith('caddy-network-relay-'):
+        arch='aarch64' if 'aarch64' in path or path.endswith('-arm64') else 'x86-64'
+        print('ELF 64-bit '+arch+' statically linked')
+    else:print('Mach-O 64-bit executable arm64')
 elif tool=='ditto':shutil.copytree(args[-2],args[-1])
 elif tool=='unzip':
     with zipfile.ZipFile(args[-1]) as archive:assert archive.testzip() is None
 elif tool=='codesign':
     assert pathlib.Path(args[-1]).exists()
     if '--verify' in args:assert '--strict' in args
+elif tool=='shasum':
+    if '--check' in args:
+        for line in pathlib.Path(args[-1]).read_text().splitlines():
+            expected,name=line.split('  ',1)
+            assert hashlib.sha256(pathlib.Path(name).read_bytes()).hexdigest()==expected
+    else:
+        assert args[:2]==['-a','256']
+        for name in args[2:]:print(hashlib.sha256(pathlib.Path(name).read_bytes()).hexdigest()+'  '+name)
+elif tool=='go' and args[:2]==['version','-m']:
+    print('\tpath\tgithub.com/arccal/caddy-network-relay/cmd/caddy')
+    for module,relative in [('github.com/caddy-dns/cloudflare','../cloudflare-src'),
+                            ('golang.org/x/net','./third_party/x-net'),
+                            ('github.com/quic-go/quic-go','./third_party/quic-go')]:
+        print('\tdep\t'+module+'\tv0.0.0\n\t=>\t'+relative+'\t(devel)')
 ''')
-        for name in ("plutil", "file", "ditto", "unzip", "codesign"):
+        for name in ("plutil", "file", "ditto", "unzip", "codesign", "shasum", "go"):
             self.tool(name, 'exec python3 "$TEST_NATIVE_TOOL" "$0" "$@"')
-        for name in ("go", "zig", "cargo-zigbuild"):
+        for name in ("zig", "cargo-zigbuild"):
             self.tool(name, "exit 0")
         self.tool("df", "printf 'Filesystem 1024-blocks Used Available Capacity Mounted\\nfixture 99999999 0 99999999 0%% /\\n'")
         toolchain = self.root / "installed-rust"
@@ -270,20 +314,36 @@ elif tool=='codesign':
                   'toolchain) mkdir -p "$RUSTUP_HOME/toolchains"; ln -s "$4" "$RUSTUP_HOME/toolchains/$3" ;; esac')
         caller_cache = self.root / "caller-cargo"; caller_cache.mkdir()
         (caller_cache / "sentinel").write_text("preserve")
+        external_cache = self.root / "external-readonly-cache"
+        external_cache.mkdir()
+        (external_cache / "sentinel").write_text("outside the build")
+        (external_cache / "sentinel").chmod(0o444)
+        external_cache.chmod(0o555)
         capture = self.root / "private-environment.json"
         native_calls = self.root / "native-calls.jsonl"
         output = self.root / "partial-artifacts"
         result = subprocess.run([BASH, str(ROOT / "build-all-targets-on-macos.sh"), "--output", str(output)],
                                 env=dict(self.env, TEST_INSTALLED_RUST=str(toolchain), TEST_BUILD_ENV=str(capture),
                                          TEST_NATIVE_TOOL=str(native), TEST_NATIVE_CALLS=str(native_calls),
-                                         CARGO_HOME=str(caller_cache)), capture_output=True, text=True, timeout=30)
+                                         CARGO_HOME=str(caller_cache), TEST_EXTERNAL_CACHE=str(external_cache)),
+                                capture_output=True, text=True, timeout=30)
         transcript = result.stdout + result.stderr
-        self.assertNotEqual(result.returncode, 0, transcript)
-        self.assertIn("FAILED (exit 37)", transcript)
+        if linux_failure:
+            self.assertNotEqual(result.returncode, 0, transcript)
+            self.assertIn("FAILED (exit 37)", transcript)
+            self.assertNotIn("All selected builds and artifact checks passed.", transcript)
+            self.assertIn("fixture Linux build failure", (output / "logs/linux-servers-both-architectures.log").read_text())
+        else:
+            self.assertEqual(result.returncode, 0, transcript)
+            self.assertIn("==> cleanup\n    ok", transcript)
+            self.assertIn("All selected builds and artifact checks passed.", transcript)
+            self.assertNotIn("Permission denied", transcript)
+            self.assertNotIn("Permission denied", (output / "logs/cleanup.log").read_text())
+            for arch in ("amd64", "arm64"):
+                for name in ("network-relay", "network-relay-cf-masque", "network-relay-vless", "network-relay-rs", "caddy-network-relay"):
+                    self.assertEqual((output / f"{name}-linux-{arch}").read_text(), "fixture executable\n")
         for label in ("nf", "rs"):
             self.assertIn(f"==> macos-network-relay-{label}\n    ok", transcript)
-        self.assertNotIn("All selected builds and artifact checks passed.", transcript)
-        self.assertIn("fixture Linux build failure", (output / "logs/linux-servers-both-architectures.log").read_text())
         values = json.loads(capture.read_text())
         work = Path(values["RELAY_BUILD_WORK_ROOT"])
         for key, value in values.items():
@@ -293,8 +353,11 @@ elif tool=='codesign':
         checkout = re.search(r"Temporary checkout: ([^\n]+)", result.stdout)[1]
         self.assertFalse(Path(checkout).exists())
         self.assertEqual((caller_cache / "sentinel").read_text(), "preserve")
-        self.assertFalse((output / "MANIFEST.txt").exists())
-        self.assertFalse((output / "SHA256SUMS").exists())
+        self.assertEqual((external_cache / "sentinel").read_text(), "outside the build")
+        self.assertEqual(external_cache.stat().st_mode & 0o777, 0o555)
+        self.assertEqual((external_cache / "sentinel").stat().st_mode & 0o777, 0o444)
+        self.assertEqual((output / "MANIFEST.txt").exists(), not linux_failure)
+        self.assertEqual((output / "SHA256SUMS").exists(), not linux_failure)
         calls = [json.loads(line) for line in native_calls.read_text().splitlines()] if native_calls.exists() else []
         for label in ("NF", "RS"):
             app = output / f"network-relay-{label.lower()}-macos-arm64.app"

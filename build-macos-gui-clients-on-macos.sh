@@ -604,7 +604,7 @@ rg_step manifest rg_manifest
 rg_require
 rg_step checksums rg_checksums
 rg_require
-rg_cleanup() { rm -rf -- "${work:?}"; rm -f -- "$output/.work"; }
+rg_cleanup() { relay_remove_build_work "${work:?}"; rm -f -- "$output/.work"; }
 rg_step cleanup rg_cleanup
 rg_require
 printf '\nAll selected builds and artifact checks passed.\nArtifacts: %s\n' "$output"

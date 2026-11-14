@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Successful Mac builds remove read-only Go module caches through the existing private-work cleanup helper, preventing a cleanup-only failure after artifacts and checksums have already passed. External toolchain links, artifacts and logs are preserved.
+
 - VLESS DNS preserves an already validated A or AAAA answer when the other family reaches the caller's shorter deadline. An expired budget does not start a query or create a cached failure.
 
 - VLESS DNS failures are cached when the relay's shared lookup deadline expires, including after an admission wait. Caller cancellation still does not cache a failure, and a late failed lookup cannot overwrite a fresh successful answer.

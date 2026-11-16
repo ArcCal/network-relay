@@ -1,0 +1,365 @@
+//! Public ABI lifetime, cancellation, fatal error and instance isolation.
+use network_relay_tun_core::*;
+use std::{
+    ffi::CString,
+    ptr,
+    time::{Duration, Instant},
+};
+
+const CONFIG: &str = r#"
+uri_template = "https://127.0.0.1/.well-known/masque/udp/{target_host}/{target_port}/"
+server_name = "nf.test.invalid"
+username = "test"
+password = "test-password-123"
+mode = "socks"
+transport = "auto"
+dns = ["192.0.2.80"]
+[socks]
+listen = ["127.0.0.1:1080"]
+"#;
+struct Instance(*mut Handle);
+impl Instance {
+    fn start() -> Self {
+        Self::start_with_level(2)
+    }
+    fn start_with_level(level: u32) -> Self {
+        let config = CString::new(CONFIG).unwrap();
+        let handle = unsafe { nf_start(config.as_ptr(), level) };
+        assert!(!handle.is_null());
+        Self(handle)
+    }
+    fn next(&self) -> (u32, u64, u64, Vec<u8>) {
+        let (kind, id, _, flags, data) = self.next_full();
+        (kind, id, flags, data)
+    }
+    fn next_full(&self) -> (u32, u64, u64, u64, Vec<u8>) {
+        let event = unsafe { nf_next_event(self.0) };
+        assert!(!event.is_null());
+        let value = unsafe { &*event };
+        let data = if value.len == 0 {
+            vec![]
+        } else {
+            unsafe { std::slice::from_raw_parts(value.data, value.len) }.to_vec()
+        };
+        let result = (value.kind, value.id, value.token, value.flags, data);
+        unsafe { nf_free_event(event) };
+        result
+    }
+    fn until(&self, kind: u32) -> (u32, u64, u64, Vec<u8>) {
+        for _ in 0..100 {
+            let event = self.next();
+            if event.0 == kind {
+                return event;
+            }
+            assert_ne!(event.0, 99, "unexpected runtime exit: {event:?}");
+        }
+        panic!("expected event {kind}")
+    }
+    fn input(&self, kind: u32, id: u64, flags: u64, data: &[u8]) -> bool {
+        unsafe { nf_input(self.0, kind, id, 0, flags, data.as_ptr(), data.len()) }
+    }
+    fn stop(&self) {
+        unsafe { nf_stop(self.0) }
+    }
+}
+impl Drop for Instance {
+    fn drop(&mut self) {
+        unsafe { nf_destroy(self.0) }
+    }
+}
+
+#[test]
+fn traffic_samples_start_at_zero_and_continue_while_native_initialization_waits() {
+    let core = Instance::start_with_level(0);
+    let initial = core.next_full();
+    assert_eq!(
+        initial,
+        (native::TRAFFIC, 0, 0, 0, 0u64.to_le_bytes().to_vec()),
+        "each run starts with an explicit zero payload sample"
+    );
+    // Leave LISTEN unanswered. The sampler must still run while native work
+    // is pending, and neither initialization nor elapsed time creates payload.
+    core.until(native::LISTEN);
+    let sample = core.next_full();
+    assert_eq!(
+        (sample.0, sample.1, sample.2, sample.3),
+        (native::TRAFFIC, 0, 0, 0)
+    );
+    let elapsed = u64::from_le_bytes(
+        sample
+            .4
+            .try_into()
+            .expect("elapsed time is exactly eight bytes"),
+    );
+    assert!(
+        elapsed >= 1_000_000_000,
+        "periodic sample arrived before one second"
+    );
+    core.stop();
+    assert_eq!(core.until(native::EXIT).2, 0);
+
+    let next_run = Instance::start_with_level(0);
+    assert_eq!(
+        next_run.next_full(),
+        (native::TRAFFIC, 0, 0, 0, 0u64.to_le_bytes().to_vec()),
+        "elapsed time and payload totals belong to one run"
+    );
+    next_run.stop();
+    assert_eq!(next_run.until(native::EXIT).2, 0);
+}
+
+#[test]
+fn a_full_event_queue_drops_traffic_samples_without_delaying_cancellation() {
+    let core = Instance::start_with_level(0);
+    core.until(native::LISTEN);
+    let bridge = unsafe { &*core.0 }.bridge.clone();
+    let mut queued = 0;
+    while bridge
+        .events
+        .try_send(native::Event {
+            kind: native::LOG,
+            id: 0,
+            token: 0,
+            flags: 0,
+            data: Default::default(),
+        })
+        .is_ok()
+    {
+        queued += 1;
+    }
+    assert!(queued > 0);
+    // Keep the queue full across the first periodic tick, then cancel while
+    // it is still full. An awaited telemetry send would prevent work teardown.
+    std::thread::sleep(Duration::from_millis(1100));
+    core.stop();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while !bridge.resources.lock().unwrap().is_empty() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    let released_without_draining = bridge.resources.lock().unwrap().is_empty();
+    // Always drain EXIT before asserting: even a failing implementation must
+    // be allowed to finish its reliable exit send before Instance is dropped.
+    let mut saw_traffic = false;
+    loop {
+        let event = core.next_full();
+        saw_traffic |= event.0 == native::TRAFFIC;
+        if event.0 == native::EXIT {
+            assert_eq!(event.3, 0);
+            break;
+        }
+    }
+    assert!(
+        released_without_draining,
+        "telemetry blocked cancellation behind a full event queue"
+    );
+    assert!(
+        !saw_traffic,
+        "a sample from a full queue must be skipped rather than queued for later"
+    );
+}
+
+#[test]
+fn quiet_logging_suppresses_info_without_losing_native_requests_or_exit() {
+    for level in [0, 1] {
+        let core = Instance::start_with_level(level);
+        let listener = core.until(8);
+        assert!(core.input(101, listener.1, 0, br#"{"local":"127.0.0.1:1080"}"#));
+        let quic = loop {
+            let event = core.next();
+            if event.0 == 20 {
+                assert!(
+                    !String::from_utf8_lossy(&event.3).contains(" INFO "),
+                    "quiet logging must suppress routine core output"
+                );
+            } else if event.0 == 2 {
+                break event;
+            } else {
+                assert_ne!(event.0, 99, "initialization unexpectedly exited");
+            }
+        };
+        assert!(core.input(104, quic.1, 1, b"certificate validation failed"));
+        let exit = core.until(99);
+        assert_eq!(exit.2, 1);
+        assert!(String::from_utf8_lossy(&exit.3).contains("certificate"));
+    }
+}
+
+#[test]
+fn cancelling_initialization_exits_and_discards_late_input() {
+    let core = Instance::start();
+    // This may run before the protocol thread installs the filter.
+    unsafe { nf_log_level(core.0, 4) };
+    let listener = core.until(8);
+    core.stop();
+    let exit = core.until(99);
+    assert_eq!(exit.2, 0);
+    assert!(!core.input(101, listener.1, 0, br#"{"local":"127.0.0.1:1080"}"#));
+}
+
+#[test]
+fn immediate_stop_always_exits_cleanly() {
+    // A stop can interrupt the native LISTEN request before it is emitted.
+    // That remains a clean stop, whichever ready select branch is polled first.
+    for attempt in 0..1000 {
+        let core = Instance::start();
+        core.stop();
+        let exit = core.until(99);
+        assert_eq!(
+            (exit.2, String::from_utf8_lossy(&exit.3).into_owned()),
+            (0, String::new()),
+            "attempt {attempt}"
+        );
+    }
+}
+
+#[test]
+fn stop_after_the_listener_is_ready_exits_cleanly_and_releases_it() {
+    for _ in 0..50 {
+        let core = Instance::start();
+        let listener = core.until(8);
+        assert!(core.input(101, listener.1, 0, br#"{"local":"127.0.0.1:1080"}"#));
+        core.stop();
+        let exit = core.until(99);
+        assert_eq!((exit.2, exit.3.as_slice()), (0, b"".as_slice()));
+        assert!(!core.input(101, listener.1, 0, br#"{"local":"127.0.0.1:1080"}"#));
+
+        let again = Instance::start();
+        let relisten = again.until(8);
+        assert!(again.input(101, relisten.1, 0, br#"{"local":"127.0.0.1:1080"}"#));
+        again.stop();
+        assert_eq!(again.until(99).2, 0);
+    }
+}
+
+#[test]
+fn listener_failure_stays_fatal_even_when_a_stop_follows() {
+    for stop_after_failure in [false, true] {
+        let core = Instance::start();
+        let listener = core.until(8);
+        assert!(core.input(104, listener.1, 2, b"address already in use"));
+        if stop_after_failure {
+            core.stop();
+        }
+        let exit = core.until(99);
+        assert_eq!(
+            exit.2, 1,
+            "a failed listener must not look like a clean stop"
+        );
+        assert!(String::from_utf8_lossy(&exit.3).contains("address already in use"));
+    }
+}
+
+#[test]
+fn one_instance_cannot_stop_another_and_level_changes_do_not_relisten() {
+    let old = Instance::start();
+    let new = Instance::start();
+    let previous = old.until(8);
+    let listener = new.until(8);
+    assert_eq!(
+        previous.1, listener.1,
+        "resource IDs belong to an instance, not a global socket table"
+    );
+    old.stop();
+    assert_eq!(old.until(99).2, 0);
+    unsafe { nf_log_level(new.0, 3) };
+    assert!(new.input(101, listener.1, 0, br#"{"local":"127.0.0.1:1080"}"#));
+    let quic = new.until(2);
+    let options: serde_json::Value = serde_json::from_slice(&quic.3).unwrap();
+    assert_eq!(options["host"], "127.0.0.1");
+    assert_eq!(options["port"], 443);
+    assert_eq!(options["server_name"], "nf.test.invalid");
+    new.stop();
+    assert_eq!(new.until(99).2, 0);
+}
+
+#[test]
+fn secure_handshake_failure_is_terminal_and_never_triggers_tcp_fallback() {
+    let core = Instance::start();
+    let listener = core.until(8);
+    assert!(core.input(101, listener.1, 0, br#"{"local":"127.0.0.1:1080"}"#));
+    let quic = core.until(2);
+    core.input(104, quic.1, 1, b"certificate validation failed");
+    let mut logs = Vec::new();
+    for _ in 0..100 {
+        let event = core.next();
+        assert_ne!(
+            event.0, 1,
+            "certificate failure must not be retried over TCP"
+        );
+        if event.0 == 20 {
+            logs.extend_from_slice(&event.3);
+        }
+        if event.0 == 99 {
+            assert_eq!(event.2, 1);
+            assert!(String::from_utf8_lossy(&event.3).contains("certificate"));
+            break;
+        }
+    }
+    let logs = String::from_utf8_lossy(&logs);
+    assert!(!logs.contains("test-password-123"));
+    assert!(!logs.contains("Basic dGVzdDo"));
+}
+
+#[test]
+fn invalid_and_null_abi_input_is_rejected_without_a_runtime() {
+    assert!(unsafe { nf_start(ptr::null(), 0) }.is_null());
+    for config in [
+        "not valid TOML",
+        "mode='system'",
+        "username='test'\npassword='secret'",
+    ] {
+        let value = CString::new(config).unwrap();
+        assert!(unsafe { nf_start(value.as_ptr(), 2) }.is_null());
+    }
+    assert!(!unsafe { nf_input(ptr::null_mut(), 101, 1, 0, 0, ptr::null(), 0) });
+    assert!(unsafe { nf_next_event(ptr::null_mut()) }.is_null());
+    unsafe {
+        nf_stop(ptr::null_mut());
+        nf_destroy(ptr::null_mut());
+        nf_free_event(ptr::null_mut());
+    }
+}
+
+#[test]
+fn data_input_abi_distinguishes_full_closed_and_invalid_without_changing_legacy_input() {
+    let core = Instance::start();
+    // Hold initialization at LISTEN: its receive channel is live and unread.
+    let listener = core.until(8);
+    let id = listener.1;
+    let chunk = b"native content";
+    assert_eq!(
+        unsafe { nf_input_data(ptr::null_mut(), id, chunk.as_ptr(), chunk.len()) },
+        3
+    );
+    assert_eq!(unsafe { nf_input_data(core.0, id, ptr::null(), 1) }, 3);
+    assert_eq!(unsafe { nf_input_data(core.0, id, chunk.as_ptr(), 0) }, 3);
+    let oversized = vec![0; 262145];
+    assert_eq!(
+        unsafe { nf_input_data(core.0, id, oversized.as_ptr(), oversized.len()) },
+        3
+    );
+    assert_eq!(
+        unsafe { nf_input_data(core.0, u64::MAX, chunk.as_ptr(), chunk.len()) },
+        1
+    );
+    assert_eq!(
+        unsafe { nf_input_data(core.0, id, chunk.as_ptr(), chunk.len()) },
+        0
+    );
+    assert_eq!(
+        unsafe { nf_input_data(core.0, id, chunk.as_ptr(), chunk.len()) },
+        2
+    );
+    assert!(!core.input(102, id, 0, chunk));
+    assert!(
+        !core.input(102, id, 1, b""),
+        "full legacy EOF is still rejected"
+    );
+    assert!(core.input(104, id, 4, b"original native failure"));
+    assert_eq!(
+        unsafe { nf_input_data(core.0, id, chunk.as_ptr(), chunk.len()) },
+        1
+    );
+    assert!(!core.input(102, id, 0, chunk));
+    assert_eq!(core.until(99).2, 1);
+}

@@ -1,0 +1,10 @@
+/research/
+/target/
+/Core/target/
+/.build/
+/dist/
+/.cargo/
+/.validation/
+/App/.build/
+/Host/target/
+/.toolchain/

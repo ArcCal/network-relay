@@ -1,0 +1,14 @@
+[package]
+name = "network-relay-tun-engine"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+tun2proxy = { path = "vendor/tun2proxy", default-features = false }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-util", "time", "signal"] }
+
+tun = { version = "0.8.14", features = ["async"] }
+libc = "0.2"

@@ -704,7 +704,8 @@ final class NativeClient {
     private func removePending(_ connection: NWConnection) { pendingConnections.removeValue(forKey: ObjectIdentifier(connection)) }
 }
 
-private struct NativeError: LocalizedError {
+// Shared by the native transport, host session and tunnel controller.
+struct NativeError: LocalizedError {
     let message: String
     init(_ message: String) { self.message = message }
     var errorDescription: String? { message }

@@ -34,6 +34,11 @@ final class HostSession: @unchecked Sendable {
                         guard FileManager.default.isExecutableFile(atPath: executable.path) else { throw NativeError("The bundled network helper is missing.") }
                         let child = Process(); child.executableURL = executable; child.arguments = ["control"]
                         let stdin = Pipe(), stdout = Pipe()
+                        // A missing or crashed helper must produce a catchable write
+                        // error, not SIGPIPE termination of the entire GUI process.
+                        guard fcntl(stdin.fileHandleForWriting.fileDescriptor, F_SETNOSIGPIPE, 1) != -1 else {
+                            throw NativeError("Cannot protect the helper control pipe against SIGPIPE.")
+                        }
                         child.standardInput = stdin; child.standardOutput = stdout; child.standardError = FileHandle.nullDevice
                         try child.run()
                         process = child; input = stdin.fileHandleForWriting; output = stdout.fileHandleForReading

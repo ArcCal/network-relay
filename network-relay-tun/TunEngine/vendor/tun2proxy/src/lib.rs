@@ -30,7 +30,6 @@ use tokio::{
 pub use tokio_util::sync::CancellationToken;
 use tproxy_config::is_private_ip;
 pub use tun::DEFAULT_MTU;
-use udp_stream::UdpStream;
 #[cfg(feature = "udpgw")]
 use udpgw::{UDPGW_KEEPALIVE_TIME, UDPGW_MAX_CONNECTIONS, UdpGwClientStream, UdpGwResponse};
 
@@ -288,7 +287,7 @@ async fn create_tcp_stream(socket_queue: &Option<Arc<SocketQueue>>, peer: Socket
     }
 }
 
-async fn create_udp_stream(socket_queue: &Option<Arc<SocketQueue>>, peer: SocketAddr) -> std::io::Result<UdpStream> {
+async fn create_udp_stream(socket_queue: &Option<Arc<SocketQueue>>, peer: SocketAddr) -> std::io::Result<UdpSocket> {
     match &socket_queue {
         None => {
             let bind_addr = match peer {
@@ -297,12 +296,12 @@ async fn create_udp_stream(socket_queue: &Option<Arc<SocketQueue>>, peer: Socket
             };
             let socket = UdpSocket::bind(bind_addr).await?;
             socket.connect(peer).await?;
-            UdpStream::from_tokio(socket, peer).await
+            Ok(socket)
         }
         Some(queue) => {
             let socket = queue.recv_udp(peer.ip().into()).await?;
             socket.connect(peer).await?;
-            UdpStream::from_tokio(socket, peer).await
+            Ok(socket)
         }
     }
 }
@@ -864,7 +863,9 @@ async fn handle_udp_associate_session(
         }
     };
 
-    let mut udp_server = create_udp_stream(&socket_queue, udp_addr).await?;
+    // Use send/recv on the connected socket. send_to on a connected UDP
+    // socket returns EISCONN on macOS; stream wrappers may call it internally.
+    let udp_server = create_udp_stream(&socket_queue, udp_addr).await?;
 
     let mut buf2 = [0_u8; 65536];
     loop {
@@ -888,12 +889,12 @@ async fn handle_udp_associate_session(
                     UdpHeader::new(0, s5addr).write_to_stream(&mut s5_udp_data)?;
                     s5_udp_data.extend_from_slice(buf1);
 
-                    udp_server.write_all(&s5_udp_data).await?;
+                    udp_server.send(&s5_udp_data).await?;
                 } else {
-                    udp_server.write_all(buf1).await?;
+                    udp_server.send(buf1).await?;
                 }
             }
-            len = udp_server.read(&mut buf2) => {
+            len = udp_server.recv(&mut buf2) => {
                 let len = len?;
                 if len == 0 {
                     break;

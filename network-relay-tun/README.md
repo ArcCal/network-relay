@@ -11,9 +11,11 @@ this directory. NF, RS, the servers and repository-wide build files are unchange
 No paid Apple developer account or Network Extension entitlement is required.
 
 **Validation status:** portable protocol, packet and recovery tests pass; the
-Rust helper and worker have been type-checked for Apple Silicon macOS. The Swift
-application, privileged installation, actual utun traffic and physical macOS
-network switching have not been executed in the current Linux environment.
+Rust helper and worker have been type-checked for Apple Silicon macOS. A supplied
+Mac build log confirms Swift production compilation and 71 passing model tests,
+but bundle verification failed on the former shell-script placement. The packaging
+correction still needs native verification. Privileged installation, actual utun
+traffic and physical macOS network switching remain unverified.
 Complete the native acceptance checklist before relying on system capture.
 
 ## Build and run
@@ -96,7 +98,7 @@ counted as passes. See [validation](docs/validation.md) for measured results and
 Disconnect, use Recover Network if needed, and quit the application. Then:
 
 ```sh
-sudo /bin/bash "dist/Network Relay Tun.app/Contents/Helpers/uninstall-helper.sh"
+sudo /bin/bash "dist/Network Relay Tun.app/Contents/Resources/uninstall-helper.sh"
 ```
 
 The uninstaller refuses to remove recovery resources while a journal remains.

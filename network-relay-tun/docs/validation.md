@@ -15,7 +15,8 @@ were executed. All fixtures and compiler outputs stayed within this project.
 | Vendored IP stack | 61 tests passed, including queue saturation and checksum rejection |
 | Isolation checks | 4 checks passed |
 | macOS Rust helper/worker | Cross-target type checking; no Apple SDK linking or execution |
-| Swift GUI/model build | Not executed: Swift and macOS SDK unavailable |
+| Swift GUI/model build | Supplied Mac log: production build and 71 model tests passed |
+| Application bundle signing | Supplied Mac log: failed on unsigned shell script in Helpers; corrected layout awaits native verification |
 | Privileged installation and real utun | Not executed |
 | Native Network.framework, WAN throughput, sleep/wake | Not executed |
 
@@ -42,3 +43,12 @@ or verified production throughput.
 Run `scripts/test-portable.sh` to reproduce the portable checks. Build and native
 acceptance instructions are in README.md and macos-acceptance.md. Development
 logs are retained locally under the ignored `.validation/` directory.
+
+The supplied Mac log after commit 9bba0ad confirms that the NativeError visibility
+fix allowed Swift compilation and all 71 model tests to pass. Strict bundle
+verification then rejected uninstall-helper.sh in Contents/Helpers. Shell scripts
+now live in Contents/Resources and are sealed by the outer bundle signature;
+Helpers retains only the separately signed native binaries. The GUI installer
+path and installer's sibling-binary lookup follow that layout. Strict verification
+remains enabled. This follows Apple's code/data placement guidance:
+https://developer.apple.com/library/archive/technotes/tn2206/_index.html

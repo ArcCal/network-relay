@@ -6,7 +6,7 @@ umask 077
 [[ $# == 1 && $1 =~ ^[0-9]+$ && $1 != 0 ]] || { echo 'Expected installing user UID' >&2; exit 1; }
 owner=$1
 /usr/bin/id -nu "$owner" >/dev/null
-source_dir=$(cd -- "$(dirname -- "$0")" && pwd)
+source_dir=$(cd -- "$(dirname -- "$0")/../Helpers" && pwd)
 root='/Library/Application Support/NetworkRelayTun'
 label='com.arccal.network-relay-tun.helper'
 plist="/Library/LaunchDaemons/$label.plist"

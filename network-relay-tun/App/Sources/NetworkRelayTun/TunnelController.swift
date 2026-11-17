@@ -198,7 +198,7 @@ final class TunnelController: ObservableObject {
     }
     func installHelper() {
         guard task == nil else { return }
-        let script = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/install-helper.sh").path
+        let script = Bundle.main.bundleURL.appendingPathComponent("Contents/Resources/install-helper.sh").path
         let command = "/bin/bash '" + script.replacingOccurrences(of: "'", with: "'\\''") + "' " + String(getuid())
         let escaped = command.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
         Task {

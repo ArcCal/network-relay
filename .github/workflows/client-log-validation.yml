@@ -1,0 +1,41 @@
+name: Verify log retention, visibility, native model tests and packaged clients
+'on':
+  push:
+    branches:
+    - audit/client-log-validation-20261120
+permissions:
+  contents: read
+jobs:
+  study:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner:
+        - macos-15
+        - xcode-27
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 65
+    steps:
+    - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      with:
+        persist-credentials: false
+    - name: Verify and benchmark the checked-in implementation
+      shell: bash
+      run: "set -euo pipefail\nmkdir \"$RUNNER_TEMP/evidence\"\nfor name in nf tun;\
+        \ do\n  case \"$name\" in nf) model=NetworkRelayNFModel;; tun) model=NetworkRelayTunModel;;\
+        \ esac\n  xcrun swiftc -O -parse-as-library \"network-relay-$name/App/Sources/$model/ClientLog.swift\"\
+        \ diagnostics/client-log/Validation.swift -o \"$RUNNER_TEMP/log-validation\"\
+        \n  \"$RUNNER_TEMP/log-validation\" > \"$RUNNER_TEMP/evidence/$name.txt\"\n\
+        done\n"
+    - name: Build and run both native client packages and all current component tests
+      if: matrix.runner == 'xcode-27'
+      shell: bash
+      run: "set -euo pipefail\nfor name in nf tun; do\n  bash \"network-relay-$name/build-macos.sh\"\
+        \ > \"$RUNNER_TEMP/evidence/$name-build.txt\" 2>&1 || { tail -60 \"$RUNNER_TEMP/evidence/$name-build.txt\"\
+        ; exit 1; }\ndone\n"
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      if: always()
+      with:
+        name: client-validation-${{ matrix.runner }}
+        path: ${{ runner.temp }}/evidence
+        retention-days: 7

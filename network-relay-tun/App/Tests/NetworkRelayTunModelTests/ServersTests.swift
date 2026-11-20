@@ -246,6 +246,29 @@ final class LogLevelTests: XCTestCase {
         }
     }
 
+    func testLevelPrefixUsesTheFirstOfFourWordsAndRequiresAMessage() {
+        let cases: [(String, LogLevel)] = [
+            ("  date zone source  TRACE   payload  ", .everything),
+            ("stamp WARN DEBUG body", .warnings),
+            ("DEBUG INFO", .detailed),
+            ("one two three four TRACE payload", .errors),
+            ("one two three DEBUG   ", .errors),
+            ("TRACE\tpayload", .errors),
+            ("tag\u{a0}DEBUG payload", .errors),
+            ("tag \u{301}DEBUG payload", .errors),
+            ("stamp INFO \u{1f680}", .normal),
+            ("UNKNOWN payload", .errors),
+        ]
+        for (line, minimum) in cases {
+            for setting in LogLevel.allCases {
+                XCTAssertEqual(setting.shows(line), setting.nativeValue >= minimum.nativeValue, line)
+            }
+            var log = ["INFO kept"]
+            appendClientLog([line], to: &log, limit: 1)
+            XCTAssertEqual(log, minimum.nativeValue >= LogLevel.detailed.nativeValue ? ["INFO kept"] : [line])
+        }
+    }
+
     func testLogCollectionFiltersAndIndependentNativeLevels() {
         XCTAssertEqual(LogLevel.allCases.map(\.nativeValue), [0, 1, 2, 3, 4])
     }

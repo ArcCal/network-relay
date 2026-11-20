@@ -10,8 +10,8 @@ public func appendClientLog(_ incoming: [String], to log: inout [String], limit:
     var excess = log.count - limit
     log = log.filter { line in
         guard excess > 0 else { return true }
-        let level = splitLogLine(line).level
-        if level == "TRACE" || level == "DEBUG" {
+        let level = messageLogLevel(line)
+        if level == .detailed || level == .everything {
             excess -= 1
             return false
         }
@@ -63,16 +63,24 @@ public enum Status: Equatable {
     }
 }
 
-/// The level and the message of a log line: a timestamp (three words in
-/// the protocol core's lines), the level, the message. The level is empty for
-/// other lines.
-func splitLogLine(_ line: String) -> (level: String, message: String) {
-    let fields = line.split(separator: " ", maxSplits: 5, omittingEmptySubsequences: true)
-    let levels = ["ERROR", "WARN", "INFO", "DEBUG", "TRACE"]
-    guard let at = fields.prefix(4).firstIndex(where: { levels.contains(String($0)) }), at < fields.count - 1 else {
-        return ("", line)
+/// Read only the level prefix. Unclassified lines are visible at every setting.
+private func messageLogLevel(_ line: String) -> LogLevel {
+    var rest = line[...].drop(while: { $0 == " " })
+    for _ in 0..<4 {
+        guard let end = rest.firstIndex(of: " ") else { break }
+        let field = rest[..<end]
+        rest = rest[end...].drop(while: { $0 == " " })
+        guard !rest.isEmpty else { break }
+        switch field {
+        case "ERROR": return .errors
+        case "WARN": return .warnings
+        case "INFO": return .normal
+        case "DEBUG": return .detailed
+        case "TRACE": return .everything
+        default: continue
+        }
     }
-    return (String(fields[at]), fields[(at + 1)...].joined(separator: " ").trimmingCharacters(in: .whitespaces))
+    return .errors
 }
 
 /// How much of the client's log the Log tab shows, and how much the client
@@ -102,16 +110,7 @@ public enum LogLevel: String, Codable, CaseIterable, Equatable {
     /// app's own and the errors the client prints before its log starts,
     /// are always shown.
     public func shows(_ line: String) -> Bool {
-        guard let rank = ["ERROR", "WARN", "INFO", "DEBUG", "TRACE"].firstIndex(of: splitLogLine(line).level) else {
-            return true
-        }
-        switch self {
-        case .errors: return rank <= 0
-        case .warnings: return rank <= 1
-        case .normal: return rank <= 2
-        case .detailed: return rank <= 3
-        case .everything: return true
-        }
+        self == .everything || messageLogLevel(line).nativeValue <= nativeValue
     }
 }
 

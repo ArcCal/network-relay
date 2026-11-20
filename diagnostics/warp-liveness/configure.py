@@ -12,7 +12,8 @@ def edit(path, old, new, count=1):
     path.write_text(source.replace(old,new))
 
 if mode=="production-keepalive":
-    edit("tests/support/warp_peer.rs", r"keepalive_secs = 1\nidle_timeout_secs = 30", r"keepalive_secs = 15\nidle_timeout_secs = 30")
+    anchor = "config.max_sockets = max_sockets.or(config.max_sockets);"
+    edit("tests/warp_matrix.rs", anchor, "config.keepalive_secs = 15;\n        "+anchor)
 elif mode=="application-heartbeat":
     edit("tests/support/persistent.rs", "tokio::time::interval(Duration::from_secs(10))",
          "tokio::time::interval(Duration::from_secs(3))", 2)

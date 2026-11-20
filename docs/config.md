@@ -211,9 +211,11 @@ The installers generate H2-only profiles. In native Apple Relay tests on
 macOS 15.8.2, macOS 27.2 and the iOS 27.2 simulator, a 63-byte UDP request
 sent over H2 failed before the Linux origin for both servers. A 64-byte
 request with a 63-byte reply passed. The same 63-byte requests and replies
-passed over H3. An H2-only profile is also an option for large TCP downloads
-that stall over H3. On macOS, Network Relay Tun in H2 mode carried 63-byte
-UDP payloads through its system-wide capture. [Measured paths](audit-2026-11-20.md).
+passed over H3. For large TCP downloads, both Macs completed four simultaneous
+64 MiB transfers using an H2-only profile with either Linux server. On the
+iOS simulator both servers had successful H2 groups and at least one group
+that exceeded 180 seconds or lost the connection. On macOS, Network Relay
+Tun in H2 mode carried 63-byte UDP payloads through its system-wide capture. [Measured paths](audit-2026-11-20.md).
 
 For a new profile, add `--no-http2` for H3 only or `--no-http3` for H2 only
 to the original profile-generation command, including its domain rules and

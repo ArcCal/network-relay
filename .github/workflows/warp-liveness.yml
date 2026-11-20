@@ -1,0 +1,42 @@
+name: Compare long-lived WARP flows under outer, application and inner TCP settings
+'on':
+  push:
+    branches: [audit/warp-liveness-alternatives-20261120]
+permissions:
+  contents: read
+jobs:
+  soak:
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 125
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-22.04-arm]
+        variant: [reference, production-keepalive, application-heartbeat, inner-reno]
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with: {persist-credentials: false}
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d
+        with: {toolchain: stable}
+      - name: Run finite controls and verify sustained authenticated traffic through both transports
+        shell: bash
+        env:
+          CARGO_PROFILE_TEST_DEBUG: '0'
+          CARGO_PROFILE_DEV_DEBUG: '0'
+          CARGO_INCREMENTAL: '0'
+          SOAK_SECONDS: '3900'
+          STUDY: ${{ matrix.variant }}
+        run: |
+          set -euo pipefail
+          python3 diagnostics/warp-liveness/configure.py "$STUDY"
+          cd network-relay-cf-masque
+          bash scripts/soak.sh
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: warp-3900-${{ matrix.variant }}-${{ matrix.runner }}
+          path: |
+            network-relay-cf-masque/target/evidence/soak-*.json
+            network-relay-cf-masque/target/evidence/soak-*.jsonl
+            network-relay-cf-masque/target/evidence/*independent*.json
+          retention-days: 7

@@ -33,6 +33,7 @@ final class NativeClient {
     private var trafficUnavailable = false
     private var pendingLogs: [String] = []
     private let runID: String
+    private let relayInterface: NWInterface?
     private let update: @MainActor (NativeUpdate) -> Void
 
     private final class TrustResult {
@@ -129,7 +130,8 @@ final class NativeClient {
         }
     }
 
-    init(configuration: String, level: LogLevel, id: UUID = UUID(), update: @escaping @MainActor (NativeUpdate) -> Void) throws {
+    init(configuration: String, level: LogLevel, id: UUID = UUID(), relayInterface: NWInterface? = nil, update: @escaping @MainActor (NativeUpdate) -> Void) throws {
+        self.relayInterface = relayInterface
         self.level = level; self.update = update; runID = String(id.uuidString.prefix(8))
         guard let core = configuration.withCString({ nf_start($0, level.nativeValue) }) else {
             throw NativeError("The native protocol core rejected the configuration.")
@@ -320,6 +322,7 @@ final class NativeClient {
         tcp.noDelay = true; tcp.connectionTimeout = 10; tcp.connectionDropTime = 30
         tcp.enableKeepalive = true; tcp.keepaliveIdle = 60; tcp.keepaliveInterval = 10; tcp.keepaliveCount = 3
         let parameters = NWParameters(tls: tls, tcp: tcp)
+        parameters.requiredInterface = relayInterface
         parameters.preferNoProxies = true
         let connection = NWConnection(host: options.endpointHost, port: .init(rawValue: options.port)!, using: parameters)
         connections[id] = Connection(connection, trust: trust)
@@ -376,6 +379,7 @@ final class NativeClient {
         quic.maxDatagramFrameSize = 0
         quic.maxUDPPayloadSize = 1472
         let parameters = NWParameters(quic: quic)
+        parameters.requiredInterface = relayInterface
         parameters.preferNoProxies = true
         let endpoint = NWEndpoint.hostPort(host: options.endpointHost, port: .init(rawValue: options.port)!)
         let native = NWConnectionGroup(with: NWMultiplexGroup(to: endpoint), using: parameters)

@@ -42,6 +42,9 @@ pub fn authenticate(stream: &UnixStream, owner: u32) -> Result<()> {
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     compile_error!("peer authentication is not implemented on this platform");
     ensure!(uid == owner, "unauthorized local peer");
+    // Darwin inherits O_NONBLOCK from the listener. Request framing uses
+    // blocking reads with a timeout, including between consecutive requests.
+    stream.set_nonblocking(false)?;
     stream.set_read_timeout(Some(Duration::from_secs(60)))?;
     stream.set_write_timeout(Some(Duration::from_secs(5)))?;
     Ok(())
@@ -112,5 +115,21 @@ mod peer_tests {
             assert_eq!(server.read_timeout().unwrap(), Some(Duration::from_secs(60)));
         }
         assert!(authenticate(&server, actual.saturating_add(1)).is_err());
+    }
+    #[test]
+    fn authentication_restores_blocking_reads_for_delayed_requests() {
+        let actual = unsafe { libc::geteuid() };
+        if actual == 0 {
+            return; // Root is intentionally not an eligible installed owner.
+        }
+        let (mut server, mut client) = UnixStream::pair().unwrap();
+        server.set_nonblocking(true).unwrap();
+        authenticate(&server, actual).unwrap();
+        let writer = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(100));
+            write_reply(&mut client, &Request::Status).unwrap();
+        });
+        assert!(matches!(read_request(&mut server).unwrap(), Request::Status));
+        writer.join().unwrap();
     }
 }

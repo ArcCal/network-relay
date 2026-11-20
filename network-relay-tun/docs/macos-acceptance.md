@@ -1,7 +1,9 @@
 # macOS acceptance
 
-These steps require a real Mac and a reachable existing Network Relay server.
-They are not automatically executed by the build or portable tests. Keep a local
+Run these field checks with a real Mac and a reachable Linux Network Relay
+server. The native CI counterpart covers codesigning, installed helper IPC,
+global capture with a controlled SOCKS peer, update and cleanup.
+[Native validation record](validation.md). Keep a local
 terminal available. Do not use a remote-only administration connection to test
 route changes. Retain logs locally; configuration and network snapshots can
 contain private information.
@@ -24,8 +26,9 @@ contain private information.
 
 1. Connect in H2 first, then repeat in H3 and Automatic. Require Prepared before
    capture, relay admission before Connected, and an assigned utun interface.
-2. Inspect routes: the relay IPv4 endpoint must retain a physical bypass while
-   public IPv4 and IPv6 destinations use capture. Check both split-default routes.
+2. Inspect routes. An IPv4 relay must retain its physical bypass. An IPv6 relay
+   must use the physical interface selected before capture, including on an
+   IPv6-only uplink. Check both split-default routes for each family.
    Document any LAN/scoped/more-specific exclusions instead of calling them leaks
    fixed by this implementation.
 3. Resolve public A and AAAA records with system APIs, explicit UDP DNS and TCP

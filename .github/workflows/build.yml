@@ -115,7 +115,7 @@ jobs:
           (cd dist && sha256sum $name.tar.gz > $name.tar.gz.sha256)
           echo "name=$name" >> "$GITHUB_OUTPUT"
       # The headless Network Relay RS client is its own Cargo workspace.
-      - name: Test Network Relay RS client (arm64 runs under qemu)
+      - name: Test Network Relay RS client on the target architecture
         run: cargo test --locked --release --manifest-path network-relay-rs/Cargo.toml -p network-relay-rs -p network-relay-rs-core --target ${{ matrix.target }}
       - name: Build Network Relay RS client
         run: |

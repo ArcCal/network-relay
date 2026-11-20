@@ -3,8 +3,8 @@
 #![cfg(target_os = "macos")]
 use crate::{
     broker::Backend,
-    network::{Network, SystemCommands, default_route},
-    protocol::Plan,
+    network::{Network, SystemCommands, route_snapshot},
+    protocol::{CaptureChanged, EndpointUnavailable, Plan},
 };
 use anyhow::{Context, Result, ensure};
 use std::{
@@ -27,6 +27,7 @@ pub struct MacBackend {
     device: Option<tun_rs::SyncDevice>,
     worker: Option<Child>,
     plan: Option<Plan>,
+    ipv6_uplink: Option<String>,
 }
 impl MacBackend {
     pub fn new(owner: u32) -> Result<Self> {
@@ -60,16 +61,7 @@ impl MacBackend {
             let current = unsafe { libc::if_nametoindex(name.as_ptr()) };
             network.reconcile_capture_interface(current);
         }
-        Ok(Self { network, owner, device: None, worker: None, plan: None })
-    }
-    fn endpoints(plan: &Plan) -> Result<Vec<Ipv4Addr>> {
-        plan.endpoints
-            .iter()
-            .map(|ip| match ip {
-                std::net::IpAddr::V4(ip) => Ok(*ip),
-                _ => anyhow::bail!("IPv6 relay endpoints are not yet supported; use a server IPv4 address"),
-            })
-            .collect()
+        Ok(Self { network, owner, device: None, worker: None, plan: None, ipv6_uplink: None })
     }
     fn launch_worker(&mut self, plan: &Plan) -> Result<()> {
         let meta = std::fs::symlink_metadata(WORKER)?;
@@ -126,11 +118,8 @@ impl MacBackend {
 }
 impl Backend for MacBackend {
     fn prepare(&mut self, plan: &Plan) -> Result<String> {
-        let endpoints = Self::endpoints(plan)?;
         ensure!(plan.resolvers.iter().all(|ip| ip.is_ipv4()), "use IPv4 DNS resolver addresses for this version");
-        let physical = default_route(&self.network.commands)?;
-        // Bypass precedes both native outer connection creation and capture.
-        self.network.endpoint_routes(&physical, &endpoints)?;
+        self.ipv6_uplink = self.network.relay_paths(&plan.endpoints, None, None).context(EndpointUnavailable)?;
         let device = tun_rs::DeviceBuilder::new().mtu(plan.mtu).associate_route(false).build_sync()?;
         let name = device.name()?;
         self.device = Some(device);
@@ -148,7 +137,7 @@ impl Backend for MacBackend {
         Ok(name)
     }
     fn activate(&mut self, plan: &Plan, interface: &str) -> Result<()> {
-        self.refresh()?;
+        self.refresh(None)?;
         self.network.tunnel_routes(interface)?;
         self.network.tunnel_routes_v6(interface)?;
         let resolvers: Vec<_> = plan
@@ -157,14 +146,20 @@ impl Backend for MacBackend {
             .filter_map(|ip| if let std::net::IpAddr::V4(ip) = ip { Some(*ip) } else { None })
             .collect();
         self.network.dns(&resolvers)?;
-        Ok(())
+        self.refresh(Some(interface))
     }
-    fn refresh(&mut self) -> Result<()> {
+    fn ipv6_uplink(&self) -> Option<&str> {
+        self.ipv6_uplink.as_deref()
+    }
+    fn refresh(&mut self, active_interface: Option<&str>) -> Result<()> {
         let worker = self.worker.as_mut().context("packet worker is absent")?;
         ensure!(worker.try_wait()?.is_none(), "packet worker exited");
         let plan = self.plan.as_ref().context("capture is not prepared")?;
-        let physical = default_route(&self.network.commands)?;
-        self.network.endpoint_routes(&physical, &Self::endpoints(plan)?)?;
+        let table = active_interface.map(|_| route_snapshot(&self.network.commands)).transpose()?;
+        if let (Some(interface), Some(snapshot)) = (active_interface, table.as_deref()) {
+            self.network.verify_active(interface, snapshot).context(CaptureChanged)?;
+        }
+        self.network.relay_paths(&plan.endpoints, table.as_deref(), self.ipv6_uplink.as_deref())?;
         Ok(())
     }
     fn cleanup(&mut self) -> Result<()> {
@@ -177,6 +172,7 @@ impl Backend for MacBackend {
         }
         self.device = None;
         self.plan = None;
+        self.ipv6_uplink = None;
         result
     }
 }

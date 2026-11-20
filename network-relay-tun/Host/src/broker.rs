@@ -9,8 +9,12 @@ pub trait Backend {
     fn prepare(&mut self, plan: &Plan) -> Result<String>;
     /// Install capture and DNS only after the application reports relay readiness.
     fn activate(&mut self, plan: &Plan, interface: &str) -> Result<()>;
-    /// Discover physical paths and refresh owned bypasses without client commands.
-    fn refresh(&mut self) -> Result<()>;
+    /// The outer IPv6 connection must bind to this interface before capture.
+    fn ipv6_uplink(&self) -> Option<&str> {
+        None
+    }
+    /// Check capture ownership only after activation.
+    fn refresh(&mut self, active_interface: Option<&str>) -> Result<()>;
     /// Restore only owned state. Preserve failed operations in a durable journal.
     fn cleanup(&mut self) -> Result<()>;
 }
@@ -27,6 +31,7 @@ pub struct Status {
     pub state: State,
     pub interface: Option<String>,
     pub lease: Option<String>,
+    pub ipv6_uplink: Option<String>,
 }
 struct Session {
     plan: Plan,
@@ -50,6 +55,7 @@ impl<B: Backend> Broker<B> {
             state: self.state.clone(),
             interface: self.session.as_ref().map(|s| s.interface.clone()),
             lease: self.session.as_ref().map(|s| s.lease.clone()),
+            ipv6_uplink: self.session.as_ref().and_then(|_| self.backend.ipv6_uplink().map(str::to_owned)),
         }
     }
     fn check_lease(&self, lease: &str) -> Result<()> {
@@ -120,7 +126,8 @@ impl<B: Backend> Broker<B> {
             Request::Refresh { lease } => {
                 self.check_lease(&lease)?;
                 ensure!(matches!(self.state, State::Prepared | State::Active), "recovery required");
-                if let Err(error) = self.backend.refresh() {
+                let active = self.session.as_ref().filter(|_| self.state == State::Active);
+                if let Err(error) = self.backend.refresh(active.map(|s| s.interface.as_str())) {
                     // No persistent kill switch: restore capture if physical
                     // bypass maintenance fails, retaining recovery failures.
                     if let Err(recovery) = self.cleanup() {
@@ -164,7 +171,7 @@ mod tests {
             ensure!(!self.fail_activate, "injected capture failure");
             Ok(())
         }
-        fn refresh(&mut self) -> Result<()> {
+        fn refresh(&mut self, _: Option<&str>) -> Result<()> {
             ensure!(!self.fail_refresh, "physical path unavailable");
             Ok(())
         }

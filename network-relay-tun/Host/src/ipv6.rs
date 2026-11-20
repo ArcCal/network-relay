@@ -1,7 +1,8 @@
 //! Ownership checks for IPv6 capture routes. IPv6 service settings stay intact.
-use crate::network::Commands;
-use anyhow::{Result, ensure};
+use crate::network::{Commands, route_fields};
+use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
+use std::net::Ipv6Addr;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -24,9 +25,34 @@ pub fn snapshot(commands: &dyn Commands) -> Result<String> {
     commands.run("/usr/sbin/netstat", &["-rn".into(), "-f".into(), "inet6".into()], None)
 }
 
+/// The kernel selects the IPv6 uplink before capture. During capture ask for
+/// the route scoped to the same interface as the outer Network.framework socket.
+pub fn endpoint_interface(commands: &dyn Commands, address: Ipv6Addr, scope: Option<&str>) -> Result<String> {
+    let mut args = vec!["-n".into(), "get".into(), "-inet6".into()];
+    if let Some(interface) = scope {
+        args.extend(["-ifscope".into(), interface.into()]);
+    }
+    args.push(address.to_string());
+    let fields = route_fields(&commands.run("/sbin/route", &args, None)?);
+    let interface = fields.get("interface").context("IPv6 route has no interface")?;
+    let flags = fields.get("flags").context("IPv6 route has no flags")?;
+    let mut flags = flags.trim_matches(['<', '>']).split(',');
+    ensure!(
+        flags.clone().any(|f| f == "UP")
+            && !flags.any(|f| matches!(f, "REJECT" | "BLACKHOLE" | "LOCAL"))
+            && !interface.starts_with("utun")
+            && !interface.starts_with("lo")
+            && !interface.is_empty()
+            && interface.bytes().all(|b| b.is_ascii_alphanumeric())
+            && scope.is_none_or(|expected| interface == expected),
+        "IPv6 relay has no usable physical interface"
+    );
+    Ok(interface.clone())
+}
+
 /// Require a recognized header, unique exact prefix and unscoped route.
 /// A default or more-specific route is never mistaken for our capture route.
-pub fn interface_for<'a>(table: &'a str, prefix: &str) -> Result<Option<&'a str>> {
+fn capture_row<'a>(table: &'a str, prefix: &str) -> Result<Option<(&'a str, &'a str)>> {
     let mut columns = None;
     let mut found = None;
     for line in table.lines() {
@@ -52,16 +78,25 @@ pub fn interface_for<'a>(table: &'a str, prefix: &str) -> Result<Option<&'a str>
             continue;
         }
         ensure!(found.is_none(), "ambiguous IPv6 capture route");
-        found = Some(fields[interface]);
+        found = Some((fields[interface], fields[flags]));
     }
     ensure!(columns.is_some(), "missing IPv6 route table header");
     Ok(found)
 }
 
+pub fn interface_for<'a>(table: &'a str, prefix: &str) -> Result<Option<&'a str>> {
+    Ok(capture_row(table, prefix)?.map(|(interface, _)| interface))
+}
+
+pub fn owns_capture(table: &str, prefix: &str, interface: &str) -> Result<bool> {
+    Ok(capture_row(table, prefix)?
+        .is_some_and(|(name, flags)| name == interface && flags.contains('U') && !flags.contains(['G', 'B', 'R'])))
+}
+
 pub fn remove_owned(commands: &dyn Commands, route: &CaptureRoute) -> Result<()> {
     route.validate()?;
     let table = snapshot(commands)?;
-    if interface_for(&table, &route.destination)? != Some(route.interface.as_str()) {
+    if !owns_capture(&table, &route.destination, &route.interface)? {
         return Ok(());
     }
     commands.run(
@@ -105,6 +140,9 @@ mod tests {
             ("::/1 utun9 US utun9\n", 0),
             ("::/1 utun8 US utun8\n", 1),
             ("::/1 utun8 USI utun8\n", 0),
+            ("::/1 fe80::1 UGS utun8\n", 0),
+            ("::/1 utun8 UR utun8\n", 0),
+            ("::/1 utun8 UB utun8\n", 0),
         ] {
             let commands = Fake {
                 table: format!("Routing tables\nInternet6:\nDestination Gateway Flags Netif Expire\n{rows}"),

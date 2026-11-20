@@ -7,6 +7,12 @@ final class NetworkChanges {
     private let queue = DispatchQueue(label: "com.arccal.network-relay-tun.path")
     private var previousPath: String?
 
+    func physicalInterface(named name: String) -> NWInterface? {
+        monitor.currentPath.availableInterfaces.first {
+            $0.name == name && [.wifi, .wiredEthernet, .cellular].contains($0.type)
+        }
+    }
+
     init(_ changed: @escaping @MainActor () -> Void) {
         monitor.pathUpdateHandler = { [weak self] path in
             guard let self else { return }
@@ -14,7 +20,7 @@ final class NetworkChanges {
             // Ignore changes caused solely by our own utun capture routes.
             // The privileged heartbeat separately checks physical gateways.
             let physical = path.availableInterfaces.filter { $0.type == .wifi || $0.type == .wiredEthernet || $0.type == .cellular }
-                .map { "\($0.name):\($0.index)" }.sorted().joined(separator: ",")
+                .map { "\($0.name):\($0.index)" }.joined(separator: ",")
             let signature = "\(path.status):\(physical)"
             let previous = previousPath
             previousPath = signature

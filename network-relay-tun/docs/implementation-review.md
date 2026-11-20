@@ -37,8 +37,12 @@ root-owned packet worker. Only descriptor 3, MTU and the local SOCKS port cross
 that boundary. The worker clears supplementary groups and runs as the installing
 user. It cannot configure routes. Parent-pipe EOF cancels its lifetime.
 
-After native admission the GUI activates capture and transient DNS, then sends
-regular refreshes. Stop, failed activation, failed path refresh, control EOF and
+Before preparation the GUI checks both installed executables and the running
+helper's control revision. An IPv6 relay uses the kernel-selected physical
+interface for the outer connection. After native admission the GUI activates
+capture and transient DNS. During refresh the helper compares both families'
+split routes and its own DNS dictionary with the installed state. Stop, failed
+activation, failed path refresh, control EOF and
 helper restart attempt owned-state cleanup. A failed cleanup preserves its
 journal and RecoveryRequired state. Quit awaits restoration. Journal boot UUIDs
 prevent a previous boot's ephemeral state from deleting a reused interface's
@@ -71,5 +75,7 @@ operations.
 - GUI stop now queries actual helper state and retries recovery, rather than
   declaring success based only on a cached lease that may have disappeared.
 
-Tests cover these changes, but do not establish native macOS packet delivery,
-physical network switching, GUI build success or production performance.
+The native runner built and signed the GUI, used the installed helper and
+verified real IPv4/IPv6 TCP, UDP and DNS capture, update and restoration.
+Physical network switching, sleep/wake and production throughput still need
+field measurements. [Native run](https://github.com/ArcCal/network-relay/actions/runs/44746108048).

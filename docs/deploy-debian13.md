@@ -72,7 +72,7 @@ After installation, install **the same** mobileconfig on the iPhone/iPad/Mac. Do
 
 The extracted installer's import command above does not rewrite the supplied profile. To replace an old dual-protocol or HTTP/3-only profile with an HTTP/2-only profile, add `--refresh-profile --profile-out /root/iphone-http2.mobileconfig`, then install the new output on the device. This reuses the imported credentials and generates the combined routing list described above. The standalone installers enable refresh automatically. An installed profile keeps its previous transport settings until the new profile is installed.
 
-To compare H2 and H3 without regenerating the routing list, use a private copy of the installed profile. Native Apple H2 lost 63-byte outgoing UDP requests in runner tests. H2 completed large transfers on paths where H3 stalled. [Transport selection and observed limits](config.md#choosing-a-transport-for-an-existing-apple-profile).
+To compare H2 and H3 without regenerating the routing list, use a private copy of the installed profile. Native Apple H2 lost 63-byte outgoing UDP requests in runner tests. H2 completed large transfers on paths where H3 stalled. [Transport selection and observed limits](https://github.com/ArcCal/network-relay/blob/main/docs/config.md#choosing-a-transport-for-an-existing-apple-profile).
 
 ## No pre-generated mobileconfig
 

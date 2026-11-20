@@ -86,9 +86,11 @@ restart (the program says so when it notices one).
   receipt. Payloads over 8190 bytes are dropped, as Xray-core does not pass
   larger ones back. The tested mihomo and sing-box versions pass empty
   datagrams; Xray-core v26.10.31 discards them in its own reader/writers.
-- **Names**: looked up with DNS over TCP to `dns_servers`, each lookup over
-  its own VLESS connection, A and AAAA pipelined; answers are cached for
-  their TTL, including CNAMEs (at most five minutes). Unrelated answer
+- **Names**: looked up with DNS over TCP to `dns_servers`. Concurrent callers
+  can share a pending lookup for the same name and resolver configuration.
+  Each attempt uses its own VLESS connection and pipelines A and AAAA.
+  A zero-TTL answer applies only to the active transaction. Other answers are
+  cached for their TTL, including CNAMEs (at most five minutes). Unrelated answer
   records are ignored. A usable answer is retained if the other address
   family fails or times out; waiting does not renew the answer's TTL. Names
   never reach this host's resolver. NXDOMAIN and NODATA are cached only

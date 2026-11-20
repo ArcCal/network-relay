@@ -1,8 +1,10 @@
 //! Name lookups through the VLESS server: DNS over TCP (RFC 1035 section
-//! 4.2.2, RFC 7766) to the configured resolvers, each lookup over its own
-//! VLESS connection. Names never reach this host's resolver, and the relay
-//! checks the addresses found against its destination rules as usual.
+//! 4.2.2, RFC 7766) to the configured resolvers. Concurrent callers can
+//! share a pending lookup for the same name. Each upstream attempt uses a
+//! separate VLESS connection. The relay checks the returned addresses against
+//! its destination rules. Names never reach this host's resolver.
 
+use std::collections::HashMap;
 use std::io;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, Mutex};
@@ -12,6 +14,7 @@ use hickory_proto::op::{Message, MessageType, OpCode, Query, ResponseCode};
 use hickory_proto::rr::{DNSClass, Name, RData, RecordType};
 use indexmap::IndexMap;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::sync::broadcast;
 
 use crate::config::VlessConfig;
 use crate::dns_wire::decode_answer;
@@ -40,6 +43,7 @@ struct CacheEntry {
 struct DnsCache {
     entries: IndexMap<String, CacheEntry>,
     hand: usize,
+    pending: HashMap<String, broadcast::Sender<Lookup>>,
 }
 
 impl DnsCache {
@@ -77,6 +81,35 @@ impl DnsCache {
             }
         }
         self.entries.insert(name, CacheEntry { result, expires, referenced: false });
+    }
+}
+
+/// One active DNS transaction. Removing it closes the channel on cancellation,
+/// so another waiting caller can take over using its own remaining time.
+struct PendingLookup<'a> {
+    cache: &'a Mutex<DnsCache>,
+    name: Option<&'a str>,
+}
+
+impl PendingLookup<'_> {
+    fn remove(&mut self) -> Option<broadcast::Sender<Lookup>> {
+        let name = self.name.take()?;
+        self.cache.lock().unwrap_or_else(|e| e.into_inner()).pending.remove(name)
+    }
+
+    fn complete(mut self, result: &io::Result<Vec<IpAddr>>) {
+        // Remove before publishing. Only callers that joined this transaction
+        // may consume its outcome, including an answer with a zero TTL.
+        if let Some(sender) = self.remove().filter(|sender| sender.receiver_count() != 0) {
+            let shared = result.as_ref().cloned().map_err(|error| Arc::new(copy_error(error)));
+            let _ = sender.send(shared);
+        }
+    }
+}
+
+impl Drop for PendingLookup<'_> {
+    fn drop(&mut self) {
+        self.remove();
     }
 }
 
@@ -120,8 +153,10 @@ impl Resolver {
             Err(_) => {
                 self.advance_after_timeout(&order);
                 let error = io::Error::new(io::ErrorKind::TimedOut, "DNS lookup timed out");
-                let name = host.strip_suffix('.').unwrap_or(host).to_ascii_lowercase();
-                self.remember(name, Err(Arc::new(copy_error(&error))), FAILURE_TTL);
+                if order.active.is_some() {
+                    let name = host.strip_suffix('.').unwrap_or(host).to_ascii_lowercase();
+                    self.remember(name, Err(Arc::new(copy_error(&error))), FAILURE_TTL);
+                }
                 Err(error)
             }
         }
@@ -159,10 +194,40 @@ impl Resolver {
 
     async fn lookup_ordered(&self, host: &str, order: &mut LookupOrder) -> io::Result<Vec<IpAddr>> {
         let name = host.strip_suffix('.').unwrap_or(host).to_ascii_lowercase();
-        let now = Instant::now();
-        if let Some(result) = self.cache.lock().unwrap_or_else(|e| e.into_inner()).get(&name, now) {
-            return result.clone().map_err(|error| copy_error(&error));
+        let pending = loop {
+            let mut receiver = {
+                let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
+                if let Some(result) = cache.get(&name, Instant::now()) {
+                    return result.clone().map_err(|error| copy_error(&error));
+                }
+                if let Some(sender) = cache.pending.get(&name) {
+                    sender.subscribe()
+                } else {
+                    // A caller with a nearly exhausted admission budget must
+                    // not impose a shorter resolver attempt on later callers.
+                    if cache.pending.len() >= CACHE_ENTRIES
+                        || order
+                            .deadline
+                            .is_some_and(|end| end.saturating_duration_since(tokio::time::Instant::now()) < PER_SERVER)
+                    {
+                        break None;
+                    }
+                    cache.pending.insert(name.clone(), broadcast::channel(1).0);
+                    break Some(PendingLookup { cache: &self.cache, name: Some(&name) });
+                }
+            };
+            if let Ok(answer) = receiver.recv().await {
+                return answer.map_err(|error| copy_error(&error));
+            }
+        };
+        let result = self.lookup_uncached(&name, order).await;
+        if let Some(pending) = pending {
+            pending.complete(&result);
         }
+        result
+    }
+
+    async fn lookup_uncached(&self, name: &str, order: &mut LookupOrder) -> io::Result<Vec<IpAddr>> {
         let fqdn = Name::from_ascii(format!("{name}."))
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "not a valid DNS name"))?;
         let mut last = io::Error::new(io::ErrorKind::TimedOut, "no resolver answered");
@@ -183,14 +248,14 @@ impl Resolver {
                 Ok((mut addrs, ttl)) => {
                     self.prefer(index);
                     self.config.ip_preference.apply(&mut addrs);
-                    self.remember(name, Ok(addrs.clone()), ttl);
+                    self.remember(name.to_owned(), Ok(addrs.clone()), ttl);
                     return Ok(addrs);
                 }
                 Err(Failure::Final(e, ttl)) => {
                     if e.kind() == io::ErrorKind::NotFound {
                         self.prefer(index);
                     }
-                    self.remember(name, Err(Arc::new(copy_error(&e))), ttl);
+                    self.remember(name.to_owned(), Err(Arc::new(copy_error(&e))), ttl);
                     return Err(e);
                 }
                 Err(Failure::Retry(e)) => {
@@ -200,7 +265,7 @@ impl Resolver {
             }
         }
         if order.active.is_some() {
-            self.remember(name, Err(Arc::new(copy_error(&last))), FAILURE_TTL);
+            self.remember(name.to_owned(), Err(Arc::new(copy_error(&last))), FAILURE_TTL);
         }
         Err(last)
     }
@@ -563,6 +628,15 @@ mod tests {
         servers: u16,
         answer: Option<(u16, Duration)>,
     ) -> (Resolver, Arc<std::sync::atomic::AtomicUsize>, tokio::task::JoinHandle<()>) {
+        delayed_peer(servers, answer, 10, None).await
+    }
+
+    async fn delayed_peer(
+        servers: u16,
+        answer: Option<(u16, Duration)>,
+        ttl: u32,
+        gate: Option<Arc<tokio::sync::Semaphore>>,
+    ) -> (Resolver, Arc<std::sync::atomic::AtomicUsize>, tokio::task::JoinHandle<()>) {
         use std::sync::atomic::{AtomicUsize, Ordering};
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
@@ -575,6 +649,7 @@ mod tests {
                     accepted = listener.accept() => {
                         let (tcp, _) = accepted.unwrap();
                         let count = count.clone();
+                        let gate = gate.clone();
                         connections.spawn(async move {
                             let mut ws = tokio_tungstenite::accept_async(tcp).await.unwrap();
                             let header = ws.next().await.unwrap().unwrap().into_data();
@@ -594,18 +669,23 @@ mod tests {
                             count.fetch_add(1, Ordering::SeqCst);
                             if let Some((index, delay)) = answer.filter(|(index, _)| destination == 53 + index) {
                                 assert!(index < servers);
+                                if let Some(gate) = gate {
+                                    gate.acquire().await.unwrap().forget();
+                                }
                                 tokio::time::sleep(delay).await;
                                 response.metadata.message_type = MessageType::Response;
                                 response.add_answer(Record::from_rdata(
                                     response.queries[0].name().clone(),
-                                    10,
+                                    ttl,
                                     RData::A(rdata::A("198.51.100.77".parse().unwrap())),
                                 ));
                                 let bytes = response.to_vec().unwrap();
                                 let mut frame = vec![0, 0];
                                 frame.extend_from_slice(&(bytes.len() as u16).to_be_bytes());
                                 frame.extend_from_slice(&bytes);
-                                ws.send(WsMessage::Binary(frame.into())).await.unwrap();
+                                if ws.send(WsMessage::Binary(frame.into())).await.is_err() {
+                                    return; // A caller may have cancelled its transaction.
+                                }
                             }
                             while let Some(Ok(message)) = ws.next().await {
                                 if matches!(message, WsMessage::Close(_)) {
@@ -631,6 +711,68 @@ mod tests {
             ip_preference: IpPreference::Ipv4Only,
         };
         (Resolver::new(Arc::new(config)), requests, server)
+    }
+
+    #[tokio::test]
+    async fn overlapping_lookups_share_one_transaction_even_when_the_ttl_is_zero() {
+        use std::sync::atomic::Ordering;
+        let (resolver, requests, server) = delayed_peer(1, Some((0, Duration::from_millis(35))), 0, None).await;
+        let queries = (0..32).map(|i| resolver.lookup(if i % 2 == 0 { "burst.test" } else { "BURST.Test." }));
+        let expected: IpAddr = "198.51.100.77".parse().unwrap();
+        for answer in futures_util::future::join_all(queries).await {
+            assert_eq!(answer.unwrap(), [expected]);
+        }
+        assert_eq!(requests.load(Ordering::SeqCst), 1);
+        assert!(resolver.cache.lock().unwrap().pending.is_empty());
+        assert_eq!(resolver.lookup("burst.test").await.unwrap(), [expected]);
+        assert_eq!(requests.load(Ordering::SeqCst), 2);
+        server.abort();
+        let _ = server.await;
+    }
+
+    async fn wait_for_dns_state(mut ready: impl FnMut() -> bool) {
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while !ready() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_waiter_deadline_and_leader_cancellation_do_not_poison_other_callers() {
+        use std::sync::atomic::Ordering;
+        let gate = Arc::new(tokio::sync::Semaphore::new(0));
+        let (resolver, requests, server) = delayed_peer(1, Some((0, Duration::ZERO)), 10, Some(gate.clone())).await;
+        let resolver = Arc::new(resolver);
+        let leader = tokio::spawn({
+            let resolver = resolver.clone();
+            async move { resolver.lookup("busy.test").await }
+        });
+        wait_for_dns_state(|| requests.load(Ordering::SeqCst) == 1).await;
+        let deadline = tokio::time::Instant::now() + Duration::from_millis(10);
+        assert_eq!(resolver.lookup_until("busy.test", deadline).await.unwrap_err().kind(), io::ErrorKind::TimedOut);
+        assert!(resolver.cache.lock().unwrap().entries.is_empty());
+        assert_eq!(*resolver.preferred.lock().unwrap(), (0, 0));
+        let follower = tokio::spawn({
+            let resolver = resolver.clone();
+            async move { resolver.lookup("BUSY.test.").await }
+        });
+        wait_for_dns_state(|| {
+            resolver.cache.lock().unwrap().pending.get("busy.test").is_some_and(|s| s.receiver_count() != 0)
+        })
+        .await;
+        leader.abort();
+        assert!(leader.await.unwrap_err().is_cancelled());
+        wait_for_dns_state(|| requests.load(Ordering::SeqCst) == 2).await;
+        gate.add_permits(2);
+        let address: IpAddr = "198.51.100.77".parse().unwrap();
+        assert_eq!(tokio::time::timeout(Duration::from_secs(2), follower).await.unwrap().unwrap().unwrap(), [address]);
+        assert_eq!(requests.load(Ordering::SeqCst), 2);
+        assert!(resolver.cache.lock().unwrap().pending.is_empty());
+        server.abort();
+        let _ = server.await;
     }
 
     #[tokio::test]

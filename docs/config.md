@@ -205,6 +205,34 @@ For example, to relay only `api.example.com` while letting the user turn the rel
 network-relay profile --host relay.example.com --user iphone --match-fqdn api.example.com --ui-toggle-enabled true
 ```
 
+### Choosing a transport for an existing Apple profile
+
+The installers generate H2-only profiles. In native Apple Relay tests on
+macOS 15.8.2, macOS 27.2 and the iOS 27.2 simulator, a 63-byte UDP request
+sent over H2 failed before the Linux origin for both servers. A 64-byte
+request with a 63-byte reply passed. The same 63-byte requests and replies
+passed over H3. An H2-only profile is also an option for large TCP downloads
+that stall over H3. On macOS, Network Relay Tun in H2 mode carried 63-byte
+UDP payloads through its system-wide capture. [Measured paths](audit-2026-11-20.md).
+
+For a new profile, add `--no-http2` for H3 only or `--no-http3` for H2 only
+to the original profile-generation command, including its domain rules and
+authentication options. To keep the settings from an existing unsigned
+single-hop Rust or Caddy profile, use the following command from the Network Relay checkout.
+
+```sh
+python3 tools/select-apple-relay-transport.py h3 device.mobileconfig device-h3.mobileconfig
+```
+
+The copy uses the selected transport's URL when present. With a single URL,
+it uses that exact host, port and template for the selected transport. Choose
+H3 on a relay and network that support QUIC at that endpoint. The copy keeps
+the profile and payload identifiers, routing rules, credentials, certificates
+and pins. Its destination must be new and is created with mode 0600. Install
+or redeploy the copy through the same channel as the original, applying the
+usual signing step if required. The original file can be redeployed to restore
+the previous transport. Use `h2` to produce an H2-only copy.
+
 ### `network-relay check`
 
 Tests a running relay the way a device would: on each of HTTP/3, HTTP/2 and HTTP/1.1 it tests TCP once (fetching a web page through a CONNECT request) and UDP once (a DNS query through CONNECT-UDP), then confirms that CONNECT without a password gets 404. Exits with 0 when everything passes.

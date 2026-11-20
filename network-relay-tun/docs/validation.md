@@ -1,5 +1,17 @@
 # Validation record
 
+## November 20, 2026
+
+The macOS 27 package passed 74 Swift tests. A real helper update and repeated
+captures preserved the physical service while TUN installed its own split
+routes and DNS. Across eight backend/transport/Linux architecture combinations,
+ordinary system sockets completed 48 TCP exchanges, 144 UDP echoes and 24 DNS
+questions. All eight restored the resolver, split routes and endpoint bypass.
+Hardware sleep/wake, physical network transitions and WAN throughput remain
+unmeasured. [Package tests](../../docs/performance-alternatives-2026-11-20.md#native-nf-and-tun-ui-log-retention) and [system-wide capture and restoration](../../docs/audit-2026-11-20.md#system-wide-tun-checks-against-linux).
+
+## Earlier helper and packet tests
+
 The portable suite ran on Linux with Rust 1.99.1. The native suite ran on
 Apple Silicon, macOS 27.0.1, Xcode 27.1 and Swift 6.4. The disposable Mac
 installed the real helper and tested network changes. The application and its

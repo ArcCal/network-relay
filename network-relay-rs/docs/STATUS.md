@@ -3,6 +3,14 @@
 Revision: 0.1.0 development, 2026-10-12. This is an independent Rust application.
 NF observations are reference evidence; they are not RS test results.
 
+## November 20, 2026 macOS validation
+
+The AppKit timer polls for new state every 150 ms. It refilters and rebuilds
+the log text only when the retained records or the selected severity change.
+The 120-tick comparison measured log processing separately from drawing.
+The macOS package and the production H2/H3 transport were exercised against
+both Linux server binaries. [Log timer measurements](../../docs/performance-alternatives-2026-11-20.md#native-rs-log-timer) and [interoperability results](../../docs/audit-2026-11-20.md#clients-and-interoperability).
+
 ## Status meanings
 
 **Implemented** means the code exists. **PASS** requires a recorded executed

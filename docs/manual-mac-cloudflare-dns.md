@@ -491,6 +491,8 @@ network-relay profile \
 
 **Always include `--no-http3` in this manual workflow.** The one-click installers add it automatically, but the low-level `profile` command still advertises both HTTP versions by default. This option removes `HTTP3RelayURL` and retains `HTTP2RelayURL`, selecting HTTP/2 over TLS/TCP for the device-to-relay transport. It does not disable UDP application forwarding through CONNECT-UDP, nor does it disable HTTP/3 on the server.
 
+For a comparison after installing, the offline profile helper can select H3 on a copy while preserving credentials and domain rules. UDP 443 must be reachable. [Measured transport differences and copy procedure](config.md#choosing-a-transport-for-an-existing-apple-profile).
+
 Inspect the generated plist:
 
 ```bash

@@ -1,5 +1,13 @@
 # Validation record
 
+## November 20, 2026 native Linux runs
+
+On both Linux x86-64 and arm64, 155 ordinary CF tests and 487 smoltcp tests
+with the production features passed. The queued TCP response completed after
+a half-close when the peer reopened its window. Separate 65-minute tests
+kept six TCP and six UDP flows alive per runner against a local WARP peer.
+Public Cloudflare operation still needs a live test. [Full suites and soaks](../../docs/audit-2026-11-20.md#cf-masque-sustained-traffic) and [slow-reader controls](../../docs/performance-alternatives-2026-11-20.md#one-second-delay-at-the-end-of-a-warp-tcp-response).
+
 ## November 13, 2026 local follow-up
 
 The exact production-feature vendor suite passes 484 tests. The broader and

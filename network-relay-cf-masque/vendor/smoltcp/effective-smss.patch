@@ -2400,7 +2400,7 @@ index b1500e1..bcf0ee9 100644
              Self::HopByHopIcmpv6(_, _) => unreachable!(),
              #[cfg(all(feature = "proto-ipv4", feature = "multicast"))]
 diff --git a/src/socket/tcp.rs b/src/socket/tcp.rs
-index 4ea9cc6..1612081 100644
+index 4ea9cc6..6035f94 100644
 --- a/src/socket/tcp.rs
 +++ b/src/socket/tcp.rs
 @@ -517,9 +517,13 @@ pub struct Socket<'a> {
@@ -2515,7 +2515,7 @@ index 4ea9cc6..1612081 100644
          reply_repr.ack_number = Some(self.remote_seq_no + self.rx_buffer.len());
          self.remote_last_ack = reply_repr.ack_number;
  
-@@ -1667,6 +1699,11 @@ impl<'a> Socket<'a> {
+@@ -1667,17 +1699,21 @@ impl<'a> Socket<'a> {
      ) -> Option<(IpRepr, TcpRepr<'static>)> {
          debug_assert!(self.accepts(cx, ip_repr, repr));
  
@@ -2527,7 +2527,11 @@ index 4ea9cc6..1612081 100644
          // Consider how much the sequence number space differs from the transmit buffer space.
          let (sent_syn, sent_fin) = match self.state {
              // In SYN-SENT or SYN-RECEIVED, we've just sent a SYN.
-@@ -1677,7 +1714,6 @@ impl<'a> Socket<'a> {
+             State::SynSent | State::SynReceived => (true, false),
+-            // In FIN-WAIT-1, LAST-ACK, or CLOSING, we've just sent a FIN.
++            // These states reserve FIN sequence space even while earlier data is unsent.
+             State::FinWait1 | State::LastAck | State::Closing => (false, true),
+             // In all other states we've already got acknowledgements for
              // all of the control flags we sent.
              _ => (false, false),
          };
@@ -2645,7 +2649,15 @@ index 4ea9cc6..1612081 100644
                  self.remote_last_ack = Some(repr.seq_number);
                  self.remote_has_sack = repr.sack_permitted;
                  self.remote_win_scale = repr.window_scale;
-@@ -2120,11 +2158,19 @@ impl<'a> Socket<'a> {
+@@ -2113,18 +2151,26 @@ impl<'a> Socket<'a> {
+
+             (State::CloseWait, TcpControl::None) => {}
+
+-            // ACK packets in LAST-ACK state change it to CLOSED.
++            // Only an ACK covering our FIN closes a socket in LAST-ACK.
+             (State::LastAck, TcpControl::None) => {
+                 if ack_of_fin {
+                     // Clear the remote endpoint, or we'll send an RST there.
                      self.set_state(State::Closed);
                      self.tuple = None;
                  } else if ack_len == 0 {

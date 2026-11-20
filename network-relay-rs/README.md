@@ -12,14 +12,12 @@ live in `network-relay-rs/`. Building it does not require another application's
 source or change the parent relay server. Its bundle identifier and private
 settings store are separate from Network Relay NF.
 
-**Development status:** the production Rust transport passes real local
-network-relay and caddy-network-relay TCP/UDP matrices for HTTP/1.1, HTTP/2 and
-HTTP/3, plus separate Automatic fallback and 125-second HTTP/3 stability checks.
-[STATUS.md](docs/STATUS.md) links exact versions and evidence. A Linux test does
-not establish that the macOS GUI has launched or looks identical. Actual Mac
-GUI, packaging and long running remote-server acceptance remain explicit release
-gates. Complete compatibility is an acceptance requirement, not a claim based
-on one connection.
+The production Rust transport passed local TCP/UDP checks over HTTP/1.1,
+HTTP/2 and HTTP/3, Automatic fallback and 125-second H3 holds. The macOS
+arm64 package built. RS on macOS carried hash-checked TCP and UDP echoes
+over H2/H3 through Rust and Caddy on Linux x86-64 and arm64. GUI appearance
+and sustained performance on the user's WAN still need separate checks.
+[Implementation status](docs/STATUS.md) and [cross-architecture tests](../docs/performance-alternatives-2026-11-20.md#product-connection-reuse-and-application-concurrency).
 
 - [Design and independence](docs/DESIGN.md)
 - [Application and protocol specification](docs/SPEC.md)

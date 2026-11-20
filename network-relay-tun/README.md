@@ -6,14 +6,15 @@ unprivileged packet worker translates IPv4/IPv6 TCP and UDP into the application
 loopback SOCKS service. A narrowly scoped root helper owns utun, routes and
 transient system DNS configuration.
 
-All source, vendored code, dependency locks, tests and build outputs belong to
-this directory. NF, RS, the servers and repository-wide build files are unchanged.
-No paid Apple developer account or Network Extension entitlement is required.
+The app, helper, dependency locks, tests and build are self-contained in this
+directory. Building and running it requires no paid Apple developer account
+or Network Extension entitlement.
 
-On macOS 27.0.1, revision `e6e4eb6` passed 71 Swift tests, strict app and
-helper signature verification, authenticated helper installation, utun worker
-startup and restoration after preparation. See the [validation record](docs/validation.md)
-for results and the remaining device and network-switching checks.
+A disposable Mac installed and updated the signed helper. System sockets
+carried IPv4/IPv6 TCP, UDP and DNS through both Linux servers over H2 and
+H3. All eight combinations restored the split routes, resolver and relay
+endpoint bypass on stop. Physical handover and sleep/wake still need device
+tests. [Validation record](docs/validation.md).
 
 ## Build and run
 

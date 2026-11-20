@@ -13,7 +13,7 @@ WARP variant, troubleshooting and test evidence](docs/USER_GUIDE.md).
 - User name and password authentication. Anyone visiting your domain without the password sees only an ordinary website.
 - Needs iOS / iPadOS 17, macOS 14 or later.
 
-> **Current status**: the server has been tested end to end on all three HTTP versions with curl, quic-go's masque-go client and the built-in self-check tool, and has automated tests. **It has not yet been systematically verified on real iPhones and Macs.** If you run into problems, read [Common pitfalls](#common-pitfalls-read-these) and [Troubleshooting](#troubleshooting) first.
+> The Linux x86-64 and arm64 server was tested with independent HTTP clients, the macOS NF, RS and TUN clients, and Apple's per-session Relay API on macOS and the iOS simulator. A profile installed on a physical iPhone or Mac on the user's WAN still needs field measurements. [Server, client and interoperability results](docs/audit-2026-11-20.md) and [performance comparisons](docs/performance-alternatives-2026-11-20.md).
 
 This project and [masque-vpn](https://github.com/ArcCal/masque-vpn) are two independent projects: masque-vpn is a full-device CONNECT-IP VPN that needs its own client; this one uses a feature built into Apple's operating systems and needs no client.
 
@@ -65,7 +65,7 @@ All of these happened in real deployments.
 
 | Pitfall | Consequence | How to avoid it |
 |---|---|---|
-| **Cloud firewall does not allow UDP 443** | HTTP/3 fails, devices fall back to HTTP/2, which is a bit slower; `check` fails only the two HTTP/3 lines | Add **UDP** 443 in the cloud provider's console. Many clouds open only TCP by default. On AWS Lightsail it is the instance's "Networking" tab, and both the IPv4 and IPv6 tables need the rule; on Vultr check whether the instance is attached to a "Firewall Group"; on Oracle Cloud edit the security list |
+| **Cloud firewall does not allow UDP 443** | The HTTP/3 checks fail. A profile with an HTTP/2 URL can still reach the relay over TCP 443 | Add **UDP** 443 in the cloud provider's console. Many clouds open only TCP by default. On AWS Lightsail it is the instance's "Networking" tab, and both the IPv4 and IPv6 tables need the rule; on Vultr check whether the instance is attached to a "Firewall Group"; on Oracle Cloud edit the security list |
 | **Cloud firewall does not allow TCP 80** | Certificate request fails (`Timeout during connect (likely firewall problem)`), and the certificate cannot be renewed automatically later | Keep TCP 80 open **permanently**, not just while requesting the certificate |
 | The server's own firewall (ufw, nftables, iptables) blocks the ports | Same as above | The one-step install opens the ports automatically when ufw is active; your own nftables/iptables rules need TCP 80, TCP 443 and UDP 443 opened by hand. Some images (Oracle Cloud's Ubuntu, for example) ship iptables rules that allow only port 22 |
 | **Cloudflare's orange cloud (proxy) is on** | The relay does not work at all, and opening the domain in a browser does not show your website | The DNS record must be **gray cloud (DNS only)** |
@@ -836,7 +836,8 @@ journalctl -u network-relay -n 50 --no-pager -o cat
 
 | Symptom | Cause and fix |
 |---|---|
-| `check` shows `✗` only on the two HTTP/3 lines | UDP 443 is not allowed (cloud firewall or server firewall). Devices switch to HTTP/2, which also works |
+| `check` shows `✗` only on the two HTTP/3 lines | Check UDP 443 on the host, at the provider and on the device network. A profile with an H2 URL can use TCP 443 |
+| A profile works but large downloads stall or small UDP requests disappear | Compare the same endpoint over H2 and H3. Native H2 lost 63-byte outgoing UDP requests in the runner tests. Some native H3 bulk downloads stalled or advanced slowly. [How to compare transports without changing credentials or routing](docs/config.md#choosing-a-transport-for-an-existing-apple-profile) |
 | `check` fails everywhere, with `QUIC handshake` / `TCP connect` timeouts | The relay is not running (`systemctl is-active network-relay`), or the ports are not open |
 | `check` says `answered like a plain website` | Wrong user name or password; configuration changed without a reload; the user is not in the configuration |
 | `certificate not valid for name` | The name given to `--server` differs from the one on the certificate |
@@ -910,7 +911,7 @@ A device usually keeps just one HTTP/3 connection to the relay, carrying many re
 - According to Apple, the relay applies to connections made through the system networking frameworks (URLSession, Network.framework); programs with their own network stack or that use low-level sockets directly may bypass it. It is not a VPN: ICMP (ping) and the like do not go through the relay.
 - TCP supports only classic CONNECT. The draft [draft-ietf-httpbis-connect-tcp](https://datatracker.ietf.org/doc/draft-ietf-httpbis-connect-tcp/) (`:protocol = connect-tcp`) is not implemented yet; Apple's documentation currently says the CONNECT method is used.
 - Client certificates are self-signed and pinned by fingerprint; there is no CA or revocation list (remove the `[[user]]` or let it expire instead). Profiles are not signed by the program (see [docs/config.md](docs/config.md#network-relay-profile) for signing one with openssl).
-- The server runs only on Linux (`check` and `profile` also build and run on a Mac).
+- The supported server platforms are Linux x86-64 and arm64. The `check` and `profile` commands can also run on a Mac.
 
 ## Standards followed
 
@@ -994,6 +995,6 @@ cargo test
 - **In-process integration tests** (`tests/in_process.rs`): a real relay and client in one process, over real TLS, QUIC and TCP on the loopback interface, relaying to local TCP and UDP services. They cover TCP and UDP on all three HTTP versions, bulk data and half-close, seeing the website with a wrong password, blocklists and port restrictions, Proxy-Status when the target is unreachable, dropping connections after a user is deleted, the connection limits overall, per user and per address, per-user byte rates, idle connections, client certificates, the server's own addresses, QUIC path MTU growth, and early datagrams. With `NETWORK_RELAY_TEST_EGRESS=loopback cargo test --test in_process` every tunnel instead goes through an egress (the `egress` interface network-relay-cf-masque uses for WARP), which leads back to the loopback interface; a few further tests cover what only an egress does.
 - **Independent interoperability tests**: after `cargo build --locked`, run `python3 tests/interop/run.py` with Go 1.26.x, OpenSSL and curl on PATH. It starts a temporary trusted-TLS relay and local targets, runs the existing quic-go/masque-go H3 client and applicable curl H1/H2 checks, then cleans up. CI runs the same fixture; H2 checks explicitly report NOT APPLICABLE when curl lacks proxy-side H2 support. For external-server checks and the project's own `network-relay check`, see [docs/design.md](docs/design.md#7-interoperability-tests).
 
-GitHub Actions runs format, clippy, deployment, independent interoperability and vendored HTTP/3 tests on PRs and pushes to `main`. Published releases and manual workflow runs additionally test and build Linux x86_64 and arm64 packages (arm64 under qemu); published releases receive the packages automatically.
+GitHub Actions runs format, clippy, deployment, independent interoperability and vendored HTTP/3 tests on PRs and pushes to `main`. Published releases and manual workflow runs additionally test and build Linux x86_64 and arm64 packages on native runners for each architecture; published releases receive the packages automatically.
 
 The two standalone installers and their `.sha256` files are checked into the repository root. To refresh them after deployment-file changes, run `python3 deploy/package-installer.py --out network-relay-install.sh` and `python3 deploy/package-installer.py --source --out network-relay-install-from-source.sh`, then verify the checksums and commit all four files. Packaging preserves existing source and output directory permissions; newly created output directories are at most mode 755 and respect a stricter caller umask.

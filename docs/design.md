@@ -246,7 +246,7 @@ Result: several hundred datagrams each of 60, 1200 and 1300 bytes all came back 
 
 **Privileges**: with `setpriv` keeping only `CAP_NET_BIND_SERVICE`, the relay could read a mode-600 private key and worked normally on port 443.
 
-**Not done yet**: tests on a real iPhone or Mac.
+The November 20 audit exercised the per-session Apple Relay API on macOS and the iOS simulator, and separately tested the three macOS clients against both Linux servers. Profile installation on physical devices, handover and WAN throughput remain unmeasured. [Recorded paths and remaining field tests](audit-2026-11-20.md).
 
 ## 8. Possible future work
 

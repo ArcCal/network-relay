@@ -1708,7 +1708,7 @@ impl<'a> Socket<'a> {
         let (sent_syn, sent_fin) = match self.state {
             // In SYN-SENT or SYN-RECEIVED, we've just sent a SYN.
             State::SynSent | State::SynReceived => (true, false),
-            // In FIN-WAIT-1, LAST-ACK, or CLOSING, we've just sent a FIN.
+            // These states reserve FIN sequence space even while earlier data is unsent.
             State::FinWait1 | State::LastAck | State::Closing => (false, true),
             // In all other states we've already got acknowledgements for
             // all of the control flags we sent.
@@ -2151,7 +2151,7 @@ impl<'a> Socket<'a> {
 
             (State::CloseWait, TcpControl::None) => {}
 
-            // ACK packets in LAST-ACK state change it to CLOSED.
+            // Only an ACK covering our FIN closes a socket in LAST-ACK.
             (State::LastAck, TcpControl::None) => {
                 if ack_of_fin {
                     // Clear the remote endpoint, or we'll send an RST there.

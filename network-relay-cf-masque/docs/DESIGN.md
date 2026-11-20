@@ -67,7 +67,10 @@ transport. Version 0.1.0 does not reconnect in process.
 
 TCP half-close and abnormal reset are separate outcomes: an egress connection
 has an explicit abort that resets it, as a kernel socket with a zero linger
-time does. Connected UDP validates the peer, and payloads above the current
+time does. After the peer sends FIN, response data queued ahead of the local
+FIN still uses the latest valid advertised window. An in-sequence window
+update can let the sender drain that data before the persist timer fires.
+Connected UDP validates the peer, and payloads above the current
 tunnel MTU are dropped without IP fragmentation (RFC 9298 section 5). IPv6
 requires its minimum MTU. Socket counts and buffers are bounded.
 

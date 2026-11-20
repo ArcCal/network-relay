@@ -1,7 +1,7 @@
 # Implementation status
 
-Updated November 13, 2026 UTC. Test results are in [VALIDATION.md](VALIDATION.md);
-[AUDIT.md](AUDIT.md) records the current review and fixes.
+Updated November 20, 2026 UTC. [Validation](VALIDATION.md) links the native Linux runs.
+[Audit](AUDIT.md) records the earlier protocol and packet-stack review.
 
 This project was restored after its removal and rebuilt on network-relay
 itself: the client-facing server, configuration format and helper commands
@@ -20,7 +20,7 @@ project's own.
 | Bounded IPv4/IPv6 receive reassembly | 16 contexts per family, 1500-byte reassembled packets, absolute 60-second expiry; overlap poisoning and independent atomic fragments | Exact-feature vendor tests, packet/mutation controls and a frozen 3950.46-second synthetic soak pass; see the November 13 validation record |
 | Large file integrity/half-close | Implemented | 64 MiB transfers in all six pairings |
 | NF/RS client compatibility | Their cores in this repository, used as they are | 12 ingress/egress pairs, 96 TCP/UDP checks, authentication and TLS negatives; NF uses its Linux bridge, not Network.framework |
-| Long-held TCP/UDP stability | Implemented | Latest frozen synthetic soak passes in 3950.46 seconds: 12 held flows, one outer generation per mode, no reported packet queue drops; older unexplained failures remain open |
+| Long-held TCP/UDP stability | Implemented | Final local-peer soaks ran 3918.87 and 3928.85 seconds on Linux x86-64 and arm64. Each held 12 flows with one outer generation per mode and zero reported packet queue drops. The two older local failures remain open |
 | Actual Cloudflare exit IP, live download, live soak | Not established | Requires a host with authorized WARP connectivity |
 | Native Apple NF GUI/profile/device execution | Not executed here | Linux tests cannot substitute for it |
 

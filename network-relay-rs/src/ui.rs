@@ -779,6 +779,8 @@ impl App {
 
     unsafe fn refresh_log(&mut self) {
         let all = self.controller.retained_logs();
+        // Trimming happens on append. The newest sequence also changes when a
+        // full log replaces a row, and clearing the log leaves no sequence.
         let revision = (all.back().map(|entry| entry.sequence), self.controller.config.log_level);
         if self.rendered_log == Some(revision) {
             return;

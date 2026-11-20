@@ -186,11 +186,12 @@ and this relay cannot remove them.
    device finishes sending, the destination is not told; it learns when
    the whole tunnel ends. Protocols that wait for the client's FIN before
    answering do not work.
-5. **One VLESS connection per tunnel and per lookup** (TCP, the WebSocket
-   upgrade, then data): a tunnel takes about two round trips to the VLESS
-   server longer to start than a direct one, and each tunnel uses a file
-   descriptor here and one on the server. Name lookups add one round trip
-   more unless cached.
+5. **Connection setup cost.** Each data tunnel opens a TCP connection and
+   upgrades it to WebSocket, adding about two round trips to the VLESS server
+   and occupying one descriptor on each side. On a destination DNS cache miss,
+   A and AAAA share a separate VLESS connection for that resolver attempt.
+   Concurrent callers for the same name can share the attempt. A failover to
+   another resolver opens another connection. [DNS comparison](../docs/performance-alternatives-2026-11-20.md#concurrent-vless-dns-misses).
 6. **This host resolves the VLESS server's name** with its own resolver
    each time a tunnel opens; use an IP address in `server` to avoid it.
 7. **IPv6 destinations** work only if the VLESS server has IPv6;

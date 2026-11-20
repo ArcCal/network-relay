@@ -2,8 +2,7 @@
 
 This guide covers the standalone Rust server, Apple's built-in Network Relay
 profiles, and the additional applications shipped in this repository. Start
-with the standard server and one test device. The experimental WARP server and
-the NF/RS desktop clients have different requirements and validation status.
+with the standard server and one test device. The WARP and VLESS servers have different egress requirements. NF and RS expose a SOCKS proxy. Network Relay Tun adds system-wide packet capture on macOS.
 
 Commands are examples to run deliberately on your own systems. Replace
 `relay.example.com`, `203.0.113.10`, SSH account names and paths before use.
@@ -32,6 +31,8 @@ Commands are examples to run deliberately on your own systems. Replace
 | Apple `.mobileconfig` profile | Configures the operating system's built-in relay feature | You want domain-based routing without installing a client application |
 | [Network Relay NF](../network-relay-nf/README.md) | Separate macOS SOCKS5 application, using Apple Network.framework for production sockets/TLS/QUIC | You want applications to use an explicit local SOCKS proxy and can meet its current macOS/SDK requirements |
 | [Network Relay RS](../network-relay-rs/README.md) | Separate Rust/AppKit macOS SOCKS5 application, using Tokio/rustls/Quinn | You want the independent Rust desktop client or its headless mode |
+| [Network Relay Tun](../network-relay-tun/README.md) | macOS app and privileged helper capture IPv4/IPv6 TCP, UDP and DNS through the relay | You need applications to use the relay without configuring SOCKS. The helper installs routes and restores them and transient DNS on stop |
+| [Network Relay VLESS](../network-relay-vless/README.md) | Linux server with mandatory VLESS over WebSocket egress and destination DNS over VLESS | You have a compatible upstream and can accept the documented WebSocket half-close limit |
 | [Network Relay CF MASQUE](../network-relay-cf-masque/README.md) | Separate experimental relay server whose forwarded traffic and DNS must leave through WARP | You specifically need WARP egress and accept the live-service validation gap |
 
 The root server's current package version is `1.5.0`; it is not the same
@@ -304,8 +305,8 @@ which exposes the secret in command arguments and shell history.
 | `--exclude-domain relay.example.com` | Excludes that domain/subdomains from this relay configuration |
 | `--match-fqdn api.example.com` | Exact hostname only; requires iOS 18.4/macOS 15.4 or later |
 | No `--match-domain` or `--match-fqdn` | **All eligible traffic**, subject to exclusions; an empty list is not "relay nothing" |
-| `--no-http3` | Writes HTTP/2 only; useful when UDP transport is blocked |
-| `--no-http2` | Writes HTTP/3 only; do not combine with `--no-http3` |
+| `--no-http3` | Selects HTTP/2. Use it to compare large transfers that stall over H3 or when UDP 443 is blocked |
+| `--no-http2` | Selects HTTP/3. On a reachable QUIC endpoint this delivered the 63-byte UDP requests lost on native H2. Select only one transport flag |
 | `--port N` / `--udp-template PATH` | Must match the server listener/template |
 | `--ui-toggle-enabled true` | Allows the device's supported relay toggle; iOS/macOS 26+ |
 | `--allow-dns-failover true` | Explicitly permits the device's system DNS fallback on supported OS versions; omit to retain the default |
@@ -650,6 +651,8 @@ traffic even when a small connectivity probe succeeds.
 | Website works, relay does not | Account/profile credential, CONNECT logs, destination policy | A website response does not test relay authentication or forwarding |
 | Wrong password looks like a 404 | Profile versus server hash, user spelling/expiry | This can be intentional cover-site behavior; regenerate/replace the profile after rotation |
 | H2 works, H3 fails | UDP 443 on provider and host, network UDP policy | Use an H2-only profile while diagnosing the actual QUIC path |
+| A 63-byte UDP request disappears on native Apple H2 | Compare 62-, 63- and 64-byte requests and 63-byte replies at a controlled origin | When UDP 443 works, compare an H3-only profile with the same credentials and domain rules. [Transport selection](config.md#choosing-a-transport-for-an-existing-apple-profile) |
+| Concurrent large downloads stall on native Apple H3 | Record elapsed time, bytes received and the digest for each file on H3 and H2 | Try H2 on the same path. Some Caddy H2 groups also exceeded 180 seconds on the iOS simulator. [Bulk results](audit-2026-11-20.md#large-native-tcp-transfers) |
 | Local check passes, device fails | Public address reachability, competing proxies and installed profiles | Repeat from an external network, then observe a matched device destination |
 | Only some domains unexpectedly relay | Generated match list, root-domain widening, OS support | Inspect the profile as private data; compare exact-domain versus subdomain rules |
 | Everything relays unexpectedly | Empty match list, unsupported exact-FQDN-only settings | Remove the profile, regenerate explicit supported match domains and reinstall |
@@ -670,11 +673,13 @@ repeating them rather than attributing an older run to a new build.
 
 | Area | Recorded evidence | Practical limit |
 | --- | --- | --- |
+| November 20 server and macOS client matrix | [Measured alternatives](performance-alternatives-2026-11-20.md) and [interoperability audit](audit-2026-11-20.md). NF, RS and TUN passed all 24 product/transport/backend/Linux architecture combinations | Physical profiles, cellular handover, WAN throughput and public WARP need independent measurements |
+| System-wide Network Relay Tun | [Native capture and restoration](../network-relay-tun/docs/validation.md). Eight H2/H3 combinations exercised dual-stack TCP, UDP and DNS with system sockets | Route and DNS restoration was checked on disposable Macs |
 | Root Rust server | [Protocol/interoperability review](review-2026-10-06.md): 153 unit + 64 integration tests in debug/release, 34 deployment tests; Go/curl independent clients and short churn/cleanup observations | Linux/local fixtures; not complete Apple-system or WAN acceptance |
 | Earlier independent protocol work | [Standards/interoperability review](review-2026-10-05.md) | Its environment had no IPv6; a pass does not establish IPv6/NAT64 deployment behavior |
 | Root CI intent | [build workflow](../.github/workflows/build.yml) | Workflow configuration is a test recipe, not proof that the current checkout ran it |
-| NF | [Current status](../network-relay-nf/docs/STATUS.md), [native evidence](../network-relay-nf/docs/evidence/native-mac-20261011.md) | User-reported native H2 successes and H3 repair confirmation are distinct from a complete current native matrix; Linux bridge tests do not execute Network.framework |
-| RS | [Current status](../network-relay-rs/docs/STATUS.md) | Production Rust transport passed both-server local matrices and short H3 stability checks; AppKit packaging/GUI and sustained remote Mac acceptance remain separate |
+| NF | [Current status](../network-relay-nf/docs/STATUS.md), [native evidence](../network-relay-nf/docs/evidence/native-mac-20261011.md) | The signed app launched on macOS. Native H2/H3 TCP and UDP passed against both Linux servers. Testing an installed Apple Relay profile requires a separate device run |
+| RS | [Current status](../network-relay-rs/docs/STATUS.md) | The macOS package built. Its production transport passed both-server checks and short H3 stability tests. GUI appearance and sustained remote operation remain field checks |
 | WARP variant | [Status](../network-relay-cf-masque/docs/STATUS.md), [validation](../network-relay-cf-masque/docs/VALIDATION.md) | Synthetic WARP peers and soak do not establish live Cloudflare interoperability |
 
 For root server development, the documented baseline checks include:

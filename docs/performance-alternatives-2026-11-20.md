@@ -465,8 +465,10 @@ queue drops. [Standard egress and relay suites](https://github.com/ArcCal/networ
 
 ### Historical WARP connection interruptions
 
-Earlier public WARP connections had stopped after about ten minutes and at
-3842.91 seconds. Eight real-time runs compared the normal local test peer
+One earlier local-peer soak timed out on H3 after about ten minutes. Another
+reset after 3842.91 seconds. Their causes are still open.
+[Original timeout](https://github.com/ArcCal/network-relay/pull/31) and
+[reset evidence](historical-issue-recheck-2026-11-13.md#h03-cf-soak-reset-after-384291-seconds). Eight real-time runs compared the normal local test peer
 with three single-variable changes. Each run kept six TCP flows and six UDP
 flows open through H1/H2/H3 frontends and H2/H3 egresses while independent
 transfers continued. The baseline outer keepalive was one second and the
@@ -486,8 +488,9 @@ The first two 15-second jobs had also changed a separate three-second idle
 fixture and failed its finite check before the long test. Scoping that
 setting to the long test restored the independent idle control. All four
 settings survived beyond the historical interruptions with the local peer.
-No public-WARP failure was reproduced and no timeout or congestion-control
-change was promoted on this evidence.
+The failures did not recur in these local runs. The timeouts and congestion
+control remain at their production settings. Public Cloudflare service still
+requires independent validation.
 [All four settings and original failed controls](https://github.com/ArcCal/network-relay/actions/runs/44790798330).
 [Correctly scoped 15-second keepalive](https://github.com/ArcCal/network-relay/actions/runs/44791712698).
 

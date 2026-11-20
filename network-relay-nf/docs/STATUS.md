@@ -1,5 +1,13 @@
 # Implementation status
 
+## November 20, 2026 macOS validation
+
+The signed NF application launched and 72 Swift tests passed. At the
+5000-record cap, reading the severity prefix directly preserved visibility
+and retention across 9000 generated lines. Native H2/H3 TCP, UDP and
+wrong-root checks ran against both Linux server architectures.
+[Log measurements](../../docs/performance-alternatives-2026-11-20.md#native-nf-and-tun-ui-log-retention) and [product interoperability](../../docs/performance-alternatives-2026-11-20.md#product-connection-reuse-and-application-concurrency).
+
 ## Server deletion and import/export check, 2026-10-27
 
 The minus button used to remove a server from the settings form only, so

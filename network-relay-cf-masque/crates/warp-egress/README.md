@@ -64,7 +64,9 @@ cached answers, literals, and shared pending queries. The transport never falls
 back to the host resolver or direct kernel sockets. Wire labels preserve
 their boundaries, including binary labels. NXDOMAIN/NODATA caching uses SOA
 lifetimes; resolution failures remain failures and are cached for one second
-(RFC 9520) before retrying. Both caches share the existing 4096-entry bound.
+(RFC 9520) before retrying. The cache holds up to 4096 name/type pairs.
+At capacity a new key evicts one entry, giving recently used entries a
+second chance without extending their TTL.
 
 `WarpEgress` owns one fixed-transport session. Its cloneable controller and
 socket handles share terminal state; detected tunnel loss, worker failure,

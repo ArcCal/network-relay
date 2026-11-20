@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- The Rust relay reuses the HTTP Date value within a worker for the current UTC second. Linux release transfer tests now run on native x86-64 and arm64.
+- VLESS retains frequently used DNS entries at capacity and shares concurrent attempts for the same destination name and resolver. Each caller keeps its own failover deadline. WARP DNS retains frequently used name/type pairs within its existing 4096-entry limit. Its two dependency locks update heapless to 0.9.4.
+- WARP TCP accepts a valid peer window change for unsent response data after a half-close. This removed a reproducible one-second wait on a local slow-reader test. Public WARP stability remains unverified.
+- Network Relay Tun tracks the physical IP service during capture and binds IPv6 relay connections to the selected physical interface. Native tests exercised real routes and DNS across helper updates and on disconnect. NF and TUN reduce log filtering work at capacity. RS refreshes the log view when the retained rows or severity filter change.
+- Existing unsigned single-hop Apple profiles can be copied privately with one selected transport. The native H2 outgoing 63-byte UDP failure and native H3 bulk stalls remain documented. [Profile procedure](docs/config.md#choosing-a-transport-for-an-existing-apple-profile), [two-server audit](docs/audit-2026-11-20.md) and [measured alternatives](docs/performance-alternatives-2026-11-20.md).
+
 - Successful Mac builds remove read-only Go module caches through the existing private-work cleanup helper, preventing a cleanup-only failure after artifacts and checksums have already passed. External toolchain links, artifacts and logs are preserved.
 
 - VLESS DNS preserves an already validated A or AAAA answer when the other family reaches the caller's shorter deadline. An expired budget does not start a query or create a cached failure.

@@ -8,16 +8,14 @@ The code and documentation are self-contained in `network-relay-nf/` inside
 the network-relay repository. No parent-server code or sibling checkout is
 required to build it.
 
-**Development status:** the protocol core is implemented. Production socket,
-TLS and QUIC operations are supplied by Apple Network.framework. Linux core
-checks are available; the user has reported a Mac build/launch and successful
-forced HTTP/2 SOCKS TCP and UDP forwarding with Rust network-relay. The earlier
-periodic native HTTP/3 disconnect was confirmed resolved by the user after the
-server idle-stream-0 and client probe-lifecycle fixes. Archived failing runs are
-historical evidence, not a current reproduction. The complete current-build
-native matrix remains incomplete; this is a development application.
-See [implementation status](docs/STATUS.md) before treating this as a release.
-“Perfect compatibility” is an acceptance goal, not a result we have established.
+Network.framework supplies the production sockets, TLS and QUIC. On macOS,
+the signed app launched and its Swift package passed 72 tests. NF's H2 and
+H3 transports carried hash-checked TCP responses and UDP echoes through the
+Rust and Caddy servers on both supported Linux architectures. The earlier
+periodic native H3 disconnect was separately reported fixed after the
+idle-stream and probe-lifecycle repairs. A physical installed Apple Relay
+profile uses a different path. [Implementation status](docs/STATUS.md) and
+[observed client paths](../docs/audit-2026-11-20.md#clients-and-interoperability).
 
 - [Design goals and architecture](docs/DESIGN.md)
 - [Protocol and application specification](docs/SPEC.md)

@@ -1,0 +1,41 @@
+name: Trace local TCP transfer pauses and compare three scheduling alternatives
+'on':
+  push:
+    branches:
+    - audit/warp-local-transfer-tail-20261120
+permissions:
+  contents: read
+jobs:
+  transfer:
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 55
+    strategy:
+      fail-fast: false
+      matrix:
+        runner:
+        - ubuntu-24.04
+        - ubuntu-22.04-arm
+    steps:
+    - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      with:
+        persist-credentials: false
+        fetch-depth: 4
+    - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d
+      with:
+        toolchain: stable
+    - name: Sample TCP windows, flight, sender timers and byte queues through checked transfers
+      shell: bash
+      run: "set -euo pipefail\nmkdir \"$RUNNER_TEMP/evidence\"\nexport CARGO_TARGET_DIR=\"$RUNNER_TEMP/target\"\nfor\
+        \ v in original idle repoll drain; do\n  python3 diagnostics/warp-acks/tail.py \"$v\"\n  cargo build --release\
+        \ --locked --manifest-path diagnostics/performance/Cargo.toml --bin tail\n  cp \"$CARGO_TARGET_DIR/release/tail\"\
+        \ \"$RUNNER_TEMP/$v\"\ndone\nfor round in $(seq 0 11); do\n  case $((round%4)) in\n    0) seq=\"original idle\
+        \ repoll drain\";;\n    1) seq=\"drain repoll idle original\";;\n    2) seq=\"repoll original drain idle\";;\n\
+        \    3) seq=\"idle drain original repoll\";;\n  esac\n  for v in $seq; do\n    RELAY_STACK_STUDY=\"$v\" /usr/bin/time\
+        \ -a -o \"$RUNNER_TEMP/evidence/cpu.txt\" -f \"$round $v %U %S %M\" \"$RUNNER_TEMP/$v\" 0 \"$round\" >> \"$RUNNER_TEMP/evidence/tails.jsonl\"\
+        \n  done\ndone\ntest \"$(wc -l < \"$RUNNER_TEMP/evidence/tails.jsonl\")\" -eq 48\n"
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      if: always()
+      with:
+        name: local-tcp-tail-${{ matrix.runner }}
+        path: ${{ runner.temp }}/evidence
+        retention-days: 7

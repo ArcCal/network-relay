@@ -52,6 +52,9 @@ class SourceBootstrapTests(unittest.TestCase):
 set -euo pipefail
 root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
 source "$root/tools/fresh-build-source.sh"
+# This driver records the fetched revision and never starts a compiler.
+# The build-entrypoint tests exercise real disk-selection policy separately.
+relay_build_work_parent() { printf '%s\\n' "$SOURCE_FIXTURE_WORK_PARENT"; }
 relay_require_fresh_source "$root" deploy/install-debian13.sh "$@"
 cat "$root/VERSION" > "$SOURCE_FIXTURE_RESULT"
 printf '%s\\n%s\\n' "$root" "$RELAY_BUILD_WORK_ROOT" >> "$SOURCE_FIXTURE_RESULT"
@@ -66,6 +69,7 @@ exit "$SOURCE_FIXTURE_STATUS"
             config = base / 'gitconfig'
             config.write_text(f'[url "file://{origin}"]\n\tinsteadOf = https://github.com/ArcCal/network-relay.git\n')
             env = os.environ.copy()
+            env['SOURCE_FIXTURE_WORK_PARENT'] = str(base)
             env.update(GIT_CONFIG_GLOBAL=str(config), GIT_CONFIG_NOSYSTEM='1', GIT_ALLOW_PROTOCOL='file',
                        GIT_AUTHOR_NAME='Anonymous', GIT_AUTHOR_EMAIL='anonymous@example.invalid',
                        GIT_COMMITTER_NAME='Anonymous', GIT_COMMITTER_EMAIL='anonymous@example.invalid')
@@ -84,6 +88,7 @@ exit "$SOURCE_FIXTURE_STATUS"
                 self.assertEqual(version, f'current remote {revision}')
                 self.assertEqual(int(commits), revision, 'the clone must retain full history')
                 self.assertTrue(source.startswith('/tmp/network-relay-'))
+                self.assertEqual(Path(work).parent, base)
                 self.assertFalse(Path(source).exists())
                 self.assertFalse(Path(work).exists())
             self.assertEqual((caller / 'VERSION').read_text(), 'stale local source\n')

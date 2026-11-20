@@ -930,7 +930,26 @@ impl Relay {
 }
 
 fn http_date() -> HeaderValue {
-    HeaderValue::try_from(chrono::Utc::now().format("%a, %d %b %Y %H:%M:%S GMT").to_string()).expect("valid date")
+    http_date_at(chrono::Utc::now())
+}
+
+fn http_date_at(now: chrono::DateTime<chrono::Utc>) -> HeaderValue {
+    // HTTP dates have second precision. Key on the wall clock so a clock
+    // adjustment takes effect even on a worker that never goes idle.
+    thread_local! {
+        static DATE: std::cell::RefCell<Option<(i64, HeaderValue)>> = const { std::cell::RefCell::new(None) };
+    }
+    DATE.with_borrow_mut(|slot| {
+        let second = now.timestamp();
+        if let Some((saved, header)) = slot {
+            if *saved == second {
+                return header.clone();
+            }
+        }
+        let header = HeaderValue::try_from(now.format("%a, %d %b %Y %H:%M:%S GMT").to_string()).expect("valid date");
+        *slot = Some((second, header.clone()));
+        header
+    })
 }
 
 /// Reads the configuration file again, on SIGHUP.
@@ -1093,6 +1112,18 @@ async fn serve(config_path: PathBuf, config: Config, variant: Option<Variant>) -
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn http_date_tracks_wall_clock_seconds_in_both_directions() {
+        for (second, nanos, text) in [
+            (0, 0, "Thu, 01 Jan 1970 00:00:00 GMT"),
+            (0, 999_999_999, "Thu, 01 Jan 1970 00:00:00 GMT"),
+            (86_400, 0, "Fri, 02 Jan 1970 00:00:00 GMT"),
+            (1, 0, "Thu, 01 Jan 1970 00:00:01 GMT"),
+        ] {
+            assert_eq!(http_date_at(chrono::DateTime::from_timestamp(second, nanos).unwrap()), text);
+        }
+    }
 
     fn lifecycle_config() -> Config {
         let hash = auth::hash_password("test-password").unwrap();

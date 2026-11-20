@@ -355,6 +355,11 @@ class StandaloneTakeoverTests(unittest.TestCase):
 
     @unittest.skipUnless(os.geteuid() == 0, 'creating a mount namespace requires root')
     def test_process_in_another_mount_namespace_is_never_identified(self):
+        probe = subprocess.run(['unshare', '-m', '--propagation', 'private', 'true'],
+                               env={**os.environ, 'LC_ALL': 'C'}, capture_output=True, text=True)
+        if probe.returncode and 'Operation not permitted' in probe.stderr:
+            self.skipTest('the host forbids creating a private mount namespace')
+        self.assertEqual(probe.returncode, 0, probe.stderr)
         # A container shows its own path in /proc/PID/exe; identical path and
         # argv must not make another deployment's relay a takeover target.
         process = subprocess.Popen(['unshare', '-m', '--propagation', 'private', str(self.binary),
@@ -364,6 +369,8 @@ class StandaloneTakeoverTests(unittest.TestCase):
             if os.readlink(f'/proc/{process.pid}/ns/mnt') != os.readlink('/proc/self/ns/mnt'):
                 break
             time.sleep(0.02)
+        else:
+            self.fail('the foreign relay never entered a separate mount namespace')
         self.assertFalse(self.identified(process))
         result = self.shell('nr_stop_standalone && echo none')
         self.assertIn('none', result.stdout)

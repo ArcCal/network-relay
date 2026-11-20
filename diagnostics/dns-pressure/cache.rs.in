@@ -1,0 +1,30 @@
+#[derive(Default)]
+struct DnsCache {
+    entries: IndexMap<String, ((Lookup, Instant), bool)>,
+    hand: usize,
+}
+
+impl DnsCache {
+    fn get(&mut self, name: &str) -> Option<&(Lookup, Instant)> {
+        self.entries.get_mut(name).map(|(value, referenced)| {
+            *referenced = true;
+            &*value
+        })
+    }
+
+    fn insert(&mut self, name: String, value: (Lookup, Instant)) {
+        if self.entries.len() == CACHE_ENTRIES && !self.entries.contains_key(&name) {
+            while let Some((_, (entry, referenced))) = self.entries.get_index_mut(self.hand) {
+                if !*referenced || entry.1 <= Instant::now() { break; }
+                *referenced = false;
+                self.hand = (self.hand + 1) % CACHE_ENTRIES;
+            }
+            self.entries.swap_remove_index(self.hand);
+            self.hand = (self.hand + 1) % CACHE_ENTRIES;
+        }
+        self.entries.insert(name, (value, false));
+    }
+
+    #[cfg(test)]
+    fn is_empty(&self) -> bool { self.entries.is_empty() }
+}

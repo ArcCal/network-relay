@@ -1,0 +1,45 @@
+name: Compare VLESS DNS cache policies under ordinary positive-answer traffic
+on:
+  push:
+    branches: [audit/vless-cache-alternatives-20261120]
+permissions:
+  contents: read
+jobs:
+  cache:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {runner: ubuntu-24.04, arch: amd64}
+          - {runner: ubuntu-22.04-arm, arch: arm64}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 70
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with: {persist-credentials: false}
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d
+        with: {toolchain: stable}
+      - name: Validate all DNS semantics and compare identical cache traces
+        run: |
+          set -euo pipefail
+          cargo fetch --locked --manifest-path network-relay-vless/Cargo.toml
+          mkdir "$RUNNER_TEMP/evidence"
+          m=network-relay-vless/Cargo.toml
+          for mode in original expiry rotating clock; do
+            RELAY_STUDY_TEST=1 python3 diagnostics/dns-pressure/variants.py "$mode"
+            cargo test --offline --release --manifest-path "$m" --lib --no-run --message-format=json > "$RUNNER_TEMP/build.jsonl"
+            bin=$(python3 -c 'import json,sys; print(next(obj["executable"] for line in open(sys.argv[1]) if (obj:=json.loads(line)).get("executable") and obj["target"]["name"]=="network_relay_vless"))' "$RUNNER_TEMP/build.jsonl")
+            cp "$bin" "$RUNNER_TEMP/$mode"
+            "$RUNNER_TEMP/$mode" 'dns::tests::' > "$RUNNER_TEMP/evidence/$mode-dns.txt"
+          done
+          for order in 'original expiry rotating clock' 'clock rotating expiry original' 'rotating original clock expiry' 'expiry clock original rotating'; do
+            for mode in $order; do
+              "$RUNNER_TEMP/$mode" --exact dns::tests::measure_cache_pressure_and_origin_work --nocapture >> "$RUNNER_TEMP/evidence/$mode-pressure.txt" 2>&1
+            done
+          done
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: dns-alternatives-${{ matrix.arch }}
+          path: ${{ runner.temp }}/evidence
+          retention-days: 7

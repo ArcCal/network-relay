@@ -37,6 +37,13 @@ struct LinkStats {
     residence_us_sum: u64,
     residence_us_min: Option<u64>,
     residence_us_max: u64,
+    tcp_data_packets: u64,
+    advancing_acks: u64,
+    acked_bytes: u64,
+    larger_than_two_mss: u64,
+    largest_ack_advance: u32,
+    #[serde(skip)]
+    last_ack: Option<u32>,
     fin_packets: u64,
     rst_packets: u64,
 }
@@ -88,6 +95,21 @@ async fn link(
                 if packet.first().is_some_and(|byte| byte >> 4 == 4) && packet.get(9) == Some(&6) {
                     let tcp = usize::from(packet[0] & 15) * 4;
                     let flags = packet.get(tcp + 13).copied().unwrap_or(0);
+                    let header_end = tcp + 4 * usize::from(packet[tcp+12] >> 4);
+                    if packet.len() > header_end { stats.tcp_data_packets += 1; }
+                    if flags & 16 != 0 {
+                        let ack = u32::from_be_bytes(packet[tcp+8..tcp+12].try_into().unwrap());
+                        if let Some(last) = stats.last_ack {
+                            let advance = ack.wrapping_sub(last);
+                            if advance > 0 && advance < 1 << 30 {
+                                stats.advancing_acks += 1;
+                                stats.acked_bytes += u64::from(advance);
+                                stats.larger_than_two_mss += u64::from(advance > 2 * (1280-20-20));
+                                stats.largest_ack_advance = stats.largest_ack_advance.max(advance);
+                            }
+                        }
+                        stats.last_ack = Some(ack);
+                    }
                     stats.fin_packets += u64::from(flags & 1 != 0);
                     stats.rst_packets += u64::from(flags & 4 != 0);
                 }
@@ -121,6 +143,9 @@ struct ResourceStats {
     b_peak_received_bytes: usize,
     a_peak_queued_bytes: usize,
     b_peak_queued_bytes: usize,
+    // Clocked samples for the sender on each side: in-flight data, congestion
+    // and receive windows, queued send bytes. Each entry follows ten 10ms ticks.
+    credit: Vec<[[usize; 4]; 2]>,
     rss_peak_kib_sampled: u64,
 }
 
@@ -139,6 +164,10 @@ fn rss_kib() -> u64 {
 
 fn sample(a: &NetStack, b: &NetStack, stats: &mut ResourceStats) {
     stats.samples += 1;
+    if stats.samples % 10 == 1 {
+        let snapshot = |s: &NetStack| s.tcp_snapshot().into_iter().next().map_or([0; 4], |x| x.study);
+        stats.credit.push([snapshot(a), snapshot(b)]);
+    }
     let (an, al) = a.socket_counts();
     let (bn, bl) = b.socket_counts();
     stats.a_peak_sockets = stats.a_peak_sockets.max(an);

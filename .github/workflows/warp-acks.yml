@@ -1,0 +1,49 @@
+name: Diagnose inner TCP ACK cadence over a measured two-way path
+'on':
+  push:
+    branches: [audit/warp-ack-cadence-20261120]
+permissions:
+  contents: read
+jobs:
+  compare:
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {runner: ubuntu-24.04, arch: amd64}
+          - {runner: ubuntu-22.04-arm, arch: arm64}
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with: {persist-credentials: false}
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d
+        with: {toolchain: stable}
+      - name: Build exact-source diagnostic policies independently
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir "$RUNNER_TEMP/evidence"
+          export CARGO_TARGET_DIR="$RUNNER_TEMP/target"
+          for mode in original smaller-ingress interleave socket-ack; do
+            python3 diagnostics/performance/ack.py "$mode"
+            cargo build --locked --release --manifest-path diagnostics/performance/Cargo.toml --bin path
+            cp "$CARGO_TARGET_DIR/release/path" "$RUNNER_TEMP/$mode"
+          done
+      - name: Compare normal two-way data, actual ACK numbers, outstanding credit and FIN
+        run: |
+          set -euo pipefail
+          for round in 0 1 2; do
+            case "$round" in 0) seq="original smaller-ingress interleave socket-ack";; 1) seq="socket-ack interleave smaller-ingress original";; 2) seq="interleave original socket-ack smaller-ingress";; esac
+            for rtt in 0 50 100; do
+              for mode in $seq; do
+                RELAY_STACK_STUDY="$mode" /usr/bin/time -a -o "$RUNNER_TEMP/evidence/cpu.txt" -f "$round $rtt $mode %U %S %M" "$RUNNER_TEMP/$mode" "$rtt" "$round" >> "$RUNNER_TEMP/evidence/windows.jsonl"
+              done
+            done
+          done
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: warp-acks-${{ matrix.arch }}
+          path: ${{ runner.temp }}/evidence
+          retention-days: 7

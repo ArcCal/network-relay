@@ -1,0 +1,20 @@
+        // RFC 1071 section 2(C). Fold native 32-bit words with end-around
+        // carry. Each even-length block bounds the accumulator on long inputs.
+        let mut sum = 0u64;
+        for block in data.chunks(65536) {
+            let (words, tail) = block.as_chunks::<4>();
+            for word in words {
+                sum += u64::from(u32::from_ne_bytes(*word));
+            }
+            let (pairs, last) = tail.as_chunks::<2>();
+            if let Some(pair) = pairs.first() {
+                sum += u64::from(u16::from_ne_bytes(*pair));
+            }
+            if let Some(byte) = last.first() {
+                sum += u64::from(u16::from_ne_bytes([*byte, 0]));
+            }
+            while sum > 0xffff {
+                sum = (sum >> 16) + (sum & 0xffff);
+            }
+        }
+        (sum as u16).to_be()

@@ -1,0 +1,46 @@
+name: Measure the packet cost of correct receive ACKs on both Linux architectures
+'on':
+  push:
+    branches:
+    - audit/warp-ack-packet-cost-20261120
+permissions:
+  contents: read
+jobs:
+  transfer:
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 55
+    strategy:
+      fail-fast: false
+      matrix:
+        runner:
+        - ubuntu-24.04
+        - ubuntu-22.04-arm
+    steps:
+    - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      with:
+        persist-credentials: false
+        fetch-depth: 8
+    - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d
+      with:
+        toolchain: stable
+    - name: Compare the prior stack, receive ACKs, permit batches and checked wide-word checksums
+      shell: bash
+      run: "set -euo pipefail\nmkdir \"$RUNNER_TEMP/evidence\"\nexport CARGO_TARGET_DIR=\"$RUNNER_TEMP/target\"\nfor\
+        \ v in prior ack-batch permits wide both; do\n  python3 diagnostics/warp-acks/packet-cost.py \"$v\"\n  cargo\
+        \ build --locked --release --manifest-path diagnostics/performance/Cargo.toml --bin checksum --bin fast --bin\
+        \ path\n  for p in checksum fast path; do cp \"$CARGO_TARGET_DIR/release/$p\" \"$RUNNER_TEMP/$v-$p\"; done\n\
+        \  \"$RUNNER_TEMP/$v-checksum\" \"$v\" >> \"$RUNNER_TEMP/evidence/checksums.txt\"\ndone\nfor round in 0 1 2 3\
+        \ 4 5; do\n  case $round in\n    0) seq=\"prior ack-batch permits wide both\";;\n    1) seq=\"both wide permits\
+        \ ack-batch prior\";;\n    2) seq=\"wide both prior ack-batch permits\";;\n    3) seq=\"permits ack-batch prior\
+        \ both wide\";;\n    4) seq=\"ack-batch permits wide both prior\";;\n    5) seq=\"prior both wide permits ack-batch\"\
+        ;;\n  esac\n  for v in $seq; do\n    RELAY_STACK_STUDY=\"$v\" /usr/bin/time -a -o \"$RUNNER_TEMP/evidence/cpu.txt\"\
+        \ -f \"$round 0 $v %U %S %M\" \"$RUNNER_TEMP/$v-fast\" 0 \"$round\" >> \"$RUNNER_TEMP/evidence/transfers.jsonl\"\
+        \n    if (( round < 2 )); then\n      RELAY_STACK_STUDY=\"$v\" /usr/bin/time -a -o \"$RUNNER_TEMP/evidence/cpu.txt\"\
+        \ -f \"$round 50 $v %U %S %M\" \"$RUNNER_TEMP/$v-path\" 50 \"$round\" >> \"$RUNNER_TEMP/evidence/transfers.jsonl\"\
+        \n    fi\n  done\ndone\ntest \"$(wc -l < \"$RUNNER_TEMP/evidence/transfers.jsonl\")\" -eq 40\n"
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      if: always()
+      with:
+        name: packet-cost-${{ matrix.runner }}
+        path: ${{ runner.temp }}/evidence
+        retention-days: 7

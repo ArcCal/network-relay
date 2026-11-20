@@ -527,7 +527,7 @@ mod tests {
     use crate::config::IpPreference;
     use crate::vless::UserId;
     use futures_util::{SinkExt, StreamExt};
-    use hickory_proto::rr::{Record, rdata};
+    use hickory_proto::rr::{rdata, Record};
     use tokio_tungstenite::tungstenite::Message as WsMessage;
 
     #[test]
@@ -627,13 +627,14 @@ mod tests {
         servers: u16,
         answer: Option<(u16, Duration)>,
     ) -> (Resolver, Arc<std::sync::atomic::AtomicUsize>, tokio::task::JoinHandle<()>) {
-        delayed_peer(servers, answer, 10).await
+        delayed_peer(servers, answer, 10, None).await
     }
 
     async fn delayed_peer(
         servers: u16,
         answer: Option<(u16, Duration)>,
         ttl: u32,
+        gate: Option<Arc<tokio::sync::Semaphore>>,
     ) -> (Resolver, Arc<std::sync::atomic::AtomicUsize>, tokio::task::JoinHandle<()>) {
         use std::sync::atomic::{AtomicUsize, Ordering};
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -647,6 +648,7 @@ mod tests {
                     accepted = listener.accept() => {
                         let (tcp, _) = accepted.unwrap();
                         let count = count.clone();
+                        let gate = gate.clone();
                         connections.spawn(async move {
                             let mut ws = tokio_tungstenite::accept_async(tcp).await.unwrap();
                             let header = ws.next().await.unwrap().unwrap().into_data();
@@ -666,6 +668,9 @@ mod tests {
                             count.fetch_add(1, Ordering::SeqCst);
                             if let Some((index, delay)) = answer.filter(|(index, _)| destination == 53 + index) {
                                 assert!(index < servers);
+                                if let Some(gate) = gate {
+                                    gate.acquire().await.unwrap().forget();
+                                }
                                 tokio::time::sleep(delay).await;
                                 response.metadata.message_type = MessageType::Response;
                                 response.add_answer(Record::from_rdata(
@@ -677,7 +682,9 @@ mod tests {
                                 let mut frame = vec![0, 0];
                                 frame.extend_from_slice(&(bytes.len() as u16).to_be_bytes());
                                 frame.extend_from_slice(&bytes);
-                                ws.send(WsMessage::Binary(frame.into())).await.unwrap();
+                                if ws.send(WsMessage::Binary(frame.into())).await.is_err() {
+                                    return; // A caller may have cancelled its transaction.
+                                }
                             }
                             while let Some(Ok(message)) = ws.next().await {
                                 if matches!(message, WsMessage::Close(_)) {
@@ -708,7 +715,7 @@ mod tests {
     #[tokio::test]
     async fn overlapping_lookups_share_one_transaction_even_when_the_ttl_is_zero() {
         use std::sync::atomic::Ordering;
-        let (resolver, requests, server) = delayed_peer(1, Some((0, Duration::from_millis(35))), 0).await;
+        let (resolver, requests, server) = delayed_peer(1, Some((0, Duration::from_millis(35))), 0, None).await;
         let queries = (0..32).map(|i| resolver.lookup(if i % 2 == 0 { "burst.test" } else { "BURST.Test." }));
         let expected: IpAddr = "198.51.100.77".parse().unwrap();
         for answer in futures_util::future::join_all(queries).await {
@@ -722,43 +729,27 @@ mod tests {
         let _ = server.await;
     }
 
+    async fn wait_for_dns_state(mut ready: impl FnMut() -> bool) {
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while !ready() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+    }
+
     #[tokio::test]
     async fn a_waiter_deadline_and_leader_cancellation_do_not_poison_other_callers() {
         use std::sync::atomic::Ordering;
-        let (resolver, requests, server) = timeout_peer(1, Some((0, Duration::from_millis(200)))).await;
+        let gate = Arc::new(tokio::sync::Semaphore::new(0));
+        let (resolver, requests, server) = delayed_peer(1, Some((0, Duration::ZERO)), 10, Some(gate.clone())).await;
         let resolver = Arc::new(resolver);
         let leader = tokio::spawn({
             let resolver = resolver.clone();
             async move { resolver.lookup("busy.test").await }
         });
-        let wait_for = |joined: bool| {
-            let resolver = &resolver;
-            let requests = &requests;
-            async move {
-                tokio::time::timeout(Duration::from_secs(2), async {
-                    loop {
-                        let ready = if joined {
-                            resolver
-                                .cache
-                                .lock()
-                                .unwrap()
-                                .pending
-                                .get("busy.test")
-                                .is_some_and(|s| s.receiver_count() > 0)
-                        } else {
-                            requests.load(Ordering::SeqCst) == 1
-                        };
-                        if ready {
-                            break;
-                        }
-                        tokio::task::yield_now().await;
-                    }
-                })
-                .await
-                .unwrap();
-            }
-        };
-        wait_for(false).await;
+        wait_for_dns_state(|| requests.load(Ordering::SeqCst) == 1).await;
         let deadline = tokio::time::Instant::now() + Duration::from_millis(10);
         assert_eq!(resolver.lookup_until("busy.test", deadline).await.unwrap_err().kind(), io::ErrorKind::TimedOut);
         assert!(resolver.cache.lock().unwrap().entries.is_empty());
@@ -767,9 +758,14 @@ mod tests {
             let resolver = resolver.clone();
             async move { resolver.lookup("BUSY.test.").await }
         });
-        wait_for(true).await;
+        wait_for_dns_state(|| {
+            resolver.cache.lock().unwrap().pending.get("busy.test").is_some_and(|s| s.receiver_count() != 0)
+        })
+        .await;
         leader.abort();
         assert!(leader.await.unwrap_err().is_cancelled());
+        wait_for_dns_state(|| requests.load(Ordering::SeqCst) == 2).await;
+        gate.add_permits(2);
         let address: IpAddr = "198.51.100.77".parse().unwrap();
         assert_eq!(tokio::time::timeout(Duration::from_secs(2), follower).await.unwrap().unwrap().unwrap(), [address]);
         assert_eq!(requests.load(Ordering::SeqCst), 2);

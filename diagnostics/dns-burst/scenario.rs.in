@@ -7,7 +7,7 @@
             ("mixed", 8, 64, 10, false), ("zero", 1, 32, 0, false),
             ("warm", 1, 32, 10, true),
         ] {
-            let (resolver, requests, server) = delayed_peer(1, Some((0, Duration::from_millis(20))), ttl).await;
+            let (resolver, requests, server) = delayed_peer(1, Some((0, Duration::from_millis(20))), ttl, None).await;
             if warm { assert_eq!(resolver.lookup("key-0.test").await.unwrap(), [address]); }
             let start = Instant::now();
             let resolver = &resolver;

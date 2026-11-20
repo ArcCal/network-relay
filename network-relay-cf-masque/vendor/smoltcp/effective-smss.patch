@@ -2400,7 +2400,7 @@ index b1500e1..bcf0ee9 100644
              Self::HopByHopIcmpv6(_, _) => unreachable!(),
              #[cfg(all(feature = "proto-ipv4", feature = "multicast"))]
 diff --git a/src/socket/tcp.rs b/src/socket/tcp.rs
-index 4ea9cc6..db5090d 100644
+index 4ea9cc6..fbc941e 100644
 --- a/src/socket/tcp.rs
 +++ b/src/socket/tcp.rs
 @@ -517,9 +517,13 @@ pub struct Socket<'a> {
@@ -2688,7 +2688,28 @@ index 4ea9cc6..db5090d 100644
              // We've processed everything in the incoming segment, so advance the local
              // sequence number past it.
              self.local_seq_no = ack_number;
-@@ -2375,13 +2433,52 @@ impl<'a> Socket<'a> {
+@@ -2354,6 +2412,20 @@ impl<'a> Socket<'a> {
+             };
+         }
+ 
++        // Interface polling may drain an entire receive batch before dispatching
++        // any socket. Return the cumulative ACK in the receive path once more
++        // than one locally advertised MSS has arrived (RFC 9293 section 3.8.6.3).
++        // The peer's MSS applies to traffic in the opposite direction.
++        let receive_mss = cx.ip_mtu() - ip_repr.header_len() - TCP_HEADER_LEN;
++        if !repr.payload.is_empty()
++            && self
++                .remote_last_ack
++                .is_some_and(|last| last + receive_mss < self.remote_seq_no + self.rx_buffer.len())
++        {
++            self.ack_delay_timer = AckDelayTimer::Idle;
++            return Some(self.ack_reply(ip_repr, repr));
++        }
++
+         // Per RFC 5681, we should send an immediate ACK when either:
+         //  1) an out-of-order segment is received, or
+         //  2) a segment arrives that fills in all or part of a gap in sequence space.
+@@ -2375,13 +2447,52 @@ impl<'a> Socket<'a> {
          }
      }
  
@@ -2746,7 +2767,7 @@ index 4ea9cc6..db5090d 100644
              #[cfg(feature = "proto-ipv4")]
              IpAddress::Ipv4(_) => crate::wire::IPV4_HEADER_LEN,
              #[cfg(feature = "proto-ipv6")]
-@@ -2396,7 +2493,16 @@ impl<'a> Socket<'a> {
+@@ -2396,7 +2507,16 @@ impl<'a> Socket<'a> {
          };
  
          let local_mss = cx.ip_mtu() - ip_header_len - TCP_HEADER_LEN;
@@ -2764,7 +2785,7 @@ index 4ea9cc6..db5090d 100644
  
          // Have we sent data that hasn't been ACKed yet?
          let data_in_flight = self.remote_last_seq != self.local_seq_no;
-@@ -2421,7 +2527,7 @@ impl<'a> Socket<'a> {
+@@ -2421,7 +2541,7 @@ impl<'a> Socket<'a> {
          let max_send = capped_send_seq.min(self.cwnd_remaining());
  
          // Can we send at least 1 octet?
@@ -2773,7 +2794,7 @@ index 4ea9cc6..db5090d 100644
          // Can we send at least 1 full segment?
          let can_send_full = max_send >= effective_mss;
  
-@@ -2541,6 +2647,12 @@ impl<'a> Socket<'a> {
+@@ -2541,6 +2661,12 @@ impl<'a> Socket<'a> {
              self.remote_last_ts = Some(cx.now());
          }
  
@@ -2786,7 +2807,7 @@ index 4ea9cc6..db5090d 100644
          self.congestion_controller
              .inner_mut()
              .pre_transmit(cx.now());
-@@ -2557,6 +2669,10 @@ impl<'a> Socket<'a> {
+@@ -2557,6 +2683,10 @@ impl<'a> Socket<'a> {
  
                  // Inform the congestion controller that we're retransmitting and should enter the slow start state
                  let in_flight = self.flight_size();
@@ -2797,7 +2818,7 @@ index 4ea9cc6..db5090d 100644
                  self.congestion_controller
                      .inner_mut()
                      .on_rto(cx.now(), in_flight);
-@@ -2718,7 +2834,12 @@ impl<'a> Socket<'a> {
+@@ -2718,7 +2848,12 @@ impl<'a> Socket<'a> {
                  let effective_mss = local_mss.min(self.remote_mss).saturating_sub(options_len);
  
                  let offset = if self.pending_fast_retransmit {
@@ -2811,7 +2832,7 @@ index 4ea9cc6..db5090d 100644
                      repr.seq_number = self.local_seq_no;
                      repr.payload = self.tx_buffer.get_allocated(0, size);
  
-@@ -2786,7 +2907,10 @@ impl<'a> Socket<'a> {
+@@ -2786,7 +2921,10 @@ impl<'a> Socket<'a> {
                          // the remote got lost.
                          win_limit.min(device_limit)
                      } else {
@@ -2823,7 +2844,7 @@ index 4ea9cc6..db5090d 100644
                      };
  
                      let offset = self.flight_size();
-@@ -2807,7 +2931,13 @@ impl<'a> Socket<'a> {
+@@ -2807,7 +2945,13 @@ impl<'a> Socket<'a> {
                  // flags, depending on whether the transmit half of the connection is open.
                  if offset + repr.payload.len() == self.tx_buffer.len() {
                      match self.state {
@@ -2838,7 +2859,7 @@ index 4ea9cc6..db5090d 100644
                              repr.control = TcpControl::Fin
                          }
                          State::Established | State::CloseWait if !repr.payload.is_empty() => {
-@@ -2826,14 +2956,13 @@ impl<'a> Socket<'a> {
+@@ -2826,14 +2970,13 @@ impl<'a> Socket<'a> {
          // has expired, and we also have data in transmit buffer. Since any packet that occupies
          // sequence space will elicit an ACK, we only need to send an explicit packet if we
          // couldn't fill the sequence space with anything.
@@ -2857,7 +2878,7 @@ index 4ea9cc6..db5090d 100644
  
          // Trace a summary of what will be sent.
          if is_keep_alive {
-@@ -2871,9 +3000,55 @@ impl<'a> Socket<'a> {
+@@ -2871,9 +3014,55 @@ impl<'a> Socket<'a> {
          // Bailing out if the packet isn't placed in the device buffer allows us
          // to not waste time waiting for the retransmit timer on packets that we know
          // for sure will not be successfully transmitted.
@@ -2913,7 +2934,7 @@ index 4ea9cc6..db5090d 100644
          // We have successfully emitted, if this was a fast retransmission it is not pending anymore
          self.pending_fast_retransmit = false;
  
-@@ -2907,10 +3082,12 @@ impl<'a> Socket<'a> {
+@@ -2907,10 +3096,12 @@ impl<'a> Socket<'a> {
  
          // We've sent a packet successfully, so we can update the internal state now.
          // Use max() so a fast-retransmit segment (whose seq_number is local_seq_no, well
@@ -2930,7 +2951,7 @@ index 4ea9cc6..db5090d 100644
          self.remote_last_ack = repr.ack_number;
          self.remote_last_win = repr.window_len;
  
-@@ -3285,8 +3462,10 @@ mod test {
+@@ -3285,8 +3476,10 @@ mod test {
          s.state = State::SynReceived;
          s.tuple = Some(TUPLE);
          s.local_seq_no = LOCAL_SEQ;
@@ -2941,7 +2962,7 @@ index 4ea9cc6..db5090d 100644
          s.remote_win_len = 256;
          s
      }
-@@ -3300,7 +3479,9 @@ mod test {
+@@ -3300,7 +3493,9 @@ mod test {
          s.state = State::SynSent;
          s.tuple = Some(TUPLE);
          s.local_seq_no = LOCAL_SEQ;
@@ -2951,7 +2972,7 @@ index 4ea9cc6..db5090d 100644
          s
      }
  
-@@ -3312,7 +3493,9 @@ mod test {
+@@ -3312,7 +3507,9 @@ mod test {
          let mut s = socket_syn_received_with_buffer_sizes(tx_len, rx_len);
          s.state = State::Established;
          s.local_seq_no = LOCAL_SEQ + 1;
@@ -2961,7 +2982,7 @@ index 4ea9cc6..db5090d 100644
          s.remote_last_ack = Some(REMOTE_SEQ + 1);
          s.remote_last_win = s.scaled_window();
          s
-@@ -3332,7 +3515,9 @@ mod test {
+@@ -3332,7 +3529,9 @@ mod test {
          let mut s = socket_fin_wait_1();
          s.state = State::FinWait2;
          s.local_seq_no = LOCAL_SEQ + 1 + 1;
@@ -2971,7 +2992,7 @@ index 4ea9cc6..db5090d 100644
          s
      }
  
-@@ -3340,6 +3525,7 @@ mod test {
+@@ -3340,6 +3539,7 @@ mod test {
          let mut s = socket_fin_wait_1();
          s.state = State::Closing;
          s.remote_last_seq = LOCAL_SEQ + 1 + 1;
@@ -2979,7 +3000,7 @@ index 4ea9cc6..db5090d 100644
          s.remote_seq_no = REMOTE_SEQ + 1 + 1;
          s.timer = Timer::Retransmit {
              expires_at: Instant::from_millis_const(1000),
-@@ -3539,7 +3725,7 @@ mod test {
+@@ -3539,7 +3739,7 @@ mod test {
      }
  
      #[test]
@@ -2988,7 +3009,7 @@ index 4ea9cc6..db5090d 100644
          let mut s = socket_listen();
          send!(
              s,
-@@ -3549,14 +3735,21 @@ mod test {
+@@ -3549,14 +3749,21 @@ mod test {
                  ack_number: None,
                  max_seg_size: Some(10),
                  ..SEND_TEMPL
@@ -3014,7 +3035,7 @@ index 4ea9cc6..db5090d 100644
          let mut s = socket_listen();
          send!(
              s,
-@@ -3566,10 +3759,17 @@ mod test {
+@@ -3566,10 +3773,17 @@ mod test {
                  ack_number: None,
                  max_seg_size: Some(0),
                  ..SEND_TEMPL
@@ -3035,7 +3056,7 @@ index 4ea9cc6..db5090d 100644
      }
  
      #[test]
-@@ -3952,6 +4152,7 @@ mod test {
+@@ -3952,6 +4166,7 @@ mod test {
      fn test_connect() {
          let mut s = socket();
          s.local_seq_no = LOCAL_SEQ;
@@ -3043,7 +3064,7 @@ index 4ea9cc6..db5090d 100644
          s.socket
              .connect(&mut s.cx, REMOTE_END, LOCAL_END.port)
              .unwrap();
-@@ -3983,9 +4184,10 @@ mod test {
+@@ -3983,9 +4198,10 @@ mod test {
      }
  
      #[test]
@@ -3055,7 +3076,7 @@ index 4ea9cc6..db5090d 100644
          s.socket
              .connect(&mut s.cx, REMOTE_END, LOCAL_END.port)
              .unwrap();
-@@ -4010,16 +4212,24 @@ mod test {
+@@ -4010,16 +4226,24 @@ mod test {
                  max_seg_size: Some(10),
                  window_scale: Some(0),
                  ..SEND_TEMPL
@@ -3084,7 +3105,7 @@ index 4ea9cc6..db5090d 100644
          s.socket
              .connect(&mut s.cx, REMOTE_END, LOCAL_END.port)
              .unwrap();
-@@ -4044,10 +4254,17 @@ mod test {
+@@ -4044,10 +4268,17 @@ mod test {
                  max_seg_size: Some(0),
                  window_scale: Some(0),
                  ..SEND_TEMPL
@@ -3105,7 +3126,7 @@ index 4ea9cc6..db5090d 100644
      }
  
      #[test]
-@@ -4079,6 +4296,7 @@ mod test {
+@@ -4079,6 +4310,7 @@ mod test {
      fn test_syn_sent_sanity() {
          let mut s = socket();
          s.local_seq_no = LOCAL_SEQ;
@@ -3113,7 +3134,7 @@ index 4ea9cc6..db5090d 100644
          s.socket.connect(&mut s.cx, REMOTE_END, LOCAL_END).unwrap();
          sanity!(s, socket_syn_sent());
      }
-@@ -4276,6 +4494,8 @@ mod test {
+@@ -4276,6 +4508,8 @@ mod test {
      #[test]
      fn test_syn_sent_rst() {
          let mut s = socket_syn_sent();
@@ -3122,7 +3143,7 @@ index 4ea9cc6..db5090d 100644
          send!(
              s,
              TcpRepr {
-@@ -4502,6 +4722,7 @@ mod test {
+@@ -4502,6 +4736,7 @@ mod test {
          ] {
              let mut s = socket_with_buffer_sizes(64, *buffer_size);
              s.local_seq_no = LOCAL_SEQ;
@@ -3130,7 +3151,7 @@ index 4ea9cc6..db5090d 100644
              assert_eq!(s.remote_win_shift, *shift_amt);
              s.socket.connect(&mut s.cx, REMOTE_END, LOCAL_END).unwrap();
              recv!(
-@@ -5077,7 +5298,9 @@ mod test {
+@@ -5077,7 +5312,9 @@ mod test {
          let mut s = socket_established();
          let local_seq_start = TcpSeqNumber(i32::MAX - 1);
          s.local_seq_no = local_seq_start + 1;
@@ -3140,7 +3161,7 @@ index 4ea9cc6..db5090d 100644
          s.send_slice(b"abc").unwrap();
          recv!(s, time 1000, Ok(TcpRepr {
              seq_number: local_seq_start + 1,
-@@ -5357,14 +5580,13 @@ mod test {
+@@ -5357,14 +5594,13 @@ mod test {
      }
  
      #[test]
@@ -3159,7 +3180,7 @@ index 4ea9cc6..db5090d 100644
          s.socket
              .connect(&mut s.cx, REMOTE_END, LOCAL_END.port)
              .unwrap();
-@@ -5387,7 +5609,7 @@ mod test {
+@@ -5387,7 +5623,7 @@ mod test {
                  control: TcpControl::Syn,
                  seq_number: REMOTE_SEQ,
                  ack_number: Some(LOCAL_SEQ + 1),
@@ -3168,7 +3189,7 @@ index 4ea9cc6..db5090d 100644
                  window_scale: Some(0),
                  timestamp: Some(TcpTimestampRepr::new(500, 1)),
                  ..SEND_TEMPL
-@@ -6063,7 +6285,8 @@ mod test {
+@@ -6063,7 +6299,8 @@ mod test {
          // Push one byte into the tx buffer to simulate data that preceded the FIN.
          let _ = s.tx_buffer.enqueue_slice(b"x");
          // Mark it as already sent (remote_last_seq is past the data byte and the FIN).
@@ -3178,7 +3199,7 @@ index 4ea9cc6..db5090d 100644
  
          // Remote ACKs just the data byte, not the FIN (partial ACK).
          // ack_number = local_seq_no + 1  =>  ack_len = 1, ack_of_fin = false.
-@@ -6633,6 +6856,8 @@ mod test {
+@@ -6633,6 +6870,8 @@ mod test {
      #[test]
      fn test_data_retransmit_bursts() {
          let mut s = socket_established();
@@ -3187,7 +3208,7 @@ index 4ea9cc6..db5090d 100644
          s.remote_mss = 6;
          s.send_slice(b"abcdef012345").unwrap();
  
-@@ -7022,6 +7247,8 @@ mod test {
+@@ -7022,6 +7261,8 @@ mod test {
      #[test]
      fn test_fast_retransmit_after_triple_duplicate_ack() {
          let mut s = socket_established();
@@ -3196,7 +3217,7 @@ index 4ea9cc6..db5090d 100644
          s.remote_mss = 3;
  
          // Normal ACK of previously received segment
-@@ -7522,6 +7749,8 @@ mod test {
+@@ -7522,6 +7763,8 @@ mod test {
      #[test]
      fn test_data_retransmit_ack_more_than_expected() {
          let mut s = socket_established();
@@ -3205,7 +3226,7 @@ index 4ea9cc6..db5090d 100644
          s.remote_mss = 6;
          s.send_slice(b"aaaaaabbbbbbcccccc").unwrap();
  
-@@ -7738,6 +7967,11 @@ mod test {
+@@ -7738,6 +7981,11 @@ mod test {
              cx: interface.inner,
              ..socket_listen()
          };
@@ -3217,7 +3238,7 @@ index 4ea9cc6..db5090d 100644
          s.tx_buffer = SocketBuffer::new(vec![0; 2 * MAX_SEGMENTABLE_SIZE]);
  
          send!(
-@@ -8885,6 +9119,7 @@ mod test {
+@@ -8885,6 +9133,7 @@ mod test {
      fn test_connect_timeout() {
          let mut s = socket();
          s.local_seq_no = LOCAL_SEQ;
@@ -3225,7 +3246,49 @@ index 4ea9cc6..db5090d 100644
          s.socket
              .connect(&mut s.cx, REMOTE_END, LOCAL_END.port)
              .unwrap();
-@@ -9982,6 +10217,1208 @@ mod test {
+@@ -9566,6 +9815,41 @@ mod test {
+         );
+     }
+ 
++    #[test]
++    fn a_receive_batch_acknowledges_each_pair_without_waiting_for_dispatch() {
++        let mut socket = socket_established_with_buffer_sizes(65535, 65535);
++        let receive_mss = socket.cx.ip_mtu() - SEND_IP_TEMPL.header_len() - TCP_HEADER_LEN;
++        // Changing the other direction's advertised MSS must not delay our ACK.
++        socket.remote_mss = 65535;
++        socket.set_ack_delay(Some(ACK_DELAY_DEFAULT));
++        let data = vec![7; receive_mss];
++        for index in 0..8 {
++            let reply = send(
++                &mut socket,
++                Instant::from_millis(1),
++                &TcpRepr {
++                    seq_number: REMOTE_SEQ + 1 + index * receive_mss,
++                    ack_number: Some(LOCAL_SEQ + 1),
++                    payload: &data,
++                    ..SEND_TEMPL
++                },
++            );
++            if index % 2 == 0 {
++                assert!(reply.is_none());
++            } else {
++                let ack =
++                    reply.expect("second in-order segment must acknowledge the receive batch");
++                assert_eq!(
++                    ack.ack_number,
++                    Some(REMOTE_SEQ + 1 + (index + 1) * receive_mss)
++                );
++                assert!(ack.payload.is_empty());
++            }
++        }
++        recv_nothing!(socket, time 20);
++        assert_eq!(socket.recv_queue(), 8 * receive_mss);
++    }
++
+     #[test]
+     fn test_delayed_ack_every_rmss() {
+         let mut s = socket_established_with_buffer_sizes(DEFAULT_MSS * 2, DEFAULT_MSS * 2);
+@@ -9982,6 +10266,1208 @@ mod test {
          assert_eq!(s.rtte.retransmission_timeout(), Duration::from_millis(50));
      }
  
@@ -4434,7 +4497,7 @@ index 4ea9cc6..db5090d 100644
      #[test]
      fn test_set_get_congestion_control() {
          let mut s = socket_established();
-@@ -10146,6 +11583,7 @@ mod test {
+@@ -10146,6 +11632,7 @@ mod test {
          s.set_tsval_generator(Some(|| 1));
          assert!(s.timestamp_enabled());
          s.local_seq_no = LOCAL_SEQ;
@@ -4442,7 +4505,7 @@ index 4ea9cc6..db5090d 100644
          s.socket
              .connect(&mut s.cx, REMOTE_END, LOCAL_END.port)
              .unwrap();
-@@ -10195,6 +11633,7 @@ mod test {
+@@ -10195,6 +11682,7 @@ mod test {
          // s.set_timestamp(false); // commented to alert if the default state changes
          assert!(!s.timestamp_enabled());
          s.local_seq_no = LOCAL_SEQ;

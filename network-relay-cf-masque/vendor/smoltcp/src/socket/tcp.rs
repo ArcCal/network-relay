@@ -2412,6 +2412,20 @@ impl<'a> Socket<'a> {
             };
         }
 
+        // Interface polling may drain an entire receive batch before dispatching
+        // any socket. Return the cumulative ACK in the receive path once more
+        // than one locally advertised MSS has arrived (RFC 9293 section 3.8.6.3).
+        // The peer's MSS applies to traffic in the opposite direction.
+        let receive_mss = cx.ip_mtu() - ip_repr.header_len() - TCP_HEADER_LEN;
+        if !repr.payload.is_empty()
+            && self
+                .remote_last_ack
+                .is_some_and(|last| last + receive_mss < self.remote_seq_no + self.rx_buffer.len())
+        {
+            self.ack_delay_timer = AckDelayTimer::Idle;
+            return Some(self.ack_reply(ip_repr, repr));
+        }
+
         // Per RFC 5681, we should send an immediate ACK when either:
         //  1) an out-of-order segment is received, or
         //  2) a segment arrives that fills in all or part of a gap in sequence space.
@@ -9799,6 +9813,41 @@ mod test {
                 ..RECV_TEMPL
             })
         );
+    }
+
+    #[test]
+    fn a_receive_batch_acknowledges_each_pair_without_waiting_for_dispatch() {
+        let mut socket = socket_established_with_buffer_sizes(65535, 65535);
+        let receive_mss = socket.cx.ip_mtu() - SEND_IP_TEMPL.header_len() - TCP_HEADER_LEN;
+        // Changing the other direction's advertised MSS must not delay our ACK.
+        socket.remote_mss = 65535;
+        socket.set_ack_delay(Some(ACK_DELAY_DEFAULT));
+        let data = vec![7; receive_mss];
+        for index in 0..8 {
+            let reply = send(
+                &mut socket,
+                Instant::from_millis(1),
+                &TcpRepr {
+                    seq_number: REMOTE_SEQ + 1 + index * receive_mss,
+                    ack_number: Some(LOCAL_SEQ + 1),
+                    payload: &data,
+                    ..SEND_TEMPL
+                },
+            );
+            if index % 2 == 0 {
+                assert!(reply.is_none());
+            } else {
+                let ack =
+                    reply.expect("second in-order segment must acknowledge the receive batch");
+                assert_eq!(
+                    ack.ack_number,
+                    Some(REMOTE_SEQ + 1 + (index + 1) * receive_mss)
+                );
+                assert!(ack.payload.is_empty());
+            }
+        }
+        recv_nothing!(socket, time 20);
+        assert_eq!(socket.recv_queue(), 8 * receive_mss);
     }
 
     #[test]

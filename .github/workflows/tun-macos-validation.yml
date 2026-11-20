@@ -1,0 +1,63 @@
+# Diagnostic workflow template. GitHub executes this only when explicitly
+# installed under .github/workflows on an authorized diagnostic branch.
+name: Network Relay Tun native validation
+on:
+  push:
+    branches: ['audit/tun-macos-validation-*']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  macos:
+    runs-on: xcode-27
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d
+        with:
+          toolchain: stable
+          targets: aarch64-apple-darwin
+      - name: Record native toolchain
+        run: |
+          sw_vers
+          uname -m
+          xcodebuild -version
+          xcrun --sdk macosx --show-sdk-version
+          rustc --version
+          swift --version
+      - name: Reproduce helper-exit connection failure
+        run: |
+          set -o pipefail
+          mkdir -p network-relay-tun/.validation
+          bash network-relay-tun/scripts/test-native-host-session.sh 2>&1 | tee network-relay-tun/.validation/host-session.log
+      - name: Build, test and verify signed application
+        id: build
+        if: always()
+        run: |
+          set -o pipefail
+          mkdir -p network-relay-tun/.validation
+          bash network-relay-tun/build-macos.sh 2>&1 | tee network-relay-tun/.validation/macos-build.log
+      - name: Verify bundle and helpers
+        if: always() && steps.build.outcome == 'success'
+        run: |
+          app='network-relay-tun/dist/Network Relay Tun.app'
+          codesign --verify --deep --strict --verbose=2 "$app"
+          codesign --verify --strict "$app/Contents/Helpers/network-relay-tun-host"
+          codesign --verify --strict "$app/Contents/Helpers/packet-worker"
+          test -f "$app/Contents/Resources/install-helper.sh"
+          test -f "$app/Contents/Resources/uninstall-helper.sh"
+      - name: Exercise installed helper and global capture on the disposable runner
+        if: always() && steps.build.outcome == 'success'
+        timeout-minutes: 5
+        run: |
+          set -o pipefail
+          bash network-relay-tun/scripts/test-native-helper.sh --capture 2>&1 | tee network-relay-tun/.validation/native-helper.log
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: network-relay-tun-native-validation
+          path: network-relay-tun/.validation/
+          retention-days: 7
+          include-hidden-files: true

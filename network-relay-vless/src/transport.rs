@@ -863,22 +863,20 @@ mod tests {
     #[tokio::test]
     async fn full_writer_queue_preserves_reverse_progress_and_neighbor_streams() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        // Fix the peer's window before the TCP handshake. Shrinking a live
+        // connection to 4 KiB and growing it during the drain can leave Linux
+        // waiting for zero-window probes even after the peer resumes reading.
+        socket2::SockRef::from(&listener).set_recv_buffer_size(64 * 1024).unwrap();
         let port = listener.local_addr().unwrap().port();
         let (reverse, send_reverse) = oneshot::channel();
         let (drain, start_draining) = oneshot::channel::<usize>();
         let peer = tokio::spawn(async move {
             let (tcp, _) = listener.accept().await.unwrap();
-            let receive_buffer = socket2::SockRef::from(&tcp).recv_buffer_size().unwrap();
-            socket2::SockRef::from(&tcp).set_recv_buffer_size(4096).unwrap();
             let mut ws = tokio_tungstenite::accept_async(tcp).await.unwrap();
             assert!(matches!(ws.next().await, Some(Ok(Message::Binary(_)))));
             send_reverse.await.unwrap();
             ws.send(Message::Binary(Bytes::from_static(b"\0\0reverse progress"))).await.unwrap();
             let expected = start_draining.await.unwrap();
-            // Restore the fixture's ordinary receive buffer after provoking
-            // backpressure; its tiny advertised window is not a drain-rate
-            // requirement on the production transport.
-            socket2::SockRef::from(ws.get_ref()).set_recv_buffer_size(receive_buffer).unwrap();
             let mut received = 0;
             while received < expected {
                 let Some(Ok(Message::Binary(data))) = ws.next().await else { panic!("missing queued payload") };

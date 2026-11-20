@@ -1,0 +1,32 @@
+name: Compare bounded log retention policies in the independent NF and TUN models
+'on':
+  push:
+    branches: [audit/client-log-alternatives-20261120]
+permissions:
+  contents: read
+jobs:
+  study:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-15, xcode-27]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with: {persist-credentials: false}
+      - name: Verify chronological priority and measure cost with the native Swift runtime
+        run: |
+          set -euo pipefail
+          mkdir "$RUNNER_TEMP/evidence"
+          xcrun swiftc --version > "$RUNNER_TEMP/evidence/toolchain.txt"
+          for name in nf tun; do
+            case "$name" in nf) model=NetworkRelayNFModel;; tun) model=NetworkRelayTunModel;; esac
+            xcrun swiftc -O -parse-as-library "network-relay-$name/App/Sources/$model/ClientLog.swift" diagnostics/client-log/Study.swift -o "$RUNNER_TEMP/log-study"
+            "$RUNNER_TEMP/log-study" > "$RUNNER_TEMP/evidence/$name.txt"
+          done
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: client-log-${{ matrix.runner }}
+          path: ${{ runner.temp }}/evidence
+          retention-days: 7

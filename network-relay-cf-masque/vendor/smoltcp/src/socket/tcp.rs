@@ -1986,6 +1986,14 @@ impl<'a> Socket<'a> {
             control = TcpControl::None;
         }
 
+        // SYN windows are never scaled, including when the SYN negotiates scaling.
+        let scale = match repr.control {
+            TcpControl::Syn => 0,
+            _ => self.remote_win_scale.unwrap_or(0),
+        };
+        let new_remote_win_len = usize::from(repr.window_len) << scale;
+        let is_window_update = new_remote_win_len != self.remote_win_len;
+
         // Validate and update the state.
         match (self.state, control) {
             // RSTs are not accepted in the LISTEN state.
@@ -2150,11 +2158,19 @@ impl<'a> Socket<'a> {
                     self.set_state(State::Closed);
                     self.tuple = None;
                 } else if ack_len == 0 {
-                    // Duplicate ACK; our FIN has not been acknowledged.
-                    // Per RFC 9293 (3.10.7.4), send a challenge ACK.
-                    return self.challenge_ack_reply(cx, ip_repr, repr);
+                    // close() marks LAST-ACK before all queued data has been
+                    // sent. Until the FIN can go on the wire, a window update
+                    // at RCV.NXT and SND.UNA still controls those bytes
+                    // (RFC 9293 sections 3.10.4 and 3.10.7.4).
+                    let window_for_unsent_data = is_window_update
+                        && self.local_highest_seq < self.local_seq_no + self.tx_buffer.len()
+                        && repr.control == TcpControl::None
+                        && repr.payload.is_empty()
+                        && repr.seq_number == window_start;
+                    if !window_for_unsent_data {
+                        return self.challenge_ack_reply(cx, ip_repr, repr);
+                    }
                 }
-                // Partial ACK: fall through to advance SND.UNA normally.
             }
 
             _ => {
@@ -2179,14 +2195,6 @@ impl<'a> Socket<'a> {
                 .cap_initial_window(segments * effective_mss);
         }
 
-        // RFC 1323: The window field (SEG.WND) in the header of every incoming segment, with the
-        // exception of SYN segments, is left-shifted by Snd.Wind.Scale bits before updating SND.WND.
-        let scale = match repr.control {
-            TcpControl::Syn => 0,
-            _ => self.remote_win_scale.unwrap_or(0),
-        };
-        let new_remote_win_len = (repr.window_len as usize) << (scale as usize);
-        let is_window_update = new_remote_win_len != self.remote_win_len;
         self.remote_win_len = new_remote_win_len;
 
         self.congestion_controller
@@ -6304,6 +6312,89 @@ mod test {
         assert_eq!(s.state, State::LastAck);
         // SND.UNA has advanced to the partial ACK number.
         assert_eq!(s.local_seq_no, LOCAL_SEQ + 1 + 1);
+    }
+
+    #[test]
+    fn test_queued_close_uses_a_window_update_before_fin_is_sent() {
+        for old_window in [0, 2] {
+            let mut s = socket_close_wait();
+            s.remote_win_len = old_window;
+            s.remote_win_scale = Some(1);
+            s.send_slice(b"abcdef").unwrap();
+            s.close();
+            let update = TcpRepr {
+                seq_number: REMOTE_SEQ + 2,
+                ack_number: Some(LOCAL_SEQ + 1),
+                window_len: 2,
+                ..SEND_TEMPL
+            };
+            send!(s, time 10, update);
+            assert_eq!(s.remote_win_len, 4);
+            assert_eq!(s.local_seq_no, LOCAL_SEQ + 1);
+            recv!(s, time 10, Ok(TcpRepr {
+                seq_number: LOCAL_SEQ + 1,
+                ack_number: Some(REMOTE_SEQ + 2),
+                payload: b"abcd",
+                ..RECV_TEMPL
+            }));
+            send!(s, time 11, TcpRepr {
+                ack_number: Some(LOCAL_SEQ + 5),
+                ..update
+            });
+            recv!(s, time 11, Ok(TcpRepr {
+                control: TcpControl::Fin,
+                seq_number: LOCAL_SEQ + 5,
+                ack_number: Some(REMOTE_SEQ + 2),
+                payload: b"ef",
+                ..RECV_TEMPL
+            }));
+            send!(s, time 12, TcpRepr {
+                ack_number: Some(LOCAL_SEQ + 8),
+                ..update
+            });
+            assert_eq!(s.state, State::Closed);
+        }
+    }
+
+    #[test]
+    fn test_queued_close_ignores_window_updates_beyond_the_peer_fin() {
+        let mut s = socket_close_wait();
+        s.remote_win_len = 0;
+        s.send_slice(b"queued").unwrap();
+        s.close();
+        let packet = TcpRepr {
+            seq_number: REMOTE_SEQ + 3,
+            ack_number: Some(LOCAL_SEQ + 1),
+            window_len: 32,
+            ..SEND_TEMPL
+        };
+        assert!(send(&mut s, Instant::from_millis(10), &packet).is_some());
+        assert_eq!(s.remote_win_len, 0);
+        assert_eq!(s.local_highest_seq, LOCAL_SEQ + 1);
+        recv_nothing!(s, time 11);
+    }
+
+    #[test]
+    fn test_queued_close_honors_a_smaller_window_before_transmitting() {
+        let mut s = socket_close_wait();
+        s.remote_win_len = 6;
+        s.send_slice(b"abcdef").unwrap();
+        s.close();
+        let update = TcpRepr {
+            seq_number: REMOTE_SEQ + 2,
+            ack_number: Some(LOCAL_SEQ + 1),
+            window_len: 0,
+            ..SEND_TEMPL
+        };
+        send!(s, time 10, update);
+        recv_nothing!(s, time 11);
+        send!(s, time 12, TcpRepr { window_len: 3, ..update });
+        recv!(s, time 12, Ok(TcpRepr {
+            seq_number: LOCAL_SEQ + 1,
+            ack_number: Some(REMOTE_SEQ + 2),
+            payload: b"abc",
+            ..RECV_TEMPL
+        }));
     }
 
     #[test]

@@ -2,7 +2,7 @@
   "upstream_repository": "https://github.com/smoltcp-rs/smoltcp",
   "upstream_commit": "336a1dd1aaf0eeb1afab5e3b4b479e818a23c03e",
   "upstream_license": "0BSD; original LICENSE-0BSD.txt retained unchanged",
-  "patch_description": "TCP sender corrections and bounded IPv4/IPv6 ingress reassembly. Reassembly is an explicit local feature with fixed packet/context bounds; the upstream default feature set is preserved. Scratch candidate pending full integration acceptance.",
+  "patch_description": "TCP sender corrections, including peer window updates for queued data before FIN, and bounded IPv4/IPv6 ingress reassembly. Reassembly is an explicit local feature with fixed packet and context bounds.",
   "upstream_files_sha256": {
     ".github/codecov.yml": "a3f9dbd81eea794acde6bd9a2d684f56add1f2f69ddfc906362667935482706e",
     ".github/workflows/coverage.yml": "92f368658ec6729e928f01f774eeba89543e1e399ec804feb287c7f88535cb56",
@@ -167,13 +167,13 @@
     "src/iface/interface/tests/mod.rs": "013b6ff6d4d56fe0c289a9364972d57957e1c8c36bacf587dd40701fdbb2308a",
     "src/iface/mod.rs": "d21340e3a520626fd36733c663cbb5a2feb0b512d9b65139134381477f581748",
     "src/iface/packet.rs": "986d22591311509b4a884d3bae0dbcf240dcc0a66a99b75e297260aa37660405",
-    "src/socket/tcp.rs": "3a170823ac04c887a6658787e0f9abb7cd5ebbee1e76373fb452640cec0fdd23",
+    "src/socket/tcp.rs": "ca84955791a0ebadbb3a7bb8dc70db107022aa8c39c50e97e01f36b10c894173",
     "src/socket/tcp/congestion.rs": "551531991a34597dc56208b7a5ee2710a0459397e7edaac5943045587075a861",
     "src/socket/tcp/congestion/cubic.rs": "26271da2fc389f646c689f31783cf566c4d22b08e8593c6862dc696d94c90c49",
     "src/socket/tcp/congestion/reno.rs": "4989f0a4d94e1bba236a0b0b83fcaf7c877cb34adf2be8305c07cd59041c6ef4",
     "src/wire/ipv6hbh.rs": "972e1ddd27a59bd76e7fb458081dd8bc158680cc377bd849b66878849946af4d"
   },
-  "patch_sha256": "dc33bd237faa38ba85d781b4013c06cfe265efb4f702ea88c7c57463355a8e3a",
+  "patch_sha256": "d722f74a050bf3a166ef452460e76b0a4cc6ebb77ddb5d18b0006d2a35dded33",
   "added_files_sha256": {
     "src/iface/ipv4_reassembly.rs": "22d9455ad02cd38c5f5812bd6542f214a62059ab831fa26616f4730486bf28d9",
     "src/iface/ipv6_input.rs": "bf1a2e04e6d9a4283abd305de6c18f38ef06b11f876df9b87ea9ac343a6c88f7",

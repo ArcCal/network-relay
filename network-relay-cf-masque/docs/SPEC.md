@@ -107,6 +107,9 @@ independent of QUIC keepalives and the subsequent 5-second SETTINGS wait.
 Initialization timeout explicitly closes QUIC and cancels the pending builder.
 TCP TIME-WAIT remains owned by smoltcp after application handles are dropped;
 the adapter must not remove it early or abort it at the ordinary close deadline.
+After peer FIN, queued response bytes still use the peer's advertised window.
+An in-sequence ACK that only updates that window can resume or limit transmission
+before the local FIN is sent (RFC 9293 sections 3.10.4 and 3.10.7.4).
 
 The TCP façade has endpoint metadata and an independent abort control. Stale
 abort controls cannot reset a subsequently reused socket. Connected UDP

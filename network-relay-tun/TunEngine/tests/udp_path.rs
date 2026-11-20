@@ -14,7 +14,7 @@ fn packet(payload: &[u8]) -> Vec<u8> {
     p[9] = 17;
     p[12..16].copy_from_slice(&[192, 0, 2, 1]);
     p[16..20].copy_from_slice(&[198, 51, 100, 2]);
-    let mut sum: u32 = p[..20].chunks_exact(2).map(|w| u16::from_be_bytes([w[0], w[1]]) as u32).sum();
+    let mut sum: u32 = p[..20].as_chunks::<2>().0.iter().map(|w| u32::from(u16::from_be_bytes(*w))).sum();
     while sum > 65535 {
         sum = (sum & 65535) + (sum >> 16);
     }
@@ -62,7 +62,7 @@ async fn forwarded_payload(size: usize, fragmented: bool) -> Vec<u8> {
             let flags = (index * 160) as u16 | if index + 1 < chunks.len() { 0x2000 } else { 0 };
             fragment[6..8].copy_from_slice(&flags.to_be_bytes());
             fragment[10..12].fill(0);
-            let mut sum: u32 = fragment.chunks_exact(2).map(|w| u16::from_be_bytes([w[0], w[1]]) as u32).sum();
+            let mut sum: u32 = fragment.as_chunks::<2>().0.iter().map(|w| u32::from(u16::from_be_bytes(*w))).sum();
             while sum > 65535 {
                 sum = (sum & 65535) + (sum >> 16);
             }
@@ -165,10 +165,11 @@ fn ip_packet(payload: &[u8], ipv6: bool, port: u16) -> Vec<u8> {
     p[42..44].copy_from_slice(&port.to_be_bytes());
     p[44..46].copy_from_slice(&length.to_be_bytes());
     p.extend_from_slice(payload);
-    let mut sum: u32 =
-        p[8..40].chunks_exact(2).chain(p[40..].chunks_exact(2)).map(|w| u16::from_be_bytes([w[0], w[1]]) as u32).sum();
-    if payload.len() % 2 != 0 {
-        sum += (*payload.last().unwrap() as u32) << 8;
+    // The two 16-byte addresses and UDP header/payload are contiguous.
+    let (words, tail) = p[8..].as_chunks::<2>();
+    let mut sum: u32 = words.iter().map(|w| u32::from(u16::from_be_bytes(*w))).sum();
+    if let [last] = tail {
+        sum += u32::from(*last) << 8;
     }
     sum += length as u32 + 17;
     while sum > 65535 {

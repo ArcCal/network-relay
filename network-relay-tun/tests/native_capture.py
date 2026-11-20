@@ -9,6 +9,7 @@ import struct
 import subprocess
 import sys
 import threading
+import time
 
 
 TARGETS = {"198.51.100.42", "2001:db8::42"}
@@ -86,6 +87,18 @@ def route_interface(address):
     return next(value.strip() for key, _, value in fields if key == "interface")
 
 
+def split_routes():
+    routes = []
+    for family in ("inet", "inet6"):
+        rows = [line.split() for line in output("/usr/sbin/netstat", "-rn", "-f", family).splitlines()]
+        header = next(row for row in rows if row[:1] == ["Destination"])
+        columns = [header.index(key) for key in ("Destination", "Gateway", "Flags", "Netif")]
+        for row in rows:
+            if row and row[0].endswith("/1"):
+                routes.append((family, *(row[index] for index in columns)))
+    return sorted(routes)
+
+
 def check_packets():
     payload = bytes(range(251)) * 47
     for host in sorted(TARGETS):
@@ -113,6 +126,7 @@ def check_packets():
 def main():
     initial_dns = dns_state()
     initial_route = route_interface(ENDPOINT)
+    initial_splits = split_routes()
     with socketserver.ThreadingTCPServer(("127.0.0.1", 0), Socks) as socks:
         socks.daemon_threads = True
         threading.Thread(target=socks.serve_forever, daemon=True).start()
@@ -137,12 +151,19 @@ def main():
                 assert request("activate", lease=lease)["state"] == "active"
                 assert request("refresh", lease=lease)["state"] == "active"
                 assert route_interface(ENDPOINT) == initial_route
+                owned_splits = [family for family, _, _, flags, name in split_routes() if name == interface and "I" not in flags]
+                assert sorted(owned_splits) == ["inet", "inet", "inet6", "inet6"], owned_splits
                 assert all(route_interface(host) == interface for host in TARGETS)
                 assert DNS in dns_state()
+                check_packets()
+                # Leave capture active across a controller heartbeat.
+                time.sleep(2)
+                assert request("refresh", lease=lease)["state"] == "active"
                 check_packets()
                 assert request("stop", lease=lease)["state"] == "idle"
                 assert dns_state() == initial_dns
                 assert route_interface(ENDPOINT) == initial_route
+                assert split_routes() == initial_splits
                 print("PASS native dual-stack TCP, UDP, DNS, relay bypass and resolver restoration")
             finally:
                 try:

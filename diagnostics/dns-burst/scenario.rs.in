@@ -1,0 +1,27 @@
+    #[tokio::test]
+    async fn measure_concurrent_dns_queries() {
+        use std::sync::atomic::Ordering;
+        let address: IpAddr = "198.51.100.77".parse().unwrap();
+        for (shape, keys, count, ttl, warm) in [
+            ("one", 1, 32, 10, false), ("distinct", 32, 32, 10, false),
+            ("mixed", 8, 64, 10, false), ("zero", 1, 32, 0, false),
+            ("warm", 1, 32, 10, true),
+        ] {
+            let (resolver, requests, server) = delayed_peer(1, Some((0, Duration::from_millis(20))), ttl).await;
+            if warm { assert_eq!(resolver.lookup("key-0.test").await.unwrap(), [address]); }
+            let start = Instant::now();
+            let resolver = &resolver;
+            let results = futures_util::future::join_all((0..count).map(|i| async move {
+                let name = if i % 2 == 0 { format!("KEY-{}.Test.", i % keys) } else { format!("key-{}.test", i % keys) };
+                resolver.lookup_until(&name, tokio::time::Instant::now()+Duration::from_secs(5)).await
+            })).await;
+            let elapsed = start.elapsed().as_secs_f64()*1000.0;
+            assert_eq!(results.len(), count);
+            for result in results {assert_eq!(result.unwrap(), [address]);}
+            let origin = requests.load(Ordering::SeqCst) - usize::from(warm);
+            assert_eq!(resolver.lookup("key-0.test").await.unwrap(),[address]);
+            assert_eq!(requests.load(Ordering::SeqCst) - origin - usize::from(warm), usize::from(ttl == 0));
+            println!("DNS-BURST {shape} {elapsed:.4} {origin}");
+            server.abort(); let _ = server.await;
+        }
+    }

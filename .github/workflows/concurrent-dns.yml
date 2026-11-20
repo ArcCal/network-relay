@@ -1,0 +1,129 @@
+name: Compare cold concurrent VLESS DNS policies and verify the selected source on
+  both Linux release architectures
+'on':
+  push:
+    branches:
+    - audit/vless-concurrent-dns-20261120
+permissions:
+  contents: read
+jobs:
+  release:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - runner: ubuntu-24.04
+          arch: amd64
+        - runner: ubuntu-22.04-arm
+          arch: arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 75
+    steps:
+    - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      with:
+        persist-credentials: false
+    - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d
+      with:
+        toolchain: stable
+        components: rustfmt,clippy
+    - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16
+      with:
+        go-version: 1.27.4
+        cache: false
+    - name: Validate exact candidate, release binary and root server policy
+      shell: bash
+      run: 'set -euo pipefail
+
+        mkdir "$RUNNER_TEMP/evidence"
+
+        export CARGO_TARGET_DIR="$RUNNER_TEMP/target"
+
+        cd network-relay-vless
+
+        cargo fmt --check
+
+        cargo clippy --locked --all-targets -- -D warnings
+
+        cargo test --locked --release | tee "$RUNNER_TEMP/evidence/functional.txt"
+
+        cargo build --locked --release --bin network-relay-vless
+
+        "$CARGO_TARGET_DIR/release/network-relay-vless" --version
+
+        cd ..
+
+        cargo test --locked --release --lib policy:: | tee "$RUNNER_TEMP/evidence/policy.txt"
+
+        '
+    - name: Run all real Xray tests against its verified release source
+      shell: bash
+      run: 'set -euo pipefail
+
+        dir="$RUNNER_TEMP/xray"
+
+        git clone --quiet --depth 1 --branch v26.10.31 https://github.com/XTLS/Xray-core.git
+        "$dir"
+
+        test "$(git -C "$dir" rev-parse HEAD)" = a4a3dff5b20c2faae567b742c172c7b95e75c083
+
+        (cd "$dir" && GOTOOLCHAIN=local go build -mod=readonly -trimpath -o "$RUNNER_TEMP/xray-bin"
+        ./main)
+
+        export XRAY_BIN="$RUNNER_TEMP/xray-bin" CARGO_TARGET_DIR="$RUNNER_TEMP/target"
+
+        cd network-relay-vless
+
+        cargo test --locked --release --test xray_interop -- --ignored --test-threads=1
+        | tee "$RUNNER_TEMP/evidence/xray.txt"
+
+        '
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      if: always()
+      with:
+        name: concurrent-dns-release-${{ matrix.arch }}
+        path: ${{ runner.temp }}/evidence
+        retention-days: 7
+  compare:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - runner: ubuntu-24.04
+          arch: amd64
+        - runner: ubuntu-22.04-arm
+          arch: arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 75
+    steps:
+    - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      with:
+        persist-credentials: false
+    - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d
+      with:
+        toolchain: stable
+        components: rustfmt,clippy
+    - name: Measure successful, zero TTL, and warm DNS traffic with independent binaries
+      shell: bash
+      run: "set -euo pipefail\nmkdir \"$RUNNER_TEMP/evidence\"\nexport CARGO_TARGET_DIR=\"\
+        $RUNNER_TEMP/target\"\nfor variant in original global striped shared; do\n\
+        \  python3 diagnostics/dns-burst/policy.py \"$variant\"\n  cargo test --locked\
+        \ --release --lib --no-run --manifest-path network-relay-vless/Cargo.toml\
+        \ --message-format json > \"$RUNNER_TEMP/bin.json\"\n  python3 - \"$variant\"\
+        \ <<'BIN'\nimport json, os, shutil, sys\nfrom pathlib import Path\nout=Path(os.environ['RUNNER_TEMP'])\n\
+        files=[p['executable'] for p in map(json.loads,(out/'bin.json').read_text().splitlines())\
+        \ if p.get('executable') and p.get('profile',{}).get('test') and 'lib' in\
+        \ p['target']['kind']]\nassert len(files)==1,files\nshutil.copy2(files[0],out/sys.argv[1])\n\
+        BIN\ndone\nfor round in 0 1 2 3; do\n  case \"$round\" in\n    0) order=\"\
+        original global striped shared\";;\n    1) order=\"shared striped global original\"\
+        ;;\n    2) order=\"striped original shared global\";;\n    3) order=\"global\
+        \ shared original striped\";;\n  esac\n  for variant in $order; do\n    \"\
+        $RUNNER_TEMP/$variant\" --exact dns::tests::measure_concurrent_dns_queries\
+        \ --nocapture > \"$RUNNER_TEMP/evidence/$round-$variant.txt\"\n    test \"\
+        $(grep -c '^DNS-BURST ' \"$RUNNER_TEMP/evidence/$round-$variant.txt\")\" =\
+        \ 5\n  done\ndone\n"
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      if: always()
+      with:
+        name: concurrent-dns-matrix-${{ matrix.arch }}
+        path: ${{ runner.temp }}/evidence
+        retention-days: 7

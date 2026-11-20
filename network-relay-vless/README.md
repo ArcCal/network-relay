@@ -87,8 +87,10 @@ restart (the program says so when it notices one).
   larger ones back. The tested mihomo and sing-box versions pass empty
   datagrams; Xray-core v26.10.31 discards them in its own reader/writers.
 - **Names**: looked up with DNS over TCP to `dns_servers`. Concurrent callers
-  can share a pending lookup for the same name and resolver configuration.
-  Each attempt uses its own VLESS connection and pipelines A and AAAA.
+  can share a complete attempt to the same DNS server for the same name.
+  Each caller retains its own deadline and can try the next server. A caller
+  with little time left can collect a partial family answer independently.
+  Each upstream attempt uses its own VLESS connection and pipelines A and AAAA.
   A zero-TTL answer applies only to the active transaction. Other answers are
   cached for their TTL, including CNAMEs (at most five minutes). Unrelated answer
   records are ignored. A usable answer is retained if the other address

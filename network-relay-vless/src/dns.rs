@@ -1,8 +1,7 @@
-//! Name lookups through the VLESS server: DNS over TCP (RFC 1035 section
-//! 4.2.2, RFC 7766) to the configured resolvers. Concurrent callers can
-//! share a pending lookup for the same name. Each upstream attempt uses a
-//! separate VLESS connection. The relay checks the returned addresses against
-//! its destination rules. Names never reach this host's resolver.
+//! DNS over TCP through VLESS (RFC 1035 section 4.2.2 and RFC 7766). Callers
+//! can share an attempt to the same resolver for the same name while retaining
+//! their own failover sequence and deadline. The relay checks the returned
+//! addresses against its destination rules. Names never reach the host resolver.
 
 use std::collections::HashMap;
 use std::io;
@@ -32,6 +31,13 @@ const CACHE_ENTRIES: usize = 4096;
 const FAILURE_TTL: Duration = Duration::from_secs(1);
 
 type Lookup = Result<Vec<IpAddr>, Arc<io::Error>>;
+type Question = (String, SocketAddr);
+
+#[derive(Clone)]
+enum Attempt {
+    Answer(Lookup),
+    TryNext(Arc<io::Error>),
+}
 
 struct CacheEntry {
     result: Lookup,
@@ -43,7 +49,7 @@ struct CacheEntry {
 struct DnsCache {
     entries: IndexMap<String, CacheEntry>,
     hand: usize,
-    pending: HashMap<String, broadcast::Sender<Lookup>>,
+    pending: HashMap<Question, broadcast::Sender<Attempt>>,
 }
 
 impl DnsCache {
@@ -88,21 +94,20 @@ impl DnsCache {
 /// so another waiting caller can take over using its own remaining time.
 struct PendingLookup<'a> {
     cache: &'a Mutex<DnsCache>,
-    name: Option<&'a str>,
+    key: Option<&'a Question>,
 }
 
 impl PendingLookup<'_> {
-    fn remove(&mut self) -> Option<broadcast::Sender<Lookup>> {
-        let name = self.name.take()?;
-        self.cache.lock().unwrap_or_else(|e| e.into_inner()).pending.remove(name)
+    fn remove(&mut self) -> Option<broadcast::Sender<Attempt>> {
+        let key = self.key.take()?;
+        self.cache.lock().unwrap_or_else(|e| e.into_inner()).pending.remove(key)
     }
 
-    fn complete(mut self, result: &io::Result<Vec<IpAddr>>) {
+    fn complete(mut self, result: &Attempt) {
         // Remove before publishing. Only callers that joined this transaction
         // may consume its outcome, including an answer with a zero TTL.
         if let Some(sender) = self.remove().filter(|sender| sender.receiver_count() != 0) {
-            let shared = result.as_ref().cloned().map_err(|error| Arc::new(copy_error(error)));
-            let _ = sender.send(shared);
+            let _ = sender.send(result.clone());
         }
     }
 }
@@ -194,40 +199,9 @@ impl Resolver {
 
     async fn lookup_ordered(&self, host: &str, order: &mut LookupOrder) -> io::Result<Vec<IpAddr>> {
         let name = host.strip_suffix('.').unwrap_or(host).to_ascii_lowercase();
-        let pending = loop {
-            let mut receiver = {
-                let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
-                if let Some(result) = cache.get(&name, Instant::now()) {
-                    return result.clone().map_err(|error| copy_error(&error));
-                }
-                if let Some(sender) = cache.pending.get(&name) {
-                    sender.subscribe()
-                } else {
-                    // A caller with a nearly exhausted admission budget must
-                    // not impose a shorter resolver attempt on later callers.
-                    if cache.pending.len() >= CACHE_ENTRIES
-                        || order
-                            .deadline
-                            .is_some_and(|end| end.saturating_duration_since(tokio::time::Instant::now()) < PER_SERVER)
-                    {
-                        break None;
-                    }
-                    cache.pending.insert(name.clone(), broadcast::channel(1).0);
-                    break Some(PendingLookup { cache: &self.cache, name: Some(&name) });
-                }
-            };
-            if let Ok(answer) = receiver.recv().await {
-                return answer.map_err(|error| copy_error(&error));
-            }
-        };
-        let result = self.lookup_uncached(&name, order).await;
-        if let Some(pending) = pending {
-            pending.complete(&result);
+        if let Some(answer) = self.cache.lock().unwrap_or_else(|e| e.into_inner()).get(&name, Instant::now()) {
+            return answer.clone().map_err(|error| copy_error(&error));
         }
-        result
-    }
-
-    async fn lookup_uncached(&self, name: &str, order: &mut LookupOrder) -> io::Result<Vec<IpAddr>> {
         let fqdn = Name::from_ascii(format!("{name}."))
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "not a valid DNS name"))?;
         let mut last = io::Error::new(io::ErrorKind::TimedOut, "no resolver answered");
@@ -243,24 +217,12 @@ impl Resolver {
                 continue;
             }
             tried.push(server);
-            order.active = Some(index);
-            match self.ask(server, &fqdn, order.deadline).await {
-                Ok((mut addrs, ttl)) => {
-                    self.prefer(index);
-                    self.config.ip_preference.apply(&mut addrs);
-                    self.remember(name.to_owned(), Ok(addrs.clone()), ttl);
-                    return Ok(addrs);
-                }
-                Err(Failure::Final(e, ttl)) => {
-                    if e.kind() == io::ErrorKind::NotFound {
-                        self.prefer(index);
-                    }
-                    self.remember(name.to_owned(), Err(Arc::new(copy_error(&e))), ttl);
-                    return Err(e);
-                }
-                Err(Failure::Retry(e)) => {
-                    tracing::debug!(%server, "DNS through VLESS failed: {e}");
-                    last = e;
+            match self.ask_shared(&name, &fqdn, index, order).await {
+                Attempt::Answer(answer) => return answer.map_err(|error| copy_error(&error)),
+                Attempt::TryNext(error) => {
+                    order.active = Some(index);
+                    tracing::debug!(%server, "DNS through VLESS failed: {error}");
+                    last = copy_error(&error);
                 }
             }
         }
@@ -268,6 +230,70 @@ impl Resolver {
             self.remember(name.to_owned(), Err(Arc::new(copy_error(&last))), FAILURE_TTL);
         }
         Err(last)
+    }
+
+    /// Share one complete resolver attempt. Each caller owns its failover
+    /// sequence and deadline, even when it waited for the same first server.
+    async fn ask_shared(&self, name: &str, fqdn: &Name, index: usize, order: &mut LookupOrder) -> Attempt {
+        let server = self.config.dns_servers[index];
+        let key = (name.to_owned(), server);
+        let pending = loop {
+            let mut receiver = {
+                let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
+                // An answer can arrive between a cold read and registration.
+                if order.active.is_none() {
+                    if let Some(answer) = cache.get(name, Instant::now()) {
+                        return Attempt::Answer(answer.clone());
+                    }
+                }
+                let short = order
+                    .deadline
+                    .is_some_and(|end| end.saturating_duration_since(tokio::time::Instant::now()) < PER_SERVER);
+                let both = self.config.ip_preference.wants_ipv4() && self.config.ip_preference.wants_ipv6();
+                if short && both {
+                    // A short dual-family lookup may return a partial family
+                    // answer before a full-duration transaction completes.
+                    break None;
+                }
+                if let Some(sender) = cache.pending.get(&key) {
+                    sender.subscribe()
+                } else {
+                    if short || cache.pending.len() >= CACHE_ENTRIES {
+                        break None;
+                    }
+                    cache.pending.insert(key.clone(), broadcast::channel(1).0);
+                    break Some(PendingLookup { cache: &self.cache, key: Some(&key) });
+                }
+            };
+            order.active = None;
+            if let Ok(attempt) = receiver.recv().await {
+                return attempt;
+            }
+        };
+
+        order.active = Some(index);
+        let result = match self.ask(server, fqdn, order.deadline).await {
+            Ok((mut addrs, ttl)) => {
+                self.prefer(index);
+                self.config.ip_preference.apply(&mut addrs);
+                let result = Ok(addrs);
+                self.remember(name.to_owned(), result.clone(), ttl);
+                Attempt::Answer(result)
+            }
+            Err(Failure::Final(error, ttl)) => {
+                if error.kind() == io::ErrorKind::NotFound {
+                    self.prefer(index);
+                }
+                let result = Err(Arc::new(error));
+                self.remember(name.to_owned(), result.clone(), ttl);
+                Attempt::Answer(result)
+            }
+            Err(Failure::Retry(error)) => Attempt::TryNext(Arc::new(error)),
+        };
+        if let Some(pending) = pending {
+            pending.complete(&result);
+        }
+        result
     }
 
     /// Asks the resolvers for the root zone's NS records, which any
@@ -741,6 +767,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_shorter_deadline_of_another_lookup_cannot_cut_off_a_working_fallback() {
+        use std::sync::atomic::Ordering;
+        let (resolver, requests, server) = timeout_peer(2, Some((1, Duration::from_millis(400)))).await;
+        let start = tokio::time::Instant::now();
+        let (short, long) = tokio::join!(
+            resolver.lookup_until("fallback.test", start + PER_SERVER + Duration::from_millis(125)),
+            async {
+                wait_for_dns_state(|| requests.load(Ordering::SeqCst) != 0).await;
+                resolver.lookup_until("fallback.test", start + 2 * PER_SERVER).await
+            },
+        );
+        assert_eq!(short.unwrap_err().kind(), io::ErrorKind::TimedOut);
+        let address: IpAddr = "198.51.100.77".parse().unwrap();
+        assert_eq!(long.unwrap(), [address]);
+        assert_eq!(resolver.lookup("fallback.test").await.unwrap(), [address]);
+        assert!(requests.load(Ordering::SeqCst) >= 2);
+        server.abort();
+        let _ = server.await;
+    }
+
+    #[tokio::test]
     async fn a_waiter_deadline_and_leader_cancellation_do_not_poison_other_callers() {
         use std::sync::atomic::Ordering;
         let gate = Arc::new(tokio::sync::Semaphore::new(0));
@@ -759,10 +806,7 @@ mod tests {
             let resolver = resolver.clone();
             async move { resolver.lookup("BUSY.test.").await }
         });
-        wait_for_dns_state(|| {
-            resolver.cache.lock().unwrap().pending.get("busy.test").is_some_and(|s| s.receiver_count() != 0)
-        })
-        .await;
+        wait_for_dns_state(|| resolver.cache.lock().unwrap().pending.values().any(|s| s.receiver_count() != 0)).await;
         leader.abort();
         assert!(leader.await.unwrap_err().is_cancelled());
         wait_for_dns_state(|| requests.load(Ordering::SeqCst) == 2).await;
@@ -1155,52 +1199,61 @@ mod tests {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
         let server = tokio::spawn(async move {
-            let (tcp, _) = listener.accept().await.unwrap();
-            let mut ws = tokio_tungstenite::accept_async(tcp).await.unwrap();
-            let _header = ws.next().await.unwrap().unwrap();
-            let mut wire = Vec::new();
-            let mut queries = Vec::new();
-            while queries.len() < 2 {
-                if let WsMessage::Binary(data) = ws.next().await.unwrap().unwrap() {
-                    wire.extend_from_slice(&data);
-                    while wire.len() >= 2 {
-                        let len = u16::from_be_bytes([wire[0], wire[1]]) as usize;
-                        if wire.len() < len + 2 {
-                            break;
+            let mut tasks = tokio::task::JoinSet::new();
+            for _ in 0..if budget.is_some() { 2 } else { 1 } {
+                let (tcp, _) = listener.accept().await.unwrap();
+                tasks.spawn(async move {
+                    let mut ws = tokio_tungstenite::accept_async(tcp).await.unwrap();
+                    let _header = ws.next().await.unwrap().unwrap();
+                    let mut wire = Vec::new();
+                    let mut queries = Vec::new();
+                    while queries.len() < 2 {
+                        if let WsMessage::Binary(data) = ws.next().await.unwrap().unwrap() {
+                            wire.extend_from_slice(&data);
+                            while wire.len() >= 2 {
+                                let len = u16::from_be_bytes([wire[0], wire[1]]) as usize;
+                                if wire.len() < len + 2 {
+                                    break;
+                                }
+                                queries.push(Message::from_vec(&wire[2..len + 2]).unwrap());
+                                wire.drain(..len + 2);
+                            }
                         }
-                        queries.push(Message::from_vec(&wire[2..len + 2]).unwrap());
-                        wire.drain(..len + 2);
                     }
-                }
+                    let query = queries.iter().find(|q| q.queries[0].query_type() == qtype).unwrap();
+                    let mut answer = Message::response(query.metadata.id, OpCode::Query);
+                    answer.add_query(query.queries[0].clone());
+                    let data = match qtype {
+                        RecordType::A => RData::A(rdata::A("198.51.100.77".parse().unwrap())),
+                        _ => RData::AAAA(rdata::AAAA("2001:db8::7".parse().unwrap())),
+                    };
+                    if ttl != 0 {
+                        answer.add_answer(Record::from_rdata(query.queries[0].name().clone(), ttl, data));
+                    }
+                    let other = queries.iter().find(|q| q.queries[0].query_type() != qtype).unwrap();
+                    let mut failure = Message::response(other.metadata.id, OpCode::Query);
+                    failure.metadata.response_code =
+                        if truncated { ResponseCode::NoError } else { ResponseCode::ServFail };
+                    failure.metadata.truncation = truncated;
+                    failure.add_query(other.queries[0].clone());
+                    let answers = match failure_first {
+                        Some(true) => vec![failure, answer],
+                        Some(false) => vec![answer, failure],
+                        None => vec![answer],
+                    };
+                    let mut frame = vec![0, 0]; // VLESS response header.
+                    for answer in answers {
+                        let bytes = answer.to_vec().unwrap();
+                        frame.extend_from_slice(&(bytes.len() as u16).to_be_bytes());
+                        frame.extend_from_slice(&bytes);
+                    }
+                    ws.send(WsMessage::Binary(frame.into())).await.unwrap();
+                    tokio::time::sleep(Duration::from_secs(10)).await;
+                });
             }
-            let query = queries.iter().find(|q| q.queries[0].query_type() == qtype).unwrap();
-            let mut answer = Message::response(query.metadata.id, OpCode::Query);
-            answer.add_query(query.queries[0].clone());
-            let data = match qtype {
-                RecordType::A => RData::A(rdata::A("198.51.100.77".parse().unwrap())),
-                _ => RData::AAAA(rdata::AAAA("2001:db8::7".parse().unwrap())),
-            };
-            if ttl != 0 {
-                answer.add_answer(Record::from_rdata(query.queries[0].name().clone(), ttl, data));
+            while let Some(result) = tasks.join_next().await {
+                result.unwrap();
             }
-            let other = queries.iter().find(|q| q.queries[0].query_type() != qtype).unwrap();
-            let mut failure = Message::response(other.metadata.id, OpCode::Query);
-            failure.metadata.response_code = if truncated { ResponseCode::NoError } else { ResponseCode::ServFail };
-            failure.metadata.truncation = truncated;
-            failure.add_query(other.queries[0].clone());
-            let answers = match failure_first {
-                Some(true) => vec![failure, answer],
-                Some(false) => vec![answer, failure],
-                None => vec![answer],
-            };
-            let mut frame = vec![0, 0]; // VLESS response header.
-            for answer in answers {
-                let bytes = answer.to_vec().unwrap();
-                frame.extend_from_slice(&(bytes.len() as u16).to_be_bytes());
-                frame.extend_from_slice(&bytes);
-            }
-            ws.send(WsMessage::Binary(frame.into())).await.unwrap();
-            tokio::time::sleep(Duration::from_secs(10)).await;
         });
         let config = VlessConfig {
             server_host: "127.0.0.1".into(),
@@ -1214,7 +1267,14 @@ mod tests {
         let resolver = Resolver::new(Arc::new(config));
         let result = tokio::time::timeout(Duration::from_secs(4), async {
             match budget {
-                Some(budget) => resolver.lookup_until("victim.test", tokio::time::Instant::now() + budget).await,
+                Some(budget) => {
+                    let (full, short) = tokio::join!(resolver.lookup("victim.test"), async {
+                        wait_for_dns_state(|| !resolver.cache.lock().unwrap().pending.is_empty()).await;
+                        resolver.lookup_until("victim.test", tokio::time::Instant::now() + budget).await
+                    },);
+                    assert_eq!(full.unwrap(), *short.as_ref().unwrap());
+                    short
+                }
                 None => resolver.lookup("victim.test").await,
             }
         })

@@ -1,0 +1,55 @@
+name: Repeat the 50 ms Linux kernel control and reverse the TCP half-close
+'on':
+  push:
+    branches:
+    - audit/warp-kernel-half-close-repeat-20261120
+permissions:
+  contents: read
+jobs:
+  kernel:
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 95
+    strategy:
+      fail-fast: false
+      matrix:
+        runner:
+        - ubuntu-24.04
+        - ubuntu-22.04-arm
+    steps:
+    - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      with:
+        persist-credentials: false
+        fetch-depth: 6
+    - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d
+      with:
+        toolchain: stable
+    - name: Alternate native kernel peers, bounded receive buffers, and original 50
+        ms controls
+      shell: bash
+      run: "set -euo pipefail\nexport CARGO_TARGET_DIR=\"$RUNNER_TEMP/target\"\nmkdir\
+        \ -p \"$RUNNER_TEMP/evidence\"/{first,peer,paused}\nfor v in original window;\
+        \ do\n  python3 diagnostics/warp-acks/tail.py \"$v\" kernel\n  cargo build\
+        \ --locked --release --manifest-path diagnostics/performance/Cargo.toml --bin\
+        \ kernel\n  cp \"$CARGO_TARGET_DIR/release/kernel\" \"$RUNNER_TEMP/$v-first\"\
+        \n  python3 diagnostics/warp-acks/tail.py \"$v\"\n  cargo build --locked --release\
+        \ --manifest-path diagnostics/performance/Cargo.toml --bin kernel_peer\n \
+        \ cp \"$CARGO_TARGET_DIR/release/kernel_peer\" \"$RUNNER_TEMP/$v-peer\"\n\
+        done\nuname -r > \"$RUNNER_TEMP/evidence/kernel.txt\"\nfor round in $(seq\
+        \ 0 11); do\n if test $((round%2)) = 0; then seq=\"original window\"; else\
+        \ seq=\"window original\"; fi\n for v in $seq; do\n  sudo unshare --net --\
+        \ python3 diagnostics/warp-acks/kernel.py \"$RUNNER_TEMP/$v-first\" \"$v\"\
+        \ 50 1 \"$round\" \"$RUNNER_TEMP/evidence/first\"\n  for path in peer paused;\
+        \ do\n   for rtt in 0 50; do\n    if test \"$path\" = paused; then\n     sudo\
+        \ unshare --net -- env RELAY_KERNEL_PAUSE=1 python3 diagnostics/warp-acks/kernel.py\
+        \ \"$RUNNER_TEMP/$v-peer\" \"$v\" \"$rtt\" 1 \"$round\" \"$RUNNER_TEMP/evidence/$path\"\
+        \n    else\n     sudo unshare --net -- python3 diagnostics/warp-acks/kernel.py\
+        \ \"$RUNNER_TEMP/$v-peer\" \"$v\" \"$rtt\" 1 \"$round\" \"$RUNNER_TEMP/evidence/$path\"\
+        \n    fi\n   done\n  done\n done\ndone\ntest \"$(wc -l < \"$RUNNER_TEMP/evidence/first/transfers.jsonl\"\
+        )\" = 24\nfor path in peer paused; do test \"$(wc -l < \"$RUNNER_TEMP/evidence/$path/transfers.jsonl\"\
+        )\" = 48; done\n"
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      if: always()
+      with:
+        name: half-close-repeat-${{ matrix.runner }}
+        path: ${{ runner.temp }}/evidence
+        retention-days: 7

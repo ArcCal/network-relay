@@ -1,0 +1,48 @@
+name: Compare the real Linux TCP kernel with the inner userspace stack
+'on':
+  push:
+    branches:
+    - audit/warp-native-kernel-peer-20261120
+permissions:
+  contents: read
+jobs:
+  kernel:
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 95
+    strategy:
+      fail-fast: false
+      matrix:
+        runner:
+        - ubuntu-24.04
+        - ubuntu-22.04-arm
+    steps:
+    - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      with:
+        persist-credentials: false
+        fetch-depth: 3
+    - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d
+      with:
+        toolchain: stable
+    - name: Transfer and hash native kernel data using a private TUN in a fresh network
+        namespace
+      shell: bash
+      run: "set -euo pipefail\nmkdir \"$RUNNER_TEMP/evidence\"\nexport CARGO_TARGET_DIR=\"\
+        $RUNNER_TEMP/target\"\nfor v in prior ack batch ack-batch; do\n  python3 diagnostics/warp-acks/configure.py\
+        \ \"$v\"\n  cargo build --release --locked --manifest-path diagnostics/performance/Cargo.toml\
+        \ --bin kernel\n  cp \"$CARGO_TARGET_DIR/release/kernel\" \"$RUNNER_TEMP/$v\"\
+        \ndone\nuname -r > \"$RUNNER_TEMP/evidence/kernel.txt\"\nfor round in 0 1\
+        \ 2 3; do\n  case $round in\n    0) seq=\"prior ack batch ack-batch\";;\n\
+        \    1) seq=\"ack-batch batch ack prior\";;\n    2) seq=\"batch prior ack-batch\
+        \ ack\";;\n    3) seq=\"ack ack-batch prior batch\";;\n  esac\n  for v in\
+        \ $seq; do\n    for spec in 0:1 0:4 50:1 100:1 100:4; do\n      rtt=${spec%:*};\
+        \ n=${spec#*:}\n      sudo unshare --net -- /usr/bin/time -a -o \"$RUNNER_TEMP/evidence/cpu.txt\"\
+        \ -f \"$round $rtt $n $v %U %S %M\" python3 diagnostics/warp-acks/kernel.py\
+        \ \"$RUNNER_TEMP/$v\" \"$v\" \"$rtt\" \"$n\" \"$round\" \"$RUNNER_TEMP/evidence\"\
+        \n    done\n  done\ndone\ntest \"$(wc -l < \"$RUNNER_TEMP/evidence/transfers.jsonl\"\
+        )\" -eq 80\n"
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      if: always()
+      with:
+        name: warp-linux-kernel-${{ matrix.runner }}
+        path: ${{ runner.temp }}/evidence
+        retention-days: 7

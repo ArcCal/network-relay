@@ -1114,6 +1114,7 @@ dependencies = [
  "h3",
  "hickory-proto",
  "http",
+ "indexmap",
  "network-relay",
  "rcgen",
  "ring",

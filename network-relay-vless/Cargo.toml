@@ -12,6 +12,7 @@ clap = { version = "4", features = ["derive"] }
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 # DNS messages for the lookups carried through the proxy (no resolver or I/O).
 hickory-proto = { version = "0.26.3", default-features = false, features = ["std"] }
+indexmap = "2"
 # The relay itself: the server, its configuration and its helper commands.
 network-relay = { path = ".." }
 ring = "0.17"

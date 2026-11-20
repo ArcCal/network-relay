@@ -3229,13 +3229,18 @@ async fn http3_request_the_client_cancels_while_connecting_is_cancelled_both_way
     network_relay::proto::varint::encode(block.len() as u64, &mut frame);
     frame.extend_from_slice(&block);
     send.write_all(&frame).await.unwrap();
+    wait_for_tunnels(&relay, 1).await;
     let mut first = [0u8; 1];
     let waited = tokio::time::timeout(Duration::from_millis(500), recv.read_exact(&mut first)).await;
     assert!(waited.is_err(), "the destination was supposed to stall the connect");
     let cancelled = h3::error::Code::H3_REQUEST_CANCELLED.value();
     recv.stop(cancelled.try_into().unwrap()).unwrap();
     assert_eq!(stop_sending_code(&mut send).await, Some(cancelled));
-    assert_eq!(relay.relay.active_tunnels(), 0);
+    // STOP_SENDING can reach the client before the cancelled dial drops its
+    // reservation. Require cleanup well before the 60-second connect timeout.
+    tokio::time::timeout(Duration::from_secs(2), wait_for_tunnels(&relay, 0))
+        .await
+        .expect("cancelled dial retained a tunnel reservation");
 }
 
 #[tokio::test]

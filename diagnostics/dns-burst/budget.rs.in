@@ -1,0 +1,19 @@
+    #[tokio::test]
+    async fn measure_resolver_deadlines() {
+        use std::sync::atomic::Ordering;
+        let (resolver, count, server) = timeout_peer(2, Some((1, Duration::from_millis(400)))).await;
+        let start = tokio::time::Instant::now();
+        let (short, long) = tokio::join!(
+            resolver.lookup_until("fallback.test", start + PER_SERVER + Duration::from_millis(125)),
+            async {
+                wait_for_dns_state(|| count.load(Ordering::SeqCst) != 0).await;
+                resolver.lookup_until("fallback.test", start + 2 * PER_SERVER).await
+            },
+        );
+        assert_eq!(short.unwrap_err().kind(), io::ErrorKind::TimedOut);
+        let expected: IpAddr = "198.51.100.77".parse().unwrap();
+        let ok = long.is_ok_and(|answer| answer == [expected]);
+        println!("DNS-DEADLINE {ok} {} {:.1}", count.load(Ordering::SeqCst), start.elapsed().as_secs_f64() * 1000.0);
+        server.abort();
+        let _ = server.await;
+    }

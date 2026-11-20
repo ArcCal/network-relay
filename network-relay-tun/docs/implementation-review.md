@@ -75,5 +75,7 @@ operations.
 - GUI stop now queries actual helper state and retries recovery, rather than
   declaring success based only on a cached lease that may have disappeared.
 
-Tests cover these changes, but do not establish native macOS packet delivery,
-physical network switching, GUI build success or production performance.
+The native runner built and signed the GUI, used the installed helper and
+verified real IPv4/IPv6 TCP, UDP and DNS capture, update and restoration.
+Physical network switching, sleep/wake and production throughput still need
+field measurements. [Native run](https://github.com/ArcCal/network-relay/actions/runs/44746108048).

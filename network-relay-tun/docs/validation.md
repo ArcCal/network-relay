@@ -1,12 +1,14 @@
 # Validation record
 
-Development environment: Linux, Rust 1.99.1. No privileged networking changes
-were executed. All fixtures and compiler outputs stayed within this project.
+The portable suite ran on Linux with Rust 1.99.1. The native suite ran on
+Apple Silicon, macOS 27.0.1, Xcode 27.1 and Swift 6.4. The disposable Mac
+installed the real helper and tested network changes. The application and its
+build remain independent. [Native acceptance run](https://github.com/ArcCal/network-relay/actions/runs/44746108048).
 
 | Check | Result |
 | --- | --- |
-| Independent relay core | 115 tests passed; 4 external-fixture tests explicitly ignored |
-| Host ownership, rollback, IPC and boot recovery | 47 tests passed |
+| Independent relay core | 115 ordinary tests passed. All four external-fixture cases also passed against Linux relay binaries. |
+| Host ownership, rollback, IPC and boot recovery | 50 tests passed |
 | Engine wrapper | 1 test passed |
 | Fragment reassembly | 3 tests passed |
 | TCP packet path | 1 test passed, covering TCP/443, TCP/53 and combined data/FIN |
@@ -14,11 +16,11 @@ were executed. All fixtures and compiler outputs stayed within this project.
 | Vendored adapter | 21 inherited library tests passed |
 | Vendored IP stack | 61 tests passed, including queue saturation and checksum rejection |
 | Isolation checks | 4 checks passed |
-| macOS Rust helper/worker | Cross-target type checking; no Apple SDK linking or execution |
-| Swift GUI/model build | Supplied Mac log: production build and 71 model tests passed |
-| Application bundle signing | Supplied Mac log: failed on unsigned shell script in Helpers; corrected layout awaits native verification |
-| Privileged installation and real utun | Not executed |
-| Native Network.framework, WAN throughput, sleep/wake | Not executed |
+| macOS Rust helper/worker | Linked, signed and executed on an Apple Silicon Mac |
+| Swift GUI/model build | Production build and 73 Swift tests passed on the Mac runner |
+| Application bundle signing | Both nested helpers and the finished application passed strict signature verification |
+| Privileged installation and real utun | Installed and updated the daemon, authenticated IPC and ran the packet worker. IPv4 and IPv6 TCP, UDP, DNS, relay bypass and route/DNS restoration passed twice. Uninstallation removed the service and its owned files. |
+| Physical network and hardware | Roaming, sleep/wake, production WAN throughput and an IPv6-only physical uplink require field measurements. |
 
 The first full-core run failed during rustdoc dependency loading while another
 Cargo graph was replacing artifacts in the same target directory. A sequential
@@ -29,7 +31,8 @@ connection before sending its test frames. Each case now has a fresh listener
 and awaits cancellation of its opening task. Ten consecutive targeted runs and
 the subsequent full portable script passed.
 
-The UDP tests use a loopback SOCKS fixture, not a real relay. TCP/53 exercises
+The packet-level and native capture tests use a loopback SOCKS echo fixture.
+The separate core interoperability tests use two real Linux relay servers. TCP/53 exercises
 transparent TCP forwarding rather than recursive DNS service behavior. IPv6
 packet tests use a real IPv6 IP header/checksum over an IPv4 loopback SOCKS
 association. Portable success does not establish IPv6-only uplink support.
@@ -49,6 +52,8 @@ fix allowed Swift compilation and all 71 model tests to pass. Strict bundle
 verification then rejected uninstall-helper.sh in Contents/Helpers. Shell scripts
 now live in Contents/Resources and are sealed by the outer bundle signature;
 Helpers retains only the separately signed native binaries. The GUI installer
-path and installer's sibling-binary lookup follow that layout. Strict verification
-remains enabled. This follows Apple's code/data placement guidance:
-https://developer.apple.com/library/archive/technotes/tn2206/_index.html
+path and installer's sibling-binary lookup follow that layout. The current native run verified that layout. It also reproduced a separate
+launchd race after a successful capture. The installer and uninstaller now
+wait for service removal before replacing or deleting helper files. The
+regression run tested an update, a second capture and a clean uninstall.
+[Apple code signing guidance](https://developer.apple.com/library/archive/technotes/tn2206/_index.html).

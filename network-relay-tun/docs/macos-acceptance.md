@@ -1,7 +1,9 @@
 # macOS acceptance
 
-These steps require a real Mac and a reachable existing Network Relay server.
-They are not automatically executed by the build or portable tests. Keep a local
+Run these field checks with a real Mac and a reachable Linux Network Relay
+server. The native CI counterpart covers codesigning, installed helper IPC,
+global capture with a controlled SOCKS peer, update and cleanup.
+[Native validation record](validation.md). Keep a local
 terminal available. Do not use a remote-only administration connection to test
 route changes. Retain logs locally; configuration and network snapshots can
 contain private information.

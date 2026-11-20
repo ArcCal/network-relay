@@ -277,12 +277,13 @@ pub fn service_devices(output: &str) -> Result<std::collections::BTreeMap<String
                 .unwrap_or("");
             ensure!(!device.chars().any(char::is_control), "invalid network device mapping");
             devices.insert(name, device.to_string());
-        } else if let Some((index, name)) = line.strip_prefix('(').and_then(|line| line.split_once(')')) {
-            if !index.is_empty() && index.chars().all(|character| character.is_ascii_digit() || character == '*') {
-                let name = name.trim().trim_start_matches('*').trim().to_string();
-                ensure!(!name.is_empty(), "empty network service name");
-                current = Some(name);
-            }
+        } else if let Some((index, name)) = line.strip_prefix('(').and_then(|line| line.split_once(')'))
+            && !index.is_empty()
+            && index.chars().all(|character| character.is_ascii_digit() || character == '*')
+        {
+            let name = name.trim().trim_start_matches('*').trim().to_string();
+            ensure!(!name.is_empty(), "empty network service name");
+            current = Some(name);
         }
     }
     ensure!(!devices.is_empty(), "networksetup returned no hardware service mappings");
@@ -577,22 +578,21 @@ impl<C: Commands> Network<C> {
                 }
                 if fields.get("flags").is_some_and(|flags| flags.contains("UP") && !flags.contains("GATEWAY"))
                     && fields.get("destination").is_some_and(|dest| dest != "default" && dest != "0.0.0.0")
+                    && let Some(interface) = fields.get("interface")
                 {
-                    if let Some(interface) = fields.get("interface") {
-                        let physical = interface == &route.interface
-                            || (hardware_device(interface)
-                                && fields.get("flags").is_some_and(|flags| !flags.contains("IFSCOPE"))
-                                && service_devices(&self.commands.run(
-                                    "/usr/sbin/networksetup",
-                                    &args(&["-listnetworkserviceorder"]),
-                                    None,
-                                )?)?
-                                .values()
-                                .any(|device| device == interface));
-                        if physical {
-                            info!(%ip, "keeping existing directly connected LAN route for server");
-                            continue;
-                        }
+                    let physical = interface == &route.interface
+                        || (hardware_device(interface)
+                            && fields.get("flags").is_some_and(|flags| !flags.contains("IFSCOPE"))
+                            && service_devices(&self.commands.run(
+                                "/usr/sbin/networksetup",
+                                &args(&["-listnetworkserviceorder"]),
+                                None,
+                            )?)?
+                            .values()
+                            .any(|device| device == interface));
+                    if physical {
+                        info!(%ip, "keeping existing directly connected LAN route for server");
+                        continue;
                     }
                 }
                 if fields.get("destination") == Some(&ip_text)

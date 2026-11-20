@@ -289,10 +289,20 @@ class AccountRepairTests(unittest.TestCase):
         uid = subprocess.run(['id', '-u', 'daemon'], capture_output=True, text=True, check=True).stdout.strip()
         subprocess.run(['useradd', '--system', '--non-unique', '--uid', uid, '--user-group', name], check=True)
         try:
+            def account(user):
+                return subprocess.check_output(['getent', 'passwd', user], text=True).strip()
+
+            before = (account(name), account('daemon'))
+            self.assertEqual([entry.split(':')[2] for entry in before], [uid, uid])
+            self.assertNotEqual(before[0].split(':')[3], before[1].split(':')[3])
             result = subprocess.run(['bash', '-c', 'source "$1"; SERVICE="$2"; nr_account', 'test', str(SCRIPT), name],
                                     capture_output=True, text=True, timeout=60)
             self.assertNotEqual(result.returncode, 0)
-            self.assertIn('shared by another account', result.stderr)
+            # NSS may return the other account's primary group for a shared UID.
+            # Either identity check must refuse the account before any repair.
+            self.assertRegex(result.stderr, r'Existing service (?:account/group is shared or mismatched|'
+                                            r'UID/GID is shared by another account)\.')
+            self.assertEqual((account(name), account('daemon')), before)
         finally:
             subprocess.run(['userdel', '-f', name], check=False)
             subprocess.run(['groupdel', name], check=False, stderr=subprocess.DEVNULL)

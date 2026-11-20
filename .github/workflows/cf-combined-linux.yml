@@ -1,0 +1,67 @@
+name: Verify the combined WARP DNS cache and TCP receive changes on Linux
+'on':
+  push:
+    branches:
+    - audit/cf-combined-linux-20261120
+permissions:
+  contents: read
+jobs:
+  soak:
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 145
+    strategy:
+      fail-fast: false
+      matrix:
+        runner:
+        - ubuntu-24.04
+        - ubuntu-22.04-arm
+        variant:
+        - ack
+        - ack-batch
+    steps:
+    - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      with:
+        persist-credentials: false
+        fetch-depth: 2
+    - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d
+      with:
+        toolchain: stable
+    - name: Run finite controls and verify sustained authenticated traffic through both transports
+      shell: bash
+      env:
+        CARGO_PROFILE_TEST_DEBUG: '0'
+        CARGO_PROFILE_DEV_DEBUG: '0'
+        CARGO_INCREMENTAL: '0'
+        SOAK_SECONDS: '3900'
+        STUDY: ${{ matrix.variant }}
+      run: 'set -euo pipefail
+
+        python3 diagnostics/warp-acks/configure.py "$STUDY"
+
+        cd network-relay-cf-masque
+
+        cargo fmt -p warp-masque-egress -p network-relay-cf-masque --check
+
+        cargo clippy --locked -p warp-masque-egress -p network-relay-cf-masque --all-targets -- -D warnings
+
+        cargo test --locked -p warp-masque-egress dns::
+
+        cargo build --locked --manifest-path examples/reuse/Cargo.toml
+
+        python3 scripts/verify-smoltcp.py --test
+
+        bash scripts/soak.sh
+
+        '
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      if: always()
+      with:
+        name: combined-cf-${{ matrix.variant }}-${{ matrix.runner }}
+        path: 'network-relay-cf-masque/target/evidence/soak-*.json
+
+          network-relay-cf-masque/target/evidence/soak-*.jsonl
+
+          network-relay-cf-masque/target/evidence/*independent*.json
+
+          '
+        retention-days: 7

@@ -1,0 +1,23 @@
+[package]
+name = "relay-performance-study"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[features]
+default = ["test-support"]
+test-support = []
+large-buffers = []
+
+[dependencies]
+bytes = "=1.12.1"
+chrono = { version = "=0.4.45", default-features = false, features = ["clock", "std"] }
+http = "=1.5.0"
+httpdate = "=1.0.3"
+ring = "=0.17.14"
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.154"
+smoltcp = { path = "../../network-relay-cf-masque/vendor/smoltcp", default-features = false, features = ["std", "async", "medium-ip", "proto-ipv4", "proto-ipv6", "socket-tcp", "socket-udp", "socket-tcp-reno", "socket-tcp-cubic", "assembler-max-segment-count-32", "relay-bounded-reassembly"] }
+tokio = { version = "=1.54.1", features = ["rt-multi-thread", "macros", "net", "time", "sync", "io-util"] }

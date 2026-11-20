@@ -1,0 +1,145 @@
+name: Compare TCP half-close and window updates against application and Linux kernel
+  peers
+'on':
+  push:
+    branches:
+    - audit/warp-half-close-comparison-20261120
+permissions:
+  contents: read
+jobs:
+  transfer:
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 55
+    strategy:
+      fail-fast: false
+      matrix:
+        runner:
+        - ubuntu-24.04
+        - ubuntu-22.04-arm
+    steps:
+    - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      with:
+        persist-credentials: false
+        fetch-depth: 4
+    - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d
+      with:
+        toolchain: stable
+    - name: Verify queued-close response bytes under ordinary and controlled read
+        backpressure
+      shell: bash
+      run: "set -euo pipefail\nmkdir \"$RUNNER_TEMP/evidence\"\nexport CARGO_TARGET_DIR=\"\
+        $RUNNER_TEMP/target\"\nfor v in original reopen window defer; do\n  python3\
+        \ diagnostics/warp-acks/tail.py \"$v\"\n  cargo build --release --locked --manifest-path\
+        \ diagnostics/performance/Cargo.toml --bin tail\n  cp \"$CARGO_TARGET_DIR/release/tail\"\
+        \ \"$RUNNER_TEMP/$v\"\ndone\nfor round in $(seq 0 11); do\n  case $((round%4))\
+        \ in\n    0) seq=\"original reopen window defer\";;\n    1) seq=\"defer window\
+        \ reopen original\";;\n    2) seq=\"window original defer reopen\";;\n   \
+        \ 3) seq=\"reopen defer original window\";;\n  esac\n  for reader in normal\
+        \ controlled; do\n   for v in $seq; do\n    unset RELAY_CONTROLLED_READER\n\
+        \    if test \"$reader\" = controlled; then export RELAY_CONTROLLED_READER=1;\
+        \ fi\n    RELAY_STACK_STUDY=\"$v\" /usr/bin/time -a -o \"$RUNNER_TEMP/evidence/cpu.txt\"\
+        \ -f \"$round $v %U %S %M\" \"$RUNNER_TEMP/$v\" 0 \"$round\" >> \"$RUNNER_TEMP/evidence/$reader.jsonl\"\
+        \n   done\n  done\ndone\nfor reader in normal controlled; do test \"$(wc -l\
+        \ < \"$RUNNER_TEMP/evidence/$reader.jsonl\")\" -eq 48; done\n"
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      if: always()
+      with:
+        name: half-close-tcp-${{ matrix.runner }}
+        path: ${{ runner.temp }}/evidence
+        retention-days: 7
+  kernel:
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 95
+    strategy:
+      fail-fast: false
+      matrix:
+        runner:
+        - ubuntu-24.04
+        - ubuntu-22.04-arm
+    steps:
+    - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      with:
+        persist-credentials: false
+        fetch-depth: 4
+    - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d
+      with:
+        toolchain: stable
+    - name: Transfer and hash native kernel data using a private TUN in a fresh network
+        namespace
+      shell: bash
+      run: "set -euo pipefail\nmkdir \"$RUNNER_TEMP/evidence\"\nexport CARGO_TARGET_DIR=\"\
+        $RUNNER_TEMP/target\"\nfor v in original window; do\n  python3 diagnostics/warp-acks/tail.py\
+        \ \"$v\" kernel\n  cargo build --release --locked --manifest-path diagnostics/performance/Cargo.toml\
+        \ --bin kernel\n  cp \"$CARGO_TARGET_DIR/release/kernel\" \"$RUNNER_TEMP/$v\"\
+        \ndone\nuname -r > \"$RUNNER_TEMP/evidence/kernel.txt\"\nfor round in 0 1\
+        \ 2 3; do\n  if test $((round % 2)) -eq 0; then seq=\"original window\"; else\
+        \ seq=\"window original\"; fi\n  for v in $seq; do\n    for spec in 0:1 0:4\
+        \ 50:1 100:1 100:4; do\n      rtt=${spec%:*}; n=${spec#*:}\n      sudo unshare\
+        \ --net -- /usr/bin/time -a -o \"$RUNNER_TEMP/evidence/cpu.txt\" -f \"$round\
+        \ $rtt $n $v %U %S %M\" python3 diagnostics/warp-acks/kernel.py \"$RUNNER_TEMP/$v\"\
+        \ \"$v\" \"$rtt\" \"$n\" \"$round\" \"$RUNNER_TEMP/evidence\"\n    done\n\
+        \  done\ndone\ntest \"$(wc -l < \"$RUNNER_TEMP/evidence/transfers.jsonl\"\
+        )\" -eq 40\n"
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      if: always()
+      with:
+        name: half-close-kernel-${{ matrix.runner }}
+        path: ${{ runner.temp }}/evidence
+        retention-days: 7
+  release:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - runner: ubuntu-24.04
+          arch: amd64
+        - runner: ubuntu-22.04-arm
+          arch: arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    steps:
+    - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      with:
+        persist-credentials: false
+    - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d
+      with:
+        toolchain: stable
+        components: rustfmt,clippy
+    - name: Test the complete CF server, pinned stack, standalone example and 3900
+        second egress soak
+      shell: bash
+      run: 'set -euo pipefail
+
+        cd network-relay-cf-masque
+
+        source scripts/env.sh
+
+        cargo fmt -p warp-masque-egress -p network-relay-cf-masque --check
+
+        cargo clippy --locked --all-targets -p warp-masque-egress -p network-relay-cf-masque
+        -- -D warnings
+
+        cargo build --locked --release --manifest-path examples/reuse/Cargo.toml
+
+        python3 scripts/verify-smoltcp.py --test
+
+        bash scripts/soak.sh
+
+        '
+      env:
+        SOAK_SECONDS: '3900'
+        CARGO_INCREMENTAL: '0'
+        CARGO_PROFILE_TEST_DEBUG: '0'
+        CARGO_PROFILE_DEV_DEBUG: '0'
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      if: always()
+      with:
+        name: half-close-soak-${{ matrix.arch }}
+        path: 'network-relay-cf-masque/target/evidence/soak-*.json
+
+          network-relay-cf-masque/target/evidence/soak-*.jsonl
+
+          network-relay-cf-masque/target/evidence/*independent*.json
+
+          '
+        retention-days: 7

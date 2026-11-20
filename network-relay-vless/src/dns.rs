@@ -3,7 +3,6 @@
 //! VLESS connection. Names never reach this host's resolver, and the relay
 //! checks the addresses found against its destination rules as usual.
 
-use std::collections::HashMap;
 use std::io;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, Mutex};
@@ -11,6 +10,7 @@ use std::time::{Duration, Instant};
 
 use hickory_proto::op::{Message, MessageType, OpCode, Query, ResponseCode};
 use hickory_proto::rr::{DNSClass, Name, RData, RecordType};
+use indexmap::IndexMap;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::config::VlessConfig;
@@ -30,9 +30,59 @@ const FAILURE_TTL: Duration = Duration::from_secs(1);
 
 type Lookup = Result<Vec<IpAddr>, Arc<io::Error>>;
 
+struct CacheEntry {
+    result: Lookup,
+    expires: Instant,
+    referenced: bool,
+}
+
+#[derive(Default)]
+struct DnsCache {
+    entries: IndexMap<String, CacheEntry>,
+    hand: usize,
+}
+
+impl DnsCache {
+    fn get(&mut self, name: &str, now: Instant) -> Option<&Lookup> {
+        let entry = self.entries.get_mut(name)?;
+        if entry.expires <= now {
+            return None;
+        }
+        entry.referenced = true;
+        Some(&entry.result)
+    }
+
+    fn insert(&mut self, name: String, result: Lookup, expires: Instant, now: Instant) {
+        if let Some(entry) = self.entries.get_mut(&name) {
+            // An earlier lookup can finish after a concurrent successful one.
+            if result.is_err() && entry.result.is_ok() && entry.expires > now {
+                return;
+            }
+            entry.result = result;
+            entry.expires = expires;
+            return;
+        }
+        if self.entries.len() == CACHE_ENTRIES {
+            // Second-chance eviction. A cold or expired name frees one slot.
+            // Even if every name was used, one sweep clears every reference bit.
+            loop {
+                let index = self.hand;
+                self.hand = (self.hand + 1) % CACHE_ENTRIES;
+                let (_, entry) = self.entries.get_index_mut(index).expect("full DNS cache");
+                if entry.expires <= now || !entry.referenced {
+                    self.entries.swap_remove_index(index);
+                    break;
+                }
+                entry.referenced = false;
+            }
+        }
+        self.entries.insert(name, CacheEntry { result, expires, referenced: false });
+    }
+}
+
 pub struct Resolver {
     config: Arc<VlessConfig>,
-    cache: Mutex<HashMap<String, (Lookup, Instant)>>,
+    cache: Mutex<DnsCache>,
     preferred: Mutex<(usize, u64)>,
 }
 
@@ -110,10 +160,8 @@ impl Resolver {
     async fn lookup_ordered(&self, host: &str, order: &mut LookupOrder) -> io::Result<Vec<IpAddr>> {
         let name = host.strip_suffix('.').unwrap_or(host).to_ascii_lowercase();
         let now = Instant::now();
-        if let Some((result, expires)) = self.cache.lock().unwrap_or_else(|e| e.into_inner()).get(&name) {
-            if *expires > now {
-                return result.clone().map_err(|error| copy_error(&error));
-            }
+        if let Some(result) = self.cache.lock().unwrap_or_else(|e| e.into_inner()).get(&name, now) {
+            return result.clone().map_err(|error| copy_error(&error));
         }
         let fqdn = Name::from_ascii(format!("{name}."))
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "not a valid DNS name"))?;
@@ -209,18 +257,7 @@ impl Resolver {
         }
         let now = Instant::now();
         let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
-        // A slower concurrent failure must not replace a fresh successful
-        // answer that completed while this lookup was still waiting.
-        if result.is_err() && cache.get(&name).is_some_and(|(found, expires)| found.is_ok() && *expires > now) {
-            return;
-        }
-        if cache.len() >= CACHE_ENTRIES {
-            cache.retain(|_, (_, expires)| *expires > now);
-            if cache.len() >= CACHE_ENTRIES {
-                cache.clear();
-            }
-        }
-        cache.insert(name, (result, now + ttl.min(MAX_TTL)));
+        cache.insert(name, result, now + ttl.min(MAX_TTL), now);
     }
 
     /// Asks one resolver for the A and/or AAAA records of `name`, both
@@ -515,7 +552,7 @@ mod tests {
                 ready = query => ready.unwrap(),
             }
         }
-        assert!(resolver.cache.lock().unwrap().is_empty());
+        assert!(resolver.cache.lock().unwrap().entries.is_empty());
         assert_eq!(*resolver.preferred.lock().unwrap(), (0, 0), "cancellation must not change resolver preference");
         tokio::time::timeout(Duration::from_secs(2), server).await.unwrap().unwrap();
     }
@@ -597,6 +634,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_full_cache_retains_active_names_across_refresh_and_insertion() {
+        use std::sync::atomic::Ordering;
+        let address: IpAddr = "198.51.100.77".parse().unwrap();
+        let (resolver, requests, server) = timeout_peer(1, Some((0, Duration::ZERO))).await;
+        for i in 0..CACHE_ENTRIES {
+            resolver.remember(format!("entry-{i}.test"), Ok(vec![address]), MAX_TTL);
+        }
+        for i in 0..128 {
+            assert_eq!(resolver.lookup(&format!("entry-{i}.test")).await.unwrap(), [address]);
+        }
+        resolver.remember("entry-17.test".into(), Ok(vec![address]), MAX_TTL);
+        for i in 0..256 {
+            resolver.remember(format!("new-{i}.test"), Ok(vec![address]), MAX_TTL);
+            assert_eq!(resolver.lookup(&format!("entry-{}.test", i % 128)).await.unwrap(), [address]);
+        }
+        assert_eq!(requests.load(Ordering::SeqCst), 0);
+        assert_eq!(resolver.cache.lock().unwrap().entries.len(), CACHE_ENTRIES);
+        server.abort();
+        let _ = server.await;
+    }
+
+    #[test]
+    fn referenced_entries_do_not_prevent_eviction_or_extend_ttls() {
+        let mut cache = DnsCache::default();
+        let now = Instant::now();
+        for i in 0..CACHE_ENTRIES {
+            let name = format!("entry-{i}.test");
+            cache.insert(name.clone(), Ok(vec![]), now + FAILURE_TTL, now);
+            assert!(cache.get(&name, now).is_some());
+        }
+        cache.insert("fresh.test".into(), Ok(vec![]), now + MAX_TTL, now);
+        assert_eq!(cache.entries.len(), CACHE_ENTRIES);
+        assert!(cache.get("fresh.test", now).is_some());
+        assert!(cache.get("entry-1.test", now + FAILURE_TTL).is_none());
+    }
+
+    #[tokio::test]
     async fn silent_resolvers_cache_failure_at_the_relay_deadline() {
         use network_relay::policy::{Policy, Refusal, Target};
         use std::sync::atomic::Ordering;
@@ -670,7 +744,7 @@ mod tests {
         let result = resolver.lookup_until("victim.test", tokio::time::Instant::now()).await;
         assert_eq!(result.unwrap_err().kind(), io::ErrorKind::TimedOut);
         assert_eq!(requests.load(std::sync::atomic::Ordering::SeqCst), 0);
-        assert!(resolver.cache.lock().unwrap().is_empty());
+        assert!(resolver.cache.lock().unwrap().entries.is_empty());
         assert_eq!(*resolver.preferred.lock().unwrap(), (0, 0));
         server.abort();
         let _ = server.await;
@@ -1015,7 +1089,7 @@ mod tests {
         assert_eq!(found, vec![expected]);
         if ttl == 1 {
             assert!(
-                resolver.cache.lock().unwrap().get("victim.test").is_none_or(|(_, expires)| *expires <= Instant::now()),
+                resolver.cache.lock().unwrap().get("victim.test", Instant::now()).is_none(),
                 "waiting for AAAA must not extend an expired A record's TTL"
             );
         } else {

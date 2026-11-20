@@ -1,0 +1,49 @@
+    #[tokio::test]
+    async fn measure_cache_pressure_and_origin_work() {
+        use std::sync::atomic::Ordering;
+        let address: IpAddr = "198.51.100.77".parse().unwrap();
+        for shape in ["same-key", "one-new", "mixed", "churn"] {
+            let (resolver, requests, server) = timeout_peer(1, Some((0, Duration::ZERO))).await;
+            for i in 0..CACHE_ENTRIES {
+                resolver.remember(format!("known-{i}.example"), Ok(vec![address]), MAX_TTL);
+            }
+            // Reference a small working set through the normal resolver API.
+            for i in 0..128 {
+                assert_eq!(resolver.lookup(&format!("known-{i}.example")).await.unwrap(), [address]);
+            }
+            assert_eq!(requests.load(Ordering::SeqCst), 0);
+            let start=Instant::now();
+            let mut operations=0;
+            let mut followup=0;
+            match shape {
+                "same-key" => resolver.remember("known-17.example".into(), Ok(vec![address]), MAX_TTL),
+                "one-new" => resolver.remember("added.example".into(), Ok(vec![address]), MAX_TTL),
+                "mixed" => {
+                    for i in 0..1024 {
+                        resolver.remember(format!("new-{i}.example"), Ok(vec![address]), MAX_TTL);
+                        let name=format!("known-{}.example",i%128);
+                        assert_eq!(resolver.lookup(&name).await.unwrap(), [address]);
+                        operations+=1;
+                    }
+                }
+                "churn" => {
+                    for i in 0..4*CACHE_ENTRIES {
+                        resolver.remember(format!("new-{i}.example"), Ok(vec![address]), MAX_TTL);
+                        operations+=1;
+                    }
+                }
+                _ => unreachable!()
+            }
+            let update_us=start.elapsed().as_micros();
+            let before=requests.load(Ordering::SeqCst);
+            let at=Instant::now();
+            for i in 0..128 {
+                assert_eq!(resolver.lookup(&format!("known-{i}.example")).await.unwrap(), [address]);
+                followup+=1;
+            }
+            let total=requests.load(Ordering::SeqCst);
+            eprintln!("DNS-PRESSURE {shape} {operations} {followup} {update_us} {} {before} {total}",at.elapsed().as_micros());
+            server.abort();
+            let _=server.await;
+        }
+    }

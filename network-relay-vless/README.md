@@ -96,7 +96,9 @@ restart (the program says so when it notices one).
   five minutes; without an SOA or with a zero TTL they are not cached.
   Completed lookup failures are cached for one second (RFC 9520), keeping
   their error distinct from NXDOMAIN/NODATA. The shared cache holds at most
-  4096 names. Cancellation does not create a failure entry.
+  4096 names. When full, it evicts one name at a time and gives recently
+  used answers a second chance. Cache hits do not extend their TTL.
+  Cancellation does not create a failure entry.
   The relay allows a lookup five seconds, including its admission wait;
   each resolver gets up to 2.5 seconds within that same deadline. A lookup
   that reaches the deadline caches a one-second timeout failure. Cancelling

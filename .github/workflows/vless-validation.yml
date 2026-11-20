@@ -1,0 +1,78 @@
+name: Validate the selected bounded DNS cache on Linux with a real Xray peer
+'on':
+  push:
+    branches: [audit/vless-cache-validation-20261120]
+permissions:
+  contents: read
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {runner: ubuntu-24.04, arch: amd64}
+          - {runner: ubuntu-22.04-arm, arch: arm64}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with: {persist-credentials: false}
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d
+        with: {toolchain: stable, components: 'rustfmt,clippy'}
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16
+        with: {go-version: '1.27.4', cache: false}
+      - name: Validate exact candidate, release binary and root server policy
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir "$RUNNER_TEMP/evidence"
+          export CARGO_TARGET_DIR="$RUNNER_TEMP/target"
+          cd network-relay-vless
+          cargo fmt --check
+          cargo clippy --locked --all-targets -- -D warnings
+          cargo test --locked --release | tee "$RUNNER_TEMP/evidence/functional.txt"
+          cargo build --locked --release --bin network-relay-vless
+          "$CARGO_TARGET_DIR/release/network-relay-vless" --version
+          cd ..
+          cargo test --locked --release --lib policy:: | tee "$RUNNER_TEMP/evidence/policy.txt"
+      - name: Run all real Xray tests against its verified release source
+        shell: bash
+        run: |
+          set -euo pipefail
+          dir="$RUNNER_TEMP/xray"
+          git clone --quiet --depth 1 --branch v26.10.31 https://github.com/XTLS/Xray-core.git "$dir"
+          test "$(git -C "$dir" rev-parse HEAD)" = a4a3dff5b20c2faae567b742c172c7b95e75c083
+          (cd "$dir" && GOTOOLCHAIN=local go build -mod=readonly -trimpath -o "$RUNNER_TEMP/xray-bin" ./main)
+          export XRAY_BIN="$RUNNER_TEMP/xray-bin" CARGO_TARGET_DIR="$RUNNER_TEMP/target"
+          cd network-relay-vless
+          cargo test --locked --release --test xray_interop -- --ignored --test-threads=1 | tee "$RUNNER_TEMP/evidence/xray.txt"
+      - name: Confirm bounded-cache pressure results against the final production implementation
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('network-relay-vless/src/dns.rs')
+          s=p.read_text()
+          anchor='    #[tokio::test]\n    async fn silent_resolvers_cache_failure_at_the_relay_deadline'
+          assert s.count(anchor)==1
+          p.write_text(s.replace(anchor,Path('diagnostics/dns-pressure/scenario.rs.in').read_text()+anchor))
+          PY
+          export CARGO_TARGET_DIR="$RUNNER_TEMP/target"
+          for round in 1 2 3 4; do
+            cargo test --locked --release --manifest-path network-relay-vless/Cargo.toml --lib -- dns::tests::measure_cache_pressure_and_origin_work --exact --nocapture 2>&1 | tee -a "$RUNNER_TEMP/evidence/pressure.txt"
+          done
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          log=(Path(os.environ['RUNNER_TEMP'])/'evidence/pressure.txt').read_text()
+          records=[s.split() for s in log.splitlines() if s.startswith('DNS-PRESSURE ')]
+          assert len(records)==16
+          assert all(int(row[-1])==0 for row in records if row[1] in ('same-key','one-new','mixed'))
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: vless-cache-release-${{ matrix.arch }}
+          path: ${{ runner.temp }}/evidence
+          retention-days: 7

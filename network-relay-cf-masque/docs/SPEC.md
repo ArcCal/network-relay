@@ -122,6 +122,9 @@ and is reflected separately from assigned addresses in diagnostics.
   connecting/closing TCP. Overload fails rather than growing without bound.
 - TCP RX/TX buffers are 256/128 KiB per socket. Packet queues, UDP metadata and
   byte buffers, DNS cache/in-flight requests and capsule parsing are bounded.
+  The DNS cache holds 4096 name and query-type pairs. At capacity, a new entry
+  displaces a cold or expired entry, giving recently read answers a second
+  chance. Hits preserve the original positive or negative expiry.
 - Packet and byte metrics identify accepted sends, received packets, stack
   and transport queue drops, MTU, socket/task counts, capability and terminal
   reason. Local send acceptance is not proof of remote delivery.

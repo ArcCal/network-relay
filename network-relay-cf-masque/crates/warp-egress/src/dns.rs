@@ -9,6 +9,7 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use indexmap::IndexMap;
 use ring::rand::{SecureRandom, SystemRandom};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::time::Instant;
@@ -46,7 +47,51 @@ pub enum LookupError {
 
 type Lookup = Result<Vec<IpAddr>, LookupError>;
 /// A lookup result and when it expires.
-type Cached = (Lookup, Instant);
+struct Cached {
+    result: Lookup,
+    expires: Instant,
+    referenced: bool,
+}
+
+#[derive(Default)]
+struct DnsCache {
+    entries: IndexMap<QueryKey, Cached>,
+    hand: usize,
+}
+
+impl DnsCache {
+    fn get(&mut self, key: &QueryKey, now: Instant) -> Option<Lookup> {
+        let entry = self.entries.get_mut(key)?;
+        if entry.expires <= now {
+            return None;
+        }
+        entry.referenced = true;
+        Some(entry.result.clone())
+    }
+
+    fn insert(&mut self, key: QueryKey, result: Lookup, expires: Instant, now: Instant) {
+        if let Some(entry) = self.entries.get_mut(&key) {
+            entry.result = result;
+            entry.expires = expires;
+            return;
+        }
+        if self.entries.len() == CACHE_SIZE {
+            // Give active answers one more turn. A full sweep clears every
+            // reference bit, so inserting one result always frees one slot.
+            loop {
+                let index = self.hand;
+                self.hand = (self.hand + 1) % CACHE_SIZE;
+                let (_, entry) = self.entries.get_index_mut(index).expect("full DNS cache");
+                if entry.expires <= now || !entry.referenced {
+                    self.entries.swap_remove_index(index);
+                    break;
+                }
+                entry.referenced = false;
+            }
+        }
+        self.entries.insert(key, Cached { result, expires, referenced: false });
+    }
+}
 /// A query under way, which lookups of the same name and type wait for.
 type InFlight = Arc<tokio::sync::OnceCell<Lookup>>;
 type QueryKey = (String, u16);
@@ -78,13 +123,13 @@ impl Drop for PendingLookup<'_> {
 pub struct Resolver {
     net: NetStack,
     servers: Vec<SocketAddr>,
-    cache: Mutex<HashMap<QueryKey, Cached>>,
+    cache: Mutex<DnsCache>,
     pending: PendingQueries,
 }
 
 impl Resolver {
     pub fn new(net: NetStack, servers: Vec<SocketAddr>) -> Self {
-        Self { net, servers, cache: Mutex::new(HashMap::new()), pending: Mutex::new(HashMap::new()) }
+        Self { net, servers, cache: Mutex::default(), pending: Mutex::new(HashMap::new()) }
     }
 
     /// The addresses of `host` in the families the tunnel carries, IPv6
@@ -125,10 +170,8 @@ impl Resolver {
         let qtype = if ipv6 { TYPE_AAAA } else { TYPE_A };
         let key = (name.clone(), qtype);
         let now = Instant::now();
-        if let Some((result, expires)) = self.cache.lock().unwrap_or_else(|e| e.into_inner()).get(&key) {
-            if *expires > now {
-                return result.clone();
-            }
+        if let Some(result) = self.cache.lock().unwrap_or_else(|e| e.into_inner()).get(&key, now) {
+            return result;
         }
         // Lookups of a name many clients want at once (a page's resources,
         // or many connections to one host) share one query rather than
@@ -160,13 +203,7 @@ impl Resolver {
         if ttl > 0 {
             let now = Instant::now();
             let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
-            if cache.len() >= CACHE_SIZE {
-                cache.retain(|_, (_, expires)| *expires > now);
-                if cache.len() >= CACHE_SIZE {
-                    cache.clear();
-                }
-            }
-            cache.insert(key, (result.clone(), now + Duration::from_secs(ttl.min(MAX_TTL).into())));
+            cache.insert(key, result.clone(), now + Duration::from_secs(ttl.min(MAX_TTL).into()), now);
         }
         result
     }
@@ -875,6 +912,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn full_dns_cache_preserves_active_families_and_their_original_expiry() {
+        let now = Instant::now();
+        let good = Ok(vec!["192.0.2.80".parse::<IpAddr>().unwrap()]);
+        let family = ("echo.test".to_owned(), TYPE_A);
+        let negative = ("echo.test".to_owned(), TYPE_AAAA);
+        let (mut resolver, count, _tasks) = setup(&["10.0.0.1"]).await;
+        resolver.servers = vec!["10.0.0.2:53".parse().unwrap()];
+        {
+            let mut cache = resolver.cache.lock().unwrap();
+            cache.insert(family.clone(), good.clone(), now + Duration::from_secs(90), now);
+            cache.insert(negative.clone(), Err(LookupError::NotFound), now + Duration::from_secs(2), now);
+            for i in 2..CACHE_SIZE {
+                cache.insert((format!("cold-{i}.test"), TYPE_A), good.clone(), now + Duration::from_secs(90), now);
+            }
+            assert_eq!(cache.get(&negative, now), Some(Err(LookupError::NotFound)));
+        }
+        assert_eq!(resolver.lookup_family("ECHO.test.", false).await, good);
+        let _ = resolver.lookup_family("big.test", false).await.unwrap();
+        let after_insert = count.load(Ordering::SeqCst);
+        assert!(after_insert > 0);
+        assert_eq!(resolver.lookup_family("echo.test", false).await, good);
+        assert_eq!(count.load(Ordering::SeqCst), after_insert);
+        let mut cache = resolver.cache.lock().unwrap();
+        assert_eq!(cache.entries.len(), CACHE_SIZE);
+        assert_eq!(cache.get(&negative, now + Duration::from_secs(1)), Some(Err(LookupError::NotFound)));
+        assert_eq!(cache.get(&negative, now + Duration::from_secs(2)), None);
+        assert_eq!(cache.get(&family, now + Duration::from_secs(90)), None);
+    }
+
+    #[tokio::test]
     async fn configured_dns_port_is_used_for_udp_and_tcp_fallback() {
         let (mut resolver, count, _tasks) = setup_at_port(&["10.0.0.1"], 5353).await;
         resolver.servers = vec!["10.0.0.2:5353".parse().unwrap()];
@@ -930,7 +997,9 @@ mod tests {
         let resolver = Resolver::new(stack.clone(), vec!["10.0.0.2:53".parse().unwrap()]);
         resolver.cache.lock().unwrap().insert(
             ("cached.test".to_owned(), TYPE_A),
-            (Ok(vec!["192.0.2.80".parse().unwrap()]), Instant::now() + Duration::from_secs(120)),
+            Ok(vec!["192.0.2.80".parse().unwrap()]),
+            Instant::now() + Duration::from_secs(120),
+            Instant::now(),
         );
         assert!(resolver.lookup("cached.test").await.is_ok());
         assert!(resolver.lookup("192.0.2.80").await.is_ok());
@@ -960,7 +1029,7 @@ mod tests {
             .expect("DNS waiters did not observe tunnel failure promptly");
         assert_eq!(results, (Err(LookupError::Unavailable), Err(LookupError::Unavailable)));
         assert!(resolver.pending.lock().unwrap().is_empty());
-        assert!(resolver.cache.lock().unwrap().is_empty());
+        assert!(resolver.cache.lock().unwrap().entries.is_empty());
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1076,7 +1145,7 @@ mod tests {
             assert_eq!(r.lookup(name).await, Err(LookupError::NoAnswer));
             assert_eq!(r.lookup(name).await, Err(LookupError::NoAnswer));
             assert_eq!(count.load(Ordering::SeqCst) - before, 2, "RFC 9520 requires a brief failure cache");
-            let expires = r.cache.lock().unwrap().get(&(name.into(), TYPE_A)).unwrap().1;
+            let expires = r.cache.lock().unwrap().entries.get(&(name.into(), TYPE_A)).unwrap().expires;
             assert!(expires <= Instant::now() + Duration::from_secs(1));
             tokio::time::sleep_until(expires + Duration::from_millis(1)).await;
             assert_eq!(r.lookup(name).await, Err(LookupError::NoAnswer));

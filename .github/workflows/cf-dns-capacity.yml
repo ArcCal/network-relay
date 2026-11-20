@@ -1,0 +1,110 @@
+name: CF MASQUE bounded DNS eviction, six protocol pairings and long-lived flows
+'on':
+  push:
+    branches:
+    - audit/cf-dns-capacity-20261120
+permissions:
+  contents: read
+jobs:
+  measure:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - runner: ubuntu-24.04
+          arch: amd64
+        - runner: ubuntu-22.04-arm
+          arch: arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 75
+    steps:
+    - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      with:
+        persist-credentials: false
+    - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d
+      with:
+        toolchain: stable
+        components: rustfmt,clippy
+    - name: Measure four eviction policies against a packet-backed DNS server
+      shell: bash
+      run: "set -euo pipefail\nmkdir \"$RUNNER_TEMP/evidence\"\nexport CARGO_TARGET_DIR=\"\
+        $RUNNER_TEMP/target\"\nfor variant in original earliest rotate selected; do\n\
+        \  python3 diagnostics/cf-dns-capacity/policy.py \"$variant\"\n  cargo test\
+        \ --locked --release --lib --no-run --manifest-path network-relay-cf-masque/Cargo.toml\
+        \ -p warp-masque-egress --message-format json > \"$RUNNER_TEMP/bin.json\"\n\
+        \  python3 - \"$variant\" <<'BIN'\nimport json, os, shutil, sys\nfrom pathlib\
+        \ import Path\nout=Path(os.environ['RUNNER_TEMP'])\nfiles=[p['executable']\
+        \ for p in map(json.loads,(out/'bin.json').read_text().splitlines()) if p.get('executable')\
+        \ and p.get('profile',{}).get('test') and 'lib' in p['target']['kind']]\n\
+        assert len(files)==1,files\nshutil.copy2(files[0],out/sys.argv[1])\nBIN\n\
+        done\nfor round in 0 1 2 3; do\n  case \"$round\" in\n    0) order=\"original\
+        \ earliest rotate selected\";;\n    1) order=\"selected rotate earliest original\"\
+        ;;\n    2) order=\"rotate original selected earliest\";;\n    3) order=\"\
+        earliest selected original rotate\";;\n  esac\n  for variant in $order; do\n\
+        \    \"$RUNNER_TEMP/$variant\" --exact dns::tests::measure_cache_pressure_through_the_actual_packet_stack\
+        \ --nocapture > \"$RUNNER_TEMP/evidence/$round-$variant.txt\"\n    test \"\
+        $(grep -c '^CF-DNS ' \"$RUNNER_TEMP/evidence/$round-$variant.txt\")\" = 4\n\
+        \  done\ndone\n"
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      if: always()
+      with:
+        name: cf-dns-capacity-${{ matrix.arch }}
+        path: ${{ runner.temp }}/evidence
+        retention-days: 7
+  release:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - runner: ubuntu-24.04
+          arch: amd64
+        - runner: ubuntu-22.04-arm
+          arch: arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    steps:
+    - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      with:
+        persist-credentials: false
+    - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d
+      with:
+        toolchain: stable
+        components: rustfmt,clippy
+    - name: Test the complete CF server, pinned stack, standalone example and 3900
+        second egress soak
+      shell: bash
+      run: 'set -euo pipefail
+
+        cd network-relay-cf-masque
+
+        source scripts/env.sh
+
+        cargo fmt -p warp-masque-egress -p network-relay-cf-masque --check
+
+        cargo clippy --locked --all-targets -p warp-masque-egress -p network-relay-cf-masque
+        -- -D warnings
+
+        cargo build --locked --release --manifest-path examples/reuse/Cargo.toml
+
+        python3 scripts/verify-smoltcp.py --test
+
+        bash scripts/soak.sh
+
+        '
+      env:
+        SOAK_SECONDS: '3900'
+        CARGO_INCREMENTAL: '0'
+        CARGO_PROFILE_TEST_DEBUG: '0'
+        CARGO_PROFILE_DEV_DEBUG: '0'
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      if: always()
+      with:
+        name: cf-dns-release-${{ matrix.arch }}
+        path: 'network-relay-cf-masque/target/evidence/soak-*.json
+
+          network-relay-cf-masque/target/evidence/soak-*.jsonl
+
+          network-relay-cf-masque/target/evidence/*independent*.json
+
+          '
+        retention-days: 7

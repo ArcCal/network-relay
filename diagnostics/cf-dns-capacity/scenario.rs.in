@@ -1,0 +1,39 @@
+    #[tokio::test]
+    async fn measure_cache_pressure_through_the_actual_packet_stack() {
+        let address: IpAddr = "192.0.2.80".parse().unwrap();
+        for shape in ["refresh", "new", "mixed", "churn"] {
+            let (mut resolver, requests, tasks) = setup(&["10.0.0.1"]).await;
+            resolver.servers=vec!["10.0.0.2:53".parse().unwrap()];
+            let put = |name:String| {
+                let now=Instant::now();
+                resolver.cache.lock().unwrap().insert((name,TYPE_A),Ok(vec![address]),now+Duration::from_secs(3600),now);
+            };
+            for i in 0..CACHE_SIZE { put(format!("known-{i}.example")); }
+            for i in 0..128 {
+                assert_eq!(resolver.lookup_family(&format!("known-{i}.example"),false).await.unwrap(), [address]);
+            }
+            assert_eq!(requests.load(Ordering::SeqCst),0);
+            let start=std::time::Instant::now();
+            match shape {
+                "refresh" => put("known-0.example".into()),
+                "new" => put("other.example".into()),
+                "mixed" => for i in 0..1024 {
+                    assert_eq!(resolver.lookup_family(&format!("known-{}.example",i%128),false).await.unwrap(),[address]);
+                    put(format!("other-{i}.example"));
+                },
+                "churn" => for i in 0..4*CACHE_SIZE {put(format!("other-{i}.example"));},
+                _=>unreachable!(),
+            }
+            let update_us=start.elapsed().as_micros();
+            let before=requests.load(Ordering::SeqCst);
+            let at=std::time::Instant::now();
+            for i in 0..128 {
+                assert_eq!(resolver.lookup_family(&format!("known-{i}.example"),false).await.unwrap(),[address]);
+            }
+            println!("CF-DNS {shape} {update_us} {} {before} {}",at.elapsed().as_micros(),requests.load(Ordering::SeqCst));
+            for task in &tasks {task.abort();}
+            for task in tasks {
+                if let Err(error)=task.await {assert!(error.is_cancelled());}
+            }
+        }
+    }

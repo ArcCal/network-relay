@@ -1936,6 +1936,7 @@ dependencies = [
  "h3",
  "h3-quinn",
  "http",
+ "indexmap",
  "network-relay",
  "quinn",
  "quinn-proto",

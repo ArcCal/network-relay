@@ -15,6 +15,7 @@ base64 = "0.22"
 bytes = "1"
 h2 = "0.4"
 http = "1"
+indexmap = "2"
 # network-relay's vendored h3, which has the client extensions WARP needs; a
 # consumer patches the pinned commit to it as network-relay does.
 h3 = { git = "https://github.com/hyperium/h3", rev = "43745ad87e95b0c035ac9c547aad467303213425" }

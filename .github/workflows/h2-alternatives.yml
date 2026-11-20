@@ -1,0 +1,46 @@
+name: Compare three Rust HTTP2 throughput changes with shared-stream and FIN controls
+'on':
+  push:
+    branches: [audit/h2-throughput-alternatives-20261120]
+permissions:
+  contents: read
+jobs:
+  compare:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {runner: ubuntu-24.04, arch: amd64}
+          - {runner: ubuntu-22.04-arm, arch: arm64}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with: {persist-credentials: false}
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d
+        with: {toolchain: stable}
+      - name: Compile independent candidates with original release dependencies
+        run: |
+          set -euo pipefail
+          mkdir "$RUNNER_TEMP/evidence"
+          for mode in original copy-chunk credit peer-frames; do
+            python3 diagnostics/h2-throughput/prepare.py "$mode"
+            cargo test --locked --release --test in_process --no-run --message-format=json > "$RUNNER_TEMP/build.jsonl"
+            bin=$(python3 -c 'import json,sys; print(next(o["executable"] for l in open(sys.argv[1]) if (o:=json.loads(l)).get("executable") and o["target"]["name"]=="in_process"))' "$RUNNER_TEMP/build.jsonl")
+            cp "$bin" "$RUNNER_TEMP/$mode"
+            "$RUNNER_TEMP/$mode" 'http2_' > "$RUNNER_TEMP/evidence/$mode-integration.txt"
+          done
+      - name: Measure exact bidirectional bytes, half-close and independent siblings
+        run: |
+          set -euo pipefail
+          for seq in 'original copy-chunk credit peer-frames' 'peer-frames credit copy-chunk original' 'credit original peer-frames copy-chunk' 'copy-chunk peer-frames original credit'; do
+            for mode in $seq; do
+              "$RUNNER_TEMP/$mode" --exact measured_h2_bulk_and_sibling_latency --nocapture >> "$RUNNER_TEMP/evidence/$mode-compare.txt" 2>&1
+            done
+          done
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: h2-throughput-${{ matrix.arch }}
+          path: ${{ runner.temp }}/evidence
+          retention-days: 7

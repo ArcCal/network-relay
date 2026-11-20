@@ -37,8 +37,12 @@ root-owned packet worker. Only descriptor 3, MTU and the local SOCKS port cross
 that boundary. The worker clears supplementary groups and runs as the installing
 user. It cannot configure routes. Parent-pipe EOF cancels its lifetime.
 
-After native admission the GUI activates capture and transient DNS, then sends
-regular refreshes. Stop, failed activation, failed path refresh, control EOF and
+Before preparation the GUI checks both installed executables and the running
+helper's control revision. An IPv6 relay uses the kernel-selected physical
+interface for the outer connection. After native admission the GUI activates
+capture and transient DNS. During refresh the helper compares both families'
+split routes and its own DNS dictionary with the installed state. Stop, failed
+activation, failed path refresh, control EOF and
 helper restart attempt owned-state cleanup. A failed cleanup preserves its
 journal and RecoveryRequired state. Quit awaits restoration. Journal boot UUIDs
 prevent a previous boot's ephemeral state from deleting a reused interface's

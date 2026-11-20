@@ -3,7 +3,7 @@ use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::io::{Read, Write};
-use std::net::Ipv4Addr;
+use std::net::{IpAddr, Ipv4Addr};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
@@ -326,6 +326,8 @@ pub struct Journal {
     pub ipv6_routes: Vec<crate::ipv6::CaptureRoute>,
     pub ipv6: Vec<Service>,
     pub dns_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dns_snapshot: Option<String>,
 }
 
 pub struct Network<C: Commands> {
@@ -491,6 +493,39 @@ impl<C: Commands> Network<C> {
             self.commands.run("/usr/sbin/networksetup", &args(&["-setv6off", &name]), None)?;
         }
         Ok(())
+    }
+
+    /// IPv4 uses owned host routes. IPv6 uses the physical interface that the
+    /// GUI requires on each outer connection, with no global IPv6 exception.
+    pub fn relay_paths(
+        &mut self,
+        endpoints: &[IpAddr],
+        v4_table: Option<&str>,
+        ipv6_scope: Option<&str>,
+    ) -> Result<Option<String>> {
+        let mut v4 = Vec::new();
+        let mut uplink = None;
+        for endpoint in endpoints {
+            match endpoint {
+                IpAddr::V4(ip) => v4.push(*ip),
+                IpAddr::V6(ip) => {
+                    let name = crate::ipv6::endpoint_interface(&self.commands, *ip, ipv6_scope)?;
+                    ensure!(
+                        uplink.as_ref().is_none_or(|prior| prior == &name),
+                        "relay endpoints need different uplinks"
+                    );
+                    uplink = Some(name);
+                }
+            }
+        }
+        if !v4.is_empty() {
+            let physical = match v4_table {
+                Some(table) => physical_default(table)?,
+                None => default_route(&self.commands)?,
+            };
+            self.endpoint_routes(&physical, &v4)?;
+        }
+        Ok(uplink)
     }
 
     pub fn endpoint_routes(&mut self, route: &DefaultRoute, addresses: &[Ipv4Addr]) -> Result<()> {
@@ -754,6 +789,7 @@ impl<C: Commands> Network<C> {
             return Ok(());
         }
         self.journal.dns_key = Some(key.clone());
+        self.journal.dns_snapshot = None;
         self.save()?;
         let addresses = servers.iter().map(ToString::to_string).collect::<Vec<_>>().join(" ");
         // Supply the per-domain numeric order as well as SearchOrder. On the
@@ -765,7 +801,10 @@ impl<C: Commands> Network<C> {
         info!(?servers, "installing temporary default DNS resolver");
         let output = self.commands.run("/usr/sbin/scutil", &[], Some(&script))?;
         ensure!(output.trim().is_empty(), "scutil DNS setup failed: {}", output.trim());
-        self.applied_dns = self.dns_snapshot().ok().map(|snapshot| (key, servers.to_vec(), snapshot));
+        let snapshot = self.dns_snapshot()?;
+        self.journal.dns_snapshot = Some(snapshot.clone());
+        self.save()?;
+        self.applied_dns = Some((key, servers.to_vec(), snapshot));
         Ok(())
     }
 
@@ -803,10 +842,28 @@ impl<C: Commands> Network<C> {
         Ok(())
     }
 
-    /// Confirms only that this app's temporary DNS key still exists.
-    /// This does not verify resolver precedence or actual system DNS queries.
+    /// Compare the product's Dynamic Store entry with the installed dictionary.
+    /// Resolver display order and more specific split domains are independent.
     pub fn verify_dns(&self) -> Result<()> {
-        self.dns_snapshot().map(|_| ())
+        let actual = self.dns_snapshot()?;
+        ensure!(
+            self.journal.dns_snapshot.as_ref().is_none_or(|saved| saved == &actual),
+            "temporary DNS resolver changed"
+        );
+        Ok(())
+    }
+
+    pub fn verify_active(&self, interface: &str, v4_table: &str) -> Result<()> {
+        self.verify_capture(interface, v4_table)?;
+        let v6_table = crate::ipv6::snapshot(&self.commands)?;
+        for prefix in ["::/1", "8000::/1"] {
+            ensure!(
+                self.journal.ipv6_routes.iter().any(|r| r.interface == interface && r.destination == prefix)
+                    && crate::ipv6::owns_capture(&v6_table, prefix, interface)?,
+                "IPv6 capture route {prefix} is missing or changed"
+            );
+        }
+        self.verify_dns()
     }
 
     fn dns_snapshot(&self) -> Result<String> {
@@ -817,7 +874,7 @@ impl<C: Commands> Network<C> {
             "temporary DNS resolver is missing or changed: {}",
             output.trim()
         );
-        Ok(output)
+        Ok(output.trim().to_owned())
     }
 
     /// Removes only routes that still match the recorded interface/gateway.
@@ -858,13 +915,13 @@ impl<C: Commands> Network<C> {
         }
         let mut errors = vec![];
         if let Some(key) = self.journal.dns_key.clone() {
-            match self.commands.run("/usr/sbin/scutil", &[], Some(&format!("remove {key}\nquit\n"))) {
-                Ok(output) if output.trim().is_empty() || output.trim() == "No such key" => {
+            match self.remove_dns(&key) {
+                Ok(()) => {
                     self.journal.dns_key = None;
+                    self.journal.dns_snapshot = None;
                     self.applied_dns = None;
-                    info!("removed temporary DNS resolver");
                 }
-                result => errors.push(format!("DNS cleanup: {result:?}")),
+                Err(error) => errors.push(format!("DNS cleanup: {error:#}")),
             }
         }
         let mut v6_routes = vec![];
@@ -918,6 +975,26 @@ impl<C: Commands> Network<C> {
         }
     }
 
+    fn remove_dns(&self, key: &str) -> Result<()> {
+        ensure!(
+            key == format!("State:/Network/Service/NetworkRelayTun-{}/DNS", self.journal.owner),
+            "unexpected journaled DNS key"
+        );
+        if let Some(installed) = &self.journal.dns_snapshot {
+            let current = self.commands.run("/usr/sbin/scutil", &[], Some(&format!("show {key}\nquit\n")))?;
+            if current.trim() == "No such key" {
+                return Ok(());
+            }
+            ensure!(current.trim().starts_with("<dictionary> {"), "unrecognized DNS snapshot");
+            if current.trim() != installed {
+                return Ok(());
+            } // Preserve a replacement.
+        }
+        let output = self.commands.run("/usr/sbin/scutil", &[], Some(&format!("remove {key}\nquit\n")))?;
+        ensure!(output.trim().is_empty() || output.trim() == "No such key", "scutil DNS removal failed: {output}");
+        Ok(())
+    }
+
     fn remove_route(&self, route: &OwnedRoute) -> Result<()> {
         let (network, bits) = route.destination.split_once('/').context("invalid recovery route")?;
         let address: Ipv4Addr = network.parse()?;
@@ -942,7 +1019,14 @@ impl<C: Commands> Network<C> {
                 .get("mask")
                 .is_some_and(|s| s == expected_mask || s == if bits == "32" { "0xffffffff" } else { "0x80000000" })
                 || (bits == "32" && fields.get("flags").is_some_and(|s| s.contains("HOST"))));
+        let direct_capture = bits != "1"
+            || fields.get("flags").is_some_and(|flags| {
+                let mut flags = flags.trim_matches(['<', '>']).split(',');
+                flags.clone().any(|flag| flag == "UP")
+                    && !flags.any(|flag| matches!(flag, "GATEWAY" | "BLACKHOLE" | "REJECT" | "IFSCOPE"))
+            });
         let matches = exact
+            && direct_capture
             && fields.get("interface") == Some(&route.interface)
             && route.gateway.is_none_or(|gateway| {
                 fields.get("gateway") == Some(&gateway.to_string())
@@ -1872,7 +1956,7 @@ mod tests {
                 if arguments[1] == "get" {
                     if self.installed.lock().unwrap().contains(destination) {
                         return Ok(format!(
-                            "destination: {}\nmask: 128.0.0.0\ninterface: utun9\n",
+                            "destination: {}\nmask: 128.0.0.0\ninterface: utun9\nflags: <UP,STATIC>\n",
                             destination.split('/').next().unwrap()
                         ));
                     }
@@ -1952,7 +2036,7 @@ mod tests {
                 bail!("injected restoration failure");
             }
             if program == "/sbin/route" && arguments.iter().any(|s| s == "get") {
-                return Ok("destination: 128.0.0.0\nmask: 128.0.0.0\ninterface: utun9\n".into());
+                return Ok("destination: 128.0.0.0\nmask: 128.0.0.0\ninterface: utun9\nflags: <UP,STATIC>\n".into());
             }
             Ok(String::new())
         }
@@ -2016,6 +2100,83 @@ mod tests {
         });
         net.cleanup().unwrap();
         assert!(!net.commands.calls.lock().unwrap().iter().any(|c| c.iter().any(|a| a == "delete")));
+    }
+
+    #[test]
+    fn active_capture_checks_both_route_tables_and_preserves_a_replaced_dns_entry() {
+        struct Observations {
+            v6: String,
+            dns: String,
+        }
+        impl Commands for Observations {
+            fn run(&self, program: &str, arguments: &[String], input: Option<&str>) -> Result<String> {
+                match program {
+                    "/usr/sbin/netstat" if arguments == ["-rn", "-f", "inet6"] => Ok(self.v6.clone()),
+                    "/usr/sbin/scutil"
+                        if input == Some("show State:/Network/Service/NetworkRelayTun-501/DNS\nquit\n") =>
+                    {
+                        Ok(self.dns.clone())
+                    }
+                    _ => bail!("unexpected mutation or query: {program} {arguments:?} {input:?}"),
+                }
+            }
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let v4 = "0/1 link#1 US utun8\n128/1 link#1 US utun8\n";
+        let v6 = "Destination Gateway Flags Netif\n::/1 utun8 US utun8\n8000::/1 utun8 US utun8\n";
+        let dns = "<dictionary> {\n  SearchOrder : 1000\n}";
+        let key = "State:/Network/Service/NetworkRelayTun-501/DNS";
+        let commands = Observations { v6: v6.into(), dns: dns.into() };
+        let mut net = Network::new(commands, 501, journal_path(directory.path()));
+        for destination in ["0.0.0.0/1", "128.0.0.0/1"] {
+            net.journal.routes.push(OwnedRoute {
+                destination: destination.into(),
+                gateway: None,
+                interface: "utun8".into(),
+            });
+        }
+        for destination in ["::/1", "8000::/1"] {
+            net.journal
+                .ipv6_routes
+                .push(crate::ipv6::CaptureRoute { destination: destination.into(), interface: "utun8".into() });
+        }
+        net.journal.dns_key = Some(key.into());
+        net.journal.dns_snapshot = Some(dns.into());
+        net.verify_active("utun8", v4).unwrap();
+        assert!(net.verify_active("utun8", &v4.replace("128/1", "default")).is_err());
+        assert!(net.verify_active("utun8", &v4.replace(" US ", " UGS ")).is_err());
+        net.commands.v6 = v6.replace("8000::/1", "default");
+        assert!(net.verify_active("utun8", v4).is_err());
+        net.commands.v6 = v6.into();
+        net.commands.dns = dns.replace("1000", "2000");
+        assert!(net.verify_active("utun8", v4).is_err());
+        net.remove_dns(key).unwrap();
+    }
+
+    #[test]
+    fn ipv6_only_relay_uses_the_physical_scope_without_reading_ipv4_defaults() {
+        struct Route(&'static str);
+        impl Commands for Route {
+            fn run(&self, program: &str, arguments: &[String], _: Option<&str>) -> Result<String> {
+                ensure!(
+                    program == "/sbin/route"
+                        && (arguments == ["-n", "get", "-inet6", "2001:db8::4"]
+                            || arguments == ["-n", "get", "-inet6", "-ifscope", "en3", "2001:db8::4"]),
+                    "unexpected route lookup"
+                );
+                Ok(format!("interface: {}\nflags: <UP,GATEWAY,STATIC>\n", self.0))
+            }
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let mut net = Network::new(Route("en3"), 501, journal_path(directory.path()));
+        let endpoints = ["2001:db8::4".parse().unwrap()];
+        assert_eq!(net.relay_paths(&endpoints, None, None).unwrap().as_deref(), Some("en3"));
+        assert_eq!(net.relay_paths(&endpoints, None, Some("en3")).unwrap().as_deref(), Some("en3"));
+        net.commands.0 = "en0";
+        assert!(net.relay_paths(&endpoints, None, Some("en3")).is_err());
+        net.commands.0 = "utun8";
+        assert!(net.relay_paths(&endpoints, None, None).is_err());
+        assert!(!net.path.exists());
     }
 
     #[test]

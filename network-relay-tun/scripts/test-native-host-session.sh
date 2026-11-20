@@ -35,6 +35,29 @@ import Darwin
         // This executable must survive closed-pipe failures without relying on
         // another component having installed a process-wide signal handler.
         signal(SIGPIPE, SIG_DFL)
+        let files = FileManager.default
+        let copies = files.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let bundled = copies.appendingPathComponent("bundle")
+        let installed = copies.appendingPathComponent("installed")
+        defer { try? files.removeItem(at: copies) }
+        for directory in [bundled, installed] {
+            try files.createDirectory(at: directory, withIntermediateDirectories: true)
+            for name in ["network-relay-tun-host", "packet-worker"] {
+                let url = directory.appendingPathComponent(name)
+                try Data(name.utf8).write(to: url)
+                try files.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path)
+            }
+        }
+        try HostSession.checkInstalledFiles(bundled: bundled, installed: installed)
+        for name in ["packet-worker", "network-relay-tun-host"] {
+            let url = installed.appendingPathComponent(name)
+            try Data("old version".utf8).write(to: url)
+            do {
+                try HostSession.checkInstalledFiles(bundled: bundled, installed: installed)
+                fatalError("A mismatched installed helper was accepted")
+            } catch { precondition(error.localizedDescription.contains("Install / Update Helper")) }
+            try Data(name.utf8).write(to: url)
+        }
         let control = HostSession()
         do {
             _ = try await control.request(["operation": "recover"])

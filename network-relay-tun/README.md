@@ -10,13 +10,10 @@ All source, vendored code, dependency locks, tests and build outputs belong to
 this directory. NF, RS, the servers and repository-wide build files are unchanged.
 No paid Apple developer account or Network Extension entitlement is required.
 
-**Validation status:** portable protocol, packet and recovery tests pass; the
-Rust helper and worker have been type-checked for Apple Silicon macOS. A supplied
-Mac build log confirms Swift production compilation and 71 passing model tests,
-but bundle verification failed on the former shell-script placement. The packaging
-correction still needs native verification. Privileged installation, actual utun
-traffic and physical macOS network switching remain unverified.
-Complete the native acceptance checklist before relying on system capture.
+On macOS 27.0.1, revision `e6e4eb6` passed 71 Swift tests, strict app and
+helper signature verification, authenticated helper installation, utun worker
+startup and restoration after preparation. See the [validation record](docs/validation.md)
+for results and the remaining device and network-switching checks.
 
 ## Build and run
 
@@ -35,7 +32,7 @@ ad-hoc signs the finished application. It does not install privileged software
 or change networking. Compilation caches remain inside this directory.
 
 1. Enter the existing server's certificate domain, account and password. An
-   optional server IPv4 address pins the endpoint; the certificate domain is
+   optional server IPv4 or IPv6 address pins the endpoint. The certificate domain is
    retained for TLS validation. Choose a local SOCKS port not already in use.
 2. Leave **Global TUN** enabled. Click **Install / Update Helper** and approve
    the local macOS administrator dialog. This installs only this product's
@@ -59,9 +56,11 @@ silently reported as success.
   relay path; no fake-IP mapping is used. Transient resolvers are 1.1.1.1 and
   8.8.8.8. DNS queries made to private UDP DNS addresses are redirected by the
   selected adapter to its remote resolver through SOCKS.
-- IPv4 and IPv6 **destinations** are supported. This version requires an IPv4
-  relay endpoint and an IPv4 physical default route; IPv6-only uplinks and
-  IPv6-only relay endpoints are explicitly rejected before activation.
+- The client resolves the relay before capture and tries usable IPv4 and IPv6
+  addresses in resolver order within each family. IPv4 uses a physical bypass
+  route. For an IPv6 relay the client binds its outer connection to the physical
+  interface chosen by the kernel. Each attempt retains the configured TLS name.
+  A failed attempt must finish restoration before the next address is tried.
 - Capture installs IPv4 and IPv6 split-default routes. macOS loopback, multicast,
   interface-scoped traffic and existing more-specific routes can take precedence.
   In particular, connected LAN routes and other VPN routes are not forcibly

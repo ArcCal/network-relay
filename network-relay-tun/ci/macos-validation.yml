@@ -46,12 +46,12 @@ jobs:
           codesign --verify --strict "$app/Contents/Helpers/packet-worker"
           test -f "$app/Contents/Resources/install-helper.sh"
           test -f "$app/Contents/Resources/uninstall-helper.sh"
-      - name: Exercise installed helper without global capture
+      - name: Exercise installed helper and global capture on the disposable runner
         if: always() && steps.build.outcome == 'success'
         timeout-minutes: 5
         run: |
           set -o pipefail
-          bash network-relay-tun/scripts/test-native-helper.sh 2>&1 | tee network-relay-tun/.validation/native-helper.log
+          bash network-relay-tun/scripts/test-native-helper.sh --capture 2>&1 | tee network-relay-tun/.validation/native-helper.log
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
         with:

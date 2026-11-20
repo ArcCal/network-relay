@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import Network
 import NetworkRelayTunModel
 
 /// Owns the complete independent application session. Network restoration is
@@ -84,30 +85,56 @@ final class TunnelController: ObservableObject {
     }
     private func runSession() async {
         var delay: UInt64 = 1
+        var endpoints: ArraySlice<String> = []
         while !Task.isCancelled {
             var terminal = false
+            var advance = false
             do {
                 var selected = settings
+                var relayInterface: NWInterface?
+                var captureLease: String?
                 if globalTUN {
                     captureStatus = "Preparing"
-                    let bootstrapSettings = selected
-                    let endpoint = try await Task.detached { try HostSession.endpoint(bootstrapSettings) }.value
-                    try Task.checkCancellation()
-                    selected.serverIP = endpoint // Retain original domain for SNI and certificate trust.
-                    let control = HostSession(); host = control
+                    let control = HostSession()
+                    do {
+                        try await control.checkCompatibility()
+                        try Task.checkCancellation()
+                    } catch {
+                        control.close()
+                        throw error
+                    }
+                    host = control
                     _ = try await control.request(["operation": "recover"])
+                    recoveryRequired = false
+                    let bootstrapSettings = selected
+                    if endpoints.isEmpty {
+                        let resolved = try await Task.detached { try RelayEndpoints.resolve(bootstrapSettings) }.value
+                        endpoints = resolved[...]
+                    }
+                    try Task.checkCancellation()
+                    guard let endpoint = endpoints.popFirst() else { throw NativeError("No relay endpoint is available.") }
+                    selected.serverIP = endpoint // Retain original domain for SNI and certificate trust.
                     let prepared = try await control.request(["operation": "prepare", "plan": [
                         "endpoints": [endpoint], "resolvers": ["1.1.1.1", "8.8.8.8"], "mtu": 1500, "socks_port": selected.port
                     ]])
+                    guard let lease = prepared.status.lease, prepared.status.state == "prepared" else {
+                        throw NativeError("Network helper did not return a prepared session.")
+                    }
+                    captureLease = lease
+                    if endpoint.contains(":") {
+                        guard let name = prepared.status.ipv6_uplink, let physical = networkChanges?.physicalInterface(named: name) else {
+                            throw EndpointFailure(message: "The IPv6 relay's physical interface is unavailable.")
+                        }
+                        relayInterface = physical
+                    }
                     interfaceName = prepared.status.interface
-                    recoveryRequired = false
                     captureStatus = "Prepared; waiting for relay"
                 }
                 try Task.checkCancellation()
                 let run = UUID(); generation = run
                 nativeReady = false; nativeExited = false; nativeFailure = nil; retryReason = nil; retrySince = nil
                 traffic.reset(); trafficNodeName = configuration.selectedServer?.title
-                native = try NativeClient(configuration: clientConfiguration(selected, password: configuration.password), level: configuration.logLevel, id: run) { [weak self] update in
+                native = try NativeClient(configuration: clientConfiguration(selected, password: configuration.password), level: configuration.logLevel, id: run, relayInterface: relayInterface) { [weak self] update in
                     guard let self, generation == run else { return }
                     received(update)
                 }
@@ -115,23 +142,21 @@ final class TunnelController: ObservableObject {
                 while !nativeReady {
                     try Task.checkCancellation()
                     if nativeExited { terminal = true; throw NativeError(nativeFailure ?? "Relay exited before readiness.") }
-                    guard ProcessInfo.processInfo.systemUptime < openingDeadline else { throw NativeError("Relay readiness timed out.") }
+                    if !endpoints.isEmpty, let reason = retryReason { throw EndpointFailure(message: reason) }
+                    guard ProcessInfo.processInfo.systemUptime < openingDeadline else { throw EndpointFailure(message: "Relay readiness timed out.") }
                     try await Task.sleep(nanoseconds: 100_000_000)
                 }
-                if let host {
-                    let current = try await host.request(["operation": "status"])
-                    guard let lease = current.status.lease else { throw NativeError("Prepared network lease disappeared.") }
+                if let host, let lease = captureLease {
                     _ = try await host.request(["operation": "activate", "lease": lease])
                     captureStatus = "Capturing IPv4 and IPv6"
                 }
                 status = .connected
+                endpoints = [] // Resolve again after a later physical path change.
                 let connectedAt = ProcessInfo.processInfo.systemUptime
                 while !Task.isCancelled {
                     if nativeExited { terminal = true; throw NativeError(nativeFailure ?? "Relay stopped.") }
                     if let retrySince, ProcessInfo.processInfo.systemUptime - retrySince >= 2 { throw NativeError(retryReason ?? "Relay connection needs replacement.") }
-                    if let host {
-                        let current = try await host.request(["operation": "status"])
-                        guard let lease = current.status.lease else { throw NativeError("Network lease disappeared.") }
+                    if let host, let lease = captureLease {
                         _ = try await host.request(["operation": "refresh", "lease": lease])
                     }
                     if ProcessInfo.processInfo.systemUptime - connectedAt >= 30 { delay = 1 }
@@ -140,12 +165,19 @@ final class TunnelController: ObservableObject {
             } catch is CancellationError {
                 // Explicit stop or configuration replacement; restore below.
             } catch {
-                if !Task.isCancelled { fail(error) }
-                // Host installation/permission and restoration failures require user action.
-                if native == nil || recoveryRequired { terminal = true }
+                advance = error is EndpointFailure && !endpoints.isEmpty
+                if !Task.isCancelled {
+                    if advance { record("Relay address unavailable: \(error.localizedDescription)") }
+                    else { fail(error) }
+                }
+                if (!advance && native == nil) || error is CaptureChanged || recoveryRequired { terminal = true }
             }
             await restore()
             if Task.isCancelled || terminal || recoveryRequired { break }
+            if advance {
+                status = .connecting
+                continue
+            }
             status = .reconnecting("Opening a fresh relay connection")
             do { try await Task.sleep(nanoseconds: delay * 1_000_000_000) } catch { break }
             delay = min(delay * 2, 30)
@@ -161,6 +193,7 @@ final class TunnelController: ObservableObject {
         }
     }
     private func restore() async {
+        if host == nil && !recoveryRequired { captureStatus = "Off" }
         if let control = host {
             captureStatus = "Restoring network"
             do { try await control.stop(); captureStatus = "Off"; recoveryRequired = false; interfaceName = nil }

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Disposable CI host only. Exercise privileged preparation and recovery without
-# activating split-default routes or changing system DNS.
+# Disposable CI host only. With --capture also activate and restore real
+# split-default routes and DNS while exercising the local packet worker.
 set -euo pipefail
 [[ $(uname -s) == Darwin && ${CI:-} == true ]] || { echo 'Requires a disposable macOS CI runner.' >&2; exit 77; }
 root=$(cd -- "$(dirname -- "$0")/.." && pwd)
@@ -28,12 +28,14 @@ def request(value):
  if not line: raise RuntimeError('Control bridge exited without a reply')
  result=json.loads(line)
  print(json.dumps(result),flush=True)
+ assert result['control_revision']==2
  if not result['ok']: raise RuntimeError(result['error'])
  return result['status']
 try:
  assert request({'operation':'recover'})['state']=='idle'
  state=request({'operation':'prepare','plan':{'endpoints':['198.51.100.254'],'resolvers':['1.1.1.1'],'mtu':1500,'socks_port':1080}})
  assert state['state']=='prepared' and state['interface'].startswith('utun')
+ assert request({'operation':'refresh','lease':state['lease']})['state']=='prepared'
  assert request({'operation':'stop','lease':state['lease']})['state']=='idle'
  print('PASS: installed daemon, authenticated IPC, utun worker startup and owned-state recovery')
 finally:
@@ -42,3 +44,6 @@ finally:
   child.stdin.close()
   child.wait(timeout=15)
 PY
+if [[ ${1:-} == --capture ]]; then
+    python3 "$root/tests/native_capture.py" "$app/Contents/Helpers/network-relay-tun-host"
+fi

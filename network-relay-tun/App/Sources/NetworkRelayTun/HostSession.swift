@@ -6,12 +6,26 @@ struct HostStatus: Decodable {
     let state: String
     let interface: String?
     let lease: String?
+    let ipv6_uplink: String?
 }
 struct HostReply: Decodable {
     let ok: Bool
     let status: HostStatus
     let error: String
     let version: String
+    let control_revision: UInt32?
+    let retry_endpoint: Bool?
+    let capture_changed: Bool?
+}
+
+struct EndpointFailure: LocalizedError {
+    let message: String
+    var errorDescription: String? { message }
+}
+
+struct CaptureChanged: LocalizedError {
+    let message: String
+    var errorDescription: String? { message }
 }
 
 /// One serialized control connection owns one capture lease. No relay password
@@ -21,7 +35,30 @@ final class HostSession: @unchecked Sendable {
     private var process: Process?
     private var input: FileHandle?
     private var output: FileHandle?
-    private var lease: String?
+    static func checkInstalledFiles(bundled: URL, installed: URL) throws {
+        let files = FileManager.default
+        for name in ["network-relay-tun-host", "packet-worker"] {
+            let source = bundled.appendingPathComponent(name).path
+            let target = installed.appendingPathComponent(name).path
+            guard files.isExecutableFile(atPath: source), files.isExecutableFile(atPath: target),
+                  files.contentsEqual(atPath: source, andPath: target) else {
+                throw NativeError("The installed network helper is missing or differs from this app. Click Install / Update Helper.")
+            }
+        }
+    }
+
+    /// Recovery stays available with an older daemon. New capture requires
+    /// both the installed binaries and the protocol of the running process.
+    func checkCompatibility() async throws {
+        try await Task.detached {
+            try Self.checkInstalledFiles(bundled: Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers"),
+                installed: URL(fileURLWithPath: "/Library/Application Support/NetworkRelayTun"))
+        }.value
+        let reply = try await request(["operation": "status"])
+        guard reply.control_revision == 2 else {
+            throw NativeError("The running network helper is incompatible with this app. Click Install / Update Helper.")
+        }
+    }
 
     func request(_ object: [String: Any]) async throws -> HostReply {
         let data = try JSONSerialization.data(withJSONObject: object)
@@ -54,7 +91,8 @@ final class HostSession: @unchecked Sendable {
                     }
                     guard reply.count <= 4096 else { throw NativeError("Invalid network helper reply.") }
                     let result = try JSONDecoder().decode(HostReply.self, from: reply)
-                    if let value = result.status.lease { lease = value }
+                    if !result.ok, result.retry_endpoint == true { throw EndpointFailure(message: result.error) }
+                    if !result.ok, result.capture_changed == true { throw CaptureChanged(message: result.error) }
                     guard result.ok else { throw NativeError(result.error) }
                     continuation.resume(returning: result)
                 } catch { continuation.resume(throwing: error) }
@@ -75,29 +113,9 @@ final class HostSession: @unchecked Sendable {
     func close() {
         queue.async { [self] in
             try? input?.close(); try? output?.close()
-            input = nil; output = nil; lease = nil
+            input = nil; output = nil
             if process?.isRunning == true { process?.terminate() }
             process = nil
         }
-    }
-    static func endpoint(_ settings: Settings) throws -> String {
-        if !settings.serverIP.isEmpty {
-            var address = in_addr()
-            guard inet_pton(AF_INET, settings.serverIP, &address) == 1 else {
-                throw NativeError("Global TUN currently needs an IPv4 relay endpoint. IPv6 destination traffic is supported through that relay.")
-            }
-            return settings.serverIP
-        }
-        guard let host = URLComponents(string: "https://" + settings.domain)?.host else { throw NativeError("Invalid relay domain.") }
-        var hints = addrinfo(); hints.ai_family = AF_INET; hints.ai_socktype = SOCK_STREAM
-        var result: UnsafeMutablePointer<addrinfo>?
-        let code = getaddrinfo(host, nil, &hints, &result)
-        guard code == 0, let first = result else { throw NativeError("Cannot resolve the relay's IPv4 bootstrap address.") }
-        defer { freeaddrinfo(result) }
-        var text = [CChar](repeating: 0, count: Int(INET_ADDRSTRLEN))
-        let address = first.pointee.ai_addr.withMemoryRebound(to: sockaddr_in.self, capacity: 1) { $0.pointee.sin_addr }
-        var addressCopy = address
-        guard inet_ntop(AF_INET, &addressCopy, &text, socklen_t(text.count)) != nil else { throw NativeError("Invalid resolved relay address.") }
-        return String(cString: text)
     }
 }

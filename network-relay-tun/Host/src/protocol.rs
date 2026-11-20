@@ -4,6 +4,15 @@ use serde::{Deserialize, Serialize};
 use std::net::IpAddr;
 
 pub const MAX_REQUEST: usize = 4096;
+pub const CONTROL_REVISION: u32 = 2;
+
+#[derive(Debug, thiserror::Error)]
+#[error("no usable physical path to the selected relay address")]
+pub struct EndpointUnavailable;
+
+#[derive(Debug, thiserror::Error)]
+#[error("system capture changed")]
+pub struct CaptureChanged;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]

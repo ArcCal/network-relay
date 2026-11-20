@@ -31,6 +31,9 @@ mod mac {
         status: Status,
         error: String,
         version: &'static str,
+        control_revision: u32,
+        retry_endpoint: bool,
+        capture_changed: bool,
     }
     pub fn control() -> Result<()> {
         use std::io::{BufRead, Read, Write};
@@ -128,9 +131,19 @@ mod mac {
                 }
                 let reply = Reply {
                     ok: result.is_ok(),
+                    retry_endpoint: status.state == network_relay_tun_host::broker::State::Idle
+                        && result
+                            .as_ref()
+                            .err()
+                            .is_some_and(|e| e.is::<network_relay_tun_host::protocol::EndpointUnavailable>()),
+                    capture_changed: result
+                        .as_ref()
+                        .err()
+                        .is_some_and(|e| e.is::<network_relay_tun_host::protocol::CaptureChanged>()),
                     status,
                     error: result.err().map(|error| format!("{error:#}")).unwrap_or_default(),
                     version: env!("CARGO_PKG_VERSION"),
+                    control_revision: network_relay_tun_host::protocol::CONTROL_REVISION,
                 };
                 if ipc::write_reply(&mut stream, &reply).is_err() {
                     break;

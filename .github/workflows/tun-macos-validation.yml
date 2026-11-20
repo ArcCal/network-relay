@@ -1,0 +1,59 @@
+name: Rust server native Relay audit
+on:
+  push:
+    branches: [audit/tun-macos-validation-protocol-20261120]
+permissions:
+  contents: read
+jobs:
+  native:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [xcode-27, macos-15]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: abb966352880c7521cbd9a1e23e9c2f6e70906b0
+          path: native-probe
+          sparse-checkout: diagnostics
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d
+        with:
+          toolchain: stable
+      - id: build
+        name: Compile candidate and original native probe
+        run: |
+          set -euo pipefail
+          sw_vers
+          xcodebuild -version
+          cargo build --locked --release --bin network-relay
+          git -C native-probe apply "$PWD/diagnostics/rust-only-probe.patch"
+          xcrun swiftc -O -parse-as-library -target "$(uname -m)-apple-macos14.0" native-probe/diagnostics/RelayProbe.swift -o "$RUNNER_TEMP/probe"
+          openssl_bin="$(brew --prefix openssl@3)/bin"
+          test -x "$openssl_bin/openssl"
+          echo "$openssl_bin" >> "$GITHUB_PATH"
+          cat > "$RUNNER_TEMP/measure" <<'SCRIPT'
+          #!/bin/bash
+          exec python3 native-probe/diagnostics/run-native-probe.py --source "$PWD" --rust-binary "$PWD/target/release/network-relay" --probe "$RUNNER_TEMP/probe" --server rust "$@"
+          SCRIPT
+          chmod 700 "$RUNNER_TEMP/measure"
+      - name: Direct, H2, H3 and automatic bulk transfers
+        if: steps.build.outcome == 'success'
+        run: '"$RUNNER_TEMP/measure" --out "$RUNNER_TEMP/evidence/bulk"'
+      - name: Independently counted UDP boundaries
+        if: always() && steps.build.outcome == 'success'
+        run: '"$RUNNER_TEMP/measure" --udp-only --udp-boundaries --out "$RUNNER_TEMP/evidence/udp"'
+      - name: UDP path-size controls
+        if: always() && steps.build.outcome == 'success'
+        run: '"$RUNNER_TEMP/measure" --udp-only --out "$RUNNER_TEMP/evidence/mtu"'
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: native-rust-relay-${{ matrix.runner }}
+          path: ${{ runner.temp }}/evidence
+          retention-days: 7

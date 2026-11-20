@@ -1,0 +1,49 @@
+--- a/diagnostics/run-native-probe.py
++++ b/diagnostics/run-native-probe.py
+@@ -356,7 +356,7 @@
+     parser = argparse.ArgumentParser(description=__doc__)
+     parser.add_argument('--source', type=Path, required=True)
+     parser.add_argument('--rust-binary', type=Path, required=True)
+-    parser.add_argument('--caddy-binary', type=Path, required=True)
++    parser.add_argument('--caddy-binary', type=Path)
+     parser.add_argument('--probe', type=Path, required=True)
+     parser.add_argument('--out', type=Path, required=True)
+     parser.add_argument('--matrix', choices=['standard', 'sustained-upload', 'sustained-h2'],
+@@ -373,6 +373,8 @@
+     parser.add_argument('--upload-diagnostic', action='store_true', help='Isolate inner HTTP3 uploads and retain H2 flow-control/stall observations')
+     parser.add_argument('--capsule-trace', action='store_true', help='Use a separately instrumented baseline; no throughput comparisons')
+     args = parser.parse_args()
++    if args.server != 'rust' and args.caddy_binary is None:
++        parser.error('Caddy cases require --caddy-binary')
+     observe_download = args.tcp_download_diagnostic or args.tcp_download_watchdog
+     sustained = args.matrix in ['sustained-upload', 'sustained-h2']
+     if args.matrix not in ['standard', 'sustained-upload', 'sustained-h2']:
+@@ -396,7 +398,7 @@
+     spec = importlib.util.spec_from_file_location('relay_fixture', args.source / 'tests/interop/run.py')
+     fixture_module = importlib.util.module_from_spec(spec); spec.loader.exec_module(fixture_module)
+     environment = {'os': platform.platform(), 'architecture': platform.machine(),
+-        'rust_binary_sha256': digest(args.rust_binary), 'caddy_binary_sha256': digest(args.caddy_binary),
++        'rust_binary_sha256': digest(args.rust_binary), 'caddy_binary_sha256': digest(args.caddy_binary) if args.caddy_binary else None,
+         'probe_sha256': digest(args.probe), 'source_revision': command(['git', '-C', args.source, 'rev-parse', 'HEAD']).stdout.strip(),
+         'scope': 'Apple URLSession explicit Relay, loopback downloads/uploads. No installed system profile, WAN, DNS or iPhone acceptance.'}
+     environment['tcp_download_diagnostic'] = observe_download
+@@ -492,9 +494,9 @@
+                     with path.open('wb') as stream:
+                         for offset in range(0, size, len(block)): stream.write(block[:min(len(block), size-offset)])
+                     upload_files[size] = path
+-                with preserve_logs(fixture, password, args.out), caddy(args.caddy_binary, fixture, password,
++                with preserve_logs(fixture, password, args.out), (caddy(args.caddy_binary, fixture, password,
+                         origin.server_port if args.origin_http3 else None, args.upload_diagnostic or observe_download, args.capsule_trace,
+-                        debug_http2=not observe_download) as caddy_port:
++                        debug_http2=not observe_download) if args.server != 'rust' else contextlib.nullcontext()) as caddy_port:
+                     origin_endpoint_port = int((fixture / 'http3-origin-port').read_text()) if args.origin_http3 else origin.server_port
+                     server_pids = {'rust': rust_process.pid, 'caddy': int((fixture / 'caddy.pid').read_text())}
+                     def server_usage():
+@@ -738,6 +740,7 @@
+                                         row['failure'] = 'Native stack sampling unavailable or failed'
+                                     summary.append(row); (args.out / 'summary.json').write_text(json.dumps(summary, indent=2) + '\n')
+                     for name in ['server.log', 'caddy-server.log']:
++                        if not (fixture / name).exists(): continue
+                         text = (fixture / name).read_text()
+                         token = base64.b64encode(('alice:' + password).encode()).decode()
+                         text = scrub_log(text, password)

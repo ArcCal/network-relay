@@ -1,0 +1,35 @@
+name: Run complete standard egress and relay suites on the exact Linux candidate
+on:
+  push:
+    branches: [audit/final-linux-standard-suites-20261120]
+permissions:
+  contents: read
+jobs:
+  standard:
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-22.04-arm]
+    env:
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with: {persist-credentials: false}
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d
+        with: {toolchain: stable, components: 'rustfmt,clippy'}
+      - name: Run the ordinary CF MASQUE entry point, all features, upstream tests and root egress suite
+        run: bash network-relay-cf-masque/scripts/test.sh
+      - name: Check the VLESS application at the same integrated source revision
+        shell: bash
+        run: |
+          set -euo pipefail
+          source network-relay-cf-masque/scripts/env.sh
+          cd network-relay-vless
+          cargo fmt --check
+          cargo clippy --locked --all-targets -- -D warnings
+          cargo test --locked
+          cargo build --locked --release

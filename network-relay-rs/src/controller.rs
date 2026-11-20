@@ -169,6 +169,12 @@ impl Controller {
         );
         owner
     }
+    /// A view of the retained history for the native log window.
+    #[cfg(any(target_os = "macos", feature = "ui-typecheck", test))]
+    pub(crate) fn retained_logs(&self) -> &VecDeque<LogEntry> {
+        &self.log
+    }
+
     pub fn logs(&self) -> Vec<LogEntry> {
         self.log.iter().cloned().collect()
     }
@@ -556,6 +562,21 @@ mod tests {
             assert!(matches!(rx.try_recv().unwrap(), Message::Log(line) if line.level == 0));
         });
     }
+    #[test]
+    fn log_revision_follows_retained_changes_and_erase() {
+        let mut c = Controller::with_configuration(Configuration::default(), None, None);
+        for i in 0..5000 {
+            c.append(LogEntry { text: format!("INFO record {i}"), level: 2, sequence: 0 });
+        }
+        let full = c.retained_logs().back().map(|entry| entry.sequence).unwrap();
+        c.append(LogEntry { text: "TRACE discarded".into(), level: 4, sequence: 0 });
+        assert_eq!(c.retained_logs().back().map(|entry| entry.sequence), Some(full));
+        c.append(LogEntry { text: "WARN retained".into(), level: 1, sequence: 0 });
+        assert!(c.retained_logs().back().map(|entry| entry.sequence).unwrap() > full);
+        c.erase().unwrap();
+        assert_eq!(c.retained_logs().back().map(|entry| entry.sequence), None);
+    }
+
     #[test]
     fn retention_prioritizes_operational_records() {
         let mut c = Controller::with_configuration(Configuration::default(), None, None);

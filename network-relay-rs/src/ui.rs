@@ -111,6 +111,7 @@ struct App {
     logs: LogViews,
     follow_latest: bool,
     last_log: String,
+    rendered_log: Option<(Option<u64>, LogLevel)>,
     last_status: String,
     last_traffic: Option<(Option<String>, LiveTraffic)>,
 }
@@ -299,6 +300,7 @@ impl App {
             logs,
             follow_latest: true,
             last_log: String::new(),
+            rendered_log: None,
             last_status: String::new(),
             last_traffic: None,
         };
@@ -772,7 +774,16 @@ impl App {
             }
             self.last_traffic = Some((self.controller.traffic_node.clone(), self.controller.traffic.clone()));
         }
-        let all = self.controller.logs();
+        self.refresh_log();
+    }
+
+    unsafe fn refresh_log(&mut self) {
+        let all = self.controller.retained_logs();
+        let revision = (all.back().map(|entry| entry.sequence), self.controller.config.log_level);
+        if self.rendered_log == Some(revision) {
+            return;
+        }
+        self.rendered_log = Some(revision);
         let shown = all.iter().filter(|entry| self.controller.config.log_level.shows(&entry.text)).collect::<Vec<_>>();
         let output = shown.iter().map(|entry| entry.text.as_str()).collect::<Vec<_>>().join("\n");
         if output != self.last_log {

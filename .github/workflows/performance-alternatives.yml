@@ -1,0 +1,46 @@
+name: Compare isolated request, UDP and inner TCP performance candidates
+on:
+  push:
+    branches: [audit/performance-alternatives-20261120]
+permissions:
+  contents: read
+jobs:
+  compare:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {runner: ubuntu-24.04, arch: amd64}
+          - {runner: ubuntu-22.04-arm, arch: arm64}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 70
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with: {persist-credentials: false}
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d
+        with: {toolchain: stable}
+      - name: Build the checked-in source and capture the exact toolchain
+        run: |
+          set -euo pipefail
+          python3 diagnostics/performance/prepare.py
+          mkdir "$RUNNER_TEMP/evidence"
+          rustc -vV > "$RUNNER_TEMP/evidence/rustc.txt"
+          export CARGO_TARGET_DIR="$RUNNER_TEMP/target"
+          cd diagnostics/performance
+          cargo build --release --locked
+          cargo build --release --locked --bin path --features large-buffers
+          mv "$CARGO_TARGET_DIR/release/path" "$CARGO_TARGET_DIR/release/path-large"
+          cargo build --release --locked --bin path
+      - name: Validate HTTP dates, actual client encode bytes and complete stream writes
+        run: |
+          set -euo pipefail
+          "$RUNNER_TEMP/target/release/date" > "$RUNNER_TEMP/evidence/date.txt"
+          "$RUNNER_TEMP/target/release/udp" > "$RUNNER_TEMP/evidence/udp.txt"
+      - name: Compare three inner TCP policies with the production packet stack
+        run: python3 diagnostics/performance/run.py "$RUNNER_TEMP/target/release" "$RUNNER_TEMP/evidence"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: rust-alternatives-${{ matrix.arch }}
+          path: ${{ runner.temp }}/evidence
+          retention-days: 7

@@ -8,7 +8,7 @@
         for shape in ["idle","active","filters","hidden","erase"] {
             let mut expected=std::collections::HashMap::new();
             for round in 0..4 {
-                let order=if round%2==0 {["copy","borrow","visible","revision"]} else {["revision","visible","borrow","copy"]};
+                let order=if round%2==0 {["copy","borrow","visible","revision","combined"]} else {["combined","revision","visible","borrow","copy"]};
                 for mode in order {
                     let mut c=Controller::with_configuration(Configuration::default(),None,None);
                     c.log.clear();
@@ -26,9 +26,9 @@
                         }
                         if shape=="erase" && tick==60 {c.erase().unwrap();}
                         let start=Instant::now();
-                        let rev=(c.latest_log_sequence(),level);
-                        if (mode!="visible" || visible) && (mode!="revision" || rendered!=Some(rev)) {
-                            displayed=if mode=="borrow"{view(c.log.iter(),level,c.log.len())}else{
+                        let rev=(c.retained_logs().back().map(|entry|entry.sequence),level);
+                        if (mode!="visible" || visible) && (!matches!(mode,"revision"|"combined") || rendered!=Some(rev)) {
+                            displayed=if matches!(mode,"borrow"|"combined"){let all=c.retained_logs();view(all.iter(),level,all.len())}else{
                                 let all=c.logs();view(all.iter(),level,all.len())
                             };
                             calls+=1;

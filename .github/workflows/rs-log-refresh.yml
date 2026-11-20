@@ -1,8 +1,8 @@
-name: Verify RS native log refresh, unchanged views and the packaged application
+name: Check the exact NF, RS and TUN packages and the borrowed RS log view
 'on':
   push:
     branches:
-    - audit/rs-log-refresh-20261120
+    - audit/client-log-packaged-20261120
 permissions:
   contents: read
 jobs:
@@ -16,38 +16,80 @@ jobs:
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 65
     steps:
-    - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+    - &id001
+      uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
       with:
         persist-credentials: false
-    - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d
+    - &id002
+      uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d
       with:
         toolchain: stable
         components: rustfmt,clippy
-    - name: Run the unchanged entry points and all RS package tests
+    - name: Type-check the native UI and exercise this checkout
       shell: bash
-      run: "set -euo pipefail\nmkdir \"$RUNNER_TEMP/evidence\"\nif [[ \"$RUNNER_OS\"\
-        \ == \"macOS\" ]]; then\n  bash network-relay-rs/build-macos.sh > \"$RUNNER_TEMP/evidence/native.txt\"\
-        \ 2>&1 || { tail -45 \"$RUNNER_TEMP/evidence/native.txt\"; exit 1; }\nelse\n\
-        \  cargo check --locked --manifest-path network-relay-rs/Cargo.toml --features\
-        \ ui-typecheck\n  cargo test --locked --manifest-path network-relay-rs/Cargo.toml\
-        \ > \"$RUNNER_TEMP/evidence/native.txt\"\nfi\n"
-    - name: Compare four projections across identical timer, filter, erase and visibility
-        histories
+      run: 'set -euo pipefail
+
+        mkdir "$RUNNER_TEMP/evidence"
+
+        cargo check --locked --manifest-path network-relay-rs/Cargo.toml --features ui-typecheck
+
+        cargo test --locked --manifest-path network-relay-rs/Cargo.toml > "$RUNNER_TEMP/evidence/native.txt"
+
+        '
+    - name: Compare four projections across identical timer, filter, erase and visibility histories
       shell: bash
       run: 'set -euo pipefail
 
         python3 diagnostics/rs-log/prepare.py
 
-        cargo test --locked --release --manifest-path network-relay-rs/Cargo.toml
-        --lib -- --exact controller::tests::measure_timer_log_refresh --nocapture
-        > "$RUNNER_TEMP/evidence/timer.txt"
+        cargo test --locked --release --manifest-path network-relay-rs/Cargo.toml --lib -- --exact controller::tests::measure_timer_log_refresh
+        --nocapture > "$RUNNER_TEMP/evidence/timer.txt"
 
-        test "$(grep -c ''^RS-LOG '' "$RUNNER_TEMP/evidence/timer.txt")" -eq 80
+        test "$(grep -c ''^RS-LOG '' "$RUNNER_TEMP/evidence/timer.txt")" -eq 100
 
         '
     - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
       if: always()
       with:
-        name: rs-log-${{ matrix.runner }}
+        name: rs-final-${{ matrix.runner }}
         path: ${{ runner.temp }}/evidence
+        retention-days: 7
+  package:
+    strategy:
+      fail-fast: false
+      matrix:
+        app:
+        - nf
+        - rs
+        - tun
+    runs-on: xcode-27
+    timeout-minutes: 65
+    steps:
+    - *id001
+    - *id002
+    - name: Build, verify and launch the exact application checkout
+      shell: bash
+      env:
+        APP: ${{ matrix.app }}
+      run: "set -euo pipefail\nmkdir \"$RUNNER_TEMP/package-evidence\"\nstage=$(mktemp -d /tmp/relay-log-package.XXXXXXXX)\n\
+        fresh=\"$stage/source\"\ngit clone --no-local -- \"$GITHUB_WORKSPACE\" \"$fresh\"\ngit -C \"$fresh\" checkout\
+        \ --detach \"$GITHUB_SHA\"\ntest \"$(git -C \"$fresh\" rev-parse HEAD)\" = \"$GITHUB_SHA\"\nsource \"$fresh/tools/fresh-build-source.sh\"\
+        \nrelay_mark_fresh_source \"$fresh\"\nexport RELAY_BUILD_WORK_ROOT=\"$stage/work\" RELAY_BUILD_OUTPUT_ROOT=\"\
+        $stage/output\"\nmkdir -p \"$RELAY_BUILD_WORK_ROOT\" \"$RELAY_BUILD_OUTPUT_ROOT\"\nlog=\"$RUNNER_TEMP/package-evidence/build.txt\"\
+        \nbash \"$fresh/network-relay-$APP/build-macos.sh\" > \"$log\" 2>&1 || { tail -60 \"$log\"; exit 1; }\ncase \"\
+        $APP\" in\n  nf) bundle=\"$RELAY_BUILD_OUTPUT_ROOT/network-relay-nf/dist/Network Relay NF.app\"; key=NetworkRelayNFSourceRevision;;\n\
+        \  rs) bundle=\"$RELAY_BUILD_OUTPUT_ROOT/network-relay-rs/dist/Network Relay RS.app\"; key=NetworkRelayRSSourceRevision;;\n\
+        \  tun) bundle=\"$fresh/network-relay-tun/dist/Network Relay Tun.app\"; key=;;\nesac\ntest -d \"$bundle\"\ncodesign\
+        \ --verify --strict --deep \"$bundle\"\nif [[ -n \"$key\" ]]; then test \"$(plutil -extract \"$key\" raw -o -\
+        \ \"$bundle/Contents/Info.plist\")\" = \"$GITHUB_SHA\"; fi\nexe=$(plutil -extract CFBundleExecutable raw -o -\
+        \ \"$bundle/Contents/Info.plist\")\ntest -x \"$bundle/Contents/MacOS/$exe\"\n\"$bundle/Contents/MacOS/$exe\"\
+        \ > \"$RUNNER_TEMP/package-evidence/app.log\" 2>&1 &\npid=$!\ntrap 'kill \"$pid\" 2>/dev/null || true' EXIT\n\
+        sleep 5\nkill -0 \"$pid\"\nkill -TERM \"$pid\"\nwait \"$pid\" || true\ntrap - EXIT\ngit -C \"$fresh\" diff --exit-code\n\
+        printf '%s %s %s\\n' \"$APP\" \"$GITHUB_SHA\" \"$(shasum -a 256 \"$bundle/Contents/MacOS/$exe\" | cut -d ' '\
+        \ -f1)\" > \"$RUNNER_TEMP/package-evidence/identity.txt\"\n"
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      if: always()
+      with:
+        name: client-exact-package-${{ matrix.app }}
+        path: ${{ runner.temp }}/package-evidence
         retention-days: 7

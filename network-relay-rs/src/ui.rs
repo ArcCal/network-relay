@@ -778,12 +778,12 @@ impl App {
     }
 
     unsafe fn refresh_log(&mut self) {
-        let revision = (self.controller.latest_log_sequence(), self.controller.config.log_level);
+        let all = self.controller.retained_logs();
+        let revision = (all.back().map(|entry| entry.sequence), self.controller.config.log_level);
         if self.rendered_log == Some(revision) {
             return;
         }
         self.rendered_log = Some(revision);
-        let all = self.controller.logs();
         let shown = all.iter().filter(|entry| self.controller.config.log_level.shows(&entry.text)).collect::<Vec<_>>();
         let output = shown.iter().map(|entry| entry.text.as_str()).collect::<Vec<_>>().join("\n");
         if output != self.last_log {

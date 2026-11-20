@@ -27,7 +27,7 @@
          'probe_sha256': digest(args.probe), 'source_revision': command(['git', '-C', args.source, 'rev-parse', 'HEAD']).stdout.strip(),
          'scope': 'Apple URLSession explicit Relay, loopback downloads/uploads. No installed system profile, WAN, DNS or iPhone acceptance.'}
      environment['tcp_download_diagnostic'] = observe_download
-@@ -492,9 +494,9 @@
+@@ -492,11 +494,13 @@
                      with path.open('wb') as stream:
                          for offset in range(0, size, len(block)): stream.write(block[:min(len(block), size-offset)])
                      upload_files[size] = path
@@ -37,9 +37,14 @@
 -                        debug_http2=not observe_download) as caddy_port:
 +                        debug_http2=not observe_download) if args.server != 'rust' else contextlib.nullcontext()) as caddy_port:
                      origin_endpoint_port = int((fixture / 'http3-origin-port').read_text()) if args.origin_http3 else origin.server_port
-                     server_pids = {'rust': rust_process.pid, 'caddy': int((fixture / 'caddy.pid').read_text())}
+-                    server_pids = {'rust': rust_process.pid, 'caddy': int((fixture / 'caddy.pid').read_text())}
++                    server_pids = {'rust': rust_process.pid}
++                    if caddy_port is not None:
++                        server_pids['caddy'] = int((fixture / 'caddy.pid').read_text())
                      def server_usage():
-@@ -738,6 +740,7 @@
+                         usage = {}
+                         for name, pid in server_pids.items():
+@@ -738,6 +742,7 @@
                                          row['failure'] = 'Native stack sampling unavailable or failed'
                                      summary.append(row); (args.out / 'summary.json').write_text(json.dumps(summary, indent=2) + '\n')
                      for name in ['server.log', 'caddy-server.log']:

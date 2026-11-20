@@ -45,8 +45,8 @@ project's own.
    this does not increase the outbound UDP ceiling or fragment outgoing packets.
 4. The Cloudflare enrollment must already exist. Registration/refresh,
    account lifecycle and license management are outside this project.
-5. Linux x86_64 is the development target. Windows is not supported;
-   macOS/ARM deployment needs its own native runtime checks.
+5. The server runs on Linux x86-64 and Linux arm64. Both architectures ran
+   the standard suite and long local-peer soak on native Linux runners.
 6. The local WARP peer reproduces a reviewed Cloudflare dialect, not every
    deployment condition at Cloudflare: account acceptance, real PMTU, loss,
    NAT and remote long-term stability need a live deployment.

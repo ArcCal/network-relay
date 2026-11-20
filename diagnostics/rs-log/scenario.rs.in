@@ -1,0 +1,51 @@
+    #[test]
+    fn measure_timer_log_refresh() {
+        use std::hint::black_box;
+        fn view<'a>(rows:impl Iterator<Item=&'a LogEntry>,filter:LogLevel,total:usize)->(String,usize,usize){
+            let shown:Vec<_>=rows.filter(|e|filter.shows(&e.text)).collect();
+            (shown.iter().map(|e| e.text.as_str()).collect::<Vec<_>>().join("\n"),shown.len(),total)
+        }
+        for shape in ["idle","active","filters","hidden","erase"] {
+            let mut expected=std::collections::HashMap::new();
+            for round in 0..4 {
+                let order=if round%2==0 {["copy","borrow","visible","revision"]} else {["revision","visible","borrow","copy"]};
+                for mode in order {
+                    let mut c=Controller::with_configuration(Configuration::default(),None,None);
+                    c.log.clear();
+                    for i in 0..5000 {
+                        let line=format!("2026-11-20T00:00:00Z {} relay: record={i}",if i%3==0 {"TRACE"} else {"INFO"});
+                        c.append(LogEntry::parse(line));
+                    }
+                    let mut rendered=None;
+                    let mut displayed=(String::new(),0,0);let mut calls=0;let mut ns=0;
+                    for tick in 0..120 {
+                        let visible=shape!="hidden" || tick==119;
+                        let level=if shape=="filters" && tick%16>=8 {LogLevel::Everything}else{LogLevel::Normal};
+                        if shape=="active" || shape=="erase" && tick==70 {
+                            c.append(LogEntry::parse(format!("2026-11-20T00:00:00Z WARN relay: update={tick}")));
+                        }
+                        if shape=="erase" && tick==60 {c.erase().unwrap();}
+                        let start=Instant::now();
+                        let rev=(c.latest_log_sequence(),level);
+                        if (mode!="visible" || visible) && (mode!="revision" || rendered!=Some(rev)) {
+                            displayed=if mode=="borrow"{view(c.log.iter(),level,c.log.len())}else{
+                                let all=c.logs();view(all.iter(),level,all.len())
+                            };
+                            calls+=1;
+                        }
+                        rendered=Some(rev);
+                        black_box(&displayed);
+                        ns+=start.elapsed().as_nanos();
+                        if visible {
+                            use std::hash::{Hash,Hasher};
+                            let mut checksum=std::collections::hash_map::DefaultHasher::new();displayed.0.hash(&mut checksum);
+                            let state=(checksum.finish(),displayed.1,displayed.2);
+                            if let Some(prior)=expected.get(&tick){assert_eq!(&state,prior);}
+                            else{expected.insert(tick,state);}
+                        }
+                    }
+                    println!("RS-LOG {shape} {mode} {round} {calls} {ns}");
+                }
+            }
+        }
+    }

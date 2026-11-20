@@ -1,0 +1,53 @@
+name: Verify RS native log refresh, unchanged views and the packaged application
+'on':
+  push:
+    branches:
+    - audit/rs-log-refresh-20261120
+permissions:
+  contents: read
+jobs:
+  study:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner:
+        - ubuntu-24.04
+        - xcode-27
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 65
+    steps:
+    - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      with:
+        persist-credentials: false
+    - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d
+      with:
+        toolchain: stable
+        components: rustfmt,clippy
+    - name: Run the unchanged entry points and all RS package tests
+      shell: bash
+      run: "set -euo pipefail\nmkdir \"$RUNNER_TEMP/evidence\"\nif [[ \"$RUNNER_OS\"\
+        \ == \"macOS\" ]]; then\n  bash network-relay-rs/build-macos.sh > \"$RUNNER_TEMP/evidence/native.txt\"\
+        \ 2>&1 || { tail -45 \"$RUNNER_TEMP/evidence/native.txt\"; exit 1; }\nelse\n\
+        \  cargo check --locked --manifest-path network-relay-rs/Cargo.toml --features\
+        \ ui-typecheck\n  cargo test --locked --manifest-path network-relay-rs/Cargo.toml\
+        \ > \"$RUNNER_TEMP/evidence/native.txt\"\nfi\n"
+    - name: Compare four projections across identical timer, filter, erase and visibility
+        histories
+      shell: bash
+      run: 'set -euo pipefail
+
+        python3 diagnostics/rs-log/prepare.py
+
+        cargo test --locked --release --manifest-path network-relay-rs/Cargo.toml
+        --lib -- --exact controller::tests::measure_timer_log_refresh --nocapture
+        > "$RUNNER_TEMP/evidence/timer.txt"
+
+        test "$(grep -c ''^RS-LOG '' "$RUNNER_TEMP/evidence/timer.txt")" -eq 80
+
+        '
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      if: always()
+      with:
+        name: rs-log-${{ matrix.runner }}
+        path: ${{ runner.temp }}/evidence
+        retention-days: 7

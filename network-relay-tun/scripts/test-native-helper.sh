@@ -45,14 +45,20 @@ finally:
   child.wait(timeout=15)
 PY
 if [[ ${1:-} == --capture ]]; then
-    python3 "$root/tests/native_capture.py" "$app/Contents/Helpers/network-relay-tun-host"
+    uplink=$(/sbin/route -n get -inet 198.51.100.254 | awk '$1 == "interface:" { print $2 }')
+    [[ -n "$uplink" ]]
+    monitor="$root/.build/physical-path-capture"
+    mkdir -p "$root/.build"
+    xcrun swiftc -swift-version 5 -parse-as-library -o "$monitor" \
+        "$root/App/Sources/NetworkRelayTun/NetworkChanges.swift" "$root/tests/PhysicalPathCapture.swift"
+    "$monitor" "$uplink" python3 "$root/tests/native_capture.py" "$app/Contents/Helpers/network-relay-tun-host"
     # Exercise an update of a running service and wait for its new listener.
     sudo /bin/bash "$app/Contents/Resources/install-helper.sh" "$owner"
     for ((attempt = 0; attempt < 100; attempt++)); do
         [[ -S "$installed/control.sock" ]] && break
         /bin/sleep 0.1
     done
-    python3 "$root/tests/native_capture.py" "$app/Contents/Helpers/network-relay-tun-host"
+    "$monitor" "$uplink" python3 "$root/tests/native_capture.py" "$app/Contents/Helpers/network-relay-tun-host"
 fi
 trap - EXIT
 cleanup

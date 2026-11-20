@@ -3,7 +3,9 @@ import Network
 
 /// One application-lifetime observer, independent of each relay connection.
 final class NetworkChanges {
-    private let monitor = NWPathMonitor()
+    // The default path can become our utun as soon as its routes are added.
+    // Scope observations to the underlying uplinks before comparing paths.
+    private let monitor = NWPathMonitor(prohibitedInterfaceTypes: [.other, .loopback])
     private let queue = DispatchQueue(label: "com.arccal.network-relay-tun.path")
     private var previousPath: String?
 

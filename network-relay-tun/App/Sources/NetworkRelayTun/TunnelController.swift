@@ -184,7 +184,12 @@ final class TunnelController: ObservableObject {
         }
         task = nil
         traffic.reset(); trafficNodeName = nil
-        if !recoveryRequired, case .failed = status {} else if !recoveryRequired { status = .stopped }
+        if !recoveryRequired {
+            switch status {
+            case .failed where !Task.isCancelled: break
+            default: status = .stopped
+            }
+        }
         if quitting {
             if eraseOnQuit && !recoveryRequired { Store.eraseEverything() }
             NSApp.reply(toApplicationShouldTerminate: true)
@@ -208,7 +213,15 @@ final class TunnelController: ObservableObject {
         if native != nil && !nativeExited { recoveryRequired = true; fail(NativeError("Native transport shutdown timed out; quit before reconnecting.")) }
         native = nil; generation = UUID(); nativeReady = false
     }
-    func disconnect() { restart = false; task?.cancel(); record("Disconnect requested; awaiting restoration") }
+    func disconnect() {
+        restart = false
+        if let task {
+            task.cancel()
+        } else if !recoveryRequired {
+            status = .stopped
+        }
+        record("Disconnect requested; awaiting restoration")
+    }
     func networkChanged() {
         guard task != nil, !quitting else { return }
         retryReason = "Physical network changed"; retrySince = ProcessInfo.processInfo.systemUptime - 2

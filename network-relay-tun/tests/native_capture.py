@@ -9,6 +9,7 @@ import struct
 import subprocess
 import sys
 import threading
+import time
 
 
 TARGETS = {"198.51.100.42", "2001:db8::42"}
@@ -139,6 +140,10 @@ def main():
                 assert route_interface(ENDPOINT) == initial_route
                 assert all(route_interface(host) == interface for host in TARGETS)
                 assert DNS in dns_state()
+                check_packets()
+                # Leave capture active across a controller heartbeat.
+                time.sleep(2)
+                assert request("refresh", lease=lease)["state"] == "active"
                 check_packets()
                 assert request("stop", lease=lease)["state"] == "idle"
                 assert dns_state() == initial_dns

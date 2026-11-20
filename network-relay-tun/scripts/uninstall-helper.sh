@@ -10,6 +10,11 @@ mode=$(/usr/bin/stat -f %Lp "$root")
 [[ ! -e "$root/network.json" ]] || { echo 'Disconnect and use Recover Network before uninstalling.' >&2; exit 1; }
 if /bin/launchctl print "system/$label" >/dev/null 2>&1; then
     /bin/launchctl bootout "system/$label"
+    # bootout can return while launchd is still removing the service.
+    for ((attempt = 0; attempt < 100; attempt++)); do
+        /bin/launchctl print "system/$label" >/dev/null 2>&1 || break
+        /bin/sleep 0.1
+    done
 fi
 if /bin/launchctl print "system/$label" >/dev/null 2>&1; then
     echo 'Helper is still running; installation files preserved.' >&2; exit 1

@@ -46,4 +46,14 @@ finally:
 PY
 if [[ ${1:-} == --capture ]]; then
     python3 "$root/tests/native_capture.py" "$app/Contents/Helpers/network-relay-tun-host"
+    # Exercise an update of a running service and wait for its new listener.
+    sudo /bin/bash "$app/Contents/Resources/install-helper.sh" "$owner"
+    for ((attempt = 0; attempt < 100; attempt++)); do
+        [[ -S "$installed/control.sock" ]] && break
+        /bin/sleep 0.1
+    done
+    python3 "$root/tests/native_capture.py" "$app/Contents/Helpers/network-relay-tun-host"
 fi
+trap - EXIT
+cleanup
+[[ ! -e $installed && ! -e /Library/LaunchDaemons/com.arccal.network-relay-tun.helper.plist ]]

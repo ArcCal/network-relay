@@ -95,3 +95,36 @@ bridge coverage, not execution of Network.framework on an Apple device.
 The local raw reproduction script and results are retained under the uncommitted
 `network-relay-nf/.build/h1-reset-review/` directory. No real server or WARP
 credentials appear in the committed evidence.
+
+## Native macOS follow-up, 2026-11-21
+
+Against current Caddy on Linux x86-64 and arm64, the native NF SOCKS client
+and OpenSSL each received a reset in all 30 trials on the packet-preserving
+path. On the TCP port-forwarded path OpenSSL detected 30 unannounced TLS
+ends; NF delivered 30 orderly EOFs. All normal half-closes delivered the
+full 8 MiB and accepted a reverse write. The receive completion's context
+identifier, final flag, connection state and error were indistinguishable
+between authenticated and bare EOF on the forwarded path. These observations
+apply to macOS 27 and the two tested paths.
+[Paired trials](https://github.com/ArcCal/caddy-network-relay/actions/runs/44847396355).
+[Native receive metadata](https://github.com/ArcCal/caddy-network-relay/actions/runs/44849940017).
+
+A transparent TCP framer beneath native TLS still delivered ordinary EOF
+in all 30 forwarded aborts and was discarded. With the same forwarder,
+the first NF H2 and RS H1 series each delivered a reset in all 30 aborts
+and passed all ten clean half-close and reverse-write controls. The x86-64
+job later reached its 40-second read deadline on an RS packet-path abort.
+A repeat also reached that deadline on an RS port-forwarded abort. Use NF H2
+when a forwarder obscures NF H1 resets. The two initial RS series alone
+cannot establish that RS always signals the abort promptly.
+[Framer comparison](https://github.com/ArcCal/caddy-network-relay/actions/runs/44850438063).
+[Transport and client alternatives](https://github.com/ArcCal/caddy-network-relay/actions/runs/44850786265).
+
+An instrumented x86-64 repeat observed 30/30 resets on the packet path
+and 29/30 on the port-forwarded path. In the remaining case the reader
+received 5,665,101 bytes, then reached its 40-second deadline. The origin
+had queued its payload and initiated the abort. RS reported a missing TLS
+close_notify and successfully set abortive linger for that SOCKS peer.
+The loopback capture contained a TCP RST to the reader's port. Why the
+read still timed out remains open. All 20 clean controls delivered 8 MiB
+and a reverse write. [Matched socket trace](https://github.com/ArcCal/caddy-network-relay/actions/runs/44852285536).

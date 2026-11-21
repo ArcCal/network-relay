@@ -141,6 +141,10 @@ the 33rd connection for one user and the 49th overall. After restart on
 defaults, 40 tunnels for one user and 24 for the other simultaneously
 returned their distinct echo payloads over both WARP transports.
 [Real CLI migration checks](https://github.com/ArcCal/caddy-network-relay/actions/runs/44851670332).
+Removing only the total limit admitted 56 tunnels across two users while
+still refusing the 33rd for one user. Removing only the per-user limit
+admitted 40 for one user while still refusing the 49th overall.
+[Independent quota checks](https://github.com/ArcCal/caddy-network-relay/actions/runs/44852117858).
 
 IPv6 is optional. If `[warp.registration]` lacks `tunnel_ipv6` or
 `endpoint_v6`, the server prints a warning naming them when it starts, logs

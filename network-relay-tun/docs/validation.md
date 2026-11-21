@@ -1,5 +1,16 @@
 # Validation record
 
+## November 21, 2026
+
+On macOS 27 the signed release app displayed a connection failure when the
+helper was missing. The process and window remained alive through the
+eight-second observation. The same build passed helper installation, capture
+and rollback. A separate interoperability matrix exercised the TUN controller
+in SOCKS mode against both Linux servers on x86-64 and arm64 over H2 and H3.
+The original exit on Connect has no crash report linking it to a particular
+fault. [Signed app and helper](https://github.com/ArcCal/caddy-network-relay/actions/runs/44851313443).
+[Native client and Linux server matrix](https://github.com/ArcCal/caddy-network-relay/actions/runs/44850970737).
+
 ## November 20, 2026
 
 The macOS 27 package passed 74 Swift tests. A real helper update and repeated

@@ -85,7 +85,7 @@ restart (the program says so when it notices one).
   An empty datagram is encoded as a zero length and stays a datagram on
   receipt. Payloads over 8190 bytes are dropped, as Xray-core does not pass
   larger ones back. The tested mihomo and sing-box versions pass empty
-  datagrams; Xray-core v26.10.31 discards them in its own reader/writers.
+  datagrams; Xray-core v26.10.31 and v26.11.9 discard them in the downstream.
 - **Names**: looked up with DNS over TCP to `dns_servers`. Concurrent callers
   can share a complete attempt to the same DNS server for the same name.
   Each caller retains its own deadline and can try the next server. A caller
@@ -185,7 +185,12 @@ and this relay cannot remove them.
 4. **No half-close.** A WebSocket close ends both directions, so when a
    device finishes sending, the destination is not told; it learns when
    the whole tunnel ends. Protocols that wait for the client's FIN before
-   answering do not work.
+   answering do not work. For such a service, choose a relay deployment
+   with a TCP egress that propagates FIN, such as the standard network-relay
+   server. Changing the device-facing HTTP version keeps the same downstream
+   WebSocket and cannot restore FIN. For workloads requiring only empty UDP
+   datagrams, a compatible mihomo or sing-box downstream retains the existing
+   VLESS wire format.
 5. **Connection setup cost.** Each data tunnel opens a TCP connection and
    upgrades it to WebSocket, adding about two round trips to the VLESS server
    and occupying one descriptor on each side. On a destination DNS cache miss,
@@ -257,7 +262,29 @@ network-relay; `network-relay-vless check --server relay.example.com
 Additional Linux checks against real mihomo and sing-box WebSocket inbounds
 verify empty UDP datagrams interleaved with 1, 1200 and 8190-byte datagrams.
 The same Xray control passes nonempty payloads but drops empty packets before
-they reach the target. These results do not establish TCP half-close support.
+they reach the target. A repeat through the production relay on Linux x86-64 and arm64 used
+Xray-core v26.11.9 and sing-box v1.14.4. Per architecture Xray delivered
+zero of four empty packets and all four nonempty controls. Sing-box
+delivered and echoed all eight. Neither peer delivered a one-way FIN to
+the TCP target in the two-second observation window; both delivered the
+target's reply after the client finished sending.
+[Peer comparison](https://github.com/ArcCal/caddy-network-relay/actions/runs/44851992801).
+
+For a same-host sing-box WebSocket inbound that preserves empty datagrams,
+the tested inbound and outbound settings have this form. Set the same
+private UUID and path on both ends and point `[vless].server` at the listening
+address. The shown UUID, path and port are examples.
+
+```json
+{
+  "inbounds": [{
+    "type": "vless", "listen": "127.0.0.1", "listen_port": 18081,
+    "users": [{"uuid": "b4e4fad1-c320-428e-92dc-f8f6944a7dec"}],
+    "transport": {"type": "ws", "path": "/relay-example"}
+  }],
+  "outbounds": [{"type": "direct", "tag": "local-echo"}]
+}
+```
 
 Not tested: a real network between the relay and the VLESS server, a CDN or
 reverse proxy in front of it, and long-running load.

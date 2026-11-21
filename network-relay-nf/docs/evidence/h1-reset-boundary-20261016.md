@@ -128,3 +128,29 @@ close_notify and successfully set abortive linger for that SOCKS peer.
 The loopback capture contained a TCP RST to the reader's port. Why the
 read still timed out remains open. All 20 clean controls delivered 8 MiB
 and a reverse write. [Matched socket trace](https://github.com/ArcCal/caddy-network-relay/actions/runs/44852285536).
+
+Two separate macOS TCP connections can account for a reader timeout.
+A direct Python/OpenSSL client with no relay software timed out in eight
+of 16 trials when the peer aborted after writing 8 MiB. Waiting at the
+peer for its send queue to drain yielded 16 resets. In RS, a bare FIN
+after TLS data triggered the expected truncation error, yet two of 16
+SOCKS clients timed out after RS issued its local abort. Waiting for the
+local send queue eliminated those two timeouts in the comparison. A local
+change cannot recover an upstream reset that the TLS socket never reports.
+[Direct TLS control](https://github.com/ArcCal/caddy-network-relay/actions/runs/44853209330).
+[Independent controls on both sockets](https://github.com/ArcCal/caddy-network-relay/actions/runs/44853350067).
+
+In two 32-case batches with the production RS local stream, immediate
+reset left six readers waiting. A fixed two-millisecond delay and a wait
+for the macOS send queue each delivered 64/64 resets. RS checks the queue
+so it can close an empty socket immediately. The wait has a 100 ms upper
+bound if the reader stalls. [Three local alternatives](https://github.com/ArcCal/caddy-network-relay/actions/runs/44853457999).
+
+With the final RS implementation, both Linux release architectures and
+both paths delivered all 120 aborts as SOCKS resets and all 40 clean
+8 MiB bodies with a successful reverse write. The same source passed the
+client suite on macOS 27, Linux x86-64 and arm64. On macOS the local bulk
+regression also passed four additional eight-abort batches, and a stalled
+reader released the abort task within the test's one-second deadline.
+[Two Linux servers and two paths](https://github.com/ArcCal/caddy-network-relay/actions/runs/44853719803).
+[Exact candidate core tests](https://github.com/ArcCal/caddy-network-relay/actions/runs/44853767475).

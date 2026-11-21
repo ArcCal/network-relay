@@ -44,6 +44,10 @@ TCP transports arbitrary binary bytes. Each direction supports independent
 half-close: a local write EOF must permit a later remote response. Cancellation
 and an I/O error must release owned drivers and wake blocked opposite pumps;
 already buffered response bytes must remain readable before the terminal error.
+When aborting a local TCP connection on macOS, the backend arms abortive
+close and checks the socket's outgoing queue. It closes immediately when
+the queue is empty and waits up to 100 ms if the reader has fallen behind.
+Normal half-close and idle connections have no such deadline.
 
 CONNECT-UDP uses DATAGRAM Capsules with context ID 0 inside the request stream.
 An empty UDP payload is valid. Native QUIC DATAGRAM is not negotiated; HTTP/3

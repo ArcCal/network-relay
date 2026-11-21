@@ -10,6 +10,10 @@
 - The WARP server's offline configuration check shows the effective tunnel
   limits. Startup and check mode identify the old 48-total, 32-per-user
   example and explain how to opt into the current defaults.
+- On macOS, RS gives already queued local TCP data up to 100 ms to drain
+  before resetting a failed SOCKS connection. This addresses a reader hang
+  after an abrupt bulk transfer. An upstream TCP reset can still go
+  unobserved on some paths.
 
 - The Rust relay reuses the HTTP Date value within a worker for the current UTC second. Linux release transfer tests now run on native x86-64 and arm64.
 - VLESS retains frequently used DNS entries at capacity and shares concurrent attempts for the same destination name and resolver. Each caller keeps its own failover deadline. WARP DNS retains frequently used name/type pairs within its existing 4096-entry limit. Its two dependency locks update heapless to 0.9.4.

@@ -129,10 +129,45 @@ impl Stream {
             // Do not let OwnedWriteHalf send FIN before the zero-linger reset.
             if let WriteHalf::Tcp(write) = std::mem::replace(&mut *write, WriteHalf::Empty) {
                 write.forget();
+                #[cfg(target_os = "macos")]
+                if let ReadHalf::Tcp(read) = &*self.read.lock().await {
+                    drain_before_local_reset(read.as_ref()).await;
+                }
             }
         }
     }
 }
+// On macOS, an abort with unsent data on a loopback TCP socket can leave
+// the reader waiting even after the RST. Give accepted bytes a bounded
+// chance to leave the socket before the last descriptor closes.
+#[cfg(target_os = "macos")]
+async fn drain_before_local_reset(tcp: &TcpStream) {
+    use std::os::fd::AsRawFd;
+
+    let _ = tokio::time::timeout(Duration::from_millis(100), async {
+        loop {
+            let mut queued: libc::c_int = 0;
+            let mut length = std::mem::size_of_val(&queued) as libc::socklen_t;
+            // SAFETY: tcp owns the fd for the call. SO_NWRITE writes a
+            // c_int through the supplied pointer and updates its length.
+            let result = unsafe {
+                libc::getsockopt(
+                    tcp.as_raw_fd(),
+                    libc::SOL_SOCKET,
+                    libc::SO_NWRITE,
+                    (&raw mut queued).cast(),
+                    &raw mut length,
+                )
+            };
+            if result != 0 || queued == 0 {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+    })
+    .await;
+}
+
 struct Group {
     // The endpoint must remain alive for the connection's entire lifetime.
     _endpoint: quinn::Endpoint,
@@ -1117,6 +1152,60 @@ mod tests {
         }
         backend.shutdown().await;
     }
+    #[cfg(target_os = "macos")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn local_bulk_write_followed_by_abort_reports_reset() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let payload = vec![0x58; 8 * 1024 * 1024];
+        for _ in 0..8 {
+            let reader = tokio::task::spawn_blocking(move || {
+                use std::io::Read;
+                let mut peer = std::net::TcpStream::connect(address).unwrap();
+                peer.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+                let mut buffer = [0; 65536];
+                loop {
+                    match peer.read(&mut buffer) {
+                        Ok(0) => panic!("an aborted bulk stream returned EOF"),
+                        Ok(_) => {}
+                        Err(error) => return error.kind(),
+                    }
+                }
+            });
+            let (socket, _) = listener.accept().await.unwrap();
+            socket.set_nodelay(true).unwrap();
+            let stream = Stream::tcp(socket, CancellationToken::new()).unwrap();
+            stream.write.lock().await.write_all(&payload).await.unwrap();
+            stream.reset(0, true).await;
+            drop(stream);
+            assert_eq!(reader.await.unwrap(), io::ErrorKind::ConnectionReset);
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn local_abort_releases_a_socket_with_a_stalled_reader() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let peer = tokio::net::TcpSocket::new_v4().unwrap();
+        peer.set_recv_buffer_size(4096).unwrap();
+        let _peer = peer.connect(listener.local_addr().unwrap()).await.unwrap();
+        let (socket, _) = listener.accept().await.unwrap();
+        let payload = [0; 65536];
+        socket.writable().await.unwrap();
+        loop {
+            match socket.try_write(&payload) {
+                Ok(0) => panic!("unexpected zero-byte write"),
+                Ok(_) => {}
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
+                Err(error) => panic!("unexpected write error: {error}"),
+            }
+        }
+        let stream = Stream::tcp(socket, CancellationToken::new()).unwrap();
+        tokio::time::timeout(Duration::from_secs(1), stream.reset(0, true))
+            .await
+            .expect("an unread socket must not hold the reset task indefinitely");
+    }
+
     #[tokio::test]
     async fn shutdown_wakes_a_blocked_socket_read_and_releases_resources() {
         let mut backend = Backend::start(BackendOptions::default()).unwrap();

@@ -2,6 +2,42 @@
 
 ## November 21, 2026
 
+### Transparent DNS under session pressure
+
+Two packet-worker regressions reproduced on Linux and on Apple Silicon with the
+previous client. After a SOCKS control close, a DNS retry from the same source
+port could keep using the dead UDP association. Separately, an answered DNS
+query could occupy the last available session while a new query never reached
+the resolver. The repaired client passed both packet tests. The tests also keep
+an answered association reusable under normal load and deliver replies to
+queries that are still pending.
+
+In five Linux loopback trials using the product's 128-session limit, 128
+distinct names received replies on separate source ports. After a 1.25-second
+pause the original worker failed to forward the next question within two
+seconds in every trial. The repaired worker returned the next answer in
+6-29 ms (median 9.3 ms). A one-second timeout on every UDP session and
+unconditional early retirement of answered DNS both closed a reusable
+association under light load. Closing a SOCKS association without delivering
+already queued UDP replies also failed an existing datagram test.
+
+On the macOS 27 runner, the signed app installed its helper and completed
+two capture cycles. Chrome opened Google's search homepage through TUN with
+application proxies disabled. Git cloned the public caddy-dns/cloudflare
+repository and passed a full object check. Both operations also succeeded
+through explicit SOCKS. IPv4 and IPv6 TCP, UDP and DNS probes passed, and
+the original route and resolver configuration returned on disconnect.
+
+Chrome also visited fresh HTTPS names twice with a new TCP connection for
+each request. In two runs, adding 1.25 seconds at the test DNS resolver gave
+first visits of 1379 and 1326 ms. Repeat visits issued no DNS query and took
+184 and 61 ms. Pinning the same slow names to their test addresses produced
+first visits of 49 and 53 ms. These measurements isolate DNS delay on the
+runner. The affected user's network has no corresponding post-update trace.
+[macOS packet tests, signed app and Chrome trials](https://github.com/ArcCal/caddy-network-relay/actions/runs/44891995933).
+
+### Switching capture in a connected session
+
 The previous signed GUI kept its Global TUN checkbox disabled after a
 working SOCKS connection to a Linux H2 relay. With the repaired app, the
 same checkbox accepted a click. Without an installed helper, the app showed

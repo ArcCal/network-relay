@@ -24,6 +24,7 @@ const FLOOD_PORT: u16 = 19;
 const FLOOD: usize = 3 << 20;
 
 struct Fixture {
+    settings_frame: tokio::sync::watch::Sender<Option<&'static [u8]>>,
     address: SocketAddr,
     ca: PathBuf,
     task: JoinHandle<()>,
@@ -38,6 +39,16 @@ impl Fixture {
         Self::start_with_limit(transport, response_delay, 128).await
     }
     async fn start_with_limit(transport: &str, response_delay: Duration, limit: u32) -> Self {
+        Self::start_with_settings(transport, response_delay, limit, Some(&[0, 4, 2, 8, 1])).await
+    }
+
+    async fn start_with_settings(
+        transport: &str,
+        response_delay: Duration,
+        limit: u32,
+        frame: Option<&'static [u8]>,
+    ) -> Self {
+        let (settings_frame, frames) = tokio::sync::watch::channel(frame);
         let key = rcgen::KeyPair::generate().unwrap();
         let cert = rcgen::CertificateParams::new(vec!["relay.test".into()])
             .unwrap()
@@ -80,11 +91,17 @@ impl Fixture {
                     let connection = incoming.await.unwrap();
                     connections.lock().unwrap().push(connection.clone());
                     let mut shutdown = shutdown.subscribe();
+                    let mut frames = frames.clone();
                     tokio::spawn(async move {
                         let mut control = connection.open_uni().await.unwrap();
-                        control.write_all(&[0, 4, 2, 8, 1]).await.unwrap();
+                        let mut settings_sent = false;
                         loop {
                             tokio::select! {
+                                frame = async { frames.wait_for(Option::is_some).await.map(|v| v.unwrap()) }, if !settings_sent => {
+                                    let Ok(frame) = frame else { break; };
+                                    if control.write_all(frame).await.is_err() { break; }
+                                    settings_sent = true;
+                                }
                                 next = connection.accept_bi() => match next {
                                     Ok((send, recv)) => { tokio::spawn(h3_echo(send, recv, response_delay)); }
                                     Err(_) => break,
@@ -181,6 +198,7 @@ impl Fixture {
             (address, task, None)
         };
         Self {
+            settings_frame,
             address,
             ca,
             task,
@@ -617,4 +635,48 @@ async fn unread_http2_flows_do_not_stall_other_flows_on_the_connection() {
     .await
     .expect("a stalled flow did not resume")
     .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn pending_udp_settings_allow_tcp_and_the_first_frame_decides_capability() {
+    for (frame, enabled) in [
+        (&[0, 4, 0][..], false),
+        (&[0, 4, 2, 8, 0][..], false),
+        (&[0, 4, 2, 8, 1][..], true),
+    ] {
+        let fixture = Fixture::start_with_settings("h3", Duration::ZERO, 128, None).await;
+        let backend = support::Backend::start(fixture.ca.clone());
+        let client = Client::new(&fixture.settings("h3"), backend.bridge.clone()).unwrap();
+        let first = client.open("127.0.0.1", 7, false).await.unwrap();
+        let udp = client.open("127.0.0.1", 7, true);
+        tokio::pin!(udp);
+        tokio::select! {
+            _ = &mut udp => panic!("UDP did not wait for SETTINGS"),
+            _ = tokio::time::sleep(Duration::from_millis(100)) => {}
+        }
+        let mut tcp =
+            tokio::time::timeout(Duration::from_secs(2), client.open("127.0.0.1", 7, false))
+                .await
+                .expect("pending UDP negotiation blocked ordinary CONNECT")
+                .unwrap();
+        echo(&mut tcp.stream, b"before SETTINGS").await;
+        fixture.settings_frame.send_replace(Some(frame));
+        let result = tokio::time::timeout(Duration::from_secs(2), udp)
+            .await
+            .expect("waited after definitive SETTINGS");
+        if enabled {
+            let mut flow = result.unwrap();
+            // Context zero DATAGRAM Capsule carrying one application byte.
+            echo(&mut flow.stream, &[0, 2, 0, 42]).await;
+        } else {
+            let error = result.err().expect("unsupported CONNECT-UDP succeeded");
+            assert!(
+                format!("{error:#}").contains("did not enable HTTP/3 Extended CONNECT"),
+                "{error:#}"
+            );
+        }
+        echo(&mut tcp.stream, b"after SETTINGS").await;
+        assert_eq!(backend.opened.lock().unwrap().len(), 1);
+        drop((first, tcp));
+    }
 }

@@ -30,6 +30,7 @@ struct ObservedConnection {
 }
 
 struct Fixture {
+    settings_frame: tokio::sync::watch::Sender<Option<&'static [u8]>>,
     address: SocketAddr,
     directory: PathBuf,
     endpoint: quinn::Endpoint,
@@ -44,6 +45,15 @@ impl Fixture {
     }
 
     async fn start_with_response_delay(stream_limit: u32, response_delay: Duration) -> Self {
+        Self::start_with_settings(stream_limit, response_delay, Some(&[0, 4, 2, 8, 1])).await
+    }
+
+    async fn start_with_settings(
+        stream_limit: u32,
+        response_delay: Duration,
+        frame: Option<&'static [u8]>,
+    ) -> Self {
+        let (settings_frame, frames) = tokio::sync::watch::channel(frame);
         let directory = std::env::temp_dir().join(format!(
             "relay-rs-h3-reuse-{}-{}",
             std::process::id(),
@@ -161,13 +171,19 @@ impl Fixture {
                         let headers = Arc::new(Mutex::new(Vec::new()));
                         observed.lock().unwrap().push(ObservedConnection { headers: headers.clone() });
                         let mut notices = notices.subscribe();
+                        let mut frames = frames.clone();
                         workers.spawn(async move {
                             let mut control = connection.open_uni().await.unwrap();
-                            control.write_all(&[0, 4, 2, 8, 1]).await.unwrap();
+                            let mut settings_sent = false;
                             let cutoff = Arc::new(AtomicU64::new(u64::MAX));
                             let mut streams = JoinSet::new();
                             loop {
                                 tokio::select! {
+                                    frame = async { frames.wait_for(Option::is_some).await.map(|v| v.unwrap()) }, if !settings_sent => {
+                                        let Ok(frame) = frame else { break; };
+                                        if control.write_all(frame).await.is_err() { break; }
+                                        settings_sent = true;
+                                    }
                                     _ = streams.join_next(), if !streams.is_empty() => {},
                                     _ = connection.closed() => break,
                                     result = notices.changed() => {
@@ -195,6 +211,7 @@ impl Fixture {
             }
         });
         Self {
+            settings_frame,
             address,
             directory,
             endpoint,
@@ -634,4 +651,52 @@ async fn silently_dead_connection_is_replaced_for_the_next_flow() {
     drop((first, fresh, client));
     backend.shutdown().await;
     assert_eq!(backend.resource_count(), 0);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn pending_udp_settings_allow_tcp_and_the_first_frame_decides_capability() {
+    for (frame, enabled) in [
+        (&[0, 4, 0][..], false),
+        (&[0, 4, 2, 8, 0][..], false),
+        (&[0, 4, 2, 8, 1][..], true),
+    ] {
+        let fixture = Fixture::start_with_settings(128, Duration::ZERO, None).await;
+        let mut backend = fixture.backend();
+        let client = Client::new(&fixture.config(), backend.bridge.clone()).unwrap();
+        let first = client.open("127.0.0.1", 7, false).await.unwrap();
+        let udp = client.open("127.0.0.1", 7, true);
+        tokio::pin!(udp);
+        tokio::select! {
+            _ = &mut udp => panic!("UDP did not wait for SETTINGS"),
+            _ = tokio::time::sleep(Duration::from_millis(100)) => {}
+        }
+        let mut tcp =
+            tokio::time::timeout(Duration::from_secs(2), client.open("127.0.0.1", 7, false))
+                .await
+                .expect("pending UDP negotiation blocked ordinary CONNECT")
+                .unwrap();
+        echo(&mut tcp.stream, b"before SETTINGS").await;
+        fixture.settings_frame.send_replace(Some(frame));
+        let result = tokio::time::timeout(Duration::from_secs(2), udp)
+            .await
+            .expect("waited after definitive SETTINGS");
+        if enabled {
+            let mut flow = result.unwrap();
+            // Context zero DATAGRAM Capsule carrying one application byte.
+            echo(&mut flow.stream, &[0, 2, 0, 42]).await;
+        } else {
+            let error = result.err().expect("unsupported CONNECT-UDP succeeded");
+            assert!(
+                format!("{error:#}").contains("did not enable HTTP/3 Extended CONNECT"),
+                "{error:#}"
+            );
+        }
+        echo(&mut tcp.stream, b"after SETTINGS").await;
+        assert_eq!(
+            fixture.request_ids(0),
+            if enabled { vec![0, 4, 8] } else { vec![0, 4] }
+        );
+        drop((first, tcp));
+        backend.shutdown().await;
+    }
 }

@@ -624,3 +624,23 @@ Linux versus emulated Linux throughput comparisons. This audit used runners.
 Physical iPhone MDM profiles, Wi-Fi to cellular handover and the operator's
 actual WAN, NIC and WARP service have no measurement in this environment.
 [Apple native matrix and traffic traces](audit-2026-11-20.md#apple-native-per-session-matrix).
+
+## HTTP/3 Extended CONNECT capability, 2026-11-21
+
+A loopback QUIC peer withheld SETTINGS while an ordinary TCP CONNECT and a
+UDP request shared one session. It then sent SETTINGS with the capability
+omitted, explicitly zero, or enabled. On the original RS the negative reply
+exceeded the two-second assertion. On NF and TUN the pending UDP request
+blocked the independent TCP CONNECT before the peer sent SETTINGS.
+
+| Implementation tested in all three cores | Result |
+| --- | --- |
+| Use the initial default immediately | Rejected UDP before a delayed SETTINGS frame could arrive. |
+| Check for actual SETTINGS every 5 ms, releasing the sender lock between checks | Passed the delayed-frame and TCP progress checks. Each pending UDP opener still scheduled a timer and acquired the sender lock repeatedly. |
+| Publish the capability once from the connection driver | Passed the same checks without polling. Explicit zero and omission reject UDP before request HEADERS. A delayed positive frame permits a UDP Capsule round trip. |
+
+On macOS the production RS backend received SETTINGS after 2.02 s and
+submitted one request. With SETTINGS delayed for 14 s, forced H3 timed out
+after 10.02 s with zero request HEADERS. A missing response timed out at
+20.02 s with one request. The old field report has no matching trace.
+[macOS regression and delay controls](https://github.com/ArcCal/caddy-network-relay/actions/runs/44850624229/job/136680863347).

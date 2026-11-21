@@ -96,7 +96,16 @@ fn serve(path: PathBuf, check_only: bool) -> ExitCode {
         Ok(c) => c,
         Err(e) => return fail(e),
     };
-    let warnings = warp_config.warnings();
+    let total = config.relay.max_tunnels();
+    let per_user = config.relay.max_tunnels_per_user;
+    let mut warnings = warp_config.warnings();
+    if (total, per_user) == (48, 32) {
+        warnings.push(
+            "tunnel limits match the old example (48 total, 32 per user). If copied unintentionally, remove \
+             both max_tunnels and max_tunnels_per_user from [relay], run serve --check and restart to use the defaults."
+                .into(),
+        );
+    }
     for w in &warnings {
         eprintln!("{NAME}: warning: {w}");
     }
@@ -108,7 +117,7 @@ fn serve(path: PathBuf, check_only: bool) -> ExitCode {
         return match checked {
             Ok(()) => {
                 println!(
-                    "{}: configuration, certificate and website are fine; users: {}",
+                    "{}: configuration, certificate and website are fine; users: {}; tunnel limits: {total} total, {per_user} per user",
                     path.display(),
                     config.users.len()
                 );

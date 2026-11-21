@@ -150,6 +150,7 @@ struct H2Session {
     keep: ConnectionKeep,
 }
 struct H3Session {
+    extended_connect: watch::Receiver<Option<bool>>,
     sender: Mutex<h3::client::SendRequest<crate::quic::Opener, Bytes>>,
     keep: ConnectionKeep,
 }
@@ -582,11 +583,27 @@ impl Client {
         let mut keep = ConnectionKeep::default();
         keep.lease = Some(lease);
         keep.h3_driver = Some(driver.clone());
+        let (settings_tx, extended_connect) = watch::channel(None);
         keep.tasks.push(tokio::spawn(async move {
-            let error = std::future::poll_fn(|cx| driver.lock().unwrap().poll_close(cx)).await;
+            let mut pending_settings = Some(settings_tx);
+            let error = std::future::poll_fn(|cx| {
+                let mut driver = driver.lock().unwrap();
+                let result = driver.poll_close(cx);
+                // The pinned h3 implementation borrows the peer's once-only
+                // SETTINGS and returns owned defaults until the frame arrives.
+                if let Some(tx) = &pending_settings
+                    && let std::borrow::Cow::Borrowed(settings) = driver.settings()
+                {
+                    tx.send_replace(Some(settings.enable_extended_connect()));
+                    pending_settings = None;
+                }
+                result
+            })
+            .await;
             tracing::debug!("HTTP/3 connection driver ended: {error}");
         }));
         let session = Arc::new(H3Session {
+            extended_connect,
             sender: Mutex::new(sender),
             keep,
         });
@@ -595,24 +612,15 @@ impl Client {
     }
     async fn h3_settings(&self, session: &H3Session, udp: bool) -> Result<()> {
         if udp {
-            use h3::ConnectionState;
-            let mut sender = tokio::time::timeout(WAIT, session.sender.lock())
+            let mut capability = session.extended_connect.clone();
+            let enabled = tokio::time::timeout(WAIT, capability.wait_for(Option::is_some))
                 .await
-                .context("HTTP/3 capability negotiation busy")?;
-            let waiter = &mut sender;
-            let driver_task = &session.keep.tasks[0];
-            tokio::time::timeout(WAIT, async move {
-                while !waiter.settings().enable_extended_connect() {
-                    ensure!(
-                        !driver_task.is_finished(),
-                        "HTTP/3 closed before Extended CONNECT settings"
-                    );
-                    tokio::time::sleep(Duration::from_millis(5)).await;
-                }
-                Ok::<_, anyhow::Error>(())
-            })
-            .await
-            .context("server did not enable HTTP/3 Extended CONNECT")??;
+                .context("timed out waiting for HTTP/3 Extended CONNECT settings")?
+                .context("HTTP/3 closed before Extended CONNECT settings")?;
+            ensure!(
+                *enabled == Some(true),
+                "server did not enable HTTP/3 Extended CONNECT"
+            );
         }
         Ok(())
     }

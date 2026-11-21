@@ -7,9 +7,9 @@ Revision: 0.1.0 development, 2026-10-12. Requirements are acceptance targets;
 
 | Forced transport | TCP | UDP | Required server result |
 | --- | --- | --- | --- |
-| HTTP/1.1 over rustls | Classic CONNECT with authority-form destination | GET with `Connection: Upgrade` and `Upgrade: connect-udp` at the template URI | TCP any 2xx; UDP exactly 101 with Upgrade and Capsule negotiation |
-| HTTP/2 over rustls | Classic CONNECT with destination `:authority` | Extended CONNECT with `:protocol = connect-udp` and an expanded HTTPS template | Any 2xx; ENABLE_CONNECT_PROTOCOL; UDP `Capsule-Protocol: ?1` |
-| HTTP/3 over Quinn/rustls | Classic CONNECT on a bidirectional request stream | Extended CONNECT with `:protocol = connect-udp` and an expanded HTTPS template | Any 2xx; ENABLE_CONNECT_PROTOCOL; UDP `Capsule-Protocol: ?1` |
+| HTTP/1.1 over rustls | Classic CONNECT with authority-form destination | GET with `Connection: Upgrade` and `Upgrade: connect-udp` at the template URI | TCP any 2xx; UDP exactly 101 with the connect-udp Upgrade |
+| HTTP/2 over rustls | Classic CONNECT with destination `:authority` | Extended CONNECT with `:protocol = connect-udp` and an expanded HTTPS template | TCP any 2xx; UDP requires Extended CONNECT support and a 2xx permitting Capsules |
+| HTTP/3 over Quinn/rustls | Classic CONNECT on a bidirectional request stream | Extended CONNECT with `:protocol = connect-udp` and an expanded HTTPS template | TCP any 2xx; UDP requires Extended CONNECT support and a 2xx permitting Capsules |
 
 Applicable references include RFC 1928, RFC 6570, RFC 9000, RFC 9001, RFC 9110
 section 9.3.6, RFC 9113, RFC 9114, RFC 9220, RFC 9297 and RFC 9298. The inherited
@@ -27,12 +27,10 @@ a rejected destination is not retried directly. Mutual-TLS-only authentication
 is not implemented by this initial app.
 
 Ordinary CONNECT accepts every successful 2xx response, rather than only 200.
-The Capsule-Protocol value is parsed as a Structured Fields Boolean, including
-valid unknown parameters. A malformed/list value, repeated field or false
-value fails. The present client also requires the response field to be present;
-RFC 9297 section 3.4 says the peer SHOULD send it, so an otherwise compliant
-peer omitting that field may be rejected. Both target-server fixtures send it;
-broader omission compatibility has not been implemented or tested.
+The connect-udp token selects Capsule framing. The peer SHOULD send the
+Capsule-Protocol field for intermediaries (RFC 9297 section 3.4). Its
+absence does not prevent a tunnel. A Capsule response cannot use status
+204, 205 or 206, or carry content metadata (RFC 9297 section 3.2).
 
 The optional server IP selects the socket endpoint. The profile domain selects
 SNI and the expected certificate identity. With no IP override, domain resolution

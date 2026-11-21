@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- RS, NF and TUN now wake pending CONNECT-UDP requests on receipt of HTTP/3
+  SETTINGS. A peer that omits or disables Extended CONNECT is handled immediately.
+  Other TCP CONNECT streams can open while SETTINGS is outstanding. RS accepts
+  connect-udp responses without the optional Capsule-Protocol field and rejects
+  statuses that cannot carry Capsules.
+- The WARP server's offline configuration check shows the effective tunnel
+  limits. Startup and check mode identify the old 48-total, 32-per-user
+  example and explain how to opt into the current defaults.
+
 - The Rust relay reuses the HTTP Date value within a worker for the current UTC second. Linux release transfer tests now run on native x86-64 and arm64.
 - VLESS retains frequently used DNS entries at capacity and shares concurrent attempts for the same destination name and resolver. Each caller keeps its own failover deadline. WARP DNS retains frequently used name/type pairs within its existing 4096-entry limit. Its two dependency locks update heapless to 0.9.4.
 - WARP TCP accepts a valid peer window change for unsent response data after a half-close. This removed a reproducible one-second wait on a local slow-reader test. Public WARP stability remains unverified.

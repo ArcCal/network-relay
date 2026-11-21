@@ -130,6 +130,18 @@ quarter of it (682 at 1 GiB). Leave `relay.max_tunnels` and
 `relay.max_tunnels_per_user` at network-relay's defaults unless you need
 lower ones; the memory-based `relay.max_tunnels` stays below the socket limit.
 
+Older example configurations set `max_tunnels = 48` and
+`max_tunnels_per_user = 32` under `[relay]`. These values can cause HTTP 503
+once either limit is reached. To adopt the current defaults, remove those two
+assignments, run `serve --config config/relay.toml --check` to see the
+effective limits under the service's memory limit, then restart the service. Keep either
+assignment if it is an intentional quota. The check leaves the file intact.
+In the Linux x86-64 and arm64 migration tests, the old limits refused
+the 33rd connection for one user and the 49th overall. After restart on
+defaults, 40 tunnels for one user and 24 for the other simultaneously
+returned their distinct echo payloads over both WARP transports.
+[Real CLI migration checks](https://github.com/ArcCal/caddy-network-relay/actions/runs/44851670332).
+
 IPv6 is optional. If `[warp.registration]` lacks `tunnel_ipv6` or
 `endpoint_v6`, the server prints a warning naming them when it starts, logs
 it, and **keeps running** IPv4 only. Copy them from the enrollment to enable

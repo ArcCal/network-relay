@@ -140,6 +140,15 @@ exit one, across HTTP/1.1, HTTP/2 and HTTP/3. The final app source fingerprint
 differs from the preserved stability run; the core, h3, test, manifest and
 lockfile fingerprints remain identical.
 
+## HTTP/3 capability and Capsule responses
+
+The connection driver publishes the peer's first SETTINGS to pending UDP
+requests. If Extended CONNECT is absent or zero, RS returns an error before
+sending request HEADERS. Ordinary TCP CONNECT can proceed while SETTINGS is
+pending. A missing frame still has a ten-second deadline in forced H3 mode.
+The connect-udp token selects Capsule framing, so an omitted Capsule-Protocol
+response field is valid. [Protocol requirements](SPEC.md#wire-protocol).
+
 ## Confirmed scope limits
 
 - Apple silicon macOS 27+ is the initial GUI target; Intel GUI is not implemented.
@@ -148,9 +157,6 @@ lockfile fingerprints remain identical.
 - Custom CONNECT-UDP templates are not exposed by GUI or headless settings
   import; both require the standard endpoint. Mutual-TLS-only authentication
   is not implemented. The protocol library retains its restricted template parser.
-- The client requires explicit true Capsule-Protocol in UDP responses. RFC 9297
-  says the peer SHOULD send the response field, rather than universally MUST;
-  a compliant peer omitting it may be rejected. Both tested servers send it.
 - SOCKS BIND and fragmented UDP are unsupported; internationalized SOCKS names
   require ASCII/Punycode. Full IPv6 UDP maximum size and per-drop UI counters
   are outside the initial profile.

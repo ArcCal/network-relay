@@ -164,6 +164,7 @@ impl Drop for H2Session {
     }
 }
 struct H3Session {
+    extended_connect: watch::Receiver<Option<bool>>,
     sender: Mutex<h3::client::SendRequest<crate::quic::Opener, Bytes>>,
     keep: H3Keep,
     _slot: OwnedSemaphorePermit,
@@ -569,11 +570,27 @@ impl Client {
         .await??;
         let driver = Arc::new(std::sync::Mutex::new(driver));
         let driven = driver.clone();
+        let (settings_tx, extended_connect) = watch::channel(None);
         let task = tokio::spawn(async move {
-            let error = std::future::poll_fn(|cx| driven.lock().unwrap().poll_close(cx)).await;
+            let mut pending_settings = Some(settings_tx);
+            let error = std::future::poll_fn(|cx| {
+                let mut driver = driven.lock().unwrap();
+                let result = driver.poll_close(cx);
+                // The pinned h3 implementation borrows the peer's once-only
+                // SETTINGS and returns owned defaults until the frame arrives.
+                if let Some(tx) = &pending_settings
+                    && let std::borrow::Cow::Borrowed(settings) = driver.settings()
+                {
+                    tx.send_replace(Some(settings.enable_extended_connect()));
+                    pending_settings = None;
+                }
+                result
+            })
+            .await;
             tracing::debug!("HTTP/3 connection driver ended: {error}");
         });
         let session = Arc::new(H3Session {
+            extended_connect,
             sender: Mutex::new(sender),
             keep: H3Keep {
                 task,
@@ -587,23 +604,15 @@ impl Client {
     }
     async fn h3_settings(&self, session: &H3Session, udp: bool) -> Result<()> {
         if udp {
-            use h3::ConnectionState;
-            tokio::time::timeout(WAIT, async {
-                loop {
-                    let sender = session.sender.lock().await;
-                    if sender.settings().enable_extended_connect() {
-                        return Ok::<_, anyhow::Error>(());
-                    }
-                    ensure!(
-                        !session.keep.task.is_finished(),
-                        "HTTP/3 closed before Extended CONNECT settings"
-                    );
-                    drop(sender);
-                    tokio::time::sleep(Duration::from_millis(5)).await;
-                }
-            })
-            .await
-            .context("server did not enable HTTP/3 Extended CONNECT")??;
+            let mut capability = session.extended_connect.clone();
+            let enabled = tokio::time::timeout(WAIT, capability.wait_for(Option::is_some))
+                .await
+                .context("timed out waiting for HTTP/3 Extended CONNECT settings")?
+                .context("HTTP/3 closed before Extended CONNECT settings")?;
+            ensure!(
+                *enabled == Some(true),
+                "server did not enable HTTP/3 Extended CONNECT"
+            );
         }
         Ok(())
     }
@@ -768,9 +777,17 @@ fn check(
         return Err(Rejected(status, proxy_status_reason(headers)).into());
     }
     if udp {
+        // The connect-udp token defines capsule framing (RFC 9298 section
+        // 3). Capsule-Protocol is only recommended metadata for
+        // intermediaries, not another negotiation requirement (RFC 9297
+        // section 3.4). Ignore it, including unknown parameters and values
+        // that have the same semantics as an absent field.
         ensure!(
-            proto::capsule_protocol_enabled(headers),
-            "relay did not negotiate Capsule Protocol"
+            !matches!(
+                status,
+                StatusCode::NO_CONTENT | StatusCode::RESET_CONTENT | StatusCode::PARTIAL_CONTENT
+            ),
+            "invalid status on CONNECT-UDP capsule response"
         );
         ensure!(
             proto::valid_capsule_headers(headers),
@@ -798,41 +815,80 @@ mod response_tests {
     use super::*;
 
     #[test]
-    fn connect_accepts_the_entire_successful_status_range() {
-        let mut headers = http::HeaderMap::new();
-        headers.insert(
-            proto::CAPSULE_PROTOCOL_HEADER,
-            "?1;future=42".parse().unwrap(),
-        );
-        for status in [200, 201, 204, 299] {
-            let status = StatusCode::from_u16(status).unwrap();
-            assert!(check(status, &headers, false, StatusCode::OK).is_ok());
-            assert!(check(status, &headers, true, StatusCode::OK).is_ok());
-        }
-        for status in [101, 199, 300, 401, 404, 500] {
-            let status = StatusCode::from_u16(status).unwrap();
-            assert!(check(status, &headers, false, StatusCode::OK).is_err());
-            assert!(check(status, &headers, true, StatusCode::OK).is_err());
+    fn connect_and_connect_udp_have_distinct_success_statuses() {
+        let headers = http::HeaderMap::new();
+        for code in 100..600 {
+            let status = StatusCode::from_u16(code).unwrap();
+            assert_eq!(
+                check(status, &headers, false, StatusCode::OK).is_ok(),
+                (200..300).contains(&code),
+                "classic CONNECT HTTP {code}"
+            );
+            assert_eq!(
+                check(status, &headers, true, StatusCode::OK).is_ok(),
+                (200..300).contains(&code) && ![204, 205, 206].contains(&code),
+                "Extended CONNECT-UDP HTTP {code}"
+            );
+            assert_eq!(
+                check(status, &headers, true, StatusCode::SWITCHING_PROTOCOLS).is_ok(),
+                code == 101,
+                "HTTP/1.1 CONNECT-UDP Upgrade HTTP {code}"
+            );
         }
     }
 
     #[test]
-    fn http1_udp_upgrade_requires_101_and_valid_capsule_headers() {
-        let mut headers = http::HeaderMap::new();
-        headers.insert(proto::CAPSULE_PROTOCOL_HEADER, "?1;future".parse().unwrap());
-        assert!(
-            check(
-                StatusCode::SWITCHING_PROTOCOLS,
-                &headers,
-                true,
-                StatusCode::SWITCHING_PROTOCOLS
-            )
-            .is_ok()
-        );
-        for status in [200, 201, 204, 404] {
+    fn connect_udp_capsule_protocol_field_does_not_select_framing() {
+        for values in [
+            vec![],
+            vec!["?1"],
+            vec!["?1;future=token;flag;quoted=\"a,b\""],
+            vec!["?0"],
+            vec!["token"],
+            vec!["?1junk"],
+            vec!["?1;broken=\""],
+            vec!["?1, ?1"],
+            vec!["?1", "?1"],
+            vec!["?0", "?1"],
+        ] {
+            let mut headers = http::HeaderMap::new();
+            for value in &values {
+                headers.append(proto::CAPSULE_PROTOCOL_HEADER, value.parse().unwrap());
+            }
+            for status in [StatusCode::OK, StatusCode::CREATED] {
+                assert!(
+                    check(status, &headers, true, StatusCode::OK).is_ok(),
+                    "{values:?}"
+                );
+            }
             assert!(
                 check(
-                    StatusCode::from_u16(status).unwrap(),
+                    StatusCode::SWITCHING_PROTOCOLS,
+                    &headers,
+                    true,
+                    StatusCode::SWITCHING_PROTOCOLS
+                )
+                .is_ok(),
+                "{values:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn connect_udp_rejects_content_metadata_even_without_capsule_protocol_field() {
+        for (name, value) in [
+            (http::header::CONTENT_LENGTH, "0"),
+            (http::header::CONTENT_TYPE, "application/octet-stream"),
+            (http::header::TRANSFER_ENCODING, "chunked"),
+        ] {
+            let mut headers = http::HeaderMap::new();
+            headers.insert(name, value.parse().unwrap());
+            for status in [StatusCode::OK, StatusCode::CREATED] {
+                assert!(check(status, &headers, true, StatusCode::OK).is_err());
+            }
+            assert!(
+                check(
+                    StatusCode::SWITCHING_PROTOCOLS,
                     &headers,
                     true,
                     StatusCode::SWITCHING_PROTOCOLS
@@ -840,11 +896,6 @@ mod response_tests {
                 .is_err()
             );
         }
-        headers.insert(proto::CAPSULE_PROTOCOL_HEADER, "?0".parse().unwrap());
-        assert!(check(StatusCode::OK, &headers, true, StatusCode::OK).is_err());
-        headers.insert(proto::CAPSULE_PROTOCOL_HEADER, "?1".parse().unwrap());
-        headers.insert(http::header::CONTENT_LENGTH, "0".parse().unwrap());
-        assert!(check(StatusCode::OK, &headers, true, StatusCode::OK).is_err());
     }
 
     #[test]

@@ -43,7 +43,12 @@ async fn root_cli_offline_check_real_serve_and_tunnel_death_are_fail_closed() ->
         let addr = unused_ingress()?;
         static HASH: OnceLock<String> = OnceLock::new();
         let hash = HASH.get_or_init(|| auth::hash_password(PASSWORD).unwrap());
-        let relay = format!("listen = \"{addr}\"\n[tls]\ncert = {:?}\nkey = {:?}\n[web]\nroot = {:?}\n[relay]\nblocked_destinations = []\nblocked_ports = []\nblock_own_addresses = false\nmax_tunnels = 64\n[[user]]\nname = \"{USER}\"\npassword_hash = \"{hash}\"\n", env.path.join("fullchain.pem"), env.path.join("privkey.pem"), env.path.join("site"));
+        let relay = format!(
+            "listen = \"{addr}\"\n[tls]\ncert = {:?}\nkey = {:?}\n[web]\nroot = {:?}\n[relay]\nblocked_destinations = []\nblocked_ports = []\nblock_own_addresses = false\nmax_tunnels = 64\n[[user]]\nname = \"{USER}\"\npassword_hash = \"{hash}\"\n",
+            env.path.join("fullchain.pem"),
+            env.path.join("privkey.pem"),
+            env.path.join("site")
+        );
         // One file holds everything. Without the IPv6 enrollment fields the
         // server warns and runs IPv4 only; with them it says nothing.
         let mut settings: toml::Value = toml::from_str(&peer.settings())?;
@@ -67,6 +72,20 @@ async fn root_cli_offline_check_real_serve_and_tunnel_death_are_fail_closed() ->
             peer.snapshot().authenticated_clients == 0 && peer.snapshot().tunnels == 0,
             "offline --check opened a tunnel"
         );
+        ensure!(String::from_utf8_lossy(&offline.stdout).contains("tunnel limits: 64 total, 512 per user"));
+        ensure!(!offline_stderr.contains("old example"));
+        let legacy = original.replace("max_tunnels = 64", "max_tunnels = 48\nmax_tunnels_per_user = 32");
+        std::fs::write(env.path.join("relay.toml"), &legacy)?;
+        let check = serve_command(&env).arg("--check").output()?;
+        ensure!(check.status.success() && String::from_utf8_lossy(&check.stdout).contains("48 total, 32 per user"));
+        ensure!(String::from_utf8_lossy(&check.stderr).contains("old example"));
+        ensure!(std::fs::read_to_string(env.path.join("relay.toml"))? == legacy, "check changed the configuration");
+        let defaults = original.replace("max_tunnels = 64", "");
+        std::fs::write(env.path.join("relay.toml"), &defaults)?;
+        let check = serve_command(&env).arg("--check").output()?;
+        ensure!(check.status.success() && String::from_utf8_lossy(&check.stdout).contains("512 per user"));
+        ensure!(!String::from_utf8_lossy(&check.stderr).contains("old example"));
+        std::fs::write(env.path.join("relay.toml"), &original)?;
         // No second file: the legacy options are gone.
         for legacy in [&["serve", "--warp-config", "warp.toml", "--check"][..], &["migrate-config"][..]] {
             let refused = Command::new(BIN).args(legacy).arg("--config").arg(env.path.join("relay.toml")).output()?;

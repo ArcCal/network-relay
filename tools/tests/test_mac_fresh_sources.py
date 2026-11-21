@@ -154,7 +154,7 @@ class MacFreshSourceTests(unittest.TestCase):
 
     def test_failed_gui_build_cleans_source_work_and_private_caches(self):
         shutil.copyfile(ROOT / "build-macos-gui-clients-on-macos.sh", self.remote / "build-macos-gui-clients-on-macos.sh")
-        for name in ("network-relay-nf", "network-relay-rs"):
+        for name in ("network-relay-nf", "network-relay-rs", "network-relay-tun"):
             folder = self.remote / name; folder.mkdir()
             (folder / "build-macos.sh").write_text(
                 "#!/bin/bash\npython3 - <<'CAPTURE'\n"
@@ -233,13 +233,13 @@ lr_build_caddy() {
 '''
         (self.remote / "build-linux-servers-on-linux.sh").write_text(
             f"LR_CLOUDFLARE_DNS_TAG=fixture-tag\nLR_CLOUDFLARE_DNS_COMMIT={tag_commit}\n" + linux_recipes)
-        for name in ("network-relay-nf", "network-relay-rs"):
+        for name in ("network-relay-nf", "network-relay-rs", "network-relay-tun"):
             folder = self.remote / name; folder.mkdir()
             (folder / "build-macos.sh").write_text(r'''#!/bin/bash
 python3 - "$0" <<'BUILD'
 import json,os,pathlib,sys,zipfile
 root=pathlib.Path(sys.argv[1]).parent
-label='NF' if root.name.endswith('-nf') else 'RS'
+label={'network-relay-nf':'NF','network-relay-rs':'RS','network-relay-tun':'Tun'}[root.name]
 keys=['RELAY_BUILD_WORK_ROOT','CARGO_HOME','RUSTUP_HOME','GOCACHE','GOMODCACHE','TMPDIR','HOMEBREW_CACHE','RELAY_FRESH_SOURCE_ROOT']
 pathlib.Path(os.environ['TEST_BUILD_ENV']).write_text(json.dumps({k:os.environ[k] for k in keys}))
 cache=pathlib.Path(os.environ['GOMODCACHE'])/'github.com/pkg/errors@v0.9.1'
@@ -342,7 +342,7 @@ elif tool=='go' and args[:2]==['version','-m']:
             for arch in ("amd64", "arm64"):
                 for name in ("network-relay", "network-relay-cf-masque", "network-relay-vless", "network-relay-rs", "caddy-network-relay"):
                     self.assertEqual((output / f"{name}-linux-{arch}").read_text(), "fixture executable\n")
-        for label in ("nf", "rs"):
+        for label in ("nf", "rs", "tun"):
             self.assertIn(f"==> macos-network-relay-{label}\n    ok", transcript)
         values = json.loads(capture.read_text())
         work = Path(values["RELAY_BUILD_WORK_ROOT"])
@@ -359,10 +359,14 @@ elif tool=='go' and args[:2]==['version','-m']:
         self.assertEqual((output / "MANIFEST.txt").exists(), not linux_failure)
         self.assertEqual((output / "SHA256SUMS").exists(), not linux_failure)
         calls = [json.loads(line) for line in native_calls.read_text().splitlines()] if native_calls.exists() else []
-        for label in ("NF", "RS"):
+        for label in ("NF", "RS", "Tun"):
             app = output / f"network-relay-{label.lower()}-macos-arm64.app"
             self.assertTrue(app.is_dir(), f"Successful {label} application was removed after Linux failure")
             self.assertEqual((app / "Contents/MacOS/FixtureApp").read_bytes(), f"fixture {label} executable\n".encode())
+            if not linux_failure:
+                sums = (output / "SHA256SUMS").read_text()
+                self.assertIn(f"  {app.name}/Contents/MacOS/FixtureApp\n", sums)
+                self.assertIn(f"  NetworkRelay{label}-fixture-macos-arm64.zip\n", sums)
             with zipfile.ZipFile(output / f"NetworkRelay{label}-fixture-macos-arm64.zip") as archive:
                 self.assertEqual(archive.read(f"Network Relay {label}.app/Contents/MacOS/FixtureApp"),
                                  f"fixture {label} executable\n".encode())

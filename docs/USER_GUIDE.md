@@ -574,7 +574,8 @@ retaining certificate-name verification; it is not an insecure mode.
 Both app build scripts create ad-hoc-signed local bundles, not notarized public
 releases. They build a fresh temporary checkout and keep final products in the
 invoking app's output directories. `build-macos-gui-clients-on-macos.sh` in the
-repository root builds both apps from a fresh checkout in one run. Follow their [NF build guide](../network-relay-nf/docs/BUILD-AND-OBSERVE.md)
+repository root builds NF, RS and Network Relay Tun from a fresh checkout in one run.
+It exports each signed app with a versioned ZIP. Follow the [NF build guide](../network-relay-nf/docs/BUILD-AND-OBSERVE.md)
 and [RS build guide](../network-relay-rs/docs/BUILD-AND-OBSERVE.md) for fresh-source
 procedures, signing observations and TCP/UDP acceptance. Do not infer native Mac
 runtime success from a Linux model or transport test.

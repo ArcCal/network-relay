@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Download current source, then build the two independent Network Relay GUI apps.
+# Download current source, then build the independent Network Relay GUI apps.
 # All A && B || die guards intentionally reject failure of either predicate.
 # shellcheck disable=SC2015
 set -euo pipefail
@@ -178,7 +178,7 @@ rg_usage() {
     cat <<'HELP'
 Usage: bash build-macos-gui-clients-on-macos.sh [--repo DIR] [--output DIR] [--jobs N]
 
-Build Network Relay NF and Network Relay RS, including their original tests,
+Build Network Relay NF, RS and Tun, including their original tests,
 ad-hoc signatures and ZIPs. Requires an Apple silicon Mac, macOS 27+, the
 macOS 27+ Xcode SDK with XCTest, Rust/rustup, and Git access to the repository.
 No Linux servers, Go, Zig or unrelated applications are built.
@@ -474,6 +474,7 @@ rg_require
 rg_build_app() { cd -- "$repo"; "$BASH" "$repo/$1/build-macos.sh"; }
 rg_step macos-network-relay-nf rg_build_app network-relay-nf
 rg_step macos-network-relay-rs rg_build_app network-relay-rs
+rg_step macos-network-relay-tun rg_build_app network-relay-tun
 
 rg_replacement() {
     awk -F '\t' -v module="$2" -v replacement="$3" '
@@ -560,8 +561,10 @@ rg_mac_cli() {
 }
 rg_step collect-nf-app rg_app "$repo/network-relay-nf/dist/Network Relay NF.app" network-relay-nf-macos-arm64.app
 rg_step collect-rs-app rg_app "$repo/network-relay-rs/dist/Network Relay RS.app" network-relay-rs-macos-arm64.app
+rg_step collect-tun-app rg_app "$repo/network-relay-tun/dist/Network Relay Tun.app" network-relay-tun-macos-arm64.app
 rg_step collect-nf-zip rg_zip "$repo/network-relay-nf/dist" NetworkRelayNF
 rg_step collect-rs-zip rg_zip "$repo/network-relay-rs/dist" NetworkRelayRS
+rg_step collect-tun-zip rg_zip "$repo/network-relay-tun/dist" NetworkRelayTun
 if [[ $mode == all ]]; then rg_step collect-macos-rust-cli rg_mac_cli; fi
 # Export successful Mac products before an independent Linux build can fail.
 if [[ $mode == all ]]; then rg_step linux-servers-both-architectures rg_servers; fi
@@ -586,12 +589,12 @@ rg_manifest() {
             printf 'VLESS: network-relay-vless-linux-amd64 and network-relay-vless-linux-arm64.\n'
             printf 'Rust CLI: Linux amd64/arm64 and macOS arm64; native Mac --help/--version checked.\n'
         fi
-        printf 'Mac: original client tests, bundle architecture and strict signatures checked.\n'
+        printf 'Mac: NF, RS and Tun original client tests, bundle architecture and strict signatures checked.\n'
     } > "$output/MANIFEST.txt"
 }
 rg_checksums() (
     cd -- "$output" || exit
-    local expected=(network-relay-nf-macos-arm64.app network-relay-rs-macos-arm64.app NetworkRelayNF-*-macos-arm64.zip NetworkRelayRS-*-macos-arm64.zip MANIFEST.txt)
+    local expected=(network-relay-nf-macos-arm64.app network-relay-rs-macos-arm64.app network-relay-tun-macos-arm64.app NetworkRelayNF-*-macos-arm64.zip NetworkRelayRS-*-macos-arm64.zip NetworkRelayTun-*-macos-arm64.zip MANIFEST.txt)
     if [[ $mode == all ]]; then
         expected+=(network-relay-linux-amd64 network-relay-linux-arm64 network-relay-cf-masque-linux-amd64 network-relay-cf-masque-linux-arm64 network-relay-vless-linux-amd64 network-relay-vless-linux-arm64 caddy-network-relay-linux-amd64 caddy-network-relay-linux-arm64 network-relay-rs-linux-amd64 network-relay-rs-linux-arm64 network-relay-rs-macos-arm64)
     fi

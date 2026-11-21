@@ -149,7 +149,7 @@ usage() {
 Usage: bash build-all-targets-on-macos.sh [--repo DIR] [--output DIR] [--jobs N]
 
 Build network-relay, network-relay-cf-masque, network-relay-vless and Caddy
-Network Relay for Linux x64 and arm64, plus the NF and RS macOS applications.
+Network Relay for Linux x64 and arm64, plus the NF, RS and Tun macOS applications.
 Also build the Rust RS command-line client for Linux x64, Linux arm64 and
 macOS arm64.
 The Caddy executable includes the Cloudflare DNS plugin.

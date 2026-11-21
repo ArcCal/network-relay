@@ -29,7 +29,9 @@ open "dist/Network Relay Tun.app"
 
 The standalone script runs Rust tests, portable isolation checks and Swift model
 tests, builds all three Rust components and the GUI, bundles the helpers, and
-ad-hoc signs the finished application. It does not install privileged software
+ad-hoc signs the finished application. The app and its versioned ZIP are in
+`dist/`. Both root macOS build scripts also export the app and ZIP and include
+them in `SHA256SUMS`. Building does not install privileged software
 or change networking. Compilation caches remain inside this directory.
 
 1. Enter the existing server's certificate domain, account and password. An

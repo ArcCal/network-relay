@@ -207,6 +207,17 @@ Both reproduced with the production Rust transport against network-relay
 
 The same two defects were found and repaired in Network Relay NF's core.
 
+On macOS, an abort after a large local write could also leave the SOCKS
+reader waiting. In an alternating x86-64 Caddy comparison, immediate
+abort produced two timeouts in 60 port-forwarded trials. Waiting for the
+local send queue produced 60 resets. On the packet-preserving path both
+settings delivered 60 resets. The implementation bounds the wait at 100 ms.
+In the subsequent two-architecture test it delivered all 120 resets and
+preserved all 40 normal half-closes and reverse writes. An upstream reset
+can still go unreported before it reaches RS.
+[Alternating trials](https://github.com/ArcCal/caddy-network-relay/actions/runs/44853395869).
+[Client and Linux release servers](https://github.com/ArcCal/caddy-network-relay/actions/runs/44853719803).
+
 ## HTTP/3 connection reuse follow-up (2026-10-16)
 
 The previous RS core opened one outer QUIC connection per business flow and

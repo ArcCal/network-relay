@@ -282,7 +282,8 @@ struct StatusColumn: View {
             }
             VStack(alignment: .leading, spacing: 8) {
                 Toggle("Global TUN", isOn: Binding(get: { tunnel.globalTUN }, set: { tunnel.setGlobalTUN($0) }))
-                    .disabled(tunnel.status.isActive)
+                    .disabled(!tunnel.canChangeGlobalTUN)
+                    .help("Switching modes while connected reconnects the relay.")
                 Text("System capture: \(tunnel.captureStatus)").font(.callout)
                 if let name = tunnel.interfaceName { Text("Interface: \(name)").font(.caption) }
                 HStack {
@@ -981,7 +982,8 @@ struct MenuPanel: View {
             ServerLabel()
             VStack(alignment: .leading, spacing: 8) {
                 Toggle("Global TUN", isOn: Binding(get: { tunnel.globalTUN }, set: { tunnel.setGlobalTUN($0) }))
-                    .disabled(tunnel.status.isActive)
+                    .disabled(!tunnel.canChangeGlobalTUN)
+                    .help("Switching modes while connected reconnects the relay.")
                 Text("System capture: \(tunnel.captureStatus)").font(.callout)
                 if let name = tunnel.interfaceName { Text("Interface: \(name)").font(.caption) }
                 HStack {

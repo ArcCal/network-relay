@@ -2,6 +2,16 @@
 
 ## November 21, 2026
 
+The previous signed GUI kept its Global TUN checkbox disabled after a
+working SOCKS connection to a Linux H2 relay. With the repaired app, the
+same checkbox accepted a click. Without an installed helper, the app showed
+installation guidance and the original SOCKS service still delivered a
+4096-byte HTTPS response. With the helper installed, two successive
+SOCKS-to-TUN-to-SOCKS cycles used a real utun route and restored the
+original route and DNS after each cycle. HTTPS through SOCKS succeeded in
+each mode. [Original GUI](https://github.com/ArcCal/caddy-network-relay/actions/runs/44867403634/job/136734041928).
+[Signed switch and restoration test](https://github.com/ArcCal/caddy-network-relay/actions/runs/44868125189).
+
 On macOS 27 the signed release app displayed a connection failure when the
 helper was missing. The process and window remained alive through the
 eight-second observation. The same build passed helper installation, capture

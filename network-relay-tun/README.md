@@ -39,12 +39,22 @@ or change networking. Compilation caches remain inside this directory.
    retained for TLS validation. Choose a local SOCKS port not already in use.
 2. Leave **Global TUN** enabled. Click **Install / Update Helper** and approve
    the local macOS administrator dialog. This installs only this product's
-   root-owned daemon and packet worker.
+   root-owned daemon and packet worker. Both ship inside the app. The
+   installer registers the daemon with launchd so the GUI can stay
+   unprivileged. Repeat this step if the app reports a helper version
+   mismatch. Ordinary connections use the installed helper.
 3. Click Connect. Endpoint bypass and utun preparation precede native relay
    admission. IPv4/IPv6 capture routes and DNS activate only after admission.
 4. Disconnect or Quit waits for network restoration before stopping the relay.
    **Recover Network** retries incomplete restoration. Failed work stays in a
    root-owned journal; subsequent captures remain blocked until recovery succeeds.
+
+While connected, switch **Global TUN** in the main window or menu bar to
+change modes. The app reconnects the relay, so existing connections can
+briefly drop. Enabling capture checks the installed helper first. If that
+check fails, the existing SOCKS session stays connected. Disconnect and
+use **Install / Update Helper**, then try again. Disabling capture restores
+this app's routes and DNS before starting the SOCKS-only session.
 
 With Global TUN disabled, the same application provides its local SOCKS service
 without requiring the helper. There is no routing rule engine or forced kill

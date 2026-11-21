@@ -17,6 +17,7 @@ final class TunnelController: ObservableObject {
     @Published private(set) var interfaceName: String?
     @Published private(set) var recoveryRequired = false
     @Published private(set) var globalTUN: Bool
+    @Published private var checkingModeChange = false
     private var task: Task<Void, Never>?
     private var native: NativeClient?
     private var generation = UUID()
@@ -46,9 +47,42 @@ final class TunnelController: ObservableObject {
         record("Network Relay Tun launched; native Network.framework relay transport")
         if configuration.connectOnLaunch && isConfigured { connect() }
     }
+    var canChangeGlobalTUN: Bool {
+        !quitting && !recoveryRequired && !checkingModeChange &&
+            (task == nil || (status == .connected && task?.isCancelled == false))
+    }
     func setGlobalTUN(_ enabled: Bool) {
-        guard task == nil else { return }
-        globalTUN = enabled; UserDefaults.standard.set(enabled, forKey: "GlobalTUN")
+        guard enabled != globalTUN, canChangeGlobalTUN else { return }
+        guard enabled, task != nil else { applyGlobalTUN(enabled); return }
+
+        // Keep the working SOCKS session until we know the installed helper can serve us.
+        let original = generation
+        checkingModeChange = true
+        Task {
+            let control = HostSession()
+            defer { control.close(); checkingModeChange = false }
+            do {
+                try await control.checkCompatibility()
+            } catch {
+                if generation == original, status == .connected, task?.isCancelled == false {
+                    captureStatus = "Off. " + error.localizedDescription
+                    record(error.localizedDescription, level: "ERROR")
+                }
+                return
+            }
+            guard generation == original, status == .connected, task?.isCancelled == false,
+                  !quitting, !recoveryRequired else { return }
+            applyGlobalTUN(true)
+        }
+    }
+    private func applyGlobalTUN(_ enabled: Bool) {
+        globalTUN = enabled
+        UserDefaults.standard.set(enabled, forKey: "GlobalTUN")
+        if let task {
+            restart = true
+            status = .connecting
+            task.cancel()
+        }
     }
     @discardableResult
     func save(_ new: Configuration, retryFailed: Bool = false, allowReconnect: Bool = true) throws -> Bool {
@@ -193,7 +227,7 @@ final class TunnelController: ObservableObject {
         if quitting {
             if eraseOnQuit && !recoveryRequired { Store.eraseEverything() }
             NSApp.reply(toApplicationShouldTerminate: true)
-        } else if restart {
+        } else if restart && !recoveryRequired {
             restart = false; connect()
         }
     }

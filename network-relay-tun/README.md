@@ -86,9 +86,14 @@ silently reported as success.
   and local SOCKS transport limits. Actual oversized utun injection and PMTU
   behavior still require native acceptance. Do not infer these from jumbo-MTU
   portable tests.
-- The worker admits at most 128 sessions, uses bounded packet queues and expires
-  idle UDP sessions. Overload drops whole IP packets rather than growing queues
-  indefinitely; TCP can retransmit. The relay core has additional admission limits.
+- The worker admits at most 128 sessions and uses bounded packet queues. The
+  ordinary UDP idle timeout is 120 seconds. At 112 active sessions an A, AAAA
+  or HTTPS lookup that has received its matching reply and has been quiet for
+  one second can give up its slot. Unanswered and overlapping DNS queries
+  retain the ordinary timeout. Each SOCKS UDP association ends when its TCP
+  control connection closes. A later packet can open a fresh association.
+  At capacity new packets can still be dropped. The relay core also has its
+  own admission limits.
 - Bootstrap DNS resolution occurs before capture. Relay IP bypass prevents the
   outer connection from re-entering TUN. Credentials stay in the unprivileged
   application; helper requests contain only validated network plans and leases.

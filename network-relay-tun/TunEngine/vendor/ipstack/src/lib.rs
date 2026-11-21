@@ -35,6 +35,37 @@ fn packet_channel_with_capacity(capacity: usize) -> (PacketSender, PacketReceive
 }
 pub(crate) type SessionCollection = AHashMap<NetworkTuple, PacketSender>;
 
+#[derive(Debug)]
+enum SessionEvent {
+    Closed(NetworkTuple),
+    RetireIdleUdp {
+        tuple: NetworkTuple,
+        input: PacketSender,
+        high_water: usize,
+        reply: tokio::sync::oneshot::Sender<bool>,
+    },
+}
+
+fn handle_session_event(sessions: &mut SessionCollection, event: SessionEvent) {
+    match event {
+        SessionEvent::Closed(tuple) => remove_closed_session(sessions, tuple),
+        SessionEvent::RetireIdleUdp { tuple, input, high_water, reply } => {
+            // This loop is the only producer of input for a tuple. Detaching
+            // here ensures a racing packet either remains queued on the old
+            // flow or becomes the first packet on its replacement.
+            // Several workers may offer a slot on the same pressure signal.
+            // Recheck occupancy here so the other warm flows remain reusable.
+            let idle = !reply.is_closed() && sessions.len() >= high_water && sessions.get(&tuple).is_some_and(|current| {
+                current.0.same_channel(&input.0) && current.0.capacity() == current.0.max_capacity()
+            });
+            if idle {
+                sessions.remove(&tuple);
+            }
+            let _ = reply.send(idle);
+        }
+    }
+}
+
 mod error;
 mod packet;
 mod stream;
@@ -331,7 +362,7 @@ fn run<Device: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
     accept_sender: UnboundedSender<IpStackStream>,
 ) -> JoinHandle<Result<()>> {
     let mut sessions: SessionCollection = AHashMap::new();
-    let (session_remove_tx, mut session_remove_rx) = mpsc::unbounded_channel::<NetworkTuple>();
+    let (session_events, mut events) = mpsc::unbounded_channel::<SessionEvent>();
     let pi = config.packet_information;
     let offset = if pi && cfg!(unix) { 4 } else { 0 };
     let mut buffer = vec![0_u8; 65575 + offset];
@@ -359,7 +390,7 @@ fn run<Device: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
                         }
                     };
                     let Some(packet) = reassembly.push(&buffer[offset..n]) else { continue; };
-                    if let Err(e) = process_device_read(&packet, &mut sessions, &session_remove_tx, &up_pkt_sender, &config, &accept_sender).await {
+                    if let Err(e) = process_device_read(&packet, &mut sessions, &session_events, &up_pkt_sender, &config, &accept_sender).await {
                         let io_err: std::io::Error = e.into();
                         if io_err.kind() == std::io::ErrorKind::ConnectionRefused {
                             log::trace!("Received junk data: {io_err}");
@@ -368,8 +399,8 @@ fn run<Device: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
                         }
                     }
                 }
-                Some(network_tuple) = session_remove_rx.recv() => {
-                    remove_closed_session(&mut sessions, network_tuple);
+                Some(event) = events.recv() => {
+                    handle_session_event(&mut sessions, event);
                 }
                 Some(packet) = up_pkt_receiver.recv() => {
                     process_upstream_recv(packet, &mut device, &mut outgoing_buffer, #[cfg(unix)]pi).await?;
@@ -391,7 +422,7 @@ fn remove_closed_session(sessions: &mut SessionCollection, network_tuple: Networ
 async fn process_device_read(
     data: &[u8],
     sessions: &mut SessionCollection,
-    session_remove_tx: &UnboundedSender<NetworkTuple>,
+    session_events: &UnboundedSender<SessionEvent>,
     up_pkt_sender: &PacketSender,
     config: &IpStackConfig,
     accept_sender: &UnboundedSender<IpStackStream>,
@@ -413,7 +444,7 @@ async fn process_device_read(
                     packet,
                     network_tuple,
                     sessions,
-                    session_remove_tx,
+                    session_events,
                     up_pkt_sender,
                     config,
                     accept_sender,
@@ -425,7 +456,7 @@ async fn process_device_read(
                 packet,
                 network_tuple,
                 sessions,
-                session_remove_tx,
+                session_events,
                 up_pkt_sender,
                 config,
                 accept_sender,
@@ -439,18 +470,21 @@ fn create_and_register_stream(
     packet: NetworkPacket,
     network_tuple: NetworkTuple,
     sessions: &mut SessionCollection,
-    session_remove_tx: &UnboundedSender<NetworkTuple>,
+    session_events: &UnboundedSender<SessionEvent>,
     up_pkt_sender: &PacketSender,
     config: &IpStackConfig,
     accept_sender: &UnboundedSender<IpStackStream>,
 ) -> Result<()> {
     if sessions.len() >= 128 { return Ok(()); }
     let (tx, rx) = tokio::sync::oneshot::channel::<()>();
-    let ip_stack_stream = create_stream(packet, config, up_pkt_sender.clone(), Some(tx))?;
-    let session_remove_tx = session_remove_tx.clone();
+    let mut ip_stack_stream = create_stream(packet, config, up_pkt_sender.clone(), Some(tx))?;
+    if let IpStackStream::Udp(udp) = &mut ip_stack_stream {
+        udp.session_events = Some(session_events.clone());
+    }
+    let session_events = session_events.clone();
     tokio::spawn(async move {
         rx.await.ok();
-        if let Err(e) = session_remove_tx.send(network_tuple) {
+        if let Err(e) = session_events.send(SessionEvent::Closed(network_tuple)) {
             log::error!("Failed to send session removal for {network_tuple}: {e}");
         }
     });
@@ -601,7 +635,7 @@ mod tests {
         drop(first);
         // Waiting for the notification does not remove the stale table entry.
         let old_notification = remove_rx.recv().await.unwrap();
-        assert_eq!(old_notification, tuple);
+        assert!(matches!(old_notification, SessionEvent::Closed(t) if t == tuple));
 
         process_device_read(&udp_packet(b"replacement"), &mut sessions, &remove_tx, &up_tx, &config, &accept_tx)
             .await
@@ -613,7 +647,7 @@ mod tests {
         let n = replacement.read(&mut buffer).await.unwrap();
         assert_eq!(&buffer[..n], b"replacement");
 
-        remove_closed_session(&mut sessions, old_notification);
+        handle_session_event(&mut sessions, old_notification);
         assert!(sessions.contains_key(&tuple), "old notification removed the replacement");
         process_device_read(&udp_packet(b"next"), &mut sessions, &remove_tx, &up_tx, &config, &accept_tx)
             .await
@@ -623,7 +657,7 @@ mod tests {
         assert!(accept_rx.try_recv().is_err(), "a live replacement must be reused");
 
         drop(replacement);
-        remove_closed_session(&mut sessions, remove_rx.recv().await.unwrap());
+        handle_session_event(&mut sessions, remove_rx.recv().await.unwrap());
         assert!(sessions.is_empty());
     }
 
@@ -768,5 +802,27 @@ mod queue_tests {
         while let Ok(p) = rx.try_recv() { assert_eq!(p.payload.unwrap(), b"bounded"); }
         rx.close();
         assert!(tx.send(NetworkPacket::parse(&super::tests::udp_packet(b"closed")).unwrap()).is_err());
+    }
+
+    #[test]
+    fn idle_retirement_checks_occupancy_ownership_and_queued_input() {
+        let packet = NetworkPacket::parse(&super::tests::udp_packet(b"retry")).unwrap();
+        let tuple = NetworkTuple::new(packet.src_addr(), packet.dst_addr(), false);
+        let mut sessions = SessionCollection::new();
+        let (current, mut receiver) = packet_channel();
+        let (old, _unused) = packet_channel();
+        sessions.insert(tuple, current.clone());
+        let mut retire = |input: &PacketSender, high_water| {
+            let (reply, mut result) = tokio::sync::oneshot::channel();
+            handle_session_event(&mut sessions, SessionEvent::RetireIdleUdp { tuple, input: input.clone(), high_water, reply });
+            result.try_recv().unwrap()
+        };
+        assert!(!retire(&current, 2));
+        assert!(!retire(&old, 1));
+        current.send(packet).unwrap();
+        assert!(!retire(&current, 1));
+        assert_eq!(receiver.try_recv().unwrap().payload.unwrap(), b"retry");
+        assert!(retire(&current, 1));
+        assert!(sessions.is_empty());
     }
 }

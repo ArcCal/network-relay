@@ -20,12 +20,12 @@ use std::net::{Ipv4Addr, Ipv6Addr, SocketAddrV4, SocketAddrV6};
 use std::{
     io::ErrorKind,
     net::{IpAddr, SocketAddr},
-    sync::Arc,
+    sync::{Arc, atomic::{AtomicUsize, Ordering::Relaxed}},
 };
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     net::{TcpSocket, TcpStream, UdpSocket},
-    sync::{Mutex, mpsc::Receiver},
+    sync::{Mutex, Notify, mpsc::Receiver},
 };
 pub use tokio_util::sync::CancellationToken;
 use tproxy_config::is_private_ip;
@@ -103,19 +103,47 @@ struct SocketQueue {
     udp_v6: Option<Mutex<Receiver<UdpSocket>>>,
 }
 
-struct SessionCountGuard(Arc<std::sync::atomic::AtomicUsize>);
+struct SessionLoad {
+    count: AtomicUsize,
+    high_water: usize,
+    pressure: Notify,
+}
+
+impl SessionLoad {
+    fn new(limit: usize) -> Self {
+        // Leave one eighth of the budget as headroom for arriving flows.
+        Self { count: AtomicUsize::new(0), high_water: limit - limit / 8, pressure: Notify::new() }
+    }
+
+    async fn trim_answered_dns(&self, lookup: &dns::Lookup) {
+        let dns::Lookup::Answered(at) = lookup else { return std::future::pending().await; };
+        loop {
+            // Subscribe before checking so a concurrent admission cannot be missed.
+            let crossing = self.pressure.notified();
+            if self.count.load(Relaxed) < self.high_water {
+                crossing.await;
+                continue;
+            }
+            tokio::time::sleep_until(*at + std::time::Duration::from_secs(1)).await;
+            if self.count.load(Relaxed) >= self.high_water { return; }
+        }
+    }
+}
+
+struct SessionCountGuard(Arc<SessionLoad>);
 
 impl SessionCountGuard {
-    fn new(count: Arc<std::sync::atomic::AtomicUsize>) -> Self {
-        let current = count.fetch_add(1, std::sync::atomic::Ordering::Relaxed).saturating_add(1);
+    fn new(load: Arc<SessionLoad>) -> Self {
+        let current = load.count.fetch_add(1, Relaxed) + 1;
+        if current == load.high_water { load.pressure.notify_waiters(); }
         log::trace!("Session count {current}");
-        Self(count)
+        Self(load)
     }
 }
 
 impl Drop for SessionCountGuard {
     fn drop(&mut self) {
-        let current = self.0.fetch_sub(1, std::sync::atomic::Ordering::Relaxed).saturating_sub(1);
+        let current = self.0.count.fetch_sub(1, Relaxed) - 1;
         log::trace!("Session count {current}");
     }
 }
@@ -397,9 +425,8 @@ where
         client
     });
 
-    let task_count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let task_count = Arc::new(SessionLoad::new(args.max_sessions));
     let mut session_tasks = tokio::task::JoinSet::new();
-    use std::sync::atomic::Ordering::Relaxed;
 
     let result: std::io::Result<()> = 'run: loop {
         let task_count = task_count.clone();
@@ -422,7 +449,7 @@ where
         let max_sessions = args.max_sessions;
         match ip_stack_stream {
             IpStackStream::Tcp(tcp) => {
-                if task_count.load(Relaxed) >= max_sessions {
+                if task_count.count.load(Relaxed) >= max_sessions {
                     if args.exit_on_fatal_error {
                         log::info!("Too many sessions that over {max_sessions}, exiting...");
                         break 'run Ok(());
@@ -452,7 +479,7 @@ where
                 });
             }
             IpStackStream::Udp(udp) => {
-                if task_count.load(Relaxed) >= max_sessions {
+                if task_count.count.load(Relaxed) >= max_sessions {
                     if args.exit_on_fatal_error {
                         log::info!("Too many sessions that over {max_sessions}, exiting...");
                         break 'run Ok(());
@@ -532,7 +559,7 @@ where
                         session_tasks.spawn(async move {
                             let _session_count = session_count;
                             let ty = args.proxy.proxy_type;
-                            if let Err(err) = handle_udp_associate_session(udp, ty, proxy_handler, socket_queue, ipv6_enabled).await {
+                            if let Err(err) = handle_udp_associate_session(udp, ty, proxy_handler, socket_queue, ipv6_enabled, &task_count).await {
                                 log::info!("Ending {info} with \"{err}\"");
                             }
                         });
@@ -559,7 +586,7 @@ where
     while session_tasks.join_next().await.is_some() {}
 
     result?;
-    Ok(task_count.load(Relaxed))
+    Ok(task_count.count.load(Relaxed))
 }
 
 #[cfg(all(test, target_os = "linux", feature = "unshare"))]
@@ -837,6 +864,7 @@ async fn handle_udp_associate_session(
     proxy_handler: Arc<Mutex<dyn ProxyHandler>>,
     socket_queue: Option<Arc<SocketQueue>>,
     ipv6_enabled: bool,
+    load: &SessionLoad,
 ) -> crate::Result<()> {
     use socks5_impl::{Address, StreamOperation, protocol::UdpHeader};
 
@@ -852,9 +880,7 @@ async fn handle_udp_associate_session(
 
     log::info!("Beginning {session_info}");
 
-    // `_server` is meaningful here, it must be alive all the time
-    // to ensure that UDP transmission will not be interrupted accidentally.
-    let (_server, udp_addr) = match udp_addr {
+    let (mut control, udp_addr) = match udp_addr {
         Some(udp_addr) => (None, udp_addr),
         None => {
             let mut server = create_tcp_stream(&socket_queue, server_addr).await?;
@@ -867,68 +893,107 @@ async fn handle_udp_associate_session(
     // socket returns EISCONN on macOS; stream wrappers may call it internally.
     let udp_server = create_udp_stream(&socket_queue, udp_addr).await?;
 
+    // RFC 1928 section 7: the UDP association ends with its TCP control connection.
+    let control_end = async {
+        let Some(control) = control.as_mut() else { return std::future::pending().await; };
+        let mut byte = [0];
+        match control.read(&mut byte).await? {
+            0 => Ok(()),
+            _ => Err(std::io::Error::new(ErrorKind::InvalidData, "unexpected data on SOCKS UDP control connection")),
+        }
+    };
+    tokio::pin!(control_end);
+    let mut lookup = if session_info.dst.port() == DNS_PORT { dns::Lookup::Idle } else { dns::Lookup::Untracked };
     let mut buf2 = [0_u8; 65536];
+    let mut drain_remaining: Option<usize> = None;
     loop {
-        tokio::select! {
-            packet = udp_stack.recv_datagram() => {
-                let Some(packet) = packet? else { break; };
-                let len = packet.len();
-                let buf1 = &packet[..];
-
-                crate::traffic_status::traffic_status_update(len, 0)?;
-
-                if let ProxyType::Socks4 | ProxyType::Socks5 = proxy_type {
-                    let s5addr = if let Some(domain_name) = &domain_name {
-                        Address::DomainAddress(domain_name.clone().into(), session_info.dst.port())
-                    } else {
-                        session_info.dst.into()
-                    };
-
-                    // Add SOCKS5 UDP header to the incoming data
-                    let mut s5_udp_data = Vec::<u8>::new();
-                    UdpHeader::new(0, s5addr).write_to_stream(&mut s5_udp_data)?;
-                    s5_udp_data.extend_from_slice(buf1);
-
-                    udp_server.send(&s5_udp_data).await?;
-                } else {
-                    udp_server.send(buf1).await?;
-                }
+        let len = if let Some(remaining) = &mut drain_remaining {
+            // TCP FIN and the last UDP replies may arrive together. Deliver
+            // already queued replies without waiting on the retired endpoint.
+            if *remaining == 0 { break; }
+            *remaining -= 1;
+            match udp_server.try_recv(&mut buf2) {
+                Ok(len) => len,
+                Err(err) if err.kind() == ErrorKind::WouldBlock => break,
+                Err(err) => return Err(err.into()),
             }
-            len = udp_server.recv(&mut buf2) => {
-                let len = len?;
-                if len == 0 {
-                    break;
+        } else {
+            tokio::select! {
+                result = &mut control_end => {
+                    result?;
+                    drain_remaining = Some(32);
+                    continue;
                 }
-                let buf2 = &buf2[..len];
+                _ = load.trim_answered_dns(&lookup), if matches!(lookup, dns::Lookup::Answered(_)) => {
+                    if udp_stack.retire_if_idle(load.high_water).await? { break; }
+                    // A packet was queued, or another worker already freed a slot.
+                    lookup = dns::Lookup::Answered(tokio::time::Instant::now());
+                    continue;
+                }
+                packet = udp_stack.recv_datagram() => {
+                    let Some(packet) = packet? else { break; };
+                    let len = packet.len();
+                    let buf1 = &packet[..];
 
-                crate::traffic_status::traffic_status_update(0, len)?;
+                    crate::traffic_status::traffic_status_update(len, 0)?;
 
-                if let ProxyType::Socks4 | ProxyType::Socks5 = proxy_type {
-                    // Remove SOCKS5 UDP header from the server data
-                    let header = match UdpHeader::retrieve_from_stream(&mut &buf2[..]) { Ok(header) => header, Err(_) => continue };
-                    if header.frag != 0 { continue; }
-                    let expected = if let Some(domain) = &domain_name {
-                        Address::DomainAddress(domain.clone().into(), session_info.dst.port())
-                    } else { session_info.dst.into() };
-                    if header.address != expected { continue; }
-                    let data = &buf2[header.len()..];
+                    if let ProxyType::Socks4 | ProxyType::Socks5 = proxy_type {
+                        let s5addr = if let Some(domain_name) = &domain_name {
+                            Address::DomainAddress(domain_name.clone().into(), session_info.dst.port())
+                        } else {
+                            session_info.dst.into()
+                        };
 
-                    let buf = if session_info.dst.port() == DNS_PORT && !ipv6_enabled {
-                        let mut message = dns::parse_data_to_dns_message(data, false)?;
-                        dns::remove_ipv6_entries(&mut message);
-                        message.to_vec()?
+                        // Add SOCKS5 UDP header to the incoming data
+                        let mut s5_udp_data = Vec::<u8>::new();
+                        UdpHeader::new(0, s5addr).write_to_stream(&mut s5_udp_data)?;
+                        s5_udp_data.extend_from_slice(buf1);
+
+                        udp_server.send(&s5_udp_data).await?;
+                        lookup.sent(buf1);
                     } else {
-                        data.to_vec()
-                    };
-
-                    udp_stack.send_datagram(&buf)?;
-                } else {
-                    udp_stack.send_datagram(buf2)?;
+                        udp_server.send(buf1).await?;
+                    }
+                    continue;
                 }
+                len = udp_server.recv(&mut buf2) => len?,
             }
+        };
+        if len == 0 {
+            break;
+        }
+        let buf2 = &buf2[..len];
+
+        crate::traffic_status::traffic_status_update(0, len)?;
+
+        if let ProxyType::Socks4 | ProxyType::Socks5 = proxy_type {
+            // Remove SOCKS5 UDP header from the server data
+            let header = match UdpHeader::retrieve_from_stream(&mut &buf2[..]) { Ok(header) => header, Err(_) => continue };
+            if header.frag != 0 { continue; }
+            let expected = if let Some(domain) = &domain_name {
+                Address::DomainAddress(domain.clone().into(), session_info.dst.port())
+            } else { session_info.dst.into() };
+            if header.address != expected { continue; }
+            let data = &buf2[header.len()..];
+
+            let buf = if session_info.dst.port() == DNS_PORT && !ipv6_enabled {
+                let mut message = dns::parse_data_to_dns_message(data, false)?;
+                dns::remove_ipv6_entries(&mut message);
+                message.to_vec()?
+            } else {
+                data.to_vec()
+            };
+
+            udp_stack.send_datagram(&buf)?;
+            lookup.received(data);
+        } else {
+            udp_stack.send_datagram(buf2)?;
         }
     }
 
+    // Close the input queue before the peer observes our control FIN. A
+    // subsequent query on the same tuple can immediately open a new stream.
+    drop(udp_stack);
     log::info!("Ending {session_info}");
 
     Ok(())
@@ -1161,15 +1226,15 @@ mod dns_tcp_response_tests {
 
     #[test]
     fn session_count_guard_releases_count_on_early_exit() {
-        let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let count = Arc::new(SessionLoad::new(128));
         let result: Result<(), ()> = {
             let _guard = SessionCountGuard::new(count.clone());
-            assert_eq!(count.load(std::sync::atomic::Ordering::Relaxed), 1);
+            assert_eq!(count.count.load(Relaxed), 1);
             Err(())
         };
 
         assert!(result.is_err());
-        assert_eq!(count.load(std::sync::atomic::Ordering::Relaxed), 0);
+        assert_eq!(count.count.load(Relaxed), 0);
     }
 }
 

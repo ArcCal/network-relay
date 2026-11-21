@@ -57,8 +57,11 @@ operations.
 - Empty UDP datagrams were confused with stream EOF. Datagram-specific receive
   and send methods retain zero-length payloads and preserve entire replies.
 - SOCKS replies must claim the expected target and use FRAG=0 before injection.
-- Normal DNS forwarding no longer reparses/reserializes responses when IPv6 is
-  enabled; the transport preserves opaque DNS wire bytes.
+- Normal DNS forwarding preserves wire bytes with IPv6 enabled. The worker
+  inspects the header and echoed question of a pending lookup to identify an
+  answered UDP association. Under pressure it can retire that association
+  after a quiet second when the packet queue is empty. A SOCKS control close
+  also releases the association so retries can use a fresh relay port.
 - The userspace TCP stack sent FIN immediately after peer FIN whenever its
   current send queue was empty. This discarded responses produced after upload
   half-close. It now retains the download half until upstream shutdown, drains

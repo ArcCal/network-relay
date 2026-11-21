@@ -46,6 +46,7 @@ pub struct IpStackUdpStream {
     timeout: Pin<Box<Sleep>>,
     timeout_interval: Duration,
     destroy_messenger: Option<::tokio::sync::oneshot::Sender<()>>,
+    pub(crate) session_events: Option<tokio::sync::mpsc::UnboundedSender<crate::SessionEvent>>,
 }
 
 impl IpStackUdpStream {
@@ -70,11 +71,24 @@ impl IpStackUdpStream {
             timeout: Box::pin(tokio::time::sleep_until(deadline)),
             timeout_interval,
             destroy_messenger,
+            session_events: None,
         }
     }
 
     pub(crate) fn stream_sender(&self) -> PacketSender {
         self.stream_sender.clone()
+    }
+
+    /// Detach this stream only while the session table is busy and no input is waiting.
+    /// On success the caller must drop the stream; later packets create a new one.
+    pub async fn retire_if_idle(&mut self, high_water: usize) -> std::io::Result<bool> {
+        let Some(events) = &self.session_events else { return Ok(false); };
+        if self.first_payload.is_some() { return Ok(false); }
+        let tuple = crate::packet::NetworkTuple::new(self.src_addr, self.dst_addr, false);
+        let (reply, result) = tokio::sync::oneshot::channel();
+        events.send(crate::SessionEvent::RetireIdleUdp { tuple, input: self.stream_sender.clone(), high_water, reply })
+            .map_err(|_| std::io::ErrorKind::BrokenPipe)?;
+        result.await.map_err(|_| std::io::ErrorKind::BrokenPipe.into())
     }
 
     /// Datagram-oriented receive distinguishes an empty payload from EOF.

@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Network Relay Tun opens a fresh UDP association after its local SOCKS control
+  connection closes. Under session pressure the packet worker can release an
+  idle, answered DNS lookup so new connections can open.
 - RS, NF and TUN now wake pending CONNECT-UDP requests on receipt of HTTP/3
   SETTINGS. A peer that omits or disables Extended CONNECT is handled immediately.
   Other TCP CONNECT streams can open while SETTINGS is outstanding. RS accepts

@@ -33,8 +33,51 @@ each request. In two runs, adding 1.25 seconds at the test DNS resolver gave
 first visits of 1379 and 1326 ms. Repeat visits issued no DNS query and took
 184 and 61 ms. Pinning the same slow names to their test addresses produced
 first visits of 49 and 53 ms. These measurements isolate DNS delay on the
-runner. The affected user's network has no corresponding post-update trace.
+runner. The field logs do not identify the build or time individual queries.
 [macOS packet tests, signed app and Chrome trials](https://github.com/ArcCal/caddy-network-relay/actions/runs/44891995933).
+
+### Encrypted DNS and native logging
+
+On macOS 27 the signed client at `7db57db` completed 32 DNS-over-TLS queries
+and 32 DNS-over-TCP queries on each of H2 and H3. The two resolver IPs were
+assigned inside an isolated Linux guest. Both ordinary system sockets and
+explicit SOCKS checked the transaction ID, question and answer. Reused TLS
+connections delivered a second answer after a 2.25-second delay. With a
+1.25-second delay in the ordinary resolver, Chrome took 1353-1557 ms to open
+a new HTTPS name and 50-81 ms to revisit it on a fresh TCP connection. The
+resolver received no new query on those repeat visits. External Google HTTPS
+and a public GitHub clone and full object check also passed in both modes.
+[Signed client, DNS responses and Chrome/Git trials](https://github.com/ArcCal/caddy-network-relay/actions/runs/44895963651).
+
+In five optimized macOS trials of 10,000 native log timestamps, constructing
+an ISO 8601 formatter per record took a median of 1268 ms. Reusing one on
+the client's serial I/O queue took 11.7 ms and matched the original output
+at every tested boundary. Two faster alternatives produced different strings
+near second boundaries. These timings measure timestamp formatting only.
+[Native formatter comparison](https://github.com/ArcCal/caddy-network-relay/actions/runs/44895896138).
+
+The signed diagnostic build repeated the TCP and TLS query matrix with full
+native tracing. In separate fresh profiles, Chrome used strict Secure DNS
+through TUN. The HTTPS resolver recorded the new test names on both relay
+transports. A deliberately delayed name took 1338 ms on its first visit
+with either transport. The repeat took 55 ms on H2 and 44 ms on H3, with
+zero further queries and a new TCP connection in both cases. The UI tests
+exported the log after connection and matched its capture state and local
+SOCKS resource IDs against the two real capture cycles.
+[Signed app, Chrome Secure DNS and log checks](https://github.com/ArcCal/caddy-network-relay/actions/runs/44896541314).
+
+On both transports, a local SOCKS caller could half-close its TCP upload and
+still read a delayed, verified DNS-over-TLS answer. Across four capture cycles,
+an intentional local TCP reset produced `ECONNRESET` on the matching native
+socket every time, and an independent DNS query still succeeded. No trial
+reproduced the field `ENETDOWN` on a connection to TCP port 853.
+[Controlled socket closure and companion DNS queries](https://github.com/ArcCal/caddy-network-relay/actions/runs/44897462269).
+
+The local Linux run passed 116 relay-core tests, 50 host tests, 14 packet
+worker tests and all 85 vendored stack and adapter tests. The four external
+core fixtures also passed against both Linux relay binaries. Those fixtures
+exercise interoperability, large transfers, idle streams and pooled connection
+renewal through the test transport.
 
 ### Switching capture in a connected session
 

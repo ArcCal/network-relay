@@ -56,6 +56,12 @@ check fails, the existing SOCKS session stays connected. Disconnect and
 use **Install / Update Helper**, then try again. Disabling capture restores
 this app's routes and DNS before starting the SOCKS-only session.
 
+In the Log tab, `System capture: Capturing IPv4 and IPv6` confirms that the
+helper activated capture for that run. `System capture: Off` on connection
+means that only the SOCKS service started. At the Detailed level, a TCP
+`SOCKS CONNECT ready` line includes `local_resource`. Match this ID and the
+`run` ID to a native error to identify a failure on the local SOCKS socket.
+
 With Global TUN disabled, the same application provides its local SOCKS service
 without requiring the helper. There is no routing rule engine or forced kill
 switch. Loss of the control connection causes capture restoration; a helper

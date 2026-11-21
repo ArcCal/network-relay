@@ -185,6 +185,7 @@ final class TunnelController: ObservableObject {
                     captureStatus = "Capturing IPv4 and IPv6"
                 }
                 status = .connected
+                record("System capture: \(captureStatus) [run=\(run.uuidString.prefix(8))]")
                 endpoints = [] // Resolve again after a later physical path change.
                 let connectedAt = ProcessInfo.processInfo.systemUptime
                 while !Task.isCancelled {

@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Network Relay Tun reuses the timestamp formatter on its native I/O queue.
+  Connected runs record the actual system capture state. Detailed SOCKS TCP
+  logs include the local socket's native resource ID for tracing failures.
 - Network Relay Tun opens a fresh UDP association after its local SOCKS control
   connection closes. Under session pressure the packet worker can release an
   idle, answered DNS lookup so new connections can open.

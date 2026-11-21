@@ -147,7 +147,7 @@ async fn session(client: Arc<Client>, mut io: native::Io, peer: SocketAddr) -> R
             match result {
                 Ok(mut opened) => {
                     reply(&mut io, 0, None).await?;
-                    tracing::debug!(%peer, host=%target.host, port=target.port, transport=opened.transport, "SOCKS CONNECT ready");
+                    tracing::debug!(%peer, host=%target.host, port=target.port, transport=opened.transport, local_resource=io.id(), "SOCKS CONNECT ready");
                     if let Err(e) = crate::traffic::copy_bidirectional(
                         &mut io,
                         &mut opened.stream,

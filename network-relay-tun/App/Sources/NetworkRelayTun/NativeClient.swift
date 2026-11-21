@@ -28,6 +28,7 @@ final class NativeClient {
     private var groups: [UInt64: Group] = [:]
     private var pendingConnections: [ObjectIdentifier: (UInt64, NWConnection)] = [:]
     private var level: LogLevel
+    private let logTimestampFormatter = ISO8601DateFormatter()
     private var logTimer: DispatchSourceTimer?
     private var lastTrafficAt = ProcessInfo.processInfo.systemUptime
     private var trafficUnavailable = false
@@ -178,7 +179,7 @@ final class NativeClient {
     private func notify(_ value: NativeUpdate) { DispatchQueue.main.async { [update] in update(value) } }
     private func log(_ severity: String, _ text: String) {
         if (severity == "DEBUG" && level.nativeValue < 3) || (severity == "TRACE" && level.nativeValue < 4) { return }
-        appendLog("\(ISO8601DateFormatter().string(from: Date())) \(severity) native: \(text)")
+        appendLog("\(logTimestampFormatter.string(from: Date())) \(severity) native: \(text)")
     }
     private func appendLog(_ text: String) {
         appendClientLog(text.split(whereSeparator: \.isNewline).map { "\($0) [run=\(runID)]" }, to: &pendingLogs)
